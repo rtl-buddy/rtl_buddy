@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.">
+        <meta name="description" content="Configure sweep and preprocessing hooks in tests.yaml, including their inputs, paths, output ownership, and failure behavior.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#plugins" class="md-skip">
+        <a href="#test-plugins" class="md-skip">
           Skip to content
         </a>
       
@@ -649,10 +649,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#sweep-expanding-one-test-into-many" class="md-nav__link">
+  <a href="#expand-tests-with-sweep" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sweep: expanding one test into many
+        Expand tests with sweep
       
     </span>
   </a>
@@ -660,10 +660,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pre-processing-mutate-test-params-before-compile" class="md-nav__link">
+  <a href="#modify-a-test-with-preproc" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-processing: mutate test params before compile
+        Modify a test with preproc
       
     </span>
   </a>
@@ -671,10 +671,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-a-generator-should-write" class="md-nav__link">
+  <a href="#write-generated-files-safely" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where a generator should write
+        Write generated files safely
       
     </span>
   </a>
@@ -682,10 +682,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-working-directory" class="md-nav__link">
+  <a href="#handle-hook-execution-context" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook working directory
+        Handle hook execution context
       
     </span>
   </a>
@@ -1445,6 +1445,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1560,10 +1644,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#sweep-expanding-one-test-into-many" class="md-nav__link">
+  <a href="#expand-tests-with-sweep" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sweep: expanding one test into many
+        Expand tests with sweep
       
     </span>
   </a>
@@ -1571,10 +1655,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pre-processing-mutate-test-params-before-compile" class="md-nav__link">
+  <a href="#modify-a-test-with-preproc" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-processing: mutate test params before compile
+        Modify a test with preproc
       
     </span>
   </a>
@@ -1582,10 +1666,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-a-generator-should-write" class="md-nav__link">
+  <a href="#write-generated-files-safely" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where a generator should write
+        Write generated files safely
       
     </span>
   </a>
@@ -1593,10 +1677,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-working-directory" class="md-nav__link">
+  <a href="#handle-hook-execution-context" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook working directory
+        Handle hook execution context
       
     </span>
   </a>
@@ -1634,196 +1718,131 @@
   
 
 
-<h1 id="plugins">Plugins</h1>
-<p><code>rtl_buddy</code> supports three Python plugin hooks that let you extend test behavior without modifying the tool itself. All hooks are specified per-test in <code>tests.yaml</code> and are executed by the tool at the appropriate point in the test flow.</p>
-<p>Hook scripts receive their input through named variables injected into the script's namespace. They do not use <code>import</code> or function arguments — instead they read from and write to these predefined variables.</p>
-<h2 id="sweep-expanding-one-test-into-many">Sweep: expanding one test into many</h2>
-<p>The sweep hook runs before the test flow and expands a single test entry into multiple <code>TestConfig</code> objects, each with different parameters. Use it to cover a combinatorial space of plusargs, seeds, or configurations without manually listing every variant.</p>
-<p><strong><code>tests.yaml</code> entry:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sweep_case&quot;</span>
+<h1 id="test-plugins">Test plugins</h1>
+<p><a id="hooks"></a></p>
+<p>Tests can run Python hooks without changing <code>rtl_buddy</code>. Configure hooks per test in <code>tests.yaml</code>; hook scripts execute at module scope and receive predefined variables rather than function arguments.</p>
+<h2 id="expand-tests-with-sweep">Expand tests with <code>sweep</code></h2>
+<p>A sweep runs before the test flow and replaces one test with a list of variants. Assign the variants to <code>out_test_cfgs</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sweep_case</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">sweep</span><span class="p">:</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;example_sweep.py&quot;</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">example_sweep.py</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../src/models.yaml</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
 </code></pre></div>
-<p><strong>Available variables in the script:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">out_test_cfgs</span> <span class="o">=</span> <span class="p">[]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">cfg</span> <span class="o">=</span> <span class="n">test_cfg</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">test_cfg</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;SCENARIO&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">out_test_cfgs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+</code></pre></div>
 <table>
 <thead>
 <tr>
 <th>Variable</th>
-<th>Type</th>
-<th>Description</th>
+<th>Value</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>logger</code></td>
-<td>Logger</td>
-<td>Use this for all logging so output goes through <code>rtl_buddy</code>'s log system</td>
-</tr>
-<tr>
 <td><code>test_cfg</code></td>
-<td>TestConfig (immutable)</td>
-<td>The original test entry from <code>tests.yaml</code></td>
+<td>Original immutable <code>TestConfig</code>; copied variants may change any field except <code>reglvl</code></td>
 </tr>
 <tr>
 <td><code>root_cfg</code></td>
-<td>RootConfig (mutable)</td>
-<td>The loaded root config</td>
+<td>Mutable <code>RootConfig</code></td>
 </tr>
 <tr>
 <td><code>suite_dir</code></td>
-<td>string</td>
-<td>Absolute path to the directory containing <code>tests.yaml</code></td>
+<td>Absolute directory containing <code>tests.yaml</code></td>
 </tr>
 <tr>
 <td><code>artifact_dir</code></td>
-<td>string</td>
-<td>Artifact root for the incoming test name under <code>suite_dir/artefacts/</code></td>
+<td>Artefact root for the incoming test name</td>
 </tr>
 <tr>
 <td><code>out_test_cfgs</code></td>
-<td>list</td>
-<td><strong>Assign</strong> the expanded list of <code>TestConfig</code> objects here</td>
+<td>Output list the script must assign</td>
+</tr>
+<tr>
+<td><code>logger</code></td>
+<td>rtl_buddy logger</td>
 </tr>
 <tr>
 <td><code>__file__</code></td>
-<td>string</td>
-<td>Absolute path to the current sweep script</td>
+<td>Absolute hook path</td>
 </tr>
 </tbody>
 </table>
-<p>Everything in <code>TestConfig</code> except <code>reglvl</code> can be mutated in the generated tests (e.g. change <code>name</code>, <code>plusargs</code>, <code>plusdefines</code>).</p>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># example_sweep.py</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">out_test_cfgs</span> <span class="o">=</span> <span class="p">[]</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">cfg</span> <span class="o">=</span> <span class="n">test_cfg</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">test_cfg</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;SCENARIO&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">out_test_cfgs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
-</code></pre></div>
-<p>If the sweep script raises an exception, <code>rtl_buddy</code> records that test as a setup failure and continues with the remaining tests.</p>
-<p>See the template repo for a working example.</p>
-<h2 id="pre-processing-mutate-test-params-before-compile">Pre-processing: mutate test params before compile</h2>
-<p>The pre-processing hook runs after sweep expansion but before the compilation step. Use it to dynamically adjust plusargs, plusdefines, or other test parameters based on runtime state.</p>
-<p><strong><code>tests.yaml</code> entry:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;basic&quot;</span>
+<p>A script exception marks the source test as a setup failure; remaining tests continue.</p>
+<h2 id="modify-a-test-with-preproc">Modify a test with <code>preproc</code></h2>
+<p>Preprocessing runs after sweep expansion and before compile. Modify <code>test_cfg</code> directly:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">basic</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">preproc</span><span class="p">:</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_preproc.py&quot;</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_preproc.py</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../src/models.yaml</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top</span>
 </code></pre></div>
-<p><strong>Available variables:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;BUILD_ID&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;CI_BUILD_ID&quot;</span><span class="p">,</span> <span class="s2">&quot;local&quot;</span><span class="p">)</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;stimulus&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">Path</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;vectors&quot;</span> <span class="o">/</span> <span class="s2">&quot;streaming_contract.txt&quot;</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">)</span>
+</code></pre></div>
+<p>The script receives <code>test_cfg</code>, <code>root_cfg</code>, <code>suite_dir</code>, <code>artifact_dir</code>, <code>logger</code>, and <code>__file__</code>, plus:</p>
 <table>
 <thead>
 <tr>
 <th>Variable</th>
-<th>Type</th>
-<th>Description</th>
+<th>Value</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>logger</code></td>
-<td>Logger</td>
-<td>Use for all logging</td>
-</tr>
-<tr>
-<td><code>test_cfg</code></td>
-<td>TestConfig (mutable)</td>
-<td>Modify this to change compile/sim parameters</td>
-</tr>
-<tr>
-<td><code>root_cfg</code></td>
-<td>RootConfig (mutable)</td>
-<td>The loaded root config</td>
-</tr>
-<tr>
-<td><code>suite_dir</code></td>
-<td>string</td>
-<td>Absolute path to the directory containing <code>tests.yaml</code></td>
-</tr>
-<tr>
-<td><code>artifact_dir</code></td>
-<td>string</td>
-<td>Artifact root for this test under <code>suite_dir/artefacts/</code> — <strong>test-keyed</strong>, so every run of the test shares it</td>
-</tr>
-<tr>
 <td><code>run_id</code></td>
-<td>int or None</td>
-<td>The run index this hook is preparing — a dispatched array element, or a single <code>test</code> — and <code>None</code> when one execution of the hook serves several runs, which is what a local <code>randtest</code> does (it runs <code>preproc</code> and the compile once, then loops the simulation)</td>
+<td>Run index for a dispatched element or single test; <code>None</code> when one hook invocation serves several local <code>randtest</code> runs</td>
 </tr>
 <tr>
 <td><code>run_artifact_dir</code></td>
-<td>string</td>
-<td>Artifact root for <em>this run</em>: <code>artifact_dir/run-NNNN</code> when <code>run_id</code> is set, otherwise <code>artifact_dir</code> itself. Also the simulation's working directory</td>
-</tr>
-<tr>
-<td><code>__file__</code></td>
-<td>string</td>
-<td>Absolute path to the current pre-processing script</td>
+<td><code>artifact_dir/run-NNNN</code> when <code>run_id</code> is set; otherwise <code>artifact_dir</code>. This is also the simulation working directory</td>
 </tr>
 </tbody>
 </table>
-<p>Both directories exist by the time the hook runs.</p>
-<p>Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against <code>suite_dir</code> in preproc. Output filenames that should land in the per-test artefact tree can remain relative to <code>artifact_dir</code>.</p>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># my_preproc.py</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;BUILD_ID&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;CI_BUILD_ID&quot;</span><span class="p">,</span> <span class="s2">&quot;local&quot;</span><span class="p">)</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;stimulus&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;vectors&quot;</span> <span class="o">/</span> <span class="s2">&quot;streaming_contract.txt&quot;</span><span class="p">)</span>
-</code></pre></div>
-<p>If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.</p>
-<p>See the template repo for a working example.</p>
-<h2 id="where-a-generator-should-write">Where a generator should write</h2>
-<p><code>artifact_dir</code> is keyed on the test name only, so under <code>randtest</code> or <code>--dispatch</code> every seed of a test resolves to the same path — and dispatched seeds run <strong>concurrently</strong>. Which directory a <code>preproc</code> generator should use follows from what its output depends on:</p>
+<p>Both artefact directories exist before the hook runs. A script exception marks the affected test as a setup failure; remaining tests continue.</p>
+<h2 id="write-generated-files-safely">Write generated files safely</h2>
+<p>Choose the output directory from the data's lifetime:</p>
 <ul>
-<li><strong>Output depends only on the test</strong> (the common case): write to <code>artifact_dir</code>, and write <strong>atomically</strong> — a temp file plus <code>os.replace</code>, never <code>open(path, "w")</code>. Truncate-in-place is not atomic, so a sibling element reading the file mid-write gets a short one, and the mismatch surfaces as a design failure rather than a harness failure.</li>
-<li><strong>Output depends on the run or the seed</strong>: write to <code>run_artifact_dir</code>. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative. This only separates runs where the hook itself runs per run: under <code>--dispatch</code> it does, and <code>run_id</code> is set. A <strong>local</strong> <code>randtest</code> runs the hook once for all its seeds, so <code>run_id</code> is <code>None</code> and <code>run_artifact_dir</code> is the test directory — a generator that must vary per seed needs the dispatch path (or a <code>sweep</code> that expands the seeds into separate tests).</li>
+<li>Write test-invariant output to <code>artifact_dir</code>. Concurrent dispatched runs share this directory, so publish files atomically with a temporary file and <code>os.replace()</code>.</li>
+<li>Write run- or seed-specific output to <code>run_artifact_dir</code>. It is unique only when <code>run_id</code> is set. Local <code>randtest</code> invokes preproc once for all seeds, so use dispatch or sweep when generation must vary per seed.</li>
 </ul>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Seed-dependent stimulus: per-run directory, no race to worry about.</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">out</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">run_artifact_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;stimulus.hex&quot;</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">out</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">generate</span><span class="p">(</span><span class="n">run_id</span><span class="p">))</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># Test-dependent stimulus: shared path, so publish it atomically.</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">out</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;stimulus.hex&quot;</span>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">tmp</span> <span class="o">=</span> <span class="n">out</span><span class="o">.</span><span class="n">with_name</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">out</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">.</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">.tmp&quot;</span><span class="p">)</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="n">tmp</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">generate</span><span class="p">())</span>
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="n">os</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">tmp</span><span class="p">,</span> <span class="n">out</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="k">if</span> <span class="n">run_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="n">run_artifact_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;stimulus.hex&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">generate</span><span class="p">(</span><span class="n">run_id</span><span class="p">))</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">out</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;stimulus.hex&quot;</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="n">tmp</span> <span class="o">=</span> <span class="n">out</span><span class="o">.</span><span class="n">with_name</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">out</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">.</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">.tmp&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="n">tmp</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">generate</span><span class="p">())</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="n">os</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">tmp</span><span class="p">,</span> <span class="n">out</span><span class="p">)</span>
 </code></pre></div>
-<h2 id="hook-working-directory">Hook working directory</h2>
-<p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which stays at <code>invocation_cwd</code> — the directory you ran <code>rb</code> from. It is <strong>not</strong> the suite directory. Always build paths from the injected <code>suite_dir</code> and <code>artifact_dir</code> variables; never call <code>os.getcwd()</code> to locate the suite.</p>
-<p>Because hooks run via <code>exec()</code> rather than <code>import</code>, <code>__name__</code> is set to the sentinel <code>"__rtl_buddy_hook__"</code> — never <code>"__main__"</code>. Put hook logic at module top level. If you also want the script runnable standalone (e.g. for local testing outside <code>rb</code>), keep only the standalone entry point under <code>if __name__ == "__main__":</code> and put the <code>rb</code>-invoked logic at module level or in the accompanying <code>else:</code> branch; the <code>__main__</code> branch is always skipped when <code>rb</code> runs the hook.</p>
-<p>A hook may <code>print()</code> freely: hook stdout is captured and re-emitted through <code>rtl_buddy</code>'s log system as a <code>hook.stdout</code> event, so the text appears on the console (stderr) and in <code>rtl_buddy.log</code> but never on stdout, which under <code>--machine</code> is reserved for the JSON envelope. Prefer the injected <code>logger</code> for anything that deserves a level.</p>
-<p>The capture rebinds <code>sys.stdout</code>, so it covers what the hook itself prints — not what a <strong>child process</strong> writes. A hook that delegates to a third-party generator gives that child <code>rtl_buddy</code>'s own stdout, and under <code>--machine</code> the generator's chatter lands ahead of the envelope. Redirect the child, and route anything worth keeping back through <code>print()</code>:</p>
+<p>Resolve suite inputs from <code>suite_dir</code>; do not use <code>os.getcwd()</code>. Plusargs are passed verbatim, so make suite-local input paths explicit. Relative output paths may target <code>run_artifact_dir</code> because simulation runs there.</p>
+<h2 id="handle-hook-execution-context">Handle hook execution context</h2>
+<p>Hooks run through <code>exec()</code> in the invocation working directory, not the suite directory. <code>__name__</code> is <code>"__rtl_buddy_hook__"</code>, so place hook logic at module scope; an <code>if __name__ == "__main__":</code> branch is skipped.</p>
+<p>Hook <code>print()</code> output is captured as <code>hook.stdout</code>, appears on stderr and in <code>rtl_buddy.log</code>, and cannot corrupt <code>--machine</code> JSON on stdout. Prefer <code>logger</code> when a message needs a level.</p>
+<p>Child-process output is not captured automatically. Capture it and print it through the hook:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">res</span> <span class="o">=</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">cmd</span><span class="p">,</span> <span class="n">capture_output</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">text</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">check</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nb">print</span><span class="p">(</span><span class="n">res</span><span class="o">.</span><span class="n">stdout</span><span class="p">,</span> <span class="n">end</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">)</span>          <span class="c1"># captured as hook.stdout</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nb">print</span><span class="p">(</span><span class="n">res</span><span class="o">.</span><span class="n">stdout</span><span class="p">,</span> <span class="n">end</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">)</span>
 </code></pre></div>
-<p>For the same reason <code>sys.stdout</code> here is a text sink rather than a real file: <code>sys.stdout.fileno()</code> and <code>sys.stdout.buffer</code> raise instead of reaching fd 1.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>     <span class="c1"># wrong — invocation cwd</span>
-</code></pre></div>
-<p>If a hook delegates to a third-party generator that writes relative to <code>os.getcwd()</code> and exposes no output-directory argument, wrap the call in a <code>chdir</code> to the suite and restore it afterwards:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="k">finally</span><span class="p">:</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
-</code></pre></div>
-<p>This anchoring behavior changed in v5; see <a href="../../migrations/#v4-to-v5">Migrations: v4 to v5</a> and the <a href="../execution-context/">execution context</a> reference.</p>
+<p>The captured <code>sys.stdout</code> has no usable <code>fileno()</code> or <code>.buffer</code>. If a third-party generator can only write relative to its working directory, change to <code>suite_dir</code> temporarily and restore the prior directory in <code>finally</code>.</p>
+<p>See <a href="../execution-context/">Execution Context</a> for path ownership rules.</p>
 <h2 id="post-processing">Post-processing</h2>
-<p>The <code>postproc</code> hook is parsed from config but the runtime flow currently relies on built-in post-processing. Custom post-processing support is planned for a future release.</p>
+<p><code>postproc</code> is accepted by the configuration loader, but custom post-processing hooks are not executed. Use the built-in post-processing flow.</p>
 
 
 

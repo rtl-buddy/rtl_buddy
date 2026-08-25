@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.">
+        <meta name="description" content="Run multiple simulation suites from regression.yaml, filter by regression level, and choose local or parallel dispatch.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -537,10 +537,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#regression-config-regressionsyaml" class="md-nav__link">
+  <a href="#configure-a-regression" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Regression config: regressions.yaml
+        Configure a regression
       
     </span>
   </a>
@@ -548,49 +548,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-a-regression" class="md-nav__link">
+  <a href="#resolve-the-manifest" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running a regression
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Running a regression">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#config-resolution-order" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Config resolution order
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression levels
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#working-directory-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Working directory behavior
+        Resolve the manifest
       
     </span>
   </a>
@@ -598,10 +559,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#parallel-dispatch" class="md-nav__link">
+  <a href="#filter-by-regression-level" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Parallel dispatch
+        Filter by regression level
       
     </span>
   </a>
@@ -609,10 +570,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
+  <a href="#reuse-compilation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full schema
+        Reuse compilation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-in-parallel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run in parallel
       
     </span>
   </a>
@@ -1473,6 +1445,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1588,10 +1644,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#regression-config-regressionsyaml" class="md-nav__link">
+  <a href="#configure-a-regression" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Regression config: regressions.yaml
+        Configure a regression
       
     </span>
   </a>
@@ -1599,49 +1655,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-a-regression" class="md-nav__link">
+  <a href="#resolve-the-manifest" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running a regression
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Running a regression">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#config-resolution-order" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Config resolution order
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression levels
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#working-directory-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Working directory behavior
+        Resolve the manifest
       
     </span>
   </a>
@@ -1649,10 +1666,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#parallel-dispatch" class="md-nav__link">
+  <a href="#filter-by-regression-level" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Parallel dispatch
+        Filter by regression level
       
     </span>
   </a>
@@ -1660,10 +1677,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
+  <a href="#reuse-compilation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full schema
+        Reuse compilation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-in-parallel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run in parallel
       
     </span>
   </a>
@@ -1691,76 +1719,45 @@
 
 
 <h1 id="regressions">Regressions</h1>
-<p>A regression runs multiple test suites in sequence, filtering tests by regression level. It is the standard way to validate a full design before a release or merge.</p>
-<h2 id="regression-config-regressionsyaml">Regression config: <code>regressions.yaml</code></h2>
+<p>A regression runs the test suites listed in one manifest and combines their results.</p>
+<h2 id="configure-a-regression">Configure a regression</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">reg_config</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">test-configs</span><span class="p">:</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_a/verif/tests.yaml&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_b/verif/tests.yaml&quot;</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">design/block_a/verif/tests.yaml</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">design/block_b/verif/tests.yaml</span>
 </code></pre></div>
-<p>Each entry in <code>test-configs</code> is a path to a suite's <code>tests.yaml</code>, resolved relative to the directory where <code>rtl-buddy regression</code> is invoked (usually the repo root).</p>
-<p>The default path to <code>regressions.yaml</code> is set in <code>root_config.yaml</code> under <code>cfg-rtl-reg.reg-cfg-path</code>. Override it per run with <code>--reg-config</code>.</p>
-<h2 id="running-a-regression">Running a regression</h2>
-<p>Use the default config:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rtl-buddy<span class="w"> </span>regression
+<p>Paths resolve from the directory containing <code>regression.yaml</code>. Each suite keeps its own artefacts and detailed log; the manifest directory receives the regression log and merged outputs.</p>
+<p>See <a href="../../reference/yaml/#regressionyaml">YAML Formats: regression.yaml</a> for the schema.</p>
+<h2 id="resolve-the-manifest">Resolve the manifest</h2>
+<p>An explicit config wins:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--reg-config<span class="w"> </span>path/to/regression.yaml
 </code></pre></div>
-<p>Specify a config file explicitly:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--reg-config<span class="w"> </span>path/to/regressions.yaml
-</code></pre></div>
-<p>When many tests in a suite share one testbench and compile configuration,
-add <code>--share-build</code> to compile once per unique set of compile inputs instead
-of once per test (Verilator, VCS, and Icarus builders). See
-<a href="../tests/#sharing-compiled-builds-across-tests">Sharing compiled builds across tests</a>.</p>
-<h3 id="config-resolution-order">Config resolution order</h3>
-<p>When <code>--reg-config</code> is not given, <code>rtl_buddy</code> resolves the regression config in this order:</p>
+<p>Without it, RTL Buddy checks:</p>
 <ol>
-<li><code>./regression.yaml</code> in the current working directory, if it exists</li>
-<li>The path set in <code>root_config.yaml</code> under <code>cfg-rtl-reg.reg-cfg-path</code></li>
+<li><code>./regression.yaml</code> in the invocation directory</li>
+<li><code>cfg-rtl-reg.reg-cfg-path</code> in <code>root_config.yaml</code></li>
 </ol>
-<p>This means you can drop a <code>regression.yaml</code> at the repo root and run <code>rtl-buddy regression</code> without any flags, even if <code>root_config.yaml</code> points elsewhere.</p>
-<p>The flow regressions (<code>rb synth-regression</code>, <code>rb power-regression</code>, <code>rb fpga-regression</code>, <code>rb cdc-regression</code>, <code>rb fpv-regression</code>) resolve their manifests with the same precedence: <code>-c</code>, then <code>./&lt;flow&gt;_regression.yaml</code> in the current working directory, then the matching <code>cfg-rtl-reg.&lt;flow&gt;-reg-cfg-path</code> key in <code>root_config.yaml</code> (see <a href="../../reference/yaml/#root_configyaml">root_config.yaml</a>). Declaring a flow's manifest there is what keeps a non-root location (e.g. <code>lint/cdc/cdc_regression.yaml</code>) visible to <a href="../graph/#flow-provenance"><code>rb graph build</code>'s flow discovery</a> as well.</p>
-<p>Each suite's outputs land under that suite's own <code>tests.yaml</code> directory; the orchestration log and any merged coverage artifacts land under <code>dirname(regression.yaml)</code>. See <a href="../execution-context/">Execution Context</a> for how the per-suite re-anchoring works.</p>
-<h3 id="regression-levels">Regression levels</h3>
-<p><code>rtl_buddy</code> filters tests by the <code>reglvl</code> value set in each <code>tests.yaml</code>. Use <code>--reg-level</code> and <code>--start-level</code> to select a range:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Run all tests with reglvl &lt;= 2000</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--reg-level<span class="w"> </span><span class="m">2000</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Run tests with reglvl in [1000, 3000]</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
+<p>Other flow regressions use the same order: explicit <code>-c</code>, <code>./&lt;flow&gt;_regression.yaml</code>, then the matching <code>cfg-rtl-reg.&lt;flow&gt;-reg-cfg-path</code>. Declare non-root flow manifests in <code>cfg-rtl-reg</code> so graph discovery can find them.</p>
+<h2 id="filter-by-regression-level">Filter by regression level</h2>
+<p>Tests with <code>reglvl</code> in the selected inclusive range run; others report <code>SKIP</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--reg-level<span class="w"> </span><span class="m">2000</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
 </code></pre></div>
-<p>The default is <code>--reg-level 0</code>, which runs only tests with <code>reglvl: 0</code> (must-run sanity tests).</p>
-<p>The <code>test</code> subcommand accepts the same <code>--reg-level</code>/<code>--start-level</code> options (long-form only) for filtering a single suite's <code>tests.yaml</code> without a <code>regressions.yaml</code>. See <a href="../tests/#regression-levels">Regression levels</a>.</p>
-<h2 id="working-directory-behavior">Working directory behavior</h2>
-<p>Unlike <code>test</code>, the <code>regression</code> subcommand <strong>changes directory</strong> into each suite directory before running its tests. This means relative paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved correctly without any extra setup.</p>
-<p>Run <code>regression</code> from the repo root so that the paths in <code>regressions.yaml</code> resolve correctly.</p>
-<h2 id="parallel-dispatch">Parallel dispatch</h2>
-<p>By default a regression runs every test in-process, one at a time
-(<code>--dispatch local</code>). To run tests in parallel after the shared build,
-dispatch them — to a <a href="https://slurm.schedmd.com/">Slurm</a> cluster, or to a
-pool of subprocesses on the machine you are sitting at:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>slurm
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">4</span>
+<p>The default upper level is 0, so an unqualified regression runs must-run tests with <code>reglvl: 0</code>. A test may define one level or builder-specific levels. See <a href="../tests/#filter-by-regression-level">Tests</a>.</p>
+<h2 id="reuse-compilation">Reuse compilation</h2>
+<p>When tests share compile inputs, reuse a compiled build:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--share-build
 </code></pre></div>
-<p>What happens: <strong>nothing heavy runs on the submit host</strong> (usually an
-interactive login node). The head expands the suite once, then submits one
-<strong>build job</strong> per suite that compiles a shared <code>simv</code> per unique compile
-key on a compute node (dispatch implies <code>--share-build</code>); it then submits
-one sim job per test, each gated on that build with <code>--dependency=afterok</code>,
-so a sim starts only once its shared build succeeded and re-enters at
-simulation. The head waits for the queue to drain and collects each job's
-result into the normal summary and exit code.</p>
-<p><code>--dispatch local-parallel</code> is the same pipeline without a scheduler: the
-build and the sims are plain subprocesses on this host, capped by
-<code>-j/--jobs</code> (default <code>min(4, cpu count)</code>) — nothing to install, and it
-works on macOS, where Slurm does not run. It cannot enforce <code>resources:</code>
-reservations or report usage, so right-size against a cluster run.</p>
-<p>See <strong><a href="../dispatch/">Parallel dispatch</a></strong> for the full treatment:
-<code>cfg-dispatch</code> configuration, per-test <code>resources:</code> layering, reservation
-right-sizing advice, requirements, the single-machine backend, and the
-agent loop.</p>
-<h2 id="full-schema">Full schema</h2>
-<p>See <a href="../../reference/yaml/#regressionyaml">YAML Formats: regressions.yaml</a> for the complete field reference.</p>
+<p>Verilator, VCS, and Icarus support cross-test sharing. See <a href="../tests/#sharing-compiled-builds-across-tests">Sharing compiled builds</a> for invalidation and backend limitations.</p>
+<h2 id="run-in-parallel">Run in parallel</h2>
+<p>The default <code>--dispatch local</code> runs tests sequentially in the current process. For parallel execution:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">4</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>slurm
+</code></pre></div>
+<p>Dispatch implies shared builds. RTL Buddy expands each suite, creates one build job per unique compile key, then runs dependent simulation jobs and combines their normal results.</p>
+<p><code>local-parallel</code> uses subprocesses on the current host and needs no scheduler. It cannot enforce <code>resources:</code> reservations or collect usage telemetry.</p>
+<p>Slurm dispatch requires a Linux submit host, Slurm client commands, and a filesystem shared with compute nodes. See <a href="../dispatch/">Parallel Dispatch</a> for cluster configuration, resources, failure recovery, and job accounting.</p>
 
 
 

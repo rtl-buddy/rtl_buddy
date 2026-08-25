@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to define testbenches and tests in tests.yaml for a verification suite.">
+        <meta name="description" content="Define and run tests from tests.yaml, control timeouts and seeds, interpret verdicts, and reuse compiled builds.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -481,156 +481,94 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#test-config-testsyaml" class="md-nav__link">
+  <a href="#define-a-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Test config: tests.yaml
+        Define a suite
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Test config: tests.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#structure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Structure
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#test-fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Test fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vcs-license-queue-waits-and-sim_timeout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VCS license-queue waits and sim_timeout
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#extra-simulation-timeout-per-builder" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Extra simulation timeout per builder
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression levels
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#default-transcript-parsing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Default transcript parsing
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#uvm-report-parsing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        UVM report parsing
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#other-failure-modes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Other failure modes
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stopping-early" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stopping early
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#result-statuses" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Result statuses
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-tests" class="md-nav__link">
+  <a href="#run-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running tests
+        Run tests
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Running tests">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#filter-by-regression-level" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filter by regression level
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#set-simulation-timeouts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set simulation timeouts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#triaging-sim-hit-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Triaging Sim hit timeout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#produce-a-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Produce a verdict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interpret-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interpret results
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stop-after-a-stage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stop after a stage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#sharing-compiled-builds-across-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -640,17 +578,12 @@
   </a>
   
 </li>
-        
-      </ul>
-    </nav>
-  
-</li>
       
         <li class="md-nav__item">
-  <a href="#randomization" class="md-nav__link">
+  <a href="#run-with-randomized-seeds" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Randomization
+        Run with randomized seeds
       
     </span>
   </a>
@@ -658,32 +591,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#logging" class="md-nav__link">
+  <a href="#inspect-artefacts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Logging
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#path-and-working-directory" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Path and working directory
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full schema
+        Inspect artefacts
       
     </span>
   </a>
@@ -1600,6 +1511,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1715,156 +1710,94 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#test-config-testsyaml" class="md-nav__link">
+  <a href="#define-a-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Test config: tests.yaml
+        Define a suite
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Test config: tests.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#structure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Structure
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#test-fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Test fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vcs-license-queue-waits-and-sim_timeout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VCS license-queue waits and sim_timeout
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#extra-simulation-timeout-per-builder" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Extra simulation timeout per builder
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression levels
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#default-transcript-parsing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Default transcript parsing
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#uvm-report-parsing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        UVM report parsing
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#other-failure-modes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Other failure modes
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stopping-early" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stopping early
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#result-statuses" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Result statuses
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-tests" class="md-nav__link">
+  <a href="#run-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running tests
+        Run tests
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Running tests">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#filter-by-regression-level" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filter by regression level
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#set-simulation-timeouts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set simulation timeouts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#triaging-sim-hit-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Triaging Sim hit timeout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#produce-a-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Produce a verdict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interpret-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interpret results
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stop-after-a-stage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stop after a stage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#sharing-compiled-builds-across-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1874,17 +1807,12 @@
   </a>
   
 </li>
-        
-      </ul>
-    </nav>
-  
-</li>
       
         <li class="md-nav__item">
-  <a href="#randomization" class="md-nav__link">
+  <a href="#run-with-randomized-seeds" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Randomization
+        Run with randomized seeds
       
     </span>
   </a>
@@ -1892,32 +1820,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#logging" class="md-nav__link">
+  <a href="#inspect-artefacts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Logging
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#path-and-working-directory" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Path and working directory
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full schema
+        Inspect artefacts
       
     </span>
   </a>
@@ -1945,203 +1851,121 @@
 
 
 <h1 id="tests">Tests</h1>
-<h2 id="test-config-testsyaml">Test config: <code>tests.yaml</code></h2>
-<p>A <code>tests.yaml</code> file defines the testbenches and tests for a verification suite. Each suite has its own <code>tests.yaml</code>.</p>
-<p><code>rtl_buddy</code> looks for <code>tests.yaml</code> in the current directory, or you can specify a file with <code>--test-config</code>.</p>
-<h3 id="structure">Structure</h3>
+<p>Each verification suite has a <code>tests.yaml</code> containing reusable testbench definitions and runnable tests.</p>
+<h2 id="define-a-suite">Define a suite</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_config</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">testbenches</span><span class="p">:</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;+incdir+../../../verif/tb&quot;</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;tb_top.sv&quot;</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">+incdir+../../../verif/tb</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top.sv</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;smoke&quot;</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sanity</span><span class="nv"> </span><span class="s">test&quot;</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">smoke</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sanity test</span>
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../src/models.yaml</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top</span>
 <a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">    </span><span class="nt">plusargs</span><span class="p">:</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">      </span><span class="nt">test_cycles</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;50&quot;</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">      </span><span class="nt">test_cycles</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
 <a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">    </span><span class="nt">plusdefines</span><span class="p">:</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">      </span><span class="nt">FEATURE_X</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1&quot;</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">      </span><span class="nt">FEATURE_X</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">    </span><span class="nt">sim_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
 </code></pre></div>
-<h3 id="test-fields">Test fields</h3>
+<p><code>model_path</code>, testbench filelists, and hook paths resolve from the directory containing <code>tests.yaml</code>. <code>plusargs</code> affect simulation; <code>plusdefines</code> affect compilation. See <a href="../../reference/yaml/#testsyaml">YAML Formats: tests.yaml</a> for all fields and <a href="../cocotb/">cocotb Testbenches</a> for Python-driven tests.</p>
+<h2 id="run-tests">Run tests</h2>
+<p>From the suite directory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke<span class="w"> </span>reset_error<span class="w"> </span>timeout
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--filter<span class="w"> </span><span class="s1">&#39;^smoke_|_error$&#39;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>rb<span class="w"> </span><span class="nb">test</span>
+</code></pre></div>
+<p>With no selection, <code>rb test</code> runs the suite. Explicit names run in command-line order and produce one combined results table. <code>--filter</code> uses a case-sensitive Python regex search against configured names; matches retain their <code>tests.yaml</code> order. Anchor the expression with <code>^</code> or <code>$</code> when position matters.</p>
+<p>Explicit names and <code>--filter</code> are mutually exclusive. Duplicate or unknown names, an invalid regex, or a regex with no matches exits 2 before any test runs. Selection applies to configured base names before sweep expansion.</p>
+<p>From another directory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke<span class="w"> </span>--test-config<span class="w"> </span>path/to/tests.yaml
+</code></pre></div>
+<p>Outputs remain beside <code>tests.yaml</code>; see <a href="../execution-context/">Execution Context</a>.</p>
+<h2 id="filter-by-regression-level">Filter by regression level</h2>
+<p>A test's <code>reglvl</code> may be one integer or a builder-specific mapping:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">reglvl</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2500</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">vcs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3500</span>
+</code></pre></div>
+<p>Filter a single suite with:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">2000</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
+</code></pre></div>
+<p>The range is inclusive. Tests outside it report <code>SKIP</code>. With <code>rb test</code>, omitting both flags runs every test regardless of level. An unqualified <a href="../regressions/#filter-by-regression-level">regression</a> instead defaults to level 0.</p>
+<h2 id="set-simulation-timeouts">Set simulation timeouts</h2>
+<p><code>sim_timeout</code> defaults to 60 seconds. Add a builder-wide allowance for licensed simulators that may wait before running:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">cfg-rtl-builder</span><span class="p">:</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">vcs</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">extra-sim-timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">900</span>
+</code></pre></div>
+<p>The allowance is added to each test's timeout. Override it for one command with <code>--extra-sim-timeout N</code>; use 0 to disable a configured allowance. Negative values are rejected. The setting affects simulation only, not compilation, and is forwarded to local-parallel and Slurm jobs.</p>
+<p>For VCS runs using <code>-licqueue</code>, RTL Buddy pauses the test timeout while recognized license-queue banner output is active, for at most one hour. The timer resumes on other simulation output or after the cap. This avoids false timeouts without allowing an indefinite queue wait. Builder allowance remains useful for unrecognized or silent license managers.</p>
+<h2 id="triaging-sim-hit-timeout">Triaging <code>Sim hit timeout</code></h2>
+<p><code>Sim hit timeout</code> means the wall-clock limit expired; it does not identify a simulated-time watchdog or prove the test is merely slow. Before raising the limit:</p>
+<ol>
+<li>Compare sibling tests under the same builder. If they also stall, inspect the shared build, tool, or environment.</li>
+<li>Check whether timestamps or progress in <code>test.log</code> advance. Progress suggests a slow test; repeated activity suggests a functional wedge.</li>
+<li>Identify the last completed phase or transaction and inspect its RTL or testbench condition.</li>
+<li>Confirm the resolved timeout, including builder and CLI allowances.</li>
+</ol>
+<p>A killed simulator may not flush its output, so <code>test.log</code> can end mid-line or at a power-of-two byte count. Do not treat its final bytes as the exact stop location.</p>
+<h2 id="produce-a-verdict">Produce a verdict</h2>
+<p>For a non-UVM, non-cocotb test, print exactly one terminal marker to simulator stdout at the start of a line:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">test_passed</span><span class="p">)</span><span class="w"> </span><span class="k">begin</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;PASS smoke completed&quot;</span><span class="p">);</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">end</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">begin</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;FAIL smoke completed&quot;</span><span class="p">);</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;ERR: expected done=1 before timeout&quot;</span><span class="p">);</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="k">end</span>
+</code></pre></div>
+<p>Use <code>ERR:</code> or <code>FAT:</code> after <code>FAIL</code> to include the reason in the summary. If both terminal markers appear, <code>FAIL</code> wins and RTL Buddy logs a warning. If neither appears, the result is <code>NA</code>: it needs review but does not by itself make the shell exit status nonzero. A simulator exit code alone is not a non-UVM verdict.</p>
+<p>For UVM, configure thresholds and let RTL Buddy parse the UVM Report Summary:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">uvm</span><span class="p">:</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">max_warns</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">max_errors</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+</code></pre></div>
+<p>A missing or malformed UVM summary fails the test. cocotb tests use <code>cocotb_results.xml</code> instead; do not print transcript markers for them.</p>
+<p>Setup hooks, filelist validation, compilation, and simulation timeout can also produce <code>FAIL</code> before transcript parsing.</p>
+<h2 id="interpret-results">Interpret results</h2>
 <table>
 <thead>
 <tr>
-<th>Field</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>Test identifier used on the command line and in log file names</td>
-</tr>
-<tr>
-<td><code>desc</code></td>
-<td>Human-readable description</td>
-</tr>
-<tr>
-<td><code>reglvl</code></td>
-<td>Regression level (int or per-builder dict)</td>
-</tr>
-<tr>
-<td><code>model</code></td>
-<td>Model name from <code>models.yaml</code></td>
-</tr>
-<tr>
-<td><code>model_path</code></td>
-<td>Path to <code>models.yaml</code>, resolved relative to the suite directory</td>
-</tr>
-<tr>
-<td><code>testbench</code></td>
-<td>Testbench name from <code>testbenches</code> list</td>
-</tr>
-<tr>
-<td><code>plusargs</code></td>
-<td>Key-value pairs passed as <code>+KEY=VALUE</code> at sim runtime</td>
-</tr>
-<tr>
-<td><code>plusdefines</code></td>
-<td>Key-value pairs passed as <code>+define+KEY=VALUE</code> at compile time</td>
-</tr>
-<tr>
-<td><code>sim_timeout</code></td>
-<td>Timeout in seconds (default: 60)</td>
-</tr>
-<tr>
-<td><code>uvm</code></td>
-<td>UVM report thresholds (see below)</td>
-</tr>
-<tr>
-<td><code>sweep</code></td>
-<td>Sweep expansion script (see <a href="../plugins/">Plugins</a>)</td>
-</tr>
-<tr>
-<td><code>preproc</code></td>
-<td>Pre-processing script (see <a href="../plugins/">Plugins</a>)</td>
-</tr>
-<tr>
-<td><code>assertions</code></td>
-<td>Boolean: compile in SVA (<code>--assert</code>) and report firings (see <a href="../abv-simulation/">Assertion-Based Verification</a>)</td>
-</tr>
-</tbody>
-</table>
-<h3 id="vcs-license-queue-waits-and-sim_timeout">VCS license-queue waits and <code>sim_timeout</code></h3>
-<p>When a VCS <code>simv</code> run is invoked with <code>-licqueue</code> and no seat is free, it prints a <code>Queuing for License</code> banner and blocks until one opens up. <code>rtl_buddy</code> detects that banner (and the <code>Licensed number of users already reached</code> variant) in the sim's output and pauses the <code>sim_timeout</code> clock for as long as the sim is queuing, so a busy license server doesn't cause a false timeout. There is a 1-hour safety cap on total queued time — if the sim is still queuing after that, <code>sim_timeout</code> resumes counting and the sim can time out normally.</p>
-<p>The pause ends on the first line that is not part of the banner. The banner's vocabulary is the two markers, blank lines, the queue-polling dots, and the <code>HIT CTRL-C to exit</code> hint; anything else counts as simulation output. A banner line VCS adds in a future release would therefore end the pause early until it is recognised, and the safety cap is what bounds that.</p>
-<h3 id="extra-simulation-timeout-per-builder">Extra simulation timeout per builder</h3>
-<p>Detecting the banner cannot cover every case: the text is a vendor string, and other license managers queue without printing anything recognisable. <code>extra-sim-timeout</code> on a builder in <code>root_config.yaml</code> adds seconds to every test's <code>sim_timeout</code> under that builder:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-rtl-builder</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vcs&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">extra-sim-timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">900</span>
-</code></pre></div>
-<p>It is added to the test's own <code>sim_timeout</code> rather than replacing it, so per-test values keep their meaning. Keeping it per-builder is the point: a licensed simulator can wait, while a builder that never blocks keeps a tight timeout so a genuinely hung test still fails fast. <code>--extra-sim-timeout N</code> overrides every builder for one run, and <code>--extra-sim-timeout 0</code> turns a configured allowance off. When either applies, the resolved value is logged as <code>sim.timeout_extended</code>. A negative value is rejected: on the CLI by <code>min=0</code>, and in <code>root_config.yaml</code> with a fatal config error, because it would shrink the timeout rather than extend it.</p>
-<p>This covers the simulation phase only. <code>compile()</code> sets no timeout, so a license-queue wait during elaboration is bounded by the dispatch job's own time limit rather than by anything here; <code>has_license_queue_marker</code> attributes such a compile after the fact so a slow build is not mistaken for an undersized reservation.</p>
-<p>Under <code>--dispatch slurm</code> or <code>--dispatch local-parallel</code>, both paths reach the dispatched job: a builder's <code>extra-sim-timeout</code> because the child re-reads <code>root_config.yaml</code>, and <code>--extra-sim-timeout</code> because it is forwarded in the job's argv.</p>
-<h3 id="regression-levels">Regression levels</h3>
-<p><code>reglvl</code> controls which tests run during a regression:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Same level for all builders</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1500</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Builder-specific, with a fallback</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nt">reglvl</span><span class="p">:</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2500</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="nt">vcs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3500</span>
-</code></pre></div>
-<p>Use <code>--reg-level</code> and <code>--start-level</code> on the <code>regression</code> subcommand to select a level range. See <a href="../regressions/">Regressions</a>.</p>
-<p>The <code>test</code> subcommand accepts the same two long-form options (no short flags), so a single <code>tests.yaml</code> suite can be filtered by regression level without a <code>regressions.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Run only tests with reglvl &lt;= 2000</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">2000</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Run tests with reglvl in [1000, 3000]</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
-</code></pre></div>
-<p>Tests with <code>reglvl</code> above <code>--reg-level</code> or below <code>--start-level</code> are reported as <code>SKIP</code>. Unlike <code>regression</code>, omitting both flags on <code>test</code> runs every test regardless of <code>reglvl</code> — filtering only kicks in once one of the flags is given.</p>
-<h3 id="default-transcript-parsing">Default transcript parsing</h3>
-<p>When <code>uvm</code> is <strong>not</strong> set, <code>rtl_buddy</code> determines the result by parsing <code>artefacts/{test_name}/test.log</code> after simulation. Your testbench must print a result marker to <strong>stdout</strong> at the start of a line:</p>
-<ul>
-<li><code>PASS &lt;optional detail&gt;</code></li>
-<li><code>FAIL &lt;optional detail&gt;</code></li>
-</ul>
-<p>When emitting <code>FAIL</code>, also print an <code>ERR:</code> or <code>FAT:</code> line. It is optional, but its text is appended to the failing test's description in the results table, so it is what makes a red row explain itself:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">test_passed</span><span class="p">)</span><span class="w"> </span><span class="k">begin</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;PASS smoke completed&quot;</span><span class="p">);</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="k">end</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">begin</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;FAIL smoke completed&quot;</span><span class="p">);</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;ERR: expected done=1 before timeout&quot;</span><span class="p">);</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="k">end</span>
-</code></pre></div>
-<p>Rules to follow:</p>
-<ul>
-<li>Emit exactly one terminal result marker.</li>
-<li>Start the line with <code>PASS</code> or <code>FAIL</code>; other wording will not be detected.</li>
-<li>Write the marker to stdout, not stderr.</li>
-<li>When using <code>FAIL</code>, follow it with an <code>ERR:</code> or <code>FAT:</code> line so the results table can say why the test failed.</li>
-<li>If a log carries <strong>both</strong> markers, <code>FAIL</code> wins, whichever came first, and a <code>postproc.conflicting_markers</code> warning is logged. A failure signal is never erased by a <code>PASS</code> line elsewhere in the transcript.</li>
-<li>If no <code>PASS</code> or <code>FAIL</code> marker is found, <code>rtl_buddy</code> records the test as <code>NA</code> with description <code>test result unknown</code>. <code>NA</code> does <strong>not</strong> pass, so such a test fails its regression.</li>
-<li>Do not rely on the simulator exit code alone to communicate pass/fail in non-UVM tests.</li>
-</ul>
-<h3 id="uvm-report-parsing">UVM report parsing</h3>
-<p>When <code>uvm</code> is set, <code>rtl_buddy</code> parses the UVM summary at the end of simulation output and fails the test if thresholds are exceeded:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">uvm</span><span class="p">:</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">max_warns</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">max_errors</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-</code></pre></div>
-<p>With <code>uvm</code> enabled, <code>rtl_buddy</code> uses the UVM Report Summary instead of <code>PASS</code> / <code>FAIL</code> transcript markers. Missing or malformed UVM summaries are treated as test failures.</p>
-<h3 id="other-failure-modes">Other failure modes</h3>
-<p>The transcript parser is not the only source of failures. <code>rtl_buddy</code> also marks a test as <code>FAIL</code> when:</p>
-<ul>
-<li>a sweep or pre-processing script fails during setup</li>
-<li>filelist validation fails before compile</li>
-<li>compilation fails</li>
-<li>simulation times out</li>
-</ul>
-<h3 id="stopping-early">Stopping early</h3>
-<p>The global <code>-E</code>/<code>--early-stop</code> option halts a run after a given stage (<code>pre</code>, <code>comp</code>, <code>sim</code>, or <code>post</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span>-E<span class="w"> </span>comp<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
-</code></pre></div>
-<p>Stopping after a successful stage (e.g. <code>comp</code>) reports result <code>NA</code> (e.g. desc "Stopped early at compile") rather than a <code>PASS</code>/<code>FAIL</code> transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other <code>NA</code>. Because the exit code reflects whether <code>rtl_buddy</code> and its tools ran properly rather than the DUT verdict, a successful early stop still exits 0. If compilation itself fails, the result is <code>FAIL</code> with exit code 1, regardless of <code>--early-stop</code>.</p>
-<h3 id="result-statuses">Result statuses</h3>
-<p><code>rtl_buddy</code> reports one of these result statuses per test:</p>
-<table>
-<thead>
-<tr>
-<th>Result</th>
+<th>Status</th>
 <th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>PASS</code></td>
-<td>A real simulation run completed and the transcript/UVM verdict was a pass</td>
+<td>Simulation completed with a passing transcript, UVM, or cocotb verdict</td>
 </tr>
 <tr>
 <td><code>FAIL</code></td>
-<td>A real simulation run failed, or a tool/flow step failed (setup, filelist, compile, sim timeout)</td>
+<td>The verdict failed, or setup, filelist, compile, or simulation failed</td>
 </tr>
 <tr>
-<td><code>XFAIL</code> / <code>XPASS</code></td>
-<td><code>PASS</code>/<code>FAIL</code> remapped by <code>xfail</code>/<code>xfail_strict</code> — see <a href="../expected-failures/">Expected failures</a></td>
+<td><code>XFAIL</code>, <code>XPASS</code></td>
+<td>Remapped by an expected-failure marker</td>
 </tr>
 <tr>
 <td><code>SKIP</code></td>
-<td>A regression-level skip (<code>reglvl</code> outside <code>--reg-level</code>/<code>--start-level</code>)</td>
+<td>Excluded by regression-level or flow filtering</td>
 </tr>
 <tr>
 <td><code>NA</code></td>
-<td>Everything else, including all intentional early stops — no real pass/fail verdict was produced, so the result needs hand-checking</td>
+<td>No real verdict was produced, including a successful early stop</td>
 </tr>
 </tbody>
 </table>
-<h3 id="exit-codes">Exit codes</h3>
-<p>The exit code reflects whether <code>rtl_buddy</code> and its tools ran, not the DUT verdict:</p>
+<p>The shell exit code is a coarse run status. Parse <code>payload.results</code> under <code>--machine</code> for per-test verdicts.</p>
 <table>
 <thead>
 <tr>
@@ -2152,11 +1976,11 @@
 <tbody>
 <tr>
 <td>0</td>
-<td>No real <code>FAIL</code> verdicts — includes <code>PASS</code>, <code>SKIP</code>, <code>XFAIL</code>, and <code>NA</code> (early stops included)</td>
+<td>No real <code>FAIL</code>; may include <code>PASS</code>, <code>XFAIL</code>, <code>SKIP</code>, or <code>NA</code></td>
 </tr>
 <tr>
 <td>1</td>
-<td>One or more tests resulted in <code>FAIL</code> (a real fail verdict, or a tool/flow failure such as compilation failure)</td>
+<td>At least one real test/tool-flow failure, or a strict <code>XPASS</code></td>
 </tr>
 <tr>
 <td>2</td>
@@ -2164,123 +1988,36 @@
 </tr>
 </tbody>
 </table>
-<h2 id="running-tests">Running tests</h2>
-<p>Run a named test:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
-</code></pre></div></p>
-<p>Run all tests in a config:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span>
-</code></pre></div></p>
-<p>List tests without running:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
-</code></pre></div></p>
-<h3 id="sharing-compiled-builds-across-tests">Sharing compiled builds across tests</h3>
-<p>By default every test compiles into its own build directory
-(<code>artefacts/&lt;test&gt;/obj_dir_&lt;test&gt;</code>), so a suite of N tests that share one
-testbench verilates the design N times. For large designs the verilation
-step dominates wall-clock time.</p>
-<p><code>--share-build</code> opts into reusing one compiled <code>simv</code> across tests whose
-compile inputs are identical:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--share-build
+<p>A strict unexpected pass counts as a failure. See <a href="../expected-failures/">Expected Failures</a>.</p>
+<h2 id="stop-after-a-stage">Stop after a stage</h2>
+<p>Use the global <code>-E</code> or <code>--early-stop</code> option with <code>pre</code>, <code>comp</code>, <code>sim</code>, or <code>post</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rb<span class="w"> </span>-E<span class="w"> </span>comp<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
 </code></pre></div>
-<p>The build directory is keyed on a hash of the compile inputs — the builder
-executable <em>as <code>PATH</code> resolves it</em>, compile-time options, plusdefines,
-compile environment, and the resolved filelist — and lives at
-<code>artefacts/.shared-builds/obj_dir_&lt;hash&gt;/</code>. Resolving the executable is what
-keeps two simulator installs to two build dirs, so pointing the project at a
-different one compiles rather than reusing what the other built, and an A/B
-between them keeps both builds runnable.
-The first test with a given key compiles; subsequent tests find a valid
-<code>simv</code> and skip verilation entirely. Runtime-only inputs (plusargs, seeds,
-<code>timeout</code>) never affect the key, so tests that differ only in those always
-share. Tests with different <code>pd</code> plusdefines hash to different keys and
-compile separately.</p>
-<p>After a successful compile, a <code>rb-compile-stamp.json</code> recording the exact
-compile inputs (including each source file's size and modification time) is
-written next to the <code>simv</code>. Reuse only happens when the stamp matches, so
-editing any file listed in the filelist triggers a rebuild in place.</p>
-<p>The stamp also names the toolchain that produced the build: the resolved
-executable, its size and mtime, and — for Verilator and Icarus — the first
-line of its version banner, probed once per binary per process. Upgrading one
-install in place therefore rebuilds <em>in the same directory</em> (the path did not
-change, so the key did not either) and logs
-<code>compile.build_toolchain_changed</code> naming the old and new versions, while
-<code>compile.build_reused</code> names the toolchain whose output a skipped compile is
-about to simulate. The version is the entry that catches an upgrade a wrapper
-script hides: <code>bin/verilator</code> can keep its own size and mtime across a
-rebuild of the <code>verilator_bin</code> it dispatches to. VCS is stamped by path, size
-and mtime only — <code>vcs -ID</code> checks out a licence, and queueing for one before
-every compile would cost more than the check is worth.</p>
-<p>The filelist only names what the <em>project</em> declared, which is not the whole
-truth: an entry that resolves to a directory (<code>+incdir+</code>, <code>-y</code>) says nothing
-about the headers reached through it. So the stamp also records every input
-the builder reports having actually consumed. <strong>Under Verilator</strong> that comes
-from the <code>V&lt;prefix&gt;__ver.d</code> dependency file it emits into the build dir, and
-it covers included headers, files pulled in from <code>-y</code> library dirs,
-Verilator's own std includes, and the <code>verilator_bin</code> binary itself — so a
-header-only edit <em>and</em> an in-place toolchain upgrade both invalidate the
-stamp. Other builders emit nothing comparable; their stamps record that no
-dependency information was available (<code>"deps": null</code>) and reuse behaves as
-it did before. <code>compile.build_stamp_written</code> logs how many inputs were
-tracked, and <code>compile.build_dep_changed</code> names the one that forced a
-rebuild.</p>
-<p>Where the build lands depends on the builder, but the executable is always
-<code>simv</code> inside the shared dir: Verilator is pointed there with <code>--Mdir</code>, VCS
-with <code>-o</code> (plus <code>-Mdir</code> so its <code>csrc</code> tree stays beside the binary), and
-Icarus with <code>-o</code> for the <code>.vvp</code> snapshot the wrapper <code>simv</code> execs. The shared
-build owns the output location, so a <code>-o</code> / <code>-Mdir</code> in <code>builder-opts</code> and a
-<em>relative</em> <code>builder-simv:</code> are both dropped in favour of <code>&lt;shared&gt;/simv</code>
-(logged at DEBUG as <code>compile.share_build_opts_overridden</code> /
-<code>compile.share_build_simv_overridden</code>). An <strong>absolute</strong> <code>builder-simv:</code>
-instead declines sharing altogether — see the caveats below.</p>
-<p>Caveats:</p>
+<p>A successful stop before a terminal verdict reports <code>NA</code> and exits 0. A stage failure still reports <code>FAIL</code> and exits 1. Treat <code>NA</code> as requiring inspection, not evidence that the DUT passed.</p>
+<h2 id="sharing-compiled-builds-across-tests">Sharing compiled builds across tests</h2>
+<p>Use <code>--share-build</code> when tests differ only at runtime:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--share-build
+</code></pre></div>
+<p>RTL Buddy stores shared builds under <code>artefacts/.shared-builds/obj_dir_&lt;hash&gt;/</code>. The key includes the resolved simulator executable, compile options, plusdefines, compile environment, and resolved filelist. Plusargs, seeds, and simulation timeouts do not affect it.</p>
+<p>A compile stamp records source metadata and toolchain identity. Reuse occurs only while the stamp matches. Verilator also reports consumed dependencies, so included headers, <code>-y</code> library files, standard includes, and the underlying Verilator binary invalidate the build. VCS and Icarus cannot report equivalent dependencies; after a header-only or hidden toolchain change, run without <code>--share-build</code> or remove <code>artefacts/.shared-builds/</code> to force compilation.</p>
+<p>Verilator, VCS, and Icarus support shared builds. An unsupported builder or an absolute <code>builder-simv</code> uses the test's own build directory and logs why cross-test sharing was declined. RTL Buddy overrides relative output-location options so the shared directory owns <code>simv</code>.</p>
+<h2 id="run-with-randomized-seeds">Run with randomized seeds</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke<span class="w"> </span>--rnd-new
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke<span class="w"> </span>--rnd-last
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>rb<span class="w"> </span>randtest<span class="w"> </span>smoke<span class="w"> </span><span class="m">20</span>
+</code></pre></div>
+<p><code>--rnd-new</code> records a generated seed; <code>--rnd-last</code> reuses it. <code>randtest</code> runs repeated seeded iterations. See the <a href="../../reference/cli/#randtest">CLI reference</a> for replay and selection options.</p>
+<h2 id="inspect-artefacts">Inspect artefacts</h2>
+<p>Single runs write under <code>artefacts/&lt;test&gt;/</code>; repeated runs use <code>run-NNNN/</code> subdirectories. Common files are:</p>
 <ul>
-<li>Verilator, VCS, and Icarus builders share one build. Others log a warning
-  (<code>compile.share_build_unsupported</code>, with the reason) and keep the build in
-  the test's own artefact dir, as does any builder whose <code>builder-simv:</code> is
-  an absolute path — that pins the executable outside the shared dir. Such a
-  build is still stamped where it lands, so <em>that test</em> reuses it on its
-  next run; only cross-test sharing is lost. (That reuse is what lets a
-  dispatched fan-out compile once in the build job instead of racing N
-  compiles into one directory — see
-  <a href="../dispatch/#builders-that-compile-inside-the-job">Builders that compile inside the job</a>.)</li>
-<li>Include-dir headers and toolchain changes are tracked <strong>only where the
-  builder reports its inputs</strong> — Verilator today. Under VCS or Icarus a
-  header-only edit still does not invalidate the stamp; delete
-  <code>artefacts/.shared-builds/</code> (or run without <code>--share-build</code>) to force a
-  fresh compile. See
-  <a href="../../known-issues/#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them">Known Issues</a>
-  for what remains untracked.</li>
+<li><code>test.log</code> and <code>test.err</code> — simulator output;</li>
+<li><code>test.randseed</code> — resolved seed;</li>
+<li><code>compile.log</code> — compile output;</li>
+<li><code>run.f</code> — generated non-portable filelist;</li>
+<li><code>coverage.dat</code> — raw coverage when enabled.</li>
 </ul>
-<h2 id="randomization">Randomization</h2>
-<p>Two seed options are available with the <code>test</code> subcommand:</p>
-<ul>
-<li><code>--rnd-new</code>: use a randomly generated seed instead of the root config seed. The seed is saved to <code>artefacts/{test_name}/test.randseed</code>.</li>
-<li><code>--rnd-last</code>: repeat the test with the seed from the last <code>--rnd-new</code> run.</li>
-</ul>
-<p>For running a test many times with different seeds, use <code>randtest</code>. See the <a href="../../reference/cli/#randtest">CLI reference</a>.</p>
-<h2 id="logging">Logging</h2>
-<p><code>rtl_buddy</code> writes orchestration output to <code>rtl_buddy.log</code> in the directory where it is invoked.</p>
-<p>Per-test simulation output goes to <code>artefacts/{test_name}/</code>:</p>
-<ul>
-<li><code>test.log</code> — full simulation output</li>
-<li><code>test.err</code> — stderr</li>
-<li><code>test.randseed</code> — the seed used</li>
-<li><code>coverage.dat</code> — coverage database (if coverage is enabled)</li>
-<li><code>compile.log</code> — compile transcript</li>
-<li><code>run.f</code> — generated, non-portable filelist; explicit source entries are pinned
-  to the resolved checkout with absolute paths</li>
-</ul>
-<p>For repeated runs (<code>randtest</code>), each iteration writes into a numbered subdirectory — <code>artefacts/{test_name}/run-0001/</code>, <code>run-0002/</code>, etc. — while compile outputs remain at the top of <code>artefacts/{test_name}/</code>.</p>
-<p>The symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root always point to the most recent run.</p>
-<p>For machine-readable logs (JSON Lines), use <code>--machine</code>. See <a href="../../agents/">For Agents</a>.</p>
-<h2 id="path-and-working-directory">Path and working directory</h2>
-<p><code>test</code> and <code>randtest</code> anchor outputs on the directory containing <code>tests.yaml</code>. You can run them from anywhere — invoke <code>rb test -c path/to/tests.yaml</code> and the artifact tree, <code>rtl_buddy.log</code>, and builder scratch all land under <code>dirname(tests.yaml)</code>, not your shell's cwd. See <a href="../execution-context/">Execution Context</a> for the full picture and the worked example for invoking from a sibling directory.</p>
-<p>Paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved relative to the suite file's directory, not the invocation directory.</p>
-<p>Plusargs are passed to the simulator verbatim. If a plusarg should reference a suite-local file, resolve it explicitly in preproc using <code>suite_dir</code>. Bare output filenames can remain artifact-relative so they land under <code>artefacts/{test_name}/</code>.</p>
-<h2 id="full-schema">Full schema</h2>
-<p>See <a href="../../reference/yaml/#testsyaml">YAML Formats: tests.yaml</a> for the complete field reference.</p>
+<p>Latest-run symlinks for the test log, error log, and seed remain at the test artefact root. <code>rtl_buddy.log</code> beside <code>tests.yaml</code> contains orchestration events; <code>--machine</code> makes it JSON Lines and returns structured stdout. See <a href="../../agents/#machine-mode">Agent Use</a>.</p>
 
 
 

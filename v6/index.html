@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="RTL Buddy is a Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, Yosys synthesis flows, coverage, and YAML-based RTL automation.">
+        <meta name="description" content="RTL Buddy is a config-driven CLI for Verilog and SystemVerilog simulation, regressions, synthesis, formal verification, physical design, and debug workflows.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -288,10 +288,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#supported-workflows" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Supported workflows
       
     </span>
   </a>
@@ -299,43 +299,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#systemverilog-regression-testing" class="md-nav__link">
+  <a href="#start-here" class="md-nav__link">
     <span class="md-ellipsis">
       
-        SystemVerilog Regression Testing
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verilator-and-vcs-simulation-workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verilator and VCS Simulation Workflows
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#yosys-synthesis-workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Yosys Synthesis Workflows
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#getting-started" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Getting Started
+        Start here
       
     </span>
   </a>
@@ -1452,6 +1419,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1567,10 +1618,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#supported-workflows" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Supported workflows
       
     </span>
   </a>
@@ -1578,43 +1629,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#systemverilog-regression-testing" class="md-nav__link">
+  <a href="#start-here" class="md-nav__link">
     <span class="md-ellipsis">
       
-        SystemVerilog Regression Testing
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verilator-and-vcs-simulation-workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verilator and VCS Simulation Workflows
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#yosys-synthesis-workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Yosys Synthesis Workflows
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#getting-started" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Getting Started
+        Start here
       
     </span>
   </a>
@@ -1653,42 +1671,31 @@
 
 
 <h1 id="rtl-buddy">RTL Buddy</h1>
-<p>RTL Buddy is a Python CLI for Verilog and SystemVerilog RTL workflows, including test execution, randomized regression testing, Verilator and VCS simulation, Yosys synthesis, coverage collection, and YAML-based automation.</p>
-<p>It wraps simulation, synthesis, and project scripts to provide a structured, config-driven test, regression, and synthesis system for ASIC and FPGA projects. The primary supported simulation flows are Verilator on macOS/Linux and VCS on Linux.</p>
-<h2 id="features">Features</h2>
+<p>RTL Buddy gives RTL projects one command surface for simulation, regressions, synthesis, formal verification, physical design, coverage, and debug tooling.</p>
+<p>Projects describe models, tests, and flows in YAML. RTL Buddy resolves filelists, invokes external tools, records artefacts, and reports consistent results for local, CI, and agent-driven runs.</p>
+<h2 id="supported-workflows">Supported workflows</h2>
 <ul>
-<li>Run individual Verilog/SystemVerilog tests or full regressions from YAML config files</li>
-<li>Randomized seed testing with repeat and replay support</li>
-<li>Plugin hooks for sweep generation, test pre-processing, and post-processing</li>
-<li>Filelist generation from <code>models.yaml</code></li>
-<li>Yosys synthesis (<code>rb synth</code>) with optional Liberty mapping, a yosys-slang frontend, and an OpenROAD backend</li>
-<li>OpenROAD place-and-route (<code>rb pnr</code>) and gate-level power analysis (<code>rb power</code>, with <code>rb saif</code> activity capture)</li>
-<li>Formal property verification (<code>rb fpv</code>) with SymbiYosys, solver pinning, and <code>rb wave-fpv</code> counterexample viewing</li>
-<li>Mutation testing (<code>rb mut</code>) that scores a verification suite by mutating a design and checking whether an FPV or simulation/assertion oracle kills each mutant</li>
-<li>Waveform viewing (<code>rb wave</code>) in <a href="https://surfer-project.org/">Surfer</a> with live editor annotation, and module hierarchy rendering (<code>rb hier</code>)</li>
-<li>AXI interconnect profiling (<code>rb axi-profile</code>) with a packaged marimo notebook, and a coordination hub (<code>rb hub</code>) tying the schematic SPA, Surfer, and editors together</li>
-<li>Spec traceability (<code>rb spec</code>) and a declarative external-tool readiness check (<code>rb tool-check</code>)</li>
-<li>Verilator coverage collection, merge, summary, and export workflows</li>
-<li>Verible command integration (<code>rb verible</code>) for lint, syntax, formatting, preprocessing, and <code>verible.filelist</code> generation</li>
-<li>Machine-readable JSONL logging for use with AI agents and CI pipelines</li>
+<li>Simulation and randomized testing with Verilator, Icarus Verilog, or VCS</li>
+<li>Multi-suite regressions with local, local-parallel, or Slurm dispatch</li>
+<li>Yosys synthesis and OpenROAD timing, place-and-route, and power analysis</li>
+<li>SymbiYosys formal verification and mutation testing</li>
+<li>Verilator coverage collection, merge, query, and export</li>
+<li>Surfer waveform viewing and RTL hierarchy queries</li>
+<li>Verible linting, spec traceability, FPGA implementation, and AXI profiling</li>
+<li>Machine-readable output, a design knowledge graph, and an MCP server for agents</li>
 </ul>
-<p><code>rtl_buddy</code> can be adapted to different project toolchains, but the primary supported simulation flows are Verilator and VCS, and synthesis through Yosys. Broader first-class Verible and PeakRDL workflows are on the roadmap.</p>
-<h2 id="systemverilog-regression-testing">SystemVerilog Regression Testing</h2>
-<p>RTL Buddy keeps simulator invocation, seeds, logs, result handling, and regression selection consistent across repeated verification runs. Projects describe suites, tests, platforms, builders, and models in readable YAML files instead of scattering that logic across ad hoc shell scripts.</p>
-<h2 id="verilator-and-vcs-simulation-workflows">Verilator and VCS Simulation Workflows</h2>
-<p>The CLI gives RTL projects one command surface for open-source Verilator flows and Linux VCS flows, with optional hooks for project-specific compile, simulation, sweep, and post-processing behavior.</p>
-<h2 id="yosys-synthesis-workflows">Yosys Synthesis Workflows</h2>
-<p>Synthesis configs use the same YAML-driven style as tests and regressions. Projects can define technology-independent or Liberty-mapped Yosys runs, capture synthesis artefacts, and run synthesis regressions from one command surface.</p>
-<h2 id="getting-started">Getting Started</h2>
+<p>External tools are installed per workflow. See <a href="install/#external-tools-by-feature">Installation</a> for the supported integrations.</p>
+<h2 id="start-here">Start here</h2>
 <ul>
-<li><a href="install/">Installation</a> — how to add <code>rtl_buddy</code> to your project</li>
-<li><a href="quickstart/">Quick Start</a> — run your first test in minutes</li>
-<li><a href="concepts/root-config/">Concepts</a> — understand the config model</li>
+<li><a href="install/">Installation</a> — install RTL Buddy and the tools your workflow needs</li>
+<li><a href="quickstart/">Quick Start</a> — run an existing test, regression, or synthesis entry</li>
+<li><a href="concepts/root-config/">Root Config</a> — configure platforms and tools</li>
+<li><a href="concepts/tests/">Tests</a> — define and run a verification suite</li>
 </ul>
 <h2 id="reference">Reference</h2>
 <ul>
-<li><a href="reference/cli/">CLI Reference</a> — all subcommands and options</li>
-<li><a href="reference/yaml/">YAML Formats</a> — full schema for all config files</li>
+<li><a href="reference/cli/">CLI Reference</a> — commands and options</li>
+<li><a href="reference/yaml/">YAML Formats</a> — configuration schemas</li>
 </ul>
 
 

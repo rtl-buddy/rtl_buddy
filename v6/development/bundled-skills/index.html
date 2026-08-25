@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Choose between Verilator and Icarus Verilog simulation backends and understand their coverage and waveform differences.">
+        <meta name="description" content="Authoring and review rules for the bundled rtl_buddy skill family, including content boundaries, packaging, and installer coverage.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/concepts/simulators/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/development/bundled-skills/">
       
       
-        <link rel="prev" href="../tests/">
+        <link rel="prev" href="../project-template/">
       
       
-        <link rel="next" href="../regressions/">
+        <link rel="next" href="../reviews/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Simulators (Verilator vs Icarus) - RTL Buddy</title>
+        <title>Bundled Skill Guidelines - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#simulation-backends" class="md-skip">
+        <a href="#bundled-skill-guidelines" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Simulators (Verilator vs Icarus)
+              Bundled Skill Guidelines
             
           </span>
         </div>
@@ -308,8 +308,6 @@
       
   
   
-    
-  
   
   
     
@@ -322,11 +320,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -347,7 +345,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -365,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../execution-context/" class="md-nav__link">
+      <a href="../../concepts/execution-context/" class="md-nav__link">
         
   
   
@@ -393,7 +391,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../root-config/" class="md-nav__link">
+      <a href="../../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -421,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tests/" class="md-nav__link">
+      <a href="../../concepts/tests/" class="md-nav__link">
         
   
   
@@ -446,37 +444,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Simulators (Verilator vs Icarus)
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../concepts/simulators/" class="md-nav__link">
         
   
   
@@ -492,70 +463,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#choose-a-backend" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Choose a backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#select-a-builder" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Select a builder
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#open-waveforms" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Open waveforms
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#collect-coverage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Collect coverage
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -568,7 +475,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../regressions/" class="md-nav__link">
+      <a href="../../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -596,7 +503,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../dispatch/" class="md-nav__link">
+      <a href="../../concepts/dispatch/" class="md-nav__link">
         
   
   
@@ -624,7 +531,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../expected-failures/" class="md-nav__link">
+      <a href="../../concepts/expected-failures/" class="md-nav__link">
         
   
   
@@ -652,7 +559,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../coverage/" class="md-nav__link">
+      <a href="../../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -680,7 +587,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../plugins/" class="md-nav__link">
+      <a href="../../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -708,7 +615,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cocotb/" class="md-nav__link">
+      <a href="../../concepts/cocotb/" class="md-nav__link">
         
   
   
@@ -736,7 +643,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../spec-traceability/" class="md-nav__link">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
         
   
   
@@ -764,7 +671,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../graph/" class="md-nav__link">
+      <a href="../../concepts/graph/" class="md-nav__link">
         
   
   
@@ -792,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../wave/" class="md-nav__link">
+      <a href="../../concepts/wave/" class="md-nav__link">
         
   
   
@@ -820,7 +727,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../hier/" class="md-nav__link">
+      <a href="../../concepts/hier/" class="md-nav__link">
         
   
   
@@ -848,7 +755,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../hub/" class="md-nav__link">
+      <a href="../../concepts/hub/" class="md-nav__link">
         
   
   
@@ -876,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../synthesis/" class="md-nav__link">
+      <a href="../../concepts/synthesis/" class="md-nav__link">
         
   
   
@@ -904,7 +811,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../pnr/" class="md-nav__link">
+      <a href="../../concepts/pnr/" class="md-nav__link">
         
   
   
@@ -932,7 +839,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../power/" class="md-nav__link">
+      <a href="../../concepts/power/" class="md-nav__link">
         
   
   
@@ -960,7 +867,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../fpga/" class="md-nav__link">
+      <a href="../../concepts/fpga/" class="md-nav__link">
         
   
   
@@ -988,7 +895,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../fpv/" class="md-nav__link">
+      <a href="../../concepts/fpv/" class="md-nav__link">
         
   
   
@@ -1016,7 +923,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../abv-simulation/" class="md-nav__link">
+      <a href="../../concepts/abv-simulation/" class="md-nav__link">
         
   
   
@@ -1044,7 +951,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../mut/" class="md-nav__link">
+      <a href="../../concepts/mut/" class="md-nav__link">
         
   
   
@@ -1072,7 +979,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../xplr/" class="md-nav__link">
+      <a href="../../concepts/xplr/" class="md-nav__link">
         
   
   
@@ -1100,7 +1007,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../axi-profile/" class="md-nav__link">
+      <a href="../../concepts/axi-profile/" class="md-nav__link">
         
   
   
@@ -1128,7 +1035,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tool-check/" class="md-nav__link">
+      <a href="../../concepts/tool-check/" class="md-nav__link">
         
   
   
@@ -1302,8 +1209,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -1314,11 +1223,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -1339,7 +1248,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1357,7 +1266,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/setup/" class="md-nav__link">
+      <a href="../setup/" class="md-nav__link">
         
   
   
@@ -1385,7 +1294,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/guidelines/" class="md-nav__link">
+      <a href="../guidelines/" class="md-nav__link">
         
   
   
@@ -1413,7 +1322,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/docs/" class="md-nav__link">
+      <a href="../docs/" class="md-nav__link">
         
   
   
@@ -1441,7 +1350,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/project-template/" class="md-nav__link">
+      <a href="../project-template/" class="md-nav__link">
         
   
   
@@ -1466,10 +1375,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../development/bundled-skills/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1485,6 +1421,59 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#set-content-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set Content Boundaries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#preserve-packaging-and-installation-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Preserve Packaging And Installation Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#review-a-skill-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Review A Skill Change
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1497,7 +1486,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/reviews/" class="md-nav__link">
+      <a href="../reviews/" class="md-nav__link">
         
   
   
@@ -1633,10 +1622,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#choose-a-backend" class="md-nav__link">
+  <a href="#set-content-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Choose a backend
+        Set Content Boundaries
       
     </span>
   </a>
@@ -1644,10 +1633,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#select-a-builder" class="md-nav__link">
+  <a href="#preserve-packaging-and-installation-contracts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Select a builder
+        Preserve Packaging And Installation Contracts
       
     </span>
   </a>
@@ -1655,21 +1644,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#open-waveforms" class="md-nav__link">
+  <a href="#review-a-skill-change" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Open waveforms
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#collect-coverage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Collect coverage
+        Review A Skill Change
       
     </span>
   </a>
@@ -1696,60 +1674,41 @@
   
 
 
-<h1 id="simulation-backends">Simulation Backends</h1>
-<p>Use Verilator by default. Use Icarus Verilog for lightweight smoke tests or environments where installing Verilator is impractical.</p>
-<h2 id="choose-a-backend">Choose a backend</h2>
-<table>
-<thead>
-<tr>
-<th>Capability</th>
-<th>Verilator</th>
-<th>Icarus 12</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>SystemVerilog procedural code</td>
-<td>Yes</td>
-<td>Yes</td>
-</tr>
-<tr>
-<td>Concurrent SVA and <code>cover property</code></td>
-<td>Yes</td>
-<td>No</td>
-</tr>
-<tr>
-<td><code>interface class</code> frameworks</td>
-<td>Yes</td>
-<td>No</td>
-</tr>
-<tr>
-<td>RTL Buddy line/toggle coverage</td>
-<td>Yes</td>
-<td>No</td>
-</tr>
-<tr>
-<td>cocotb through VPI</td>
-<td>Yes</td>
-<td>Yes</td>
-</tr>
-<tr>
-<td>Default waveform</td>
-<td>FST</td>
-<td>VCD</td>
-</tr>
-</tbody>
-</table>
-<p>Verilator compiles a cycle-based <code>simv</code> binary and provides RTL Buddy's coverage path. Icarus compiles a <code>.vvp</code> snapshot and runs it through <code>vvp</code>; RTL Buddy generates a <code>simv</code> wrapper so the surrounding flow stays the same.</p>
-<p>Gate unsupported constructs when a suite must run on Icarus. Use <a href="../expected-failures/">expected failures</a> only when the failure mode is understood.</p>
-<h2 id="select-a-builder">Select a builder</h2>
-<p>Builder precedence is <code>--builder &lt;name&gt;</code>, per-test <code>builder:</code>, suite-level <code>builder:</code>, then the platform default.</p>
-<p>The selected <code>cfg-rtl-builder</code> entry should set <code>simulator-family</code>, or use an executable name from which RTL Buddy can infer it. See <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a>.</p>
-<h2 id="open-waveforms">Open waveforms</h2>
-<p>Verilator normally writes <code>dump.fst</code>; Icarus writes <code>dump.vcd</code>. <code>rb wave</code> opens the newest supported dump under <code>artefacts/&lt;test&gt;/</code>.</p>
-<p>Set <code>wave-format: fst-postproc</code> on an Icarus builder to run <code>vcd2fst</code> after simulation. If <code>vcd2fst</code> is unavailable, the VCD remains usable.</p>
-<h2 id="collect-coverage">Collect coverage</h2>
-<p>RTL Buddy coverage is currently Verilator-only and follows the platform-selected builder. Use <code>--builder verilator</code>, or make Verilator the platform default, instead of relying only on a suite- or test-level override. See <a href="../../known-issues/#coverage-uses-the-platform-builder">Coverage uses the platform builder</a>.</p>
+<h1 id="bundled-skill-guidelines">Bundled Skill Guidelines</h1>
+<p>Use these rules for <code>src/rtl_buddy/skill/SKILL.md</code>, specialist skill files, and the installer that distributes them. Skills provide agent-specific operating guidance; the docs remain the detailed reference.</p>
+<h2 id="set-content-boundaries">Set Content Boundaries</h2>
+<p>Every skill must:</p>
+<ul>
+<li>Stay under 8 KiB.</li>
+<li>Match its directory name in frontmatter.</li>
+<li>Have a description that distinguishes it from every other family member.</li>
+<li>Require <code>rb --version</code> at the top of each run summary.</li>
+<li>Link option lists, schemas, and procedures through <code>rb docs show &lt;page&gt;</code> instead of copying them.</li>
+</ul>
+<p>The primary skill covers the minimum needed for ordinary work: feature selection, basic commands, <code>--machine</code>, result interpretation, YAML orientation, path anchoring, and specialist routing.</p>
+<p>A specialist must work when selected alone and contain only non-obvious decisions and failure modes for its topic. Do not repeat general guidance from the primary or create a specialist solely because a command exists.</p>
+<h2 id="preserve-packaging-and-installation-contracts">Preserve Packaging And Installation Contracts</h2>
+<p>The primary source is <code>src/rtl_buddy/skill/SKILL.md</code>; specialists live at <code>src/rtl_buddy/skill/&lt;skill-name&gt;/SKILL.md</code>. Hatchling includes that tree in the wheel. Installed family members are sibling directories under the selected platform's <code>skills/</code> directory.</p>
+<p>The wheel also includes the docs through <code>src/rtl_buddy/docs</code> and <code>pyproject.toml</code> <code>force-include</code>, so <code>rb docs</code> matches the installed version. Keep docs excluded from package discovery to avoid packaging them twice.</p>
+<p>Installation uses these contracts:</p>
+<ul>
+<li><code>SKILL_DIRNAMES</code> lists every family member.</li>
+<li>Each installed directory matches its skill <code>name:</code>.</li>
+<li><code>rtl-buddy skill install</code> refreshes the family; <code>status</code> compares <code>.rtl_buddy_skill_version</code>; <code>uninstall</code> removes managed copies.</li>
+<li><code>src/rtl_buddy/skill/gitignore_snippet.txt</code> supplies project-install and <code>print-gitignore</code> output.</li>
+<li>User scope is the default. <code>--project</code> and <code>--root PATH</code> create project copies that override user copies.</li>
+<li>Install, status, uninstall, version markers, gitignore handling, and managed obsolete-directory cleanup cover the same family membership.</li>
+</ul>
+<p>Do not change the default scope without an explicit policy decision. When membership changes, update the lifecycle tests with the source files and constants.</p>
+<h2 id="review-a-skill-change">Review A Skill Change</h2>
+<ol>
+<li>Enumerate the family from <code>SKILL_DIRNAMES</code>.</li>
+<li>Check size, directory/frontmatter names, and description uniqueness.</li>
+<li>Apply the primary or specialist content boundary above.</li>
+<li>Verify commands against <code>uv run rb --help</code> and relevant subcommand help.</li>
+<li>Verify packaging and installer lifecycle tests when files or membership change.</li>
+</ol>
+<p>For a full audit, report findings under <strong>Trim</strong> and <strong>Missing</strong>, with one reason and one action per item. Apply <a href="../reviews/">Code Reviews</a> to pull request scope and feedback.</p>
 
 
 

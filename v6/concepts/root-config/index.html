@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How root_config.yaml configures platform selection, builders, and simulation settings for an RTL project.">
+        <meta name="description" content="Configure project-wide platforms, simulation builders, tool paths, regression defaults, and machine-local environment values in root_config.yaml.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -453,10 +453,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#location" class="md-nav__link">
+  <a href="#place-and-discover-the-config" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Location
+        Place and discover the config
       
     </span>
   </a>
@@ -464,10 +464,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#structure" class="md-nav__link">
+  <a href="#configure-a-simulation-platform" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Structure
+        Configure a simulation platform
       
     </span>
   </a>
@@ -475,38 +475,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#key-fields" class="md-nav__link">
+  <a href="#configure-portable-tool-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key fields
+        Configure portable tool paths
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Key fields">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#signal-value-annotation-with-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Signal value annotation with nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#builder-and-mode-overrides" class="md-nav__link">
+  <a href="#configure-the-builder" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Builder and mode overrides
+        Configure the builder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#set-regression-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set regression defaults
       
     </span>
   </a>
@@ -525,10 +519,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
+  <a href="#use-the-schema-reference" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full schema
+        Use the schema reference
       
     </span>
   </a>
@@ -1473,6 +1467,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1588,10 +1666,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#location" class="md-nav__link">
+  <a href="#place-and-discover-the-config" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Location
+        Place and discover the config
       
     </span>
   </a>
@@ -1599,10 +1677,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#structure" class="md-nav__link">
+  <a href="#configure-a-simulation-platform" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Structure
+        Configure a simulation platform
       
     </span>
   </a>
@@ -1610,38 +1688,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#key-fields" class="md-nav__link">
+  <a href="#configure-portable-tool-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key fields
+        Configure portable tool paths
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Key fields">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#signal-value-annotation-with-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Signal value annotation with nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#builder-and-mode-overrides" class="md-nav__link">
+  <a href="#configure-the-builder" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Builder and mode overrides
+        Configure the builder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#set-regression-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set regression defaults
       
     </span>
   </a>
@@ -1660,10 +1732,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
+  <a href="#use-the-schema-reference" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full schema
+        Use the schema reference
       
     </span>
   </a>
@@ -1691,127 +1763,89 @@
 
 
 <h1 id="root-config">Root Config</h1>
-<p>The <code>root_config.yaml</code> file sits at the root of your RTL project and tells <code>rtl_buddy</code> how to build and simulate designs on the current platform.</p>
-<h2 id="location">Location</h2>
-<p><code>rtl_buddy</code> discovers <code>root_config.yaml</code> by walking <strong>up</strong> from the command root (the directory containing the command's primary config — see <a href="../execution-context/">Execution Context</a>), not from the directory you ran <code>rb</code> from. Paths declared inside <code>root_config.yaml</code> are resolved relative to the <code>root_config.yaml</code> file itself. (Standalone commands that have no primary config — e.g. <code>rb tool-check</code> — fall back to walking up from the current directory.)</p>
-<h2 id="structure">Structure</h2>
+<p><code>root_config.yaml</code> defines project-wide platform and tool configuration.</p>
+<h2 id="place-and-discover-the-config">Place and discover the config</h2>
+<p>Keep <code>root_config.yaml</code> at the project root. RTL Buddy walks upward from the command root—the directory containing the primary command config—and uses the first root config it finds. Commands without a primary config walk upward from the shell's current directory.</p>
+<p>Paths inside <code>root_config.yaml</code> resolve from its directory. See <a href="../execution-context/">Execution Context</a> for command-root behavior.</p>
+<h2 id="configure-a-simulation-platform">Configure a simulation platform</h2>
+<p>A minimal simulation configuration maps the host <code>uname</code> to a builder:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">project_root_config</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">cfg-platforms</span><span class="p">:</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">os</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;osx&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">unames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;Darwin&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">verible</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-macos&quot;</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="nt">cfg-rtl-builder</span><span class="p">:</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="nt">builder-simv</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;obj_dir/simv&quot;</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nt">sim-rand-seed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">31310</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">sim-rand-seed-prefix</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;+verilator+seed+&quot;</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">builder-opts</span><span class="p">:</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">      </span><span class="nt">debug</span><span class="p">:</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">        </span><span class="nt">compile-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;--binary</span><span class="nv"> </span><span class="s">-sv</span><span class="nv"> </span><span class="s">-o</span><span class="nv"> </span><span class="s">simv&quot;</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">        </span><span class="nt">run-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;+verilator+rand+reset+2&quot;</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">      </span><span class="nt">reg</span><span class="p">:</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">        </span><span class="nt">compile-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;--binary</span><span class="nv"> </span><span class="s">-sv</span><span class="nv"> </span><span class="s">-o</span><span class="nv"> </span><span class="s">simv&quot;</span>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">        </span><span class="nt">run-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;+verilator+rand+reset+2&quot;</span>
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="nt">cfg-verible</span><span class="p">:</span>
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-macos&quot;</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/opt/homebrew/bin&quot;</span>
-<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">    </span><span class="nt">extra_args</span><span class="p">:</span>
-<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">      </span><span class="nt">lint</span><span class="p">:</span>
-<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--rules=-module-filename&quot;</span>
-<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>
-<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;regression.yaml&quot;</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">os</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">osx</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">unames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">Darwin</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">verilator</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">verible</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">verible-macos</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">surfer</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">surfer-default</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="nt">cfg-rtl-builder</span><span class="p">:</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">verilator</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">verilator</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nt">builder-simv</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">obj_dir/simv</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">sim-rand-seed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">31310</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">sim-rand-seed-prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">+verilator+seed+</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">    </span><span class="nt">builder-opts</span><span class="p">:</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">      </span><span class="nt">debug</span><span class="p">:</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">        </span><span class="nt">compile-time</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--binary -sv -o simv</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">        </span><span class="nt">run-time</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">+verilator+rand+reset+2</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">      </span><span class="nt">reg</span><span class="p">:</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">        </span><span class="nt">compile-time</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--binary -sv -o simv</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">        </span><span class="nt">run-time</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">+verilator+rand+reset+2</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="nt">cfg-verible</span><span class="p">:</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">verible-macos</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/opt/homebrew/bin</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">surfer-default</span>
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">surfer</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">regression.yaml</span>
 </code></pre></div>
-<h2 id="key-fields">Key fields</h2>
-<p><strong><code>cfg-platforms</code></strong></p>
-<p>Maps the current OS (detected via <code>uname</code>) to a builder and Verible config. <code>rtl_buddy</code> picks the <strong>last</strong> platform entry whose <code>unames</code> list contains the output of <code>uname</code> — with the usual one-entry-per-uname layout there is only one match, but overlapping <code>unames</code> lists are resolved last-wins.</p>
-<p>A platform entry may also route <code>cfg-surfer</code> by naming one of its entries. It is optional; unrouted, <code>cfg-surfer</code> keeps its previous global behaviour (the <code>surfer-default</code> entry). Routing lets the viewer be pinned per platform — a shared Linux tool tree pinned absolutely (<code>PATH</code> cannot silently override it, and it survives a <code>--dispatch slurm</code> login shell re-prepending site paths) while macOS routes to an entry keeping a bare name off <code>PATH</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-platforms</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">os</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;linux&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">unames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;Linux&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator-shared&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">verible</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-x86_64&quot;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">surfer</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-shared&quot;</span><span class="w">      </span><span class="c1"># absolute path into the shared tool tree</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">os</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;osx&quot;</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">unames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;Darwin&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">verible</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-macos&quot;</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">surfer</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-brew&quot;</span><span class="w">        </span><span class="c1"># bare name off PATH</span>
+<p>If multiple platform entries match <code>uname</code>, the last match wins. RTL Buddy validates routing names on every platform entry at load time, including entries for other hosts.</p>
+<p>A platform may route simulation builders, Verible, and Surfer. It cannot route <code>cfg-synth-tools</code>, <code>cfg-pnr-tools</code>, <code>cfg-power-tools</code>, <code>cfg-cdc-tools</code>, <code>cfg-fpv-tools</code>, or <code>cfg-fpga-tools</code>; each flow's <code>tool:</code> field selects those entries directly.</p>
+<p>Override the platform defaults for one command with <code>--builder</code>, <code>--builder-mode</code>, or the flow-specific CLI option. See the <a href="../../reference/cli/">CLI reference</a>.</p>
+<h2 id="configure-portable-tool-paths">Configure portable tool paths</h2>
+<p>Executable fields accept a bare name, a relative or absolute path, or an ordered list of candidates:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">surfer-default</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${RB_TOOLS}/bin/surfer</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/opt/rb-tools/current/bin/surfer</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">surfer</span>
 </code></pre></div>
-<p>Routing supplies the <em>default</em> entry for a block; a CLI flag that names one explicitly — <code>--surfer</code>, <code>--builder</code> — still wins. Every platform entry's routing is validated at load, not only the one matching this host, so a typo in the Linux entry fails on a developer's laptop rather than waiting for CI.</p>
-<p>The <code>cfg-*-tools</code> blocks (<code>cfg-synth-tools</code>, <code>cfg-pnr-tools</code>, <code>cfg-power-tools</code>, <code>cfg-cdc-tools</code>, <code>cfg-fpv-tools</code>, <code>cfg-fpga-tools</code>) are <strong>not</strong> routable, and naming one on a platform entry is a fatal config error rather than a silent no-op. Their entry is chosen per run by the flow YAML's <code>tool:</code>, and that name simultaneously selects the <em>backend</em> — <code>openroad</code> picks the OpenROAD P&amp;R backend, <code>yosys</code> the Yosys synthesis backend, <code>rb power</code> looks the name up in a backend registry — so a platform-level redirect could only be ignored (the flow already named an entry) or break dispatch (the routed name is not a backend). To pin one of those binaries per platform, pin it in the entry itself with the candidate list <code>tool:</code> accepts, described next: the first candidate that exists wins, so a Linux tool-tree path and a Homebrew path can share one committed entry and each host takes the one it has.</p>
-<p><strong>Tool paths: <code>~</code>, <code>$VAR</code>, and candidate lists</strong></p>
-<p><code>cfg-rtl-builder[].builder</code>, <code>cfg-verible[].path</code>, <code>cfg-surfer[].path</code> and the <code>tool:</code> field of every <code>cfg-*-tools</code> block are expanded with <code>expanduser</code> + <code>expandvars</code> before use — the same treatment <code>cfg-systemc.home</code> has always had. An unset <code>${VAR}</code> makes that value not apply rather than producing a path containing a literal <code>${...}</code>.</p>
-<p>Each of those fields also accepts a <em>list</em> of candidates; the first that expands cleanly and exists wins, and a trailing bare name is the <code>PATH</code> fallback. "Exists" means an <em>executable file</em> for the binary-valued fields, so a candidate that is present but not runnable falls through to the next one instead of winning and then being reported unavailable; relative candidates are tested against the directory holding <code>root_config.yaml</code>, never the process cwd:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-shared&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;${RB_TOOLS}/bin/surfer&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;/opt/rb-tools/current/bin/surfer&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;surfer&quot;</span><span class="p p-Indicator">]</span>
-</code></pre></div>
-<p>That is the full chain a multi-platform project wants — <strong>individual env override → committed canonical path → <code>PATH</code></strong> — expressed in one committed file. The individual half lives in the gitignored <a href="#project-local-env-defaults-rtl-buddyenv"><code>.rtl-buddy/.env</code></a> (<code>RB_TOOLS=/Users/me/tools/rb</code>), so a developer relocating their copy never dirties a tracked file, and everyone else gets the canonical path. CI wants the pin hard enough that a stray <code>PATH</code> cannot change it and laptops want it soft enough to relocate; expansion with a committed fallback satisfies both, because the value is still decided by a committed file and the only thing an individual supplies is <em>where their copy lives</em>.</p>
-<p><strong><code>cfg-rtl-builder</code></strong></p>
-<p>Defines simulation tool configurations. Each entry has:</p>
+<p>RTL Buddy expands <code>~</code> and environment variables, then chooses the first executable candidate that exists. Relative paths resolve from <code>root_config.yaml</code>; a bare name falls back to <code>PATH</code>. A candidate containing an unset variable is skipped.</p>
+<p>This applies to <code>cfg-rtl-builder[].builder</code>, <code>cfg-surfer[].path</code>, tool fields in <code>cfg-*-tools</code>, and <code>cfg-verible[].path</code>. The Verible field names a directory rather than a binary, so a bare value is a root-config-relative directory, not a <code>PATH</code> lookup. If the configured directory cannot supply a requested Verible executable, RTL Buddy warns and may use the executable found on <code>PATH</code>.</p>
+<p>Use candidate lists to combine a machine override, a committed shared-tool path, and a <code>PATH</code> fallback without editing tracked YAML.</p>
+<h2 id="configure-the-builder">Configure the builder</h2>
+<p>Each <code>cfg-rtl-builder</code> entry owns:</p>
 <ul>
-<li><code>builder</code>: simulator executable name (<code>verilator</code>, <code>vcs</code>, etc.), a path to it, or a candidate list</li>
-<li><code>builder-simv</code>: path to the compiled simulation binary</li>
-<li><code>sim-rand-seed</code> / <code>sim-rand-seed-prefix</code>: default seed value and the plusarg prefix used to pass it</li>
-<li><code>builder-opts</code>: named compile-time and run-time option sets, selected by builder mode</li>
+<li>the simulator executable and compiled <code>simv</code> path;</li>
+<li>simulator family and seed syntax;</li>
+<li>named compile-time and run-time option sets;</li>
+<li>optional builder-specific timeout allowances and waveform format.</li>
 </ul>
-<p><strong><code>cfg-verible</code></strong></p>
-<p>Defines Verible tool configurations for lint and syntax checks. <code>path</code> is the directory containing Verible executables — absolute or relative to <code>root_config.yaml</code>. If that directory is missing — or is present but does not contain the binary — Verible stays enabled off <code>PATH</code> and rtl_buddy warns, naming both the configured location and what <code>PATH</code> resolved: a deliberately pinned path silently resolving elsewhere is exactly what pinning is meant to rule out. Because <code>path</code> names a <em>directory</em>, a candidate without a path separator is a relative directory next to <code>root_config.yaml</code>, never a <code>PATH</code> lookup.</p>
-<p><strong><code>cfg-surfer</code></strong> <em>(optional)</em></p>
-<p>Configures the Surfer waveform viewer for <code>rb wave</code>. Fields:</p>
-<ul>
-<li><code>path</code>: bare executable name (resolved via PATH, e.g. <code>"surfer"</code>) or a relative/absolute path to the binary</li>
-<li><code>wcp-port</code>: TCP port rtl-buddy listens on; Surfer connects with <code>--wcp-initiate</code> (default: <code>0</code> — OS auto-assigns a free port)</li>
-<li><code>editor-cmd</code>: command template with <code>%f</code> (file path) and <code>%l</code> (line number) placeholders — e.g. <code>"vim +%l %f"</code>, <code>"code --goto %f:%l"</code></li>
-<li><code>editor-terminal</code>: how to open terminal editors — <code>tmux</code> (new tmux window), <code>iterm2</code>, <code>terminal</code> (macOS Terminal.app), or <code>""</code> to run the command directly (for GUI editors)</li>
-<li><code>editor-sock</code>: path to a Unix socket for nvim remote reuse (e.g. <code>"/tmp/nvim-rb.sock"</code>). When set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use and reuses the already-running instance for subsequent "Go to declaration" and cursor-moved events. Omit this field if you do not use nvim or do not want remote reuse.</li>
-</ul>
-<p><code>rb wave &lt;test&gt;</code> looks for a signal layout file at <code>&lt;test&gt;.surfer</code> in the same directory as <code>tests.yaml</code> (e.g. <code>verif/sandbox/basic.surfer</code>). If found it is passed to Surfer via <code>-c</code>; if not, Surfer opens with no pre-loaded signals. If no FST exists for the test, <code>rb wave</code> runs a debug sim automatically before launching Surfer.</p>
-<h3 id="signal-value-annotation-with-nvim">Signal value annotation with nvim</h3>
-<p>When <code>editor-sock</code> is set and the nvim plugin is installed, <code>rb wave</code> annotates signal values as end-of-line virtual text in nvim:</p>
-<ul>
-<li>Right-click a signal in Surfer and choose "Go to declaration": nvim opens at the signal's declaration and all signals in the same module scope are annotated with their waveform values (<code>▶ value [instance]</code> style, black text on a lemon-chiffon background using the <code>WaveValue</code> highlight group).</li>
-<li>Moving the Surfer time cursor updates all annotations in real time.</li>
-<li>Two signals that share a source line are combined into a single annotation: <code>▶ a=val  b=val [inst]</code>.</li>
-<li>Pass <code>--focused-signal</code> to <code>rb wave</code> to annotate only the signal explicitly selected via "Go to declaration" instead of the full module scope.</li>
-</ul>
-<p><strong>Installing the nvim plugin:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>nvim-install<span class="w">          </span><span class="c1"># install the unified rtl-buddy-nvim plugin (hub + annotation)</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--update<span class="w"> </span><span class="c1"># sync an existing install to the pinned revision</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--force<span class="w">  </span><span class="c1"># remove and re-install</span>
-</code></pre></div>
-<p>This installs the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a> plugin — the same plugin that provides the <a href="../hub/">hub</a> connection — which supplies the <code>WaveValue</code> highlight group and the annotation hook. One command wires both the annotation and the hub auto-connect; see <a href="../wave/#nvim-setup">the wave doc</a> for details.</p>
-<p><strong><code>cfg-rtl-reg</code></strong></p>
-<p>Sets the default path to <code>regression.yaml</code> used by <code>rtl-buddy regression</code> when <code>--reg-config</code> is not specified.</p>
-<h2 id="builder-and-mode-overrides">Builder and mode overrides</h2>
-<p>Use command-line flags to override the platform defaults for a run:</p>
-<ul>
-<li><code>--builder b</code>: use a different builder (e.g. <code>--builder vcs</code>)</li>
-<li><code>--builder-mode m</code>: use a different named option set (e.g. <code>--builder-mode reg</code>)</li>
-</ul>
-<p>See the <a href="../../reference/cli/">CLI reference</a> for the full option list.</p>
+<p>Tests select a builder through the CLI, test or suite config, then platform default. See <a href="../simulators/#select-a-builder">Simulation Backends</a> and the <a href="../../reference/yaml/#root_configyaml">root config schema</a>.</p>
+<p>Keep Surfer editor and socket settings under <code>cfg-surfer</code>; <a href="../wave/#configure-surfer-and-the-editor">Waveform Viewer</a> owns that workflow.</p>
+<h2 id="set-regression-defaults">Set regression defaults</h2>
+<p><code>cfg-rtl-reg</code> supplies fallback paths for simulation and flow regression manifests. An explicit <code>-c</code> option and a matching manifest in the invocation directory take precedence. See <a href="../regressions/#resolve-the-manifest">Regressions</a>.</p>
 <h2 id="project-local-env-defaults-rtl-buddyenv">Project-local env defaults: <code>.rtl-buddy/.env</code></h2>
-<p>Some values are project-scoped but machine-local — they belong with the project, yet committing them would break every other checkout (an absolute <code>RTL_BUDDY_SLANG_PLUGIN</code>, a <code>SYSTEMC_HOME</code>). Put them in <code>.rtl-buddy/.env</code> next to <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># .rtl-buddy/.env — KEY=VALUE per line; # comments; `export ` prefix tolerated</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nv">RTL_BUDDY_SLANG_PLUGIN</span><span class="o">=</span>/opt/rtl-buddy-tools/yosys-slang/build/slang.so
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nv">SYSTEMC_HOME</span><span class="o">=</span>/opt/homebrew/opt/systemc
+<p>Store project-specific, untracked machine values in <code>.rtl-buddy/.env</code> beside <code>root_config.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nv">RTL_BUDDY_SLANG_PLUGIN</span><span class="o">=</span>/opt/rtl-buddy-tools/yosys-slang/build/slang.so
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">SYSTEMC_HOME</span><span class="o">=</span>/opt/homebrew/opt/systemc
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nv">RB_TOOLS</span><span class="o">=</span>/Users/me/tools/rtl-buddy
 </code></pre></div>
-<p>Every <code>rb</code> command loads the file as soon as the project root is discovered and injects the variables into its environment, so both rtl_buddy itself and every tool subprocess (yosys, sby, verilator, the compiled simv) see them.</p>
-<p>Semantics:</p>
+<p>Every command loads this file after discovering the project root and passes the values to tool subprocesses.</p>
 <ul>
-<li><strong>Fallback only.</strong> A variable already present in the process environment is never overridden — the shell, CI, and sourced toolchain env scripts always win, and explicit YAML config (e.g. <code>plugin-path</code>) beats any environment source.</li>
-<li><strong>Literal values.</strong> No <code>$VAR</code> interpolation, no escapes; surrounding matching quotes are stripped. A line that is not <code>KEY=VALUE</code> fails loud with the file and line number.</li>
-<li><strong>Untracked by design.</strong> Add <code>.rtl-buddy/.env</code> to <code>.gitignore</code> (<code>rtl-buddy skill print-gitignore</code> includes it). A committed env file would inject machine paths — or worse, loader variables — into every clone's runs.</li>
+<li>Existing process environment variables win; the file provides fallback values only.</li>
+<li>Values are literal. There is no variable interpolation or escape processing; matching surrounding quotes are removed.</li>
+<li>Lines must use <code>KEY=VALUE</code>; comments and an optional <code>export</code> prefix are accepted.</li>
+<li>Add <code>.rtl-buddy/.env</code> to <code>.gitignore</code>. <code>rb skill print-gitignore</code> prints the recommended entry.</li>
 </ul>
-<p>This completes the lookup chain that <a href="../../reference/yaml/#root_configyaml"><code>plugin-path</code></a> uses: per-project YAML config, then the process environment (set machine-wide by a toolchain env script), then <code>.rtl-buddy/.env</code> for project-scoped machine-local values.</p>
-<h2 id="full-schema">Full schema</h2>
-<p>See <a href="../../reference/yaml/#root_configyaml">YAML Formats: root_config.yaml</a> for the complete field reference.</p>
+<p>Explicit YAML configuration still wins over environment fallback where a field supports both. A malformed env line fails with its file and line number.</p>
+<h2 id="use-the-schema-reference">Use the schema reference</h2>
+<p>See <a href="../../reference/yaml/#root_configyaml">YAML Formats: root_config.yaml</a> for all supported blocks and fields.</p>
 
 
 

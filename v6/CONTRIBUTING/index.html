@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Entry point for contributing to rtl_buddy, with links to the detailed development and documentation guidelines maintainers follow.">
+        <meta name="description" content="Setup, authoring rules, and validation required for rtl_buddy contributions.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1339,6 +1339,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1609,23 +1693,19 @@
 
 
 <h1 id="contributing">Contributing</h1>
-<p>This page is the entry point for contributors and maintainers.
-Detailed rules live under the Development section so they are visible in the docs site, available through <code>rb docs show</code>, and not duplicated across agent-only files.</p>
+<p>Use the linked guides as the source of truth; do not duplicate their rules in contributor or agent files.</p>
 <h2 id="environment-setup">Environment Setup</h2>
-<p>Start with <a href="../development/setup/">Environment Setup</a> for cloning, <code>uv sync</code>, pre-commit hooks, running the test suite, and building the wheel/sdist locally.</p>
+<p>Follow <a href="../development/setup/">Environment Setup</a> to clone the repository, install dependencies, and run local checks.</p>
 <h2 id="development-guidelines">Development Guidelines</h2>
-<p>Read <a href="../development/guidelines/">Engineering Guidelines</a> before changing runtime behavior, command execution, YAML loading, subprocess wrappers, logging, errors, release mechanics, or the bundled agent skill.</p>
-<p>Those rules define the public contracts maintainers should preserve.
-When the current implementation differs from a guideline, treat the mismatch as behavior debt: fix it in the same change when it is in scope, or document the exception and add a follow-up issue.</p>
+<p>Read <a href="../development/guidelines/">Engineering Guidelines</a> before changing a public contract, dependency, command execution, logging, release workflow, or the bundled skill.</p>
 <h2 id="documentation-guidelines">Documentation Guidelines</h2>
-<p>Read <a href="../development/docs/">Documentation Guidelines</a> before adding or editing files under <code>docs/</code>.</p>
-<p>Documentation changes must keep frontmatter valid, keep generated pages in sync, and avoid duplicating reference material that is already generated from the CLI or schemas.</p>
+<p>Read <a href="../development/docs/">Documentation Guidelines</a> before editing <code>docs/</code>.</p>
 <h2 id="validation">Validation</h2>
-<p>Use the narrowest validation that proves the change:</p>
+<p>Run the narrowest checks that prove the change:</p>
 <ul>
 <li>Docs-only edits: run <code>uv run python scripts/check_docs_frontmatter.py --check</code> and <code>uv run --group docs mkdocs build --strict</code>.</li>
 <li>CLI help changes: regenerate <code>docs/reference/cli.md</code> with <code>uv run python scripts/gen_cli_reference.py</code> and check the docs build.</li>
-<li>Runtime behavior changes: add or update focused tests, then run the affected test subset. Broaden to the full suite when shared contracts or command dispatch are touched.</li>
+<li>Runtime changes: add focused tests and run the affected subset. Run the full suite for shared contracts or command dispatch.</li>
 </ul>
 <p>If validation cannot be run locally, say which check was skipped and why in the PR.</p>
 

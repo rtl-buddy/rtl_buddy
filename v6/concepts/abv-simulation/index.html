@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to compile in SystemVerilog Assertions during simulation with rb test, the Verilator SVA subset, and how firings surface in the results table.">
+        <meta name="description" content="Enable SystemVerilog assertions in Verilator simulation, interpret assertion failures, and collect cover-property hits.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -985,10 +985,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#enabling-assertions" class="md-nav__link">
+  <a href="#enable-assertions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Enabling assertions
+        Enable assertions
       
     </span>
   </a>
@@ -996,10 +996,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-you-see-in-the-results-table" class="md-nav__link">
+  <a href="#interpret-assertion-results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What you see in the results table
+        Interpret assertion results
       
     </span>
   </a>
@@ -1007,43 +1007,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verilator-sva-subset" class="md-nav__link">
+  <a href="#collect-cover-property-hits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verilator SVA subset
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-firings-are-detected" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How firings are detected
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cover-property-hits" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cover-property hits
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#relationship-to-rb-fpv" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Relationship to rb fpv
+        Collect cover-property hits
       
     </span>
   </a>
@@ -1456,6 +1423,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1571,10 +1622,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#enabling-assertions" class="md-nav__link">
+  <a href="#enable-assertions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Enabling assertions
+        Enable assertions
       
     </span>
   </a>
@@ -1582,10 +1633,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-you-see-in-the-results-table" class="md-nav__link">
+  <a href="#interpret-assertion-results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What you see in the results table
+        Interpret assertion results
       
     </span>
   </a>
@@ -1593,43 +1644,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verilator-sva-subset" class="md-nav__link">
+  <a href="#collect-cover-property-hits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verilator SVA subset
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-firings-are-detected" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How firings are detected
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cover-property-hits" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cover-property hits
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#relationship-to-rb-fpv" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Relationship to rb fpv
+        Collect cover-property hits
       
     </span>
   </a>
@@ -1656,69 +1674,38 @@
   
 
 
-<h1 id="assertion-based-verification-in-simulation">Assertion-Based Verification in Simulation</h1>
-<p>Pair with <a href="../fpv/">Formal Property Verification</a> for the proof-engine side. This page is about <strong>simulation</strong> — running <code>rb test</code> with assertions compiled into the Verilator-built simulator so SVA properties evaluate on every clock and firings show up in the results table.</p>
-<blockquote>
-<p><strong>Status:</strong> Phase 1 ABV. Today this targets Verilator only.</p>
-</blockquote>
-<h2 id="enabling-assertions">Enabling assertions</h2>
-<p>Set <code>assertions: true</code> on a test in <code>tests.yaml</code>:</p>
+<h1 id="assertion-based-verification-in-simulation">Assertion-based verification in simulation</h1>
+<p>Set <code>assertions: true</code> on a test to compile SystemVerilog assertions into a Verilator simulation. Assertion firings then affect the test verdict and appear in results.</p>
+<h2 id="enable-assertions">Enable assertions</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">tests</span><span class="p">:</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">smoke_with_sva</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;smoke</span><span class="nv"> </span><span class="s">test</span><span class="nv"> </span><span class="s">with</span><span class="nv"> </span><span class="s">SVA</span><span class="nv"> </span><span class="s">assertions</span><span class="nv"> </span><span class="s">compiled</span><span class="nv"> </span><span class="s">in&quot;</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../src/models.yaml</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../src/models.yaml</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
-<p>When <code>assertions: true</code> and the builder is Verilator, <code>rb test</code> appends <code>--assert</code> and <code>--coverage-user</code> to the Verilator compile command. The flags are idempotent — already-configured values in <code>root_config.yaml</code> builder opts are not duplicated.</p>
-<p>For non-Verilator builders the flag is currently a no-op — but not a silent one: the run logs a <code>compile.assertions_not_verilator</code> WARNING naming the simulator family, so a misconfigured non-Verilator run is visible rather than ignored. VCS/Xcelium SVA enablement is a follow-up.</p>
-<h2 id="what-you-see-in-the-results-table">What you see in the results table</h2>
-<p>When at least one test in the run enables <code>assertions</code>, both <code>rb test</code> and <code>rb regression</code> add an <strong>Assertions</strong> column:</p>
+<p>For Verilator, rtl_buddy adds <code>--assert</code> and <code>--coverage-user</code> unless the builder options already contain them. For other builders, the setting has no effect and logs <code>compile.assertions_not_verilator</code> at WARNING.</p>
+<p>Verilator supports immediate assertions, common synchronous concurrent assertions, cover properties, and some sequence operators. It does not implement the full IEEE 1800 assertion language. Check the <a href="https://verilator.org/guide/latest/languages.html">Verilator language support</a> for the installed version before relying on constructs such as <code>disable iff</code>, local property variables, or advanced sequence operators. Use <a href="../fpv/"><code>rb fpv</code></a> with the slang frontend or a simulator with the required SVA support when Verilator cannot compile the property set.</p>
+<h2 id="interpret-assertion-results">Interpret assertion results</h2>
+<p>When any selected test enables assertions, <code>rb test</code> and <code>rb regression</code> add an <strong>Assertions</strong> column:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Test           Result   Description                    Assertions
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>smoke_with_sva PASS     test passed                    0 fired
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sva_violation  FAIL     1 SVA assertion failure(s) …   1 fired
 </code></pre></div>
 <ul>
-<li><code>0 fired</code> confirms SVA was compiled in and no <code>%Error: ... Assertion failed</code> lines were seen.</li>
-<li><code>N fired</code> reports the count; the test is forced to FAIL even if the testbench wrapper printed PASS earlier.</li>
+<li><code>0 fired</code> means assertions were enabled and no matching failure was recorded.</li>
+<li><code>N fired</code> forces the test to FAIL, even if the testbench reported PASS first.</li>
 </ul>
-<p>The column is hidden when no test in the run requests assertions, so existing flows are unchanged.</p>
-<h2 id="verilator-sva-subset">Verilator SVA subset</h2>
-<p>Verilator implements a <strong>subset</strong> of IEEE 1800-2017 §16. Today's expectations:</p>
-<ul>
-<li>✅ Immediate assertions: <code>assert (cond);</code></li>
-<li>✅ Concurrent assertions on synchronous properties: <code>always @(posedge clk) assert property (a |-&gt; b);</code></li>
-<li>✅ Cover properties: <code>cover property (...)</code> — hits flow into the existing <code>--coverage-user</code> pipeline and are merged through <code>--coverage-merge</code> like any other user coverage point.</li>
-<li>⚠️ <code>disable iff</code> clauses — not supported.</li>
-<li>⚠️ Local variables inside properties — not supported.</li>
-<li>⚠️ Full sequence operators — partial. <code>##N</code>, <code>[*N]</code>, <code>|-&gt;</code>, <code>|=&gt;</code> work; advanced operators like <code>intersect</code>, <code>throughout</code>, <code>within</code> are not supported.</li>
-</ul>
-<p>For a property set that needs the full SVA language, point those properties at <code>rb fpv</code> (which can use the slang frontend) or fall back to a commercial simulator. See the <a href="https://verilator.org/guide/latest/languages.html">Verilator language support notes</a> for the authoritative list.</p>
-<h2 id="how-firings-are-detected">How firings are detected</h2>
-<p><code>rb test</code> parses both <code>test.log</code> and <code>test.err</code> after simulation looking for lines matching:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>%Error: &lt;file&gt;:&lt;line&gt;: Assertion failed in &lt;hier&gt;: &#39;&lt;expr&gt;&#39;
+<p>rtl_buddy scans <code>test.log</code> and <code>test.err</code> for Verilator assertion errors, including lines prefixed by a simulation timestamp:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>[500] %Error: tb_top.sv:32: Assertion failed in top.dut: &#39;assert&#39; failed.
 </code></pre></div>
-<p>Under Verilator's <code>--timing</code> flow the line is prefixed with the simulation time, e.g. <code>[500] %Error: tb_top.sv:32: Assertion failed in top.dut: 'assert' failed.</code>; the counter accepts the optional leading <code>[&lt;time&gt;]</code> prefix. (Before this was handled, a fired assertion under <code>--timing</code> was missed and the test reported NA instead of FAIL.)</p>
-<p>A non-zero count flips the result to FAIL regardless of the prior verdict — whether the log said PASS, said nothing (NA), or the sim aborted before any marker — and folds the prior result/description into the FAIL message so the truth still surfaces.</p>
-<h2 id="cover-property-hits">Cover-property hits</h2>
-<p>Cover properties land in the same <code>coverage.dat</code> Verilator emits today, so:</p>
-<ul>
-<li><code>rb -M cov test ...</code> continues to be the canonical path for full coverage HTML / Coverview packaging.</li>
-<li>With just <code>assertions: true</code> (no <code>-M cov</code>), <code>coverage.dat</code> still exists per-run because <code>--coverage-user</code> was injected — but only the user-coverage type is present. Merge with <code>--coverage-merge</code> to roll up.</li>
-</ul>
-<p>Under <code>--machine</code>, each labeled cover property is reported by name with its hit count, per test and summed across the run — see <a href="../coverage/#per-cover-point-results">Per-cover-point results</a>. That gives the simulation side the same per-cover observability <code>rb fpv</code> rows already carry through their vacuity witnesses.</p>
-<p>See <a href="../coverage/">Coverage</a> for the merge pipeline and the
-<a href="https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/tools/verilator_cov_analysis.md">Verilator coverage analysis note</a>
-for how the raw simulator coverage points relate to LCOV outputs.</p>
-<h2 id="relationship-to-rb-fpv">Relationship to <code>rb fpv</code></h2>
-<p><code>rb fpv</code> proves assertions exhaustively up to a bound; <code>rb test</code> with <code>assertions: true</code> exercises them on the dynamic stimulus your testbench drives. The two are complementary:</p>
-<ul>
-<li>Use simulation to find <strong>the obvious bugs cheaply</strong> — every existing test now polices SVA properties as a side effect of running.</li>
-<li>Use <a href="../fpv/"><code>rb fpv</code></a> to <strong>prove invariants</strong> over all reachable behaviors up to the bound.</li>
-</ul>
-<p>A property that proves bounded under <code>rb fpv</code> and never fires in simulation is the strongest signal you'll get without a commercial completeness tool.</p>
+<p>The Assertions column is omitted when no selected test enables assertions.</p>
+<h2 id="collect-cover-property-hits">Collect cover-property hits</h2>
+<p><code>assertions: true</code> also enables Verilator user coverage, so labeled <code>cover property</code> hits appear in each run's <code>coverage.dat</code>. Use the normal coverage flags to merge or report them:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>-M<span class="w"> </span>cov<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke_with_sva<span class="w"> </span>--coverage-merge
+</code></pre></div>
+<p>Under <code>--machine</code>, cover points are reported by name per test and summed across the run. See <a href="../coverage/#inspect-cover-property-hits">Coverage</a> for the data and merge behavior.</p>
+<p>Simulation checks only the stimulus that ran. Use <a href="../fpv/">Formal Property Verification</a> when the property needs bounded proof over all modeled behaviors.</p>
 
 
 

@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Fan regression tests out in parallel — as Slurm jobs on a cluster or as capped subprocesses on one machine — after a single shared build, with per-test resource reservations and right-sizing advice.">
+        <meta name="description" content="Run tests concurrently on one host or Slurm, configure resources and retries, and diagnose dispatched builds and jobs.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -565,10 +565,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
+  <a href="#run-on-one-host" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How it works
+        Run on one host
       
     </span>
   </a>
@@ -576,10 +576,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-test-on-the-cluster-rb-test-dispatch" class="md-nav__link">
+  <a href="#meet-the-slurm-requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One test on the cluster: rb test --dispatch
+        Meet the Slurm requirements
       
     </span>
   </a>
@@ -587,10 +587,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-arrays-interact-with-the-shared-build" class="md-nav__link">
+  <a href="#understand-build-and-simulation-jobs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How arrays interact with the shared build
+        Understand build and simulation jobs
       
     </span>
   </a>
@@ -598,10 +598,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#builders-that-compile-inside-the-job" class="md-nav__link">
+  <a href="#configure-dispatch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Builders that compile inside the job
+        Configure dispatch
       
     </span>
   </a>
@@ -609,10 +609,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#on-one-machine-dispatch-local-parallel" class="md-nav__link">
+  <a href="#set-per-test-resources" class="md-nav__link">
     <span class="md-ellipsis">
       
-        On one machine: --dispatch local-parallel
+        Set per-test resources
       
     </span>
   </a>
@@ -620,10 +620,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#requirements-slurm" class="md-nav__link">
+  <a href="#retry-license-queue-timeouts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Requirements (Slurm)
+        Retry license-queue timeouts
       
     </span>
   </a>
@@ -631,10 +631,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration-cfg-dispatch" class="md-nav__link">
+  <a href="#monitor-and-stop-a-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration: cfg-dispatch
+        Monitor and stop a run
       
     </span>
   </a>
@@ -642,82 +642,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#retrying-a-license-queue-kill" class="md-nav__link">
+  <a href="#apply-reservation-advice" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Retrying a license-queue kill
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#watching-a-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Watching a run
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Watching a run">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#where-each-log-lives" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where each log lives
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#per-test-reservations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Per-test reservations
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#sizing-the-reservations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Sizing the reservations
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#reservation-right-sizing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Reservation right-sizing
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#agent-loop" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Agent loop
+        Apply reservation advice
       
     </span>
   </a>
@@ -1550,6 +1478,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1665,10 +1677,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
+  <a href="#run-on-one-host" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How it works
+        Run on one host
       
     </span>
   </a>
@@ -1676,10 +1688,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-test-on-the-cluster-rb-test-dispatch" class="md-nav__link">
+  <a href="#meet-the-slurm-requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One test on the cluster: rb test --dispatch
+        Meet the Slurm requirements
       
     </span>
   </a>
@@ -1687,10 +1699,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-arrays-interact-with-the-shared-build" class="md-nav__link">
+  <a href="#understand-build-and-simulation-jobs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How arrays interact with the shared build
+        Understand build and simulation jobs
       
     </span>
   </a>
@@ -1698,10 +1710,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#builders-that-compile-inside-the-job" class="md-nav__link">
+  <a href="#configure-dispatch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Builders that compile inside the job
+        Configure dispatch
       
     </span>
   </a>
@@ -1709,10 +1721,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#on-one-machine-dispatch-local-parallel" class="md-nav__link">
+  <a href="#set-per-test-resources" class="md-nav__link">
     <span class="md-ellipsis">
       
-        On one machine: --dispatch local-parallel
+        Set per-test resources
       
     </span>
   </a>
@@ -1720,10 +1732,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#requirements-slurm" class="md-nav__link">
+  <a href="#retry-license-queue-timeouts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Requirements (Slurm)
+        Retry license-queue timeouts
       
     </span>
   </a>
@@ -1731,10 +1743,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration-cfg-dispatch" class="md-nav__link">
+  <a href="#monitor-and-stop-a-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration: cfg-dispatch
+        Monitor and stop a run
       
     </span>
   </a>
@@ -1742,82 +1754,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#retrying-a-license-queue-kill" class="md-nav__link">
+  <a href="#apply-reservation-advice" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Retrying a license-queue kill
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#watching-a-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Watching a run
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Watching a run">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#where-each-log-lives" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where each log lives
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#per-test-reservations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Per-test reservations
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#sizing-the-reservations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Sizing the reservations
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#reservation-right-sizing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Reservation right-sizing
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#agent-loop" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Agent loop
+        Apply reservation advice
       
     </span>
   </a>
@@ -1845,750 +1785,199 @@
 
 
 <h1 id="parallel-dispatch">Parallel dispatch</h1>
-<p>By default <code>rb regression</code> runs every test in-process, one at a time.
-<strong>Dispatch</strong> instead fans the tests out in parallel after a single shared
-build, with one of two backends:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>slurm<span class="w">             </span><span class="c1"># a cluster</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w">    </span><span class="c1"># this machine, no scheduler</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rb<span class="w"> </span>randtest<span class="w"> </span>my_test<span class="w"> </span><span class="m">500</span><span class="w"> </span>--dispatch<span class="w"> </span>slurm<span class="w">   </span><span class="c1"># seed fan-out</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>my_test<span class="w"> </span>--dispatch<span class="w"> </span>slurm<span class="w">           </span><span class="c1"># one test, on the cluster</span>
+<p>Dispatch runs <code>test</code>, <code>randtest</code>, or regression work in parallel after planning the run and sharing compilations where possible.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>slurm
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rb<span class="w"> </span>randtest<span class="w"> </span>my_test<span class="w"> </span><span class="m">500</span><span class="w"> </span>--dispatch<span class="w"> </span>slurm
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke<span class="w"> </span>reset_error<span class="w"> </span>--dispatch<span class="w"> </span>slurm
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--filter<span class="w"> </span><span class="s1">&#39;^smoke_&#39;</span><span class="w"> </span>--dispatch<span class="w"> </span>slurm
 </code></pre></div>
-<p><code>--dispatch local</code> (the default) is the unchanged in-process path.</p>
 <table>
 <thead>
 <tr>
-<th></th>
-<th><code>local</code></th>
-<th><code>local-parallel</code></th>
-<th><code>slurm</code></th>
+<th>Backend</th>
+<th>Execution</th>
+<th>Concurrency</th>
+<th>Resource enforcement</th>
+<th>Usage advice</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Runs where</td>
-<td>this process</td>
-<td>this host, N subprocesses</td>
-<td>cluster nodes</td>
-</tr>
-<tr>
-<td>Needs</td>
-<td>nothing</td>
-<td>nothing</td>
-<td>Slurm client + shared FS</td>
-</tr>
-<tr>
-<td>Concurrency</td>
+<td><code>local</code></td>
+<td>Current process</td>
 <td>1</td>
-<td><code>--jobs</code> / <code>cfg-dispatch.jobs</code></td>
-<td><code>max-jobs-per-array</code> × arrays</td>
+<td>None</td>
+<td>None</td>
 </tr>
 <tr>
-<td><code>resources:</code> reservations</td>
-<td>n/a</td>
-<td>ignored (advisory)</td>
-<td>enforced by the scheduler</td>
+<td><code>local-parallel</code></td>
+<td>Subprocesses on this host</td>
+<td><code>--jobs</code> or <code>cfg-dispatch.jobs</code></td>
+<td>No</td>
+<td>No</td>
 </tr>
 <tr>
-<td>Right-sizing advice</td>
-<td>n/a</td>
-<td>none (no accounting)</td>
-<td>from <code>sacct</code></td>
+<td><code>slurm</code></td>
+<td>Cluster jobs</td>
+<td>Per-array throttle</td>
+<td>Yes</td>
+<td>From <code>sacct</code></td>
 </tr>
 </tbody>
 </table>
-<p>Both dispatch backends sit behind one interface and share everything that
-is not the transport: the head expands sweeps <strong>once</strong> into a plan
-manifest, submits one build job per suite, gates the sims on that build,
-and collects a <code>result.json</code> per job. The sections below describe the
-Slurm path first; <a href="#on-one-machine-dispatch-local-parallel">On one machine</a>
-covers what differs on a laptop.</p>
-<h2 id="how-it-works">How it works</h2>
-<p><strong>Nothing heavy runs on the submit host</strong> — it is usually an interactive
-login node where a big Verilation is against policy. The head process only
-plans and submits; the compile and the sims both run as scheduler jobs.</p>
+<p><code>local</code> is the default. <code>rb test</code> uses dispatch only when <code>--dispatch</code> is given explicitly; it does not inherit <code>cfg-dispatch.backend</code>. Other dispatch settings still apply after a backend is selected.</p>
+<p><code>rb test</code> accepts the same explicit-name list or regex filter locally and under dispatch, creating one simulation job per selected test. See <a href="../tests/#run-tests">Run tests</a> for selection order and validation.</p>
+<p>Dispatch cannot be combined with <code>--early-stop</code>. It implies <a href="../tests/#sharing-compiled-builds-across-tests"><code>--share-build</code></a>, expands sweep hooks once on the head, and skips the per-tree lock in worker jobs.</p>
+<h2 id="run-on-one-host">Run on one host</h2>
+<p><code>local-parallel</code> uses one global subprocess pool across all suites and resource groups:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w">       </span><span class="c1"># min(4, CPU count)</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">8</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>rb<span class="w"> </span>randtest<span class="w"> </span>my_test<span class="w"> </span><span class="m">20</span><span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">4</span>
+</code></pre></div>
+<p>The default is <code>min(4, CPU count)</code>. Build jobs are prioritized because they unblock their suite. A simulation starts only after its build exits 0; a failed build prevents dependent simulations from starting and makes them dispatch failures.</p>
+<p>CPU, memory, and time reservations are not enforced locally. A non-default reservation logs <code>dispatch.reservations_ignored</code>; choose <code>--jobs</code> for the memory demand of the heaviest concurrent tests. Local runs also produce no reservation advice.</p>
+<p>Use <code>Ctrl-C</code> to stop the head and its process groups. <code>SIGKILL</code> prevents cleanup and may leave child processes running.</p>
+<h2 id="meet-the-slurm-requirements">Meet the Slurm requirements</h2>
+<p>Before using <code>--dispatch slurm</code>, provide:</p>
+<ul>
+<li><code>sbatch</code>, <code>squeue</code>, <code>sacct</code>, and <code>scancel</code> on the submit host. Run <code>rb tool-check --explain slurm</code>.</li>
+<li>A shared filesystem exposing the project, artefacts, and Python environment at identical absolute paths on submit and compute hosts.</li>
+<li>The project's Python environment on compute hosts; workers run <code>sys.executable -m rtl_buddy</code>.</li>
+</ul>
+<p>The submit process only plans, submits, waits, and collects. Compilation and simulation run on compute nodes.</p>
+<h2 id="understand-build-and-simulation-jobs">Understand build and simulation jobs</h2>
+<p>For each suite, dispatch:</p>
 <ol>
-<li><strong>Build job.</strong> The head submits one <code>sbatch</code> job per suite that runs
-   <code>rb _build-job</code> on a compute node: it compiles one shared <code>simv</code> per
-   unique compile key (<code>--dispatch</code> implies
-   <a href="../tests/#sharing-compiled-builds-across-tests"><code>--share-build</code></a>) and
-   writes the shared build to the shared filesystem. Those compiles run
-   <strong>serially inside that one job</strong>, so a suite with several compile keys
-   needs a <code>compile.time</code> covering their total — see <a href="#sizing-the-reservations">Sizing the
-   reservations</a>. If no test in the
-   suite uses a share-build-capable builder there is nothing for the sim
-   jobs to read, so the build job is skipped entirely rather than burning
-   a compile — see <a href="#builders-that-compile-inside-the-job">Builders that compile inside the
-   job</a>.</li>
-<li><strong>Fan-out gated on the build.</strong> One job per <code>(test, run_id)</code> is
-   submitted, grouped by identical resolved resources into a Slurm
-   <strong>array</strong> (<code>cfg-dispatch.max-jobs-per-array</code> maps to the array's <code>%N</code>
-   throttle), each with <code>--dependency=afterok:&lt;build-job&gt;</code>. Slurm holds
-   the sim elements until the build succeeds; each then re-invokes
-   <code>rb _test-job</code>, whose own compile short-circuits on the shared-build
-   stamp, so it runs simulation + post only.</li>
-<li><strong>Collect.</strong> The head waits for the queue to drain (once, across all
-   suites), then loads each job's result and feeds the normal summary and
-   exit code. A job that produced no result — a scheduler kill, a crash,
-   or a build-job failure that made <code>afterok</code> cancel it — counts as a
-   fail, never silently dropped.</li>
+<li>Writes a plan and, when needed, submits one build job.</li>
+<li>Builds each unique compile key serially. Compile keys fingerprint sources, flags, defines, and the resolved builder.</li>
+<li>Groups simulations with identical resolved resources into Slurm arrays and gates them with <code>afterok</code> on the build.</li>
+<li>Collects each worker's <code>result.json</code> into the normal summary and exit status.</li>
 </ol>
-<p>The compile carries its own reservation (<code>cfg-dispatch.compile</code>,
-defaulting to <code>resources</code>) since a large Verilation or VCS elaboration is
-often heavier than the sims it precedes. Normally that reservation belongs
-to the build job; when the builder cannot share a build the compile runs
-inside each sim job instead and the block is folded into <em>that</em> job's
-reservation. If the reservation is too small the build is
-killed, <code>afterok</code> cancels the sims, and they surface as dispatch failures
-pointing at the build log.</p>
-<div class="admonition note">
-<p class="admonition-title">Dependents are reaped, not left queued</p>
-<p>Slurm reports a sim whose build failed as <code>PENDING</code> with reason
-<code>DependencyNeverSatisfied</code>, and by default leaves it queued <strong>forever</strong> —
-it is only reaped if the site sets <code>kill_invalid_depend</code> in
-<code>SchedulerParameters</code>. Two things prevent that stray:</p>
+<p>Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. <code>max-jobs-per-array</code> is a <code>%N</code> throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.</p>
+<p>Verilator, VCS, and Icarus can place outputs in a shared compile-key directory. Other builders, and builders with an absolute <code>builder-simv</code>, keep the build under the test artefact directory:</p>
 <ul>
-<li>every dependent submit carries <strong><code>--kill-on-invalid-dep=yes</code></strong>, so
-  Slurm itself removes the job the moment the dependency fails. This is
-  the one that matters, because it holds even when the head process is
-  <code>SIGKILL</code>ed (a CI abort or timeout) and never gets to clean up;</li>
-<li>failing that, collection notices such jobs, cancels them, and logs
-  <code>dispatch.dependency_never_satisfied</code> instead of polling jobs that can
-  never run.</li>
+<li>Without shared-capable tests or seed fan-out, no separate build job is submitted; each simulation job compiles in its own directory.</li>
+<li>A fanned-out test still gets a build job to prevent concurrent compiles into the same test directory. Workers use the stamp left by that job.</li>
+<li>A job that may compile uses the field-wise maximum of its simulation and compile reservations. This protects against a missing or invalid prebuilt stamp.</li>
 </ul>
-<p>Pass <code>--kill-on-invalid-dep=no</code> in <code>sbatch-args</code> to opt out — user
-<code>sbatch-args</code> are appended last and win.</p>
-</div>
-<p>A single test's compile failure does <strong>not</strong>
-fail the build job — the other sims still run, and the failing test
-recompiles (and fails) in its own sim job. <code>--dispatch</code> cannot be combined
-with <code>--early-stop</code>, and dispatched jobs deliberately skip the per-tree
-lock (see <a href="../../known-issues/#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">Known Issues</a>).</p>
-<h2 id="one-test-on-the-cluster-rb-test-dispatch">One test on the cluster: <code>rb test --dispatch</code></h2>
-<p>The three test-family commands take the same pair of flags, and they mean
-the same thing on each — only the <em>selection</em> differs:</p>
-<table>
-<thead>
-<tr>
-<th>Command</th>
-<th>What is dispatched</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>rb regression</code></td>
-<td>every suite in the regression config, at <code>-l</code>/<code>-s</code></td>
-</tr>
-<tr>
-<td><code>rb randtest &lt;test&gt; N</code></td>
-<td>one test, N seeds</td>
-</tr>
-<tr>
-<td><code>rb test [&lt;test&gt;]</code></td>
-<td>one named test — or the suite, when no name is given</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>-B<span class="w"> </span>verilator<span class="w"> </span>-M<span class="w"> </span>reg<span class="w"> </span><span class="nb">test</span><span class="w"> </span>my_test<span class="w"> </span>-c<span class="w"> </span>verif/sch/tests.yaml<span class="w"> </span>--dispatch<span class="w"> </span>slurm
+<p>When a build job exists, every dependent is submitted with <code>--kill-on-invalid-dep=yes</code>. A failed build therefore removes jobs that could never satisfy <code>afterok</code>; collection also cancels any <code>DependencyNeverSatisfied</code> remnants. A user-supplied <code>--kill-on-invalid-dep=no</code> in <code>sbatch-args</code> overrides the default.</p>
+<p>A missing result from a scheduler kill, worker crash, or dependency failure is a failed row, not a dropped test. A compile failure for one compile key does not stop unrelated keys; the affected worker retries its own compile and reports the failure.</p>
+<h2 id="configure-dispatch">Configure dispatch</h2>
+<p>Set defaults in <code>root_config.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">cfg-dispatch</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">jobs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">resources</span><span class="p">:</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4G</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;01:00:00&quot;</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span><span class="nt">compile</span><span class="p">:</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16G</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;02:00:00&quot;</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span><span class="nt">sbatch-args</span><span class="p">:</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--partition=verif</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--account=chip</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">  </span><span class="nt">max-jobs-per-array</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">  </span><span class="nt">poll-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">  </span><span class="nt">progress-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">  </span><span class="nt">max-wait</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">7200</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span><span class="nt">attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="nt">backoff-sec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span><span class="nt">backoff-max-sec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="w">    </span><span class="nt">jitter</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span><span class="nt">classifiers</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">license-queue</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="w">  </span><span class="nt">rightsize</span><span class="p">:</span>
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="w">    </span><span class="nt">report</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a><span class="w">    </span><span class="nt">over-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
+<a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="w">    </span><span class="nt">near-limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.9</span>
+<a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a><span class="w">    </span><span class="nt">margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span>
 </code></pre></div>
-<p>This is the <strong>same planning path</strong>, narrowed: one plan manifest, one sim
-job, one collected envelope — with a build job in front of it, gated with
-<code>afterok</code>, whenever the test's builder can share a build. When it cannot
-(a VCS builder, or one pinned with an absolute <code>builder-simv:</code>) there is no
-build job at all and the single sim job compiles inside its own allocation,
-ungated — the same rule the whole page follows,
-<a href="#how-arrays-interact-with-the-shared-build">below</a>. It exists because a
-single-test cluster run is what iterating on one failing test needs, and
-because on a shared submit host a large top-level build is not something to
-run locally at all
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/440">#440</a>).</p>
-<p>Everything <code>rb test</code> already carried composes unchanged: <code>-c</code>,
-<code>--reg-level</code> / <code>--start-level</code> (a test filtered out by level is skipped
-before the plan, exactly as in-process), <code>--share-build</code> (implied by
-<code>--dispatch</code> anyway), the <code>--coverage-*</code> set, and <code>-n</code> / <code>-l</code> seed
-selection, which travels to the job as its <code>--seed-mode</code>.</p>
-<p><strong>Dispatching <code>rb test</code> is opt-in per invocation.</strong> It is the one command
-that does <em>not</em> take its backend from <code>cfg-dispatch.backend</code>: <code>rb test</code> is
-the local iteration command, and a project that configured a cluster
-backend for its regressions should not find single-test runs queueing (nor
-<code>--early-stop</code> rejected) because of a config key it set for something else.
-Without <code>--dispatch</code> on the command line, nothing about <code>rb test</code> changes.
-The rest of the <code>cfg-dispatch</code> block — <code>resources</code>, <code>compile</code>, <code>retry</code>,
-<code>jobs</code>, <code>max-wait</code>, … — configures the run as usual once <code>--dispatch</code>
-selects a backend.</p>
-<h2 id="how-arrays-interact-with-the-shared-build">How arrays interact with the shared build</h2>
-<p>Dispatch buckets tests by <strong>two independent keys</strong>, and they need not line
-up:</p>
+<p><code>jobs</code> controls the single local-parallel pool. <code>max-jobs-per-array</code> controls each Slurm array. See <a href="../../reference/yaml/#root_configyaml">YAML formats</a> for defaults and validation.</p>
+<p>Always quote <code>time</code> values. YAML 1.1 can parse an unquoted value such as <code>4:00:00</code> as the integer <code>14400</code>, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations.</p>
+<h2 id="set-per-test-resources">Set per-test resources</h2>
+<p>Reservations resolve field by field in this order: test, testbench, <code>cfg-dispatch.resources</code>, built-in defaults.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">testbenches</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_tb</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">8G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;00:30:00&quot;</span><span class="p p-Indicator">}</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="nt">tests</span><span class="p">:</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_smoke</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_soak</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="nv">24G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;04:00:00&quot;</span><span class="p p-Indicator">}</span>
+</code></pre></div>
+<p>Tests with identical resolved reservations share an array. Compilation normally uses <code>cfg-dispatch.compile</code>; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.</p>
+<p>Size <code>compile.time</code> for all unique compile keys in the suite because the build job processes them serially. Size <code>compile.mem</code> from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports <code>OUT_OF_MEMORY</code>, while local runs may show <code>Killed</code>, SIGKILL, or exit 137. Raise the field named by <code>reservation_advice[*].edit_hint</code>, not <code>sim_timeout</code>.</p>
+<p>VCS license wait under <code>-licqueue</code> counts against the Slurm time limit. Give <code>compile.time</code> queue headroom; <code>compile.license_queued</code> records only completed builds that waited.</p>
+<p>Dispatch requests <code>--acctg-freq=task=1</code> unless <code>sbatch-args</code> already supplies it. Keep fine-grained accounting if you want useful memory advice for short jobs.</p>
+<p><a id="retrying-a-license-queue-kill"></a></p>
+<h2 id="retry-license-queue-timeouts">Retry license-queue timeouts</h2>
+<p>Retry is disabled until <code>retry.attempts</code> is nonzero. It applies to simulation jobs only and retries a missing result only when evidence identifies a VCS license wait:</p>
 <ul>
-<li><strong>Share-build groups by <em>compile key</em></strong> — a fingerprint of the compile
-  inputs (filelist + compile flags + plusdefines + the resolved builder
-  executable). Tests whose inputs hash identically reuse one <code>simv</code> under
-  <code>artefacts/.shared-builds/obj_dir_&lt;key&gt;/simv</code>. Because dispatch implies
-  <code>--share-build</code>, the toolchain has to be part of that key or a dispatched
-  run would reuse a build the current simulator never produced — see
-  <a href="../tests/#sharing-compiled-builds-across-tests">the stamp</a>.</li>
-<li><strong>Arrays group by <em>resolved resources</em></strong> — the <code>cpus</code>/<code>mem</code>/<code>time</code>
-  reservation. Tests resolving to the same reservation share one <code>sbatch</code>
-  array.</li>
+<li>Slurm state is <code>TIMEOUT</code>, <code>NODE_FAIL</code>, or <code>PREEMPTED</code>; <code>FAILED</code> and <code>CANCELLED</code> are not retried.</li>
+<li>Captured output ends in license-queue banner content after the last <code>-licqueue</code> marker.</li>
+<li>The suite build job succeeded, so the shared-build stamp is available.</li>
 </ul>
-<p>These are orthogonal because reservations are about <em>sim-time</em> needs while
-compile keys are about <em>compile inputs</em>. A smoke test and a soak test of
-the same DUT+testbench reuse one compiled <code>simv</code> (same compile key) but
-reserve very different memory/time, so they land in <strong>different arrays</strong>.
-Conversely, two unrelated blocks that happen to reserve the same slot
-share one array but each build their own <code>simv</code>.</p>
-<p>The sharing happens in the <strong>build job</strong>: it Verilates each unique compile
-key exactly once (later configs with the same key short-circuit on the
-stamp), and the sim arrays are gated on it by <code>afterok</code>, so no sim starts
-until its shared build exists. So the counts are independent — distinct
-<code>simv</code>s built = distinct compile keys; arrays submitted = distinct
-resource tuples — and any combination is possible (one <code>simv</code> shared
-across a 12-element array; three arrays all pointing at one <code>simv</code>; a
-single array whose members each have their own <code>simv</code>).</p>
-<p>Every array element re-runs <code>compile()</code>, finds the shared stamp on the
-shared filesystem, short-circuits, and reads the same on-disk <code>simv</code>
-<strong>read-only</strong> — which is why elements across different arrays (or suites)
-that share a compile key all point at the same build, and why concurrent
-elements are safe (<code>_test-job</code> is a cooperative reader that skips the
-per-tree lock).</p>
-<h2 id="builders-that-compile-inside-the-job">Builders that compile inside the job</h2>
-<p>Share-build works for the builders whose compile output rtl_buddy can
-redirect wholesale into the shared dir: <strong>Verilator</strong> (<code>--Mdir</code>), <strong>VCS</strong>
-(<code>-o</code> for the executable plus <code>-Mdir</code> for its <code>csrc</code> tree, so the build is
-self-contained), and <strong>Icarus</strong> (<code>-o</code> for the <code>.vvp</code> snapshot). All three
-build once per compile key and short-circuit on the stamp.</p>
-<p>Any other builder — and a builder configured with an <em>absolute</em>
-<code>builder-simv:</code>, which pins the executable somewhere a per-compile-key dir
-cannot honour — cannot put its build where other tests would find it, so
-<strong>the build stays inside the test's own <code>artefacts/&lt;test&gt;/</code></strong>. Under
-<code>--share-build</code> it is still stamped there, which means it can be <em>reused</em>
-by the next process to compile that same test even though it can never be
-<em>shared</em> with a different one. That is what lets a build job compile it once
-and the sim jobs skip their own compile. Two further consequences dispatch
-handles for you:</p>
+<p>For <code>local-parallel</code>, queue evidence is sufficient because there is no scheduler state. Build jobs are never retried.</p>
+<p>Delay for retry number <code>n</code> is <code>min(backoff-max-sec, backoff-sec * 2^(n-1))</code>, multiplied by jitter. Slurm holds retries with <code>--begin</code>; local-parallel holds them outside the worker pool. User <code>sbatch-args</code> occur last, so a user <code>--begin</code> overrides retry backoff.</p>
+<p><code>max-wait</code> bounds each collection round, not the total run, and excludes the requested backoff. An exhausted retry remains a failure. A retry submission failure logs <code>dispatch.retry_abandoned</code> and preserves the already-scored run.</p>
+<p>Each retry gets a scheduler log named <code>slurm-&lt;tag&gt;-retry&lt;N&gt;.log</code>. Test capture files are reused and truncated by the next attempt; <code>dispatch.retry</code> and <code>dispatch.result_missing</code> in <code>rtl_buddy.log</code> are the durable reason trail.</p>
+<p>Scheduler-side license gating with Slurm <code>Licenses=</code> and <code>--licenses=&lt;name&gt;:1</code> is preferable when available because jobs wait without consuming an allocation.</p>
+<p><a id="watching-a-run"></a></p>
+<h2 id="monitor-and-stop-a-run">Monitor and stop a run</h2>
+<p>At normal verbosity dispatch prints:</p>
 <ul>
-<li><strong>No build job is submitted</strong> when nothing in the suite can share a
-  build <em>and</em> no test is fanned out over several runs. The build pass would
-  compile on a compute node and produce something no sim job needs, so it
-  is skipped and the elements run ungated (logged as
-  <code>dispatch.build_job_skipped</code>). That is safe because each test owns its own
-  <code>artefacts/&lt;test&gt;/</code>, so there is exactly one writer per directory.</li>
-<li><strong>A fanned-out test gets one anyway</strong>, because there the one-writer
-  property does not hold: <code>artefacts/&lt;test&gt;/</code> is keyed on the <em>test</em>, not on
-  the run, so <code>randtest &lt;test&gt; N --dispatch</code> would otherwise run N full
-  compiles into one directory at once and the losers would report
-  <code>Compile failed</code> with nothing wrong
-  (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/369">#369</a>). The build job
-  is the single writer: it compiles once, and every element waits for it and
-  short-circuits on the stamp it leaves. So whenever a build job exists,
-  <strong>every</strong> group is gated on it with <code>afterok</code> — including the
-  self-compiling ones, since the build job runs PRE+COMPILE for the whole
-  plan and therefore writes into their directories too. The gate orders the
-  elements but does not exclude them, so the stamp is what actually keeps
-  them from recompiling; an element that compiles anyway logs
-  <code>compile.prebuilt_stamp_invalid</code> — see
-  <a href="../../known-issues/#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling">Known Issues</a>.</li>
-<li><strong>The job's reservation covers both phases.</strong> A compile is frequently
-  hungrier than the sim it precedes — a VCS elaboration usually is — so a
-  sim-sized reservation would be killed during it. One allocation cannot
-  carry two reservations, so the element-wise maximum of
-  <code>cfg-dispatch.resources</code> (as resolved for that test) and
-  <code>cfg-dispatch.compile</code> is used, field by field, and logged as
-  <code>dispatch.compile_in_job</code>. Tests whose builder <em>can</em> share a build are
-  unaffected: they keep the sim-sized reservation, and the compile
-  reservation stays with the build job where it belongs. The combined size
-  is kept even where a build job exists and the element expects to skip its
-  compile — a stamp that fails to validate for any reason puts the compile
-  back inside the job, and being over-reserved is cheaper than being killed.</li>
+<li>suite submission lines with build and simulation job IDs;</li>
+<li>progress when counts change and at <code>progress-interval</code> heartbeats;</li>
+<li>a line when each suite drains;</li>
+<li>a warning with outstanding IDs when <code>max-wait</code> expires.</li>
 </ul>
-<div class="admonition note">
-<p class="admonition-title">A VCS compile can wait for a license</p>
-<p><code>vcs</code> elaboration honours <code>-licqueue</code> exactly as <code>simv</code> does, so part
-of a compile's wall-clock can be time spent queuing for a seat rather
-than compiling — and Slurm's <code>--time</code> clock keeps running through it.
-rtl_buddy cannot pause the scheduler's clock, but it detects the queue
-banner and logs <code>compile.license_queued</code> with the compile transcript,
-so a build job killed at its time limit is diagnosable as a busy
-license server rather than an undersized reservation. Give a VCS
-<code>compile.time</code> headroom for it. Sharing the build helps here too: the
-build job compiles each key once, serially, taking one seat at a time
-instead of one per concurrent array element.</p>
-</div>
-<h2 id="on-one-machine-dispatch-local-parallel">On one machine: <code>--dispatch local-parallel</code></h2>
-<p>Slurm needs a cluster, and it has no native macOS build — so on a laptop
-the only options used to be "one test at a time" or "stand up a scheduler".
-<code>local-parallel</code> closes that gap: the same plan → build job → gated
-fan-out, with every job a plain subprocess on this host, throttled by one
-pool of slots.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w">          </span><span class="c1"># min(4, cpu count) jobs</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">8</span><span class="w">     </span><span class="c1"># eight at a time</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>rb<span class="w"> </span>randtest<span class="w"> </span>my_test<span class="w"> </span><span class="m">20</span><span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">4</span>
-</code></pre></div>
-<p>Nothing to install: no scheduler client, no shared filesystem (the local
-one is trivially "visible at the same paths"), no accounting database.
-Concurrency comes from <code>-j/--jobs</code>, or <code>cfg-dispatch.jobs</code>, defaulting to
-<code>min(4, cpu count)</code>. It is <strong>one global pool</strong> — across every suite and
-every resource group, not per array — so <code>-j 4</code> means at most four
-<code>rb</code> jobs alive at once, full stop. Build jobs jump the queue ahead of
-waiting sims, since a build unblocks a whole suite and a sim unblocks
-nothing.</p>
-<p>What carries over unchanged: the sweep hook runs once on the head; each
-suite's shared build compiles once and the sims short-circuit on its
-stamp; a sim only starts once its build <strong>exited 0</strong> (this backend's
-version of <code>afterok</code>), and if the build fails its sims never start and are
-reported as producing no result, pointing at the build log.</p>
-<p>Two things are deliberately <strong>not</strong> supported, and they are the reason to
-still prefer Slurm where you have it:</p>
-<ul>
-<li><strong>Reservations are not enforced.</strong> <code>resources:</code> cpus/mem/time are
-  ignored rather than half-honoured — one host has no portable per-process
-  cap (<code>ulimit</code>/<code>nice</code>/<code>taskset</code> are coarse and platform-specific). Any
-  reservation that resolves to something non-default — from <code>cfg-dispatch</code>
-  <em>or</em> from a per-testbench / per-test <code>resources:</code> — <strong>warns</strong> once
-  (<code>dispatch.reservations_ignored</code>) so it cannot read as enforced. <code>-j</code> is
-  the only backpressure, so size it for the <em>memory</em> your heaviest tests
-  need, not just for cores.</li>
-<li><strong>No usage telemetry, so no right-sizing advice.</strong> There is no <code>sacct</code>
-  to ask, so <code>payload.reservation_advice</code> comes back empty instead of
-  guessing. Right-size against a real cluster run.</li>
-</ul>
-<div class="admonition note">
-<p class="admonition-title">Ctrl-C cleans up; <code>kill -9</code> does not</p>
-<p>Jobs run in their own process session, so an interrupt goes to the
-head, which takes the fleet down itself — the same shape as <code>scancel</code>,
-and it lets a simulator flush on a graceful signal. Teardown signals
-<strong>every</strong> job before waiting on any, so the grace period is one 5 s
-window for the whole fleet rather than 5 s per job, and an impatient
-second <code>Ctrl-C</code> can at worst skip the escalation to <code>SIGKILL</code> — never
-leave a job unsignalled. The trade-off: a <code>SIGKILL</code>ed head runs no
-cleanup at all and, unlike Slurm, there is no scheduler to reap the
-orphans — its children finish their runs. Prefer <code>Ctrl-C</code> over
-<code>kill -9</code> on a dispatched run.</p>
-</div>
-<h2 id="requirements-slurm">Requirements (Slurm)</h2>
-<ul>
-<li>A Slurm client on the submit host (<code>sbatch</code>/<code>squeue</code>/<code>sacct</code>/<code>scancel</code>)
-  — see <a href="../../install/">Installation</a>. <code>rb tool-check --explain slurm</code>
-  reports readiness.</li>
-<li>A <strong>shared filesystem</strong> visible at the same absolute paths on the submit
-  host and every compute node: the project checkout, the <code>artefacts/</code>
-  tree, and the Python environment.</li>
-<li>The project's <code>rb</code> runnable on the compute nodes (the job runs
-  <code>sys.executable -m rtl_buddy _test-job</code>).</li>
-<li>A share-build-capable builder (Verilator, VCS, or Icarus) to compile
-  once per compile key; other builders still work but recompile inside
-  each job — see <a href="#builders-that-compile-inside-the-job">Builders that compile inside the
-  job</a>.</li>
-</ul>
-<h2 id="configuration-cfg-dispatch">Configuration: <code>cfg-dispatch</code></h2>
-<p>All optional, in <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-dispatch</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm</span><span class="w">            </span><span class="c1"># local (in-process, default) | local-parallel | slurm</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">jobs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">                   </span><span class="c1"># local-parallel only: concurrent subprocesses</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">resources</span><span class="p">:</span><span class="w">                </span><span class="c1"># cluster-wide per-SIM-job defaults</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4G</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;01:00:00&quot;</span><span class="w">        </span><span class="c1"># QUOTE time values (see below)</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span><span class="nt">compile</span><span class="p">:</span><span class="w">                  </span><span class="c1"># reservation for the COMPILE (defaults to resources)</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16G</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;02:00:00&quot;</span>
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span><span class="nt">sbatch-args</span><span class="p">:</span><span class="w">              </span><span class="c1"># passed to sbatch verbatim</span>
-<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--partition=verif</span>
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--account=chip</span>
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">  </span><span class="nt">max-jobs-per-array</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">   </span><span class="c1"># concurrency throttle, PER submitted array</span>
-<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">  </span><span class="nt">poll-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w">         </span><span class="c1"># seconds between queue polls (&gt; 0)</span>
-<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">  </span><span class="nt">progress-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">     </span><span class="c1"># seconds between console progress lines (0 = quiet)</span>
-<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">  </span><span class="nt">max-wait</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">7200</span><span class="w">            </span><span class="c1"># seconds to wait for the fleet (unset = unbounded)</span>
-<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span><span class="w">                    </span><span class="c1"># retry budget for license-queue kills (off by default)</span>
-<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">    </span><span class="nt">attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">             </span><span class="c1"># EXTRA attempts after the first</span>
-<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">    </span><span class="nt">backoff-sec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">         </span><span class="c1"># first delay, doubling per attempt</span>
-<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">    </span><span class="nt">backoff-max-sec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span><span class="w">    </span><span class="c1"># cap</span>
-<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">    </span><span class="nt">jitter</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span><span class="w">             </span><span class="c1"># +/- fraction applied to each delay</span>
-<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="w">    </span><span class="nt">classifiers</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">license-queue</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># what may be retried</span>
-<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="w">  </span><span class="nt">rightsize</span><span class="p">:</span><span class="w">                </span><span class="c1"># reservation right-sizing (see below)</span>
-<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="w">    </span><span class="nt">report</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="w">    </span><span class="nt">over-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
-<a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="w">    </span><span class="nt">near-limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.9</span>
-<a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="w">    </span><span class="nt">margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span>
-</code></pre></div>
-<p><code>jobs</code> and <code>max-jobs-per-array</code> belong to different backends and do not
-interact: <code>jobs</code> is <code>local-parallel</code>'s single global pool, while
-<code>max-jobs-per-array</code> is a Slurm <code>%N</code> throttle (and is ignored by
-<code>local-parallel</code>, which has no arrays).</p>
-<p><code>max-jobs-per-array</code> throttles each <em>submitted array</em>
-(<code>--array=1-N%max-jobs-per-array</code>), not the run as a whole — a regression with several reservation shapes across
-several suites submits several arrays, so peak concurrency is roughly
-<code>max-jobs-per-array × arrays</code>. Size it per array, not per cluster.</p>
-<div class="admonition warning">
-<p class="admonition-title">Quote <code>time</code> values</p>
-<p>YAML 1.1 reads an unquoted <code>time: 4:00:00</code> as the <strong>integer 14400</strong>
-(sexagesimal), which Slurm would take as 14400 <em>minutes</em> — 10 days.
-rtl_buddy rejects the unquoted form loudly, so this costs you a config
-error rather than a ten-day reservation; always write
-<code>time: "4:00:00"</code> (bare minutes work as a string too, <code>time: "240"</code>).</p>
-<p>The trap is easy to miss because it is inconsistent: a leading-zero form
-like <code>01:00:00</code> happens to survive as a string, so a file full of
-unquoted times can load fine until someone writes a single-digit hour.
-Quote every one, in <code>cfg-dispatch.resources</code>, <code>cfg-dispatch.compile</code>,
-and per-testbench / per-test <code>resources:</code> alike. See
-<a href="../../known-issues/#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">Known Issues</a>.</p>
-</div>
-<h2 id="retrying-a-license-queue-kill">Retrying a license-queue kill</h2>
-<p>A dispatched sim that waits for a VCS license seat waits <strong>inside its
-allocation</strong>: the seat and the reservation are two different clocks, and
-when the reservation runs out first the scheduler kills the job. It leaves
-no result envelope, so the head scores it a failure — <code>dispatch job 6553_2
-produced no result (scheduler state TIMEOUT)</code>. Nothing about the test was
-wrong; it never got to run.</p>
-<p><code>retry:</code> gives those jobs another go. It is <strong>off unless you set
-<code>attempts</code></strong>, and it is deliberately narrow — a job is retried only when
-<em>both</em> hold:</p>
-<ul>
-<li>the scheduler state is a <strong>resource condition</strong>: <code>TIMEOUT</code>, <code>NODE_FAIL</code>
-  or <code>PREEMPTED</code> (a <code>FAILED</code> or <code>CANCELLED</code> job decided its own outcome
-  and is never retried), <strong>and</strong></li>
-<li>the job's own output ends <strong>inside the license queue</strong>: after the last
-  <code>-licqueue</code> marker, everything the job captured is queue-banner
-  vocabulary — the repeated banner, the polling dots, the <code>HIT CTRL-C to
-  exit</code> hint, a truncated last line. rtl-buddy looks in <code>test.log</code> /
-  <code>test.err</code>, then the job's <code>rtl_buddy-*.log</code> and the scheduler's log
-  beside it, and only accepts files written since this attempt was
-  submitted (<code>artefacts/&lt;test&gt;/test.log</code> is keyed on the test, not on the
-  run, so an older one is a previous run's).</li>
-</ul>
-<p>The banner's <em>presence</em> is deliberately not the rule. Most jobs that
-print it go on to get a seat and run perfectly well — 376 of 657 in the
-run that motivated this — so a sim that queued, was granted its seat, ran
-and <em>then</em> hung would be resubmitted by a rule that only looked for the
-marker. The discriminator is the same one that pauses the <code>sim_timeout</code>
-clock live: a complete line outside the banner's vocabulary means the seat
-was granted. A testbench that hung after its seat has such a line; a
-testbench that hung without ever queueing has no marker at all. Neither is
-retried — retrying either would re-run a genuine failure and burn the
-reservation twice.</p>
-<p>A job is also never retried when its suite's <strong>build job did not report
-success</strong>. Such a sim never started (<code>afterok</code> cancelled it), so it has no
-evidence of its own to classify, and resubmitting it would launch a job
-the head deliberately skipped — ungated, because a retry carries no
-<code>afterok</code> edge (the build job has left the queue and an <code>afterok</code> on a job
-the scheduler has forgotten never becomes satisfiable). Requiring the gate
-to have opened is what keeps the retry safe: the shared build's stamp is
-on disk, so the retried element short-circuits its own compile exactly as
-the first attempt did.</p>
-<p>And a job that vanishes still fails when the budget runs out: <strong>no retry
-ever turns a missing result green.</strong> The exhausted row says how many
-attempts it got.</p>
-<p>On <code>local-parallel</code> there is no scheduler and no accounting source, so
-there is no state to require: the <strong>queue evidence alone</strong> decides there.
-Nothing killed the job from outside, so a missing envelope from a sim that
-was demonstrably still waiting for a seat is the same shape without a
-scheduler to name it.</p>
-<p>Retry covers <strong>sim jobs only</strong>. A build job's elaboration honours
-<code>-licqueue</code> the same way and can lose the same race, but a build kill
-dooms a whole suite's fan-out at once and re-running it is a much larger
-bet than re-running one sim, so it stays out for now.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">cfg-dispatch</span><span class="p">:</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">            </span><span class="c1"># at most three submissions of one job</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">backoff-sec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">backoff-max-sec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">jitter</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">classifiers</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">license-queue</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># the only classifier that exists today</span>
-</code></pre></div>
-<p>(The key is <code>classifiers</code>, not <code>on</code>: PyYAML parses YAML 1.1, where an
-unquoted <code>on:</code> key is the boolean <code>true</code> — the pin would never reach the
-config and an unknown classifier could never be rejected.)</p>
-<p>The delay before attempt <em>n</em> is
-<code>min(backoff-max-sec, backoff-sec × 2^(n-1))</code>, multiplied by
-<code>uniform(1 - jitter, 1 + jitter)</code>.</p>
-<div class="admonition note">
-<p class="admonition-title">Why the delay is both growing and random</p>
-<p>The jobs that lose a seat race lose it <em>together</em>: they queued behind
-the same exhausted pool, so their reservations expire within seconds of
-each other. Resubmitting them immediately puts the whole batch back in
-front of a pool that is still full and they time out together again —
-a synchronised retry storm. A <em>fixed</em> delay keeps the batch in
-lockstep; the jitter decorrelates them so they trickle back as seats
-free.</p>
-</div>
-<p>The wait is served by the <strong>backend</strong>, never slept in the head: Slurm gets
-<code>--begin=now+&lt;delay&gt;</code> and holds the job <code>PENDING</code> (occupying no
-allocation — the point, since the pool that killed the first attempt is
-not made freer by a second allocation sitting on it), and <code>local-parallel</code>
-holds it in its own queue, taking no pool slot. Each attempt writes its
-own <strong>scheduler</strong> log (<code>slurm-&lt;tag&gt;-retry&lt;N&gt;.log</code>), so those are kept side
-by side; the result envelope path does not move, and neither does the
-sim's own capture — <code>artefacts/&lt;test&gt;/test.log</code> and the per-job
-<code>rtl_buddy-&lt;tag&gt;.log</code> are <strong>truncated by the next attempt</strong>, so if the
-banner landed only there, the retry overwrites the evidence for itself.
-The <code>dispatch.retry</code> console line and the <code>dispatch.result_missing</code> entry
-in <code>rtl_buddy.log</code> are the durable record of why the retry happened.</p>
-<p>Every retry logs <code>dispatch.retry</code> <strong>on the console</strong>, naming the attempt,
-the delay and the classifier, so a green run that needed three attempts is
-not indistinguishable from one that needed none:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>dispatch: retrying seqr_add_fp16_cpc8 (job 6553_2) in 1m04s — license-queue, attempt 1 of 2
-</code></pre></div>
-<p>A retry that cannot be launched — <code>sbatch</code> refusing the submission, or
-<code>max-wait</code> elapsing on the second round — is <strong>not</strong> fatal to the run: the
-rows for that pass are already written and already say the jobs produced
-no result, so rtl-buddy logs <code>dispatch.retry_abandoned</code> and keeps the
-regression it has scored rather than discarding the summary and the exit
-code.</p>
-<div class="admonition note">
-<p class="admonition-title">Retry and <code>max-wait</code></p>
-<p><code>max-wait</code> bounds <strong>each</strong> wait, not their sum: a run with retry
-enabled can take up to roughly <code>attempts × (backoff + max-wait)</code>. The
-backoff itself is not charged against it — a held job is outstanding
-for the whole delay (Slurm reports it <code>PENDING</code>/<code>BeginTime</code>, the pool
-keeps it queued), so each retry round's deadline is widened by the
-delay the head asked for. Without that, a <code>max-wait</code> shorter than the
-backoff would trip on every retry before the job was allowed to start.</p>
-</div>
-<div class="admonition note">
-<p class="admonition-title"><code>--begin</code> and <code>sbatch-args</code></p>
-<p>The retry's <code>--begin=now+&lt;delay&gt;</code> is emitted <strong>before</strong>
-<code>cfg-dispatch.sbatch-args</code>, and <code>sbatch</code> takes the last occurrence of a
-duplicated flag. A site that passes its own <code>--begin</code> through
-<code>sbatch-args</code> therefore wins — consistent with how every other
-<code>sbatch-args</code> override behaves, but it means the retry's hold does not
-happen. Drop <code>--begin</code> from <code>sbatch-args</code> if you want the backoff.</p>
-</div>
-<div class="admonition warning">
-<p class="admonition-title">Retry is the portable half of the fix</p>
-<p>A retried job still occupies a full allocation per attempt and can
-still lose the race. The complete fix is scheduler-side license
-gating — <code>Licenses=</code> in <code>slurm.conf</code>, then <code>--licenses=&lt;name&gt;:1</code>
-through <code>cfg-dispatch.sbatch-args</code> — where the job stays <code>PENDING</code>
-with no allocation until a token frees. That needs a cluster admin, so
-retry is what rtl-buddy can ship on its own
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/405">#405</a>).</p>
-</div>
-<h2 id="watching-a-run">Watching a run</h2>
-<p>A dispatched regression's console is often the <strong>only</strong> artifact anyone
-sees — a Jenkins log, an agent's transcript — so the wait narrates itself
-at default verbosity, without <code>-v</code> and without pretending any of it is a
-warning. Four things appear, in this order:</p>
-<ol>
-<li>
-<p><strong>The job ids, before the wait starts.</strong> One line per suite as it is
-   submitted (<code>dispatch.suite_submitted</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>dispatch: verif/tb_a → build job 1234, sim jobs 1235_[1-40] 1236 (41 jobs on slurm)
-</code></pre></div>
-<p>The ordering is deliberate. If the head dies — killed by CI, or by
-the machine it ran on — those ids are the only route to
-<code>squeue</code>/<code>sacct</code>, and the only way to tell whether the fleet outlived
-the process that submitted it.</p>
-</li>
-<li>
-<p><strong>Progress, on change and as a heartbeat.</strong> Every time the outstanding
-   count moves, and at least once every <code>progress-interval</code> seconds while
-   any job is still outstanding, queued or running (<code>dispatch.progress</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>dispatch: 42/88 jobs remaining (12 running, 30 pending), 12m34s elapsed, longest running rb:demo_alu 8m02s
-</code></pre></div>
-<p>The count is in <strong>jobs</strong>, not queue lines: one pending array is as
-many jobs as it has elements. At most one line per interval, so a 10 s
-<code>poll-interval</code> does not print 360 lines an hour.</p>
-</li>
-<li>
-<p><strong>Suites, as they drain</strong> (<code>dispatch.suite_drained</code>) —
-   <code>dispatch: verif/tb_a — all 41 jobs finished (12m34s)</code>. "Finished", not
-   "passed": results are collected once the whole fleet has drained, so at
-   this point nobody has looked at them.</p>
-</li>
-<li>
-<p><strong><code>max-wait</code>, if it fires.</strong> The collect wait is otherwise a <code>while
-   True</code> with no wall-clock bound, so anything that never leaves the queue
-   blocks the head forever and silently. Set <code>max-wait</code> and that becomes a
-   loud failure instead: <code>dispatch.max_wait_exceeded</code> at WARNING, the run
-   fails, the head <strong>cancels the fleet</strong> (as it does on any interrupt),
-   and the message names the outstanding ids in the grouped form
-   <code>squeue</code>/<code>sacct</code> take back. <code>dispatch.cancelled</code> carries them too, so
-   an interrupted run leaves a post-mortem trail either way.</p>
-</li>
-</ol>
-<p><code>progress-interval: 0</code> opts a developer's terminal out of all three
-console lines; the head's <code>rtl_buddy.log</code> still records every change at
-INFO, and it is the head's alone — see
-<a href="#where-each-log-lives">Where each log lives</a>. There
-is no CLI flag for either knob — CI sets them once in <code>root_config.yaml</code>,
-where the value belongs to the site rather than to the invocation.</p>
-<div class="admonition note">
-<p class="admonition-title">A heartbeat also protects against CI idle timeouts</p>
-<p>A build that prints nothing for long enough is a candidate for being
-killed as hung by the very system running it. Before this, a healthy
-half-hour regression printed nothing at all between "Running
-regression from …" and the summary
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/435">#435</a>).</p>
-</div>
-<h3 id="where-each-log-lives">Where each log lives</h3>
-<p>Head and jobs are separate processes, so they get separate log files
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/437">#437</a>) — a job never
-opens the head's, because a process's first open of a log path truncates
-it:</p>
+<p>Set <code>progress-interval: 0</code> to suppress console progress; events remain in the head log. On timeout or interrupt, the head cancels the outstanding fleet.</p>
+<p>Logs are separated by process:</p>
 <table>
 <thead>
 <tr>
 <th>Process</th>
 <th>rtl_buddy log</th>
-<th>Beside it</th>
+<th>Related files</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>head</td>
-<td><code>&lt;suite&gt;/rtl_buddy.log</code> (and <code>dirname(regression.yaml)/rtl_buddy.log</code>, which a regression re-anchors back to between suites)</td>
-<td>the console</td>
+<td>Head</td>
+<td><code>&lt;suite&gt;/rtl_buddy.log</code></td>
+<td>Console output</td>
 </tr>
 <tr>
-<td>sim job</td>
+<td>Simulation</td>
 <td><code>artefacts/&lt;test&gt;/dispatch/rtl_buddy-&lt;tag&gt;.log</code></td>
-<td><code>result-&lt;tag&gt;.json</code>, <code>slurm-&lt;tag&gt;.log</code> (<code>local-parallel-&lt;tag&gt;.log</code>)</td>
+<td><code>result-&lt;tag&gt;.json</code>, <code>slurm-&lt;tag&gt;.log</code> or <code>local-parallel-&lt;tag&gt;.log</code></td>
 </tr>
 <tr>
-<td>build job</td>
+<td>Build</td>
 <td><code>artefacts/.dispatch/build-rtl_buddy-&lt;pid&gt;.log</code></td>
 <td><code>build-result-&lt;pid&gt;.json</code>, <code>build-&lt;pid&gt;.log</code></td>
 </tr>
 </tbody>
 </table>
-<p><code>&lt;tag&gt;</code> is the run id (<code>0001</code>) or <code>single</code> for an unnumbered run, and
-<code>&lt;pid&gt;</code> is the head's. The scheduler's log holds the job's raw
-stdout/stderr; the <code>rtl_buddy-*.log</code> beside it holds the same events the
-head records for itself, as JSON Lines — a dispatched job runs in
-<code>--machine</code> mode. A dispatch failure names both in its
-result description, so a failed row leads to the files without a search.</p>
-<h2 id="per-test-reservations">Per-test reservations</h2>
-<p>Not every test deserves the same slot. Override the reservation per
-testbench or per test in <code>tests.yaml</code>, using the same fields; the
-effective reservation is layered <strong>test → testbench →
-<code>cfg-dispatch.resources</code> → built-in defaults</strong>, field by field:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">testbenches</span><span class="p">:</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_tb</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpus</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">8G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;00:30:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_smoke</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="c1"># inherits the testbench reservation</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_soak</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">24G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;04:00:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">   </span><span class="c1"># cpus inherited</span>
-</code></pre></div>
-<p>Tests that resolve to the same reservation share one Slurm array;
-differing reservations split into separate arrays.</p>
-<h2 id="sizing-the-reservations">Sizing the reservations</h2>
-<p><a href="#reservation-right-sizing">Right-sizing</a> tunes these numbers from real
-usage, but it can only
-report on jobs that survived long enough to be measured. Four things decide
-the first sizing, and each has bitten someone:</p>
-<p><strong><code>compile.time</code> covers the whole suite, not one compile.</strong> The build job
-compiles each of the suite's unique compile keys <strong>serially</strong>, in one job,
-under one <code>--time</code>. A suite with six testbenches over one DUT has six keys,
-so its build job needs roughly six compiles' worth of time — and the whole
-array waits behind it, since every sim job is gated on that one job with
-<code>afterok</code>. Sizing <code>compile.time</code> from a single observed compile is the usual
-way to get a build job killed at its limit and a suite of dispatch failures
-pointing at a build log that just stops. Two ways to shrink the number
-rather than raise it: collapse compile keys (tests differing only in
-<code>plusdefines:</code> each cost a key — see
-<a href="#how-arrays-interact-with-the-shared-build">How arrays interact with the shared build</a>),
-or split the suite. Full consequences in
-<a href="../../known-issues/#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation">Known Issues</a>.</p>
-<p><strong>A job that compiles inside itself must be reserved for the compile.</strong>
-Where the builder cannot share a build, the compile happens under the
-<em>sim</em> job's reservation. rtl_buddy folds <code>cfg-dispatch.compile</code> into it
-field by field (see <a href="#builders-that-compile-inside-the-job">Builders that compile inside the
-job</a>), so the thing to get right is
-<code>cfg-dispatch.compile</code> itself — a sim-sized <code>mem</code> there is what turns a
-whole array into <code>OUT_OF_MEMORY</code> kills. Elaboration is usually the memory
-peak of the entire flow, so size <code>compile.mem</code> from a real elaboration, not
-from a simulation.</p>
-<p><strong>Give a VCS build job headroom for the license queue.</strong> <code>-licqueue</code> waits
-count against <code>--time</code>, so a <code>compile.time</code> sized for compute alone will
-eventually land on a busy license server — see <a href="#builders-that-compile-inside-the-job">A VCS compile can wait for a
-license</a>. <code>compile.license_queued</code> is
-logged when a compile <em>completes</em> after queueing, so a build job killed at
-its limit produces no such event of its own: the evidence comes from the
-keys that finished before it, or from a previous run.</p>
-<p><strong>Ask for accounting fine enough to advise from.</strong> Dispatch requests
-<code>--acctg-freq=task=1</code> for you unless your <code>sbatch-args</code> already set
-<code>--acctg-freq</code>; leave it alone unless the site requires otherwise, because
-at the stock 30 s interval every sim job shorter than half a minute reports
-a memory peak far below the truth. See <a href="#reservation-right-sizing">Reservation
-right-sizing</a>.</p>
-<h2 id="reservation-right-sizing">Reservation right-sizing</h2>
-<p>After a dispatched run, rtl_buddy compares what each test <em>reserved</em>
-against what it <em>used</em> (from <code>sacct</code> accounting) and reports advice —
-which resource is over- or under-reserved and what to set it to. It
-<strong>reports and suggests; it never edits <code>tests.yaml</code></strong> — you (or an agent)
-apply the change as a reviewable diff.</p>
-<p>In human mode this is a "Reservation Advice" table after the summary. In
-<code>--machine</code> mode, <code>payload.reservation_advice</code> carries one event per
-finding:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reservation-advice&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">&quot;suite&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;axi_soak&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">&quot;resource&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mem&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nt">&quot;reserved&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;24G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;peak&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;utilization&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.13</span><span class="p">,</span>
-<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reduce&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;suggested&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;5G&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="nt">&quot;runs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reg_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;states&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;COMPLETED&quot;</span><span class="p">],</span>
-<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">  </span><span class="nt">&quot;edit_hint&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">                </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tests[name=axi_soak].resources.mem&quot;</span><span class="p">}</span>
-<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="p">}</span>
-</code></pre></div>
-<p>Semantics:</p>
+<p><code>&lt;tag&gt;</code> is the run ID or <code>single</code>; <code>&lt;pid&gt;</code> is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.</p>
+<h2 id="apply-reservation-advice">Apply reservation advice</h2>
+<p>After a Slurm run, rtl_buddy compares reservations with <code>sacct</code> usage and prints a Reservation Advice table. Machine output returns findings in <code>payload.reservation_advice</code>. It never edits configuration.</p>
+<p>Advice is calculated per test using the peak across runs in this invocation:</p>
 <ul>
-<li>Utilization is judged <strong>per test</strong>, using the peak across the test's
-  runs/seeds this invocation, so a suggestion covers the worst run.</li>
-<li>Below <code>over-threshold</code> → <code>reduce</code>; above <code>near-limit</code>, or a scheduler
-  <code>TIMEOUT</code>/<code>OUT_OF_MEMORY</code> kill → <code>raise</code> (the kill wins even without
-  usage numbers). Suggested = peak × <code>margin</code>, floored at 5 min / 128M.</li>
-<li><strong>Time advice is Verilator-only.</strong> A VCS <code>-licqueue</code> wait would
-  masquerade as compute time, so time advice is suppressed off Verilator
-  (see <a href="https://github.com/rtl-buddy/rtl_buddy/issues/329">#329</a>); memory
-  and CPU-efficiency advice are unaffected.</li>
-<li><strong>Memory advice needs a peak that was sampled.</strong> <code>MaxRSS</code> is a high-water
-  mark over accounting samples, so a test whose longest run finished inside
-  one sampling interval was measured at most once and reports near-nothing.
-  Dispatch therefore asks for per-second task accounting
-  (<code>--acctg-freq=task=1</code>) on every job unless your <code>sbatch-args</code> already set
-  <code>--acctg-freq</code>, and <em>still</em> suppresses utilization-based memory advice for
-  any test that ran shorter than the interval actually in force — logging
-  <code>rightsize.mem_advice_unsampled</code> with the test names rather than leaving
-  the gap silent. An <code>OUT_OF_MEMORY</code> kill still raises, being a fact about
-  the reservation rather than a measurement of it. Background:
-  <a href="https://github.com/rtl-buddy/rtl_buddy/issues/365">#365</a>.</li>
-<li>Advice is labelled with <code>runs</code> and <code>reg_level</code>, so a <code>-l 0</code> smoke run
-  is never used to shrink a nightly test's reservation.</li>
-<li><strong><code>phase</code> says what the numbers cover.</strong> <code>"sim"</code> is the usual case. A
-  job that also compiled (its builder <a href="#builders-that-compile-inside-the-job">compiles inside the
-  job</a>) is labelled
-  <code>"compile+sim"</code>: <code>MaxRSS</code> and <code>Elapsed</code> are high-water marks over the
-  whole job, so they legitimately span both phases — do not read them as
-  sim-only.</li>
-<li><strong>The hint names the field that actually governs.</strong> A <code>compile+sim</code>
-  job's allocation is the maximum of the sim and compile reservations, so
-  where the compile side won, editing <code>tests[...].resources</code> would change
-  nothing. Those findings point at <code>cfg-dispatch.compile.&lt;field&gt;</code> in
-  <code>root_config.yaml</code> instead. Always apply the <code>edit_hint</code>'s <code>file</code> and
-  <code>path</code> rather than inferring the field from <code>test</code>.</li>
-<li>Requires <code>sacct</code> (slurmdbd accounting). Without it, dispatch still works
-  and right-sizing degrades gracefully to no advice. Turn it off with
-  <code>rightsize: { report: false }</code>.</li>
+<li>utilization below <code>over-threshold</code> suggests a reduction;</li>
+<li>utilization above <code>near-limit</code>, <code>TIMEOUT</code>, or <code>OUT_OF_MEMORY</code> suggests an increase;</li>
+<li>suggestions use peak times <code>margin</code>, with floors of 5 minutes and 128 MiB;</li>
+<li>time advice is limited to Verilator because VCS license wait distorts elapsed time;</li>
+<li>memory advice is suppressed when the longest run is shorter than the accounting sample interval, except that an out-of-memory state still suggests an increase;</li>
+<li><code>phase</code> is <code>sim</code> or <code>compile+sim</code> and <code>edit_hint</code> identifies the configuration field that actually controlled the allocation.</li>
 </ul>
-<div class="admonition note">
-<p class="admonition-title"><code>MaxRSS</code> populates on step rows only</p>
-<p>Checking the advice by hand with <code>sacct -X</code> shows the field <strong>blank</strong> —
-<code>-X</code> returns allocation rows, and usage is recorded on the steps
-(<code>.batch</code>, <code>.extern</code>, …) and folded up. rtl_buddy queries without <code>-X</code>
-and gets this right; a human reproducing it may conclude the field is
-simply empty. Use <code>sacct -j &lt;jobid&gt; --format=JobID,Elapsed,MaxRSS</code> with
-no <code>-X</code>.</p>
-</div>
-<h2 id="agent-loop">Agent loop</h2>
-<p>An agent driving <code>--dispatch slurm --machine</code> closes the loop: run,
-read <code>reservation_advice</code>, apply each <code>edit_hint</code> (raise under-reservations
-first — those cost failed runs — then trim over-reservations), rerun to
-confirm the advice retires. See the <a href="../../agents/">bundled skill</a>.</p>
+<p>Advice records the run count and regression level; do not use a smoke run to shrink a nightly reservation. Apply the provided <code>edit_hint</code>, rerun, and confirm the finding clears. Disable reports with <code>rightsize: {report: false}</code>. Without <code>sacct</code> accounting, dispatch completes but emits no advice.</p>
+<p>To inspect accounting manually, query step rows without <code>sacct -X</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sacct<span class="w"> </span>-j<span class="w"> </span>&lt;jobid&gt;<span class="w"> </span>--format<span class="o">=</span>JobID,Elapsed,MaxRSS
+</code></pre></div>
 
 
 

@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, pnr, and power runs.">
+        <meta name="description" content="Mark known failures and choose whether an unexpected pass should fail a test, formal, synthesis, P&R, or power run.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#expected-failures-xfail" class="md-skip">
+        <a href="#expected-failures" class="md-skip">
           Skip to content
         </a>
       
@@ -593,10 +593,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#strict-vs-non-strict" class="md-nav__link">
+  <a href="#choose-strictness" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Strict vs non-strict
+        Choose strictness
       
     </span>
   </a>
@@ -604,21 +604,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#caveat" class="md-nav__link">
+  <a href="#interpret-failures-carefully" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Caveat
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#where-it-shows-up" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where it shows up
+        Interpret failures carefully
       
     </span>
   </a>
@@ -1423,6 +1412,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1538,10 +1611,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#strict-vs-non-strict" class="md-nav__link">
+  <a href="#choose-strictness" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Strict vs non-strict
+        Choose strictness
       
     </span>
   </a>
@@ -1549,21 +1622,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#caveat" class="md-nav__link">
+  <a href="#interpret-failures-carefully" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Caveat
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#where-it-shows-up" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where it shows up
+        Interpret failures carefully
       
     </span>
   </a>
@@ -1590,86 +1652,38 @@
   
 
 
-<h1 id="expected-failures-xfail">Expected failures (xfail)</h1>
-<p>Mark a verification that is <strong>known not to hold</strong> — a teaching property
-that is true but not inductive under FPV <code>mode: prove</code>, a test guarding
-an unfixed bug, a synthesis or P&amp;R configuration whose current failure
-is documented — when you want it tracked in the suite rather than
-deleted.</p>
-<p><code>xfail</code> and <code>xfail_strict</code> are one shared mechanism wired across every
-command whose results carry a PASS / FAIL / SKIP verdict: <code>fpv.yaml</code>,
-<code>tests.yaml</code>, <code>synth.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code>. A
-verification is treated as expected-to-fail when <strong>either</strong> marker is
-set; the verdict is then re-interpreted:</p>
-<table>
-<thead>
-<tr>
-<th>Actual outcome</th>
-<th>Reported as</th>
-<th>Counts as</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>FAIL</td>
-<td><code>XFAIL</code></td>
-<td><strong>pass</strong> — the expected failure happened, so it does not fail the run or the regression</td>
-</tr>
-<tr>
-<td>PASS</td>
-<td><code>XPASS</code></td>
-<td>depends on strictness (see below)</td>
-</tr>
-<tr>
-<td>SKIP / NA</td>
-<td>unchanged</td>
-<td>unchanged</td>
-</tr>
-</tbody>
-</table>
-<h2 id="strict-vs-non-strict">Strict vs non-strict</h2>
-<p>The two markers differ <strong>only</strong> in how an unexpected pass is counted:</p>
+<h1 id="expected-failures">Expected Failures</h1>
+<p>Use an expected-failure marker only for a known, understood failure that should remain visible in a suite. The fields are available on runs in <code>tests.yaml</code>, <code>fpv.yaml</code>, <code>synth.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code>.</p>
+<h2 id="choose-strictness">Choose strictness</h2>
 <table>
 <thead>
 <tr>
 <th>Marker</th>
-<th><code>XPASS</code> counts as</th>
+<th>Actual failure</th>
+<th>Unexpected pass</th>
 <th>Use when</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>xfail: true</code></td>
-<td><strong>pass</strong> (non-strict)</td>
-<td>the run <em>may</em> start passing and that is fine / not worth failing on</td>
+<td><code>XFAIL</code>, counts as pass</td>
+<td><code>XPASS</code>, counts as pass</td>
+<td>Either outcome is acceptable</td>
 </tr>
 <tr>
 <td><code>xfail_strict: true</code></td>
-<td><strong>fail</strong> (strict)</td>
-<td>a pass means the marker is stale and you want to be told — the safe choice for a regression guard</td>
+<td><code>XFAIL</code>, counts as pass</td>
+<td><code>XPASS</code>, counts as fail</td>
+<td>A pass means the marker is stale</td>
 </tr>
 </tbody>
 </table>
-<p>If both are set, strict wins. Each verification picks the marker it
-needs. A common pattern: <code>xfail_strict: true</code> on a teaching demo or a
-not-yet-fixed bug, so the regression turns red (via <code>XPASS</code>) the moment
-the run starts passing and the marker should be removed.</p>
-<h2 id="caveat">Caveat</h2>
-<p>Like pytest <code>xfail</code> without <code>raises=</code>, this does not distinguish a
-genuine disproof from an infrastructure error that also surfaces as a
-FAIL. Reserve the marker for runs whose failure mode is understood.</p>
-<h2 id="where-it-shows-up">Where it shows up</h2>
-<p>The marker is a per-verification field in each command's yaml; the
-exact schema entries live in <a href="../../reference/yaml/">YAML Formats</a>.
-Common contexts:</p>
-<ul>
-<li><strong><code>fpv.yaml</code></strong> — a teaching property that is true but not inductive
-  under <code>mode: prove</code> (see <a href="../fpv/#writing-properties-that-prove-bmc-vs-induction">Writing properties that prove</a>).</li>
-<li><strong><code>tests.yaml</code></strong> — a test that guards a known unfixed bug or an
-  environment limitation.</li>
-<li><strong><code>synth.yaml</code> / <code>pnr.yaml</code> / <code>power.yaml</code></strong> — a configuration whose
-  current failure is documented and tracked.</li>
-</ul>
+<p>If both fields are set, strict behavior wins. <code>SKIP</code> and <code>NA</code> are unchanged.</p>
+<p>Prefer <code>xfail_strict: true</code> for a known bug or intentionally failing teaching case so the regression reports when the underlying behavior changes.</p>
+<h2 id="interpret-failures-carefully">Interpret failures carefully</h2>
+<p>The marker remaps any <code>FAIL</code>; it does not distinguish the expected design failure from a compile, tool, or environment failure. Confirm the failure reason before accepting <code>XFAIL</code>.</p>
+<p>See <a href="../../reference/yaml/">YAML Formats</a> for the field on each configuration type.</p>
 
 
 

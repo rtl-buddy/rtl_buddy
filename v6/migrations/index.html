@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to upgrade an rtl_buddy project across each major version bump — v2→v3 artefact layout, v3→v4 PDK schema, v4→v5 ExecutionContext anchoring, and v5→v6 mutation budget rename. Also covers the one-time submodule-to-uv distribution move.">
+        <meta name="description" content="Required project changes for rtl_buddy major-version upgrades and the legacy submodule-to-uv migration.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/migrations/">
       
       
-        <link rel="prev" href="../development/docs/">
+        <link rel="prev" href="../development/reviews/">
       
       
         <link rel="next" href="../known-issues/">
@@ -1341,6 +1341,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/project-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Template Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/bundled-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bundled Skill Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/reviews/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1667,8 +1751,7 @@
 
 
 <h1 id="migrations">Migrations</h1>
-<p>Breaking changes only land on major version bumps. Each section below covers one bump: what changed and what you must update. Crossing several majors at once (e.g. v3 → v6)? The changes are independent — work through every section between your old and new version, in order.</p>
-<p>The final <a href="#submodule-to-uv">Submodule to uv</a> section is a one-time distribution change, independent of which version you run.</p>
+<p>Apply each section between your installed and target major versions in order. The <a href="#submodule-to-uv">submodule-to-uv migration</a> is independent of package version.</p>
 <h2 id="v2-to-v3">v2 to v3</h2>
 <p>Per-test outputs moved from <code>logs/</code> to <code>artefacts/</code> inside the suite directory.</p>
 <table>
@@ -1702,9 +1785,9 @@
 </tbody>
 </table>
 <p><code>randtest</code> iterations write to numbered subdirectories (<code>artefacts/{test}/run-0001/test.log</code>, …), while shared compile outputs (<code>compile.log</code>, <code>run.f</code>) stay at <code>artefacts/{test}/</code>. The suite-root <code>test.log</code> / <code>test.err</code> / <code>test.randseed</code> symlinks still point at the latest run.</p>
-<p><strong>What to update:</strong> swap <code>logs/</code> for <code>artefacts/</code> in <code>.gitignore</code>; repoint CI and coverage scripts at <code>artefacts/{test}/coverage.dat</code> (single run) or <code>artefacts/{test}/run-*/coverage.dat</code> (randtest). Hooks that relied on suite-relative paths resolving from the simulator's working directory must now build paths from the preproc hook's <code>suite_dir</code>. (v5 changed hook working directories again — see <a href="#hook-scripts-run-at-the-invocation-directory">Hook scripts run at the invocation directory</a>.)</p>
+<p>Update <code>.gitignore</code>, CI, and coverage scripts from <code>logs/</code> to <code>artefacts/</code>. Use <code>artefacts/{test}/coverage.dat</code> for one run and <code>artefacts/{test}/run-*/coverage.dat</code> for randomized runs. Build hook paths from <code>suite_dir</code>; v5 changed the hook working directory again.</p>
 <h2 id="v3-to-v4">v3 to v4</h2>
-<p>The synthesis/PDK config schema was refactored to also drive place-and-route. The flat <code>cfg-synth-libs</code> block split into a reusable <code>cfg-pdks</code> block (all PDK-bound assets) plus thin platform selectors. In <code>root_config.yaml</code>:</p>
+<p>Replace <code>cfg-synth-libs</code> with reusable PDK data plus flow-specific platform selectors:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># v3</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nt">cfg-synth-libs</span><span class="p">:</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nangate45_typ</span>
@@ -1720,10 +1803,9 @@
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="nt">cfg-synth-platforms</span><span class="p">:</span>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> name</span><span class="p">:</span><span class="w"> </span><span class="nv">nangate45_typ</span><span class="p p-Indicator">,</span><span class="nt"> pdk</span><span class="p">:</span><span class="w"> </span><span class="nv">nangate45</span><span class="p p-Indicator">,</span><span class="nt"> corner</span><span class="p">:</span><span class="w"> </span><span class="nv">typ</span><span class="w"> </span><span class="p p-Indicator">}</span>
 </code></pre></div>
-<p>In <code>synth.yaml</code>, the <code>libraries: [name]</code> list became a single <code>platform: name</code> string naming a <code>cfg-synth-platforms</code> entry.</p>
-<p><strong>What to update:</strong> rewrite <code>cfg-synth-libs</code> as <code>cfg-pdks</code> + <code>cfg-synth-platforms</code> (add a <code>cfg-pnr-platforms</code> entry only if you use <code>rb pnr</code>); change <code>synth.yaml</code> <code>libraries:</code> to <code>platform:</code>. Code calling <code>RootConfig</code> directly: <code>get_synth_lib_cfg</code> is now <code>get_synth_platform_cfg</code> (plus new <code>get_pdk_cfg</code> / <code>get_pnr_platform_cfg</code>). See the <a href="../concepts/synthesis/">synthesis</a> and <a href="../concepts/pnr/">place-and-route</a> concept docs for the full schema.</p>
+<p>In <code>synth.yaml</code>, replace <code>libraries: [name]</code> with <code>platform: name</code>. Add <code>cfg-pnr-platforms</code> only for <code>rb pnr</code>. API users must replace <code>get_synth_lib_cfg</code> with <code>get_synth_platform_cfg</code>; use <code>get_pdk_cfg</code> and <code>get_pnr_platform_cfg</code> for the new layers. See <a href="../concepts/synthesis/">Synthesis</a> and <a href="../concepts/pnr/">Place-and-Route</a>.</p>
 <h2 id="v4-to-v5">v4 to v5</h2>
-<p>Every config-driven command now anchors its outputs on the directory containing its primary config — the <strong>command root</strong> — via <a href="../concepts/execution-context/"><code>ExecutionContext</code></a>, instead of wherever you happened to run <code>rb</code>.</p>
+<p>Config-driven commands now anchor managed output on the primary config's directory, the <a href="../concepts/execution-context/"><code>command_root</code></a>.</p>
 <table>
 <thead>
 <tr>
@@ -1760,33 +1842,28 @@
 </tr>
 </tbody>
 </table>
-<p>Explicit output paths you pass on the command line (<code>hier -o diagram.svg</code>, <code>axi-profile … -o report.html</code>, <code>filelist &lt;model&gt; out.f</code>) are unchanged — they still resolve against your shell's cwd. Only command-managed artefacts and default output locations moved.</p>
+<p>Explicit CLI paths still resolve from the invocation directory. Only managed artifacts and default output locations moved.</p>
 <h3 id="hook-scripts-run-at-the-invocation-directory">Hook scripts run at the invocation directory</h3>
-<p>The change most likely to break a project. <code>regression</code> no longer <code>chdir</code>s into each suite, so <code>sweep</code> / <code>preproc</code> hooks now run from your shell's cwd like every other command (single-suite <code>test</code> / <code>randtest</code> were already this way). Build paths from the <code>suite_dir</code> and <code>artifact_dir</code> namespace variables, never <code>os.getcwd()</code>:</p>
+<p><code>sweep</code> and <code>preproc</code> hooks run from the invocation directory. Build paths from the injected <code>suite_dir</code> and <code>artifact_dir</code>, never <code>os.getcwd()</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">out</span>  <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>          <span class="c1"># correct</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">stim</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">,</span> <span class="s2">&quot;vectors&quot;</span><span class="p">,</span> <span class="s2">&quot;in.txt&quot;</span><span class="p">)</span>  <span class="c1"># correct</span>
 </code></pre></div>
-<p>For a third-party generator that only writes relative to <code>os.getcwd()</code>, wrap the call in <code>os.chdir(suite_dir)</code> and restore the previous directory afterwards. See <a href="../known-issues/">Quirks &amp; Known Issues</a> for the failure signature.</p>
-<p><strong>What to update:</strong> repoint CI that looked for <code>rtl_buddy.log</code> in the invocation directory to the command root; replace any <code>os.getcwd()</code> in hooks with <code>suite_dir</code> / <code>artifact_dir</code>.</p>
+<p>Wrap a third-party generator that only writes relative to the CWD in a temporary <code>os.chdir(suite_dir)</code>. Repoint CI from the invocation directory to the command root for <code>rtl_buddy.log</code>.</p>
 <h2 id="v5-to-v6">v5 to v6</h2>
-<p><code>mut.yaml</code> <code>budget.per_module_cap</code> was renamed to <code>budget.per_file_cap</code>. The cap counts mutants per scoped <em>file</em> (files and modules are not 1:1), so the name now matches the behavior. Unknown keys are dropped silently, so a stale <code>per_module_cap</code> is ignored and silently reverts to "no per-file cap" rather than erroring.</p>
-<p><strong>What to update:</strong> rename <code>budget.per_module_cap</code> to <code>budget.per_file_cap</code> in every <code>mut.yaml</code>.</p>
-<p>v6 also adds optional hierarchical <a href="../concepts/mut/#scope-hierarchical-designs"><code>scope</code></a> for multi-file mutation campaigns. This is additive — an empty or absent <code>scope</code> keeps v5 single-file behavior byte-for-byte. When <code>scope</code> is set, <code>rtl-buddy-view</code> must be on <code>PATH</code>, because scope resolution shells out to <code>rb hier --format json</code>.</p>
+<p>Rename <code>budget.per_module_cap</code> to <code>budget.per_file_cap</code> in every <code>mut.yaml</code>. The old key is ignored and removes the cap rather than failing validation.</p>
 <h2 id="submodule-to-uv">Submodule to uv</h2>
-<p>Independent of version bumps: this is the one-time move from the legacy <code>rtl_buddy</code> git submodule (under <code>tools/rtl_buddy</code>, installed via <code>pip install -e</code>) to a <code>uv</code>-managed PyPI dependency.</p>
-<p>If your RTL repo is not already a Python project, initialize one, then add <code>rtl_buddy</code>:</p>
+<p>Replace the legacy <code>tools/rtl_buddy</code> submodule and editable pip install with a <code>uv</code>-managed dependency:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>init<span class="w"> </span>--bare<span class="w">        </span><span class="c1"># only if there is no pyproject.toml yet</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>uv<span class="w"> </span>add<span class="w"> </span>rtl_buddy
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>--version
 </code></pre></div>
-<p>Then:</p>
 <ol>
 <li>Remove the <code>tools/rtl_buddy</code> submodule.</li>
 <li>Fold any <code>requirements.txt</code> entries into <code>pyproject.toml</code> under <code>dependencies</code>, then delete <code>requirements.txt</code>.</li>
 <li>Update local scripts and CI from <code>tools/rtl_buddy/…</code> / <code>python -m rtl_buddy</code> to <code>uv run rb …</code>.</li>
 <li>Commit <code>pyproject.toml</code> and <code>uv.lock</code> so other users and CI resolve the same environment.</li>
 </ol>
-<p>Pin a specific release with <code>uv add "rtl_buddy==2.3.0"</code> when a project must hold back.</p>
+<p>Use <code>uv add "rtl_buddy==&lt;version&gt;"</code> when the project needs an exact pin.</p>
 
 
 
