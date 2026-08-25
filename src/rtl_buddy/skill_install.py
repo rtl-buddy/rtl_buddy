@@ -1,10 +1,10 @@
-"""`rtl-buddy skill ...` subcommands: materialize the bundled agent skill.
+"""`rtl-buddy skill ...` subcommands: materialize the bundled agent skills.
 
 Skill content ships inside the wheel at `rtl_buddy.skill`. There is no
 PEP 517 post-install hook, so users run `rtl-buddy skill install` once to
-copy `SKILL.md` to the Claude Code / Codex skill directories. The directory
-is named `rtl-buddy` to match the `name:` in the bundled SKILL.md frontmatter,
-as the Agent Skills spec requires. Default scope is user-level; `--project`
+copy the skill family to the Claude Code / Codex skill directories. The primary
+directory remains `rtl-buddy`; every directory matches its SKILL.md frontmatter
+name, as the Agent Skills spec requires. Default scope is user-level; `--project`
 (or `--root PATH`) opts into project-level, which Claude Code resolves with
 higher precedence than user-level.
 """
@@ -28,6 +28,14 @@ from .errors import FatalRtlBuddyError
 # Skills spec requires a skill's name to equal its containing directory name,
 # and spec-validating loaders warn on every load when they diverge.
 SKILL_DIRNAME = "rtl-buddy"
+SPECIALIST_SKILL_DIRNAMES = (
+    "rtl-buddy-test",
+    "rtl-buddy-dispatch",
+    "rtl-buddy-graph",
+    "rtl-buddy-fpv",
+    "rtl-buddy-implementation",
+)
+SKILL_DIRNAMES = (SKILL_DIRNAME, *SPECIALIST_SKILL_DIRNAMES)
 # Installs predating the rename used the underscore spelling. `install`
 # migrates them away and `uninstall` cleans both.
 LEGACY_SKILL_DIRNAME = "rtl_buddy"
@@ -35,15 +43,43 @@ SKILL_FILENAME = "SKILL.md"
 VERSION_MARKER = ".rtl_buddy_skill_version"
 PACKAGE_NAME = "rtl-buddy"
 
-app = typer.Typer(help="manage the rtl_buddy agent skill", no_args_is_help=True)
+app = typer.Typer(help="manage the rtl_buddy agent skills", no_args_is_help=True)
 
 
 def _package_version() -> str:
     return _pkg_version(PACKAGE_NAME)
 
 
-def _bundled_skill_text() -> str:
-    return _resource_files("rtl_buddy.skill").joinpath(SKILL_FILENAME).read_text()
+def _bundled_skill_text(skill_name: str = SKILL_DIRNAME) -> str:
+    if skill_name not in SKILL_DIRNAMES:
+        raise KeyError(f"unknown bundled skill: {skill_name}")
+    root = _resource_files("rtl_buddy.skill")
+    resource = (
+        root.joinpath(SKILL_FILENAME)
+        if skill_name == SKILL_DIRNAME
+        else root.joinpath(skill_name).joinpath(SKILL_FILENAME)
+    )
+    return resource.read_text()
+
+
+def _skill_target(primary_target: Path, skill_name: str) -> Path:
+    """Return one family member beside the backward-compatible primary."""
+    return primary_target.parent / skill_name
+
+
+def _guard_foreign_specialists(targets: list[tuple[str, Path]]) -> None:
+    """Refuse to claim a non-empty specialist directory we did not install."""
+    for _, primary_target in targets:
+        for skill_name in SPECIALIST_SKILL_DIRNAMES:
+            target_dir = _skill_target(primary_target, skill_name)
+            if (
+                target_dir.exists()
+                and not _is_ours(target_dir)
+                and (not target_dir.is_dir() or any(target_dir.iterdir()))
+            ):
+                raise FatalRtlBuddyError(
+                    f"Refusing to overwrite unmanaged skill directory: {target_dir}"
+                )
 
 
 def _bundled_gitignore_snippet() -> str:
@@ -224,7 +260,7 @@ def cmd_install(
         typer.Option(
             "--dir",
             help=(
-                "write a single flat target at <DIR>/rtl-buddy/SKILL.md, "
+                "write the skill family directly under <DIR>/, "
                 "bypassing the .claude/.agents/.codex layout"
             ),
         ),
@@ -248,14 +284,13 @@ def cmd_install(
         bool, typer.Option("--force", help="overwrite even when content matches")
     ] = False,
 ):
-    """Install the bundled rtl_buddy skill.
+    """Install the bundled rtl_buddy skill family.
 
     Default scope is user-level (`~/.claude/skills/rtl-buddy/` and
     `~/.codex/skills/rtl-buddy/`). Use `--project` to install into the
     discovered project root instead; project-level copies take precedence
-    over user-level when both exist. Use `--dir PATH` to write a single
-    `PATH/rtl-buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`
-    layout entirely.
+    over user-level when both exist. Use `--dir PATH` to write the family as
+    sibling directories under PATH, bypassing the `.claude`/`.agents` layout.
 
     Installs made before the directory was renamed to `rtl-buddy` are
     migrated: a sibling `rtl_buddy/` carrying our version marker is removed
@@ -279,7 +314,8 @@ def cmd_install(
                 "--no-claude and --no-codex leave nothing to install."
             )
 
-    skill_text = _bundled_skill_text()
+    _guard_foreign_specialists(targets)
+
     ver = _package_version()
 
     typer.echo(f"Scope:   {scope}")
@@ -290,27 +326,30 @@ def cmd_install(
     changed = 0
     unchanged = 0
     migrated = 0
-    for label, target_dir in targets:
-        skill_path = target_dir / SKILL_FILENAME
-        marker_path = target_dir / VERSION_MARKER
-        content_matches = _same_content(skill_path, skill_text)
-        marker_matches = (
-            marker_path.is_file() and marker_path.read_text().strip() == ver
-        )
-        needs_write = force or not content_matches or not marker_matches
+    for label, primary_target in targets:
+        for skill_name in SKILL_DIRNAMES:
+            target_dir = _skill_target(primary_target, skill_name)
+            skill_path = target_dir / SKILL_FILENAME
+            marker_path = target_dir / VERSION_MARKER
+            skill_text = _bundled_skill_text(skill_name)
+            content_matches = _same_content(skill_path, skill_text)
+            marker_matches = (
+                marker_path.is_file() and marker_path.read_text().strip() == ver
+            )
+            needs_write = force or not content_matches or not marker_matches
 
-        action = "write" if needs_write else "skip (up to date)"
-        typer.echo(f"  [{label:>6}] {skill_path}  — {action}")
+            action = "write" if needs_write else "skip (up to date)"
+            typer.echo(f"  [{label:>6}] {skill_path}  — {action}")
 
-        if needs_write and not dry_run:
-            target_dir.mkdir(parents=True, exist_ok=True)
-            skill_path.write_text(skill_text)
-            marker_path.write_text(ver + "\n")
-            changed += 1
-        elif not needs_write:
-            unchanged += 1
+            if needs_write and not dry_run:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                skill_path.write_text(skill_text)
+                marker_path.write_text(ver + "\n")
+                changed += 1
+            elif not needs_write:
+                unchanged += 1
 
-        legacy = _legacy_dir(target_dir)
+        legacy = _legacy_dir(primary_target)
         if _is_ours(legacy):
             if dry_run:
                 typer.echo(f"  [{label:>6}] {legacy}  — would remove (legacy name)")
@@ -360,7 +399,7 @@ def cmd_uninstall(
         bool, typer.Option("--no-codex", help="skip the Codex target")
     ] = False,
 ):
-    """Remove the installed rtl_buddy skill files from the selected scope.
+    """Remove installed rtl_buddy skill-family files from the selected scope.
 
     Both the current `rtl-buddy` directory and the legacy `rtl_buddy` one are
     cleaned, so an install predating the rename is fully removed.
@@ -371,8 +410,15 @@ def cmd_uninstall(
     )
 
     removed = 0
-    for label, target_dir in targets:
-        for candidate in (target_dir, _legacy_dir(target_dir)):
+    for label, primary_target in targets:
+        candidates = [
+            (skill_name, _skill_target(primary_target, skill_name))
+            for skill_name in SKILL_DIRNAMES
+        ]
+        candidates.append((LEGACY_SKILL_DIRNAME, _legacy_dir(primary_target)))
+        for skill_name, candidate in candidates:
+            if skill_name in SPECIALIST_SKILL_DIRNAMES and not _is_ours(candidate):
+                continue
             if _remove_skill_files(candidate):
                 removed += 1
                 typer.echo(f"  [{label:>6}] removed {candidate / SKILL_FILENAME}")
@@ -397,7 +443,7 @@ def cmd_status(
         ),
     ] = None,
 ):
-    """Report whether the skill is installed and whether it matches the current package version."""
+    """Report whether each skill is installed and matches the package version."""
     scope, base = _resolve_root(project, root)
     targets = _targets(scope, base, include_claude=True, include_codex=True)
     current = _package_version()
@@ -407,39 +453,45 @@ def cmd_status(
     typer.echo(f"Version: {current} (installed rtl_buddy)")
     typer.echo("")
 
-    for label, target_dir in targets:
-        marker = target_dir / VERSION_MARKER
-        skill_path = target_dir / SKILL_FILENAME
-        legacy = _legacy_dir(target_dir)
-        # Current install wins; the legacy path is only ever a FALLBACK
-        # report. A target carrying both spellings is unreachable through
-        # `install` (which migrates the sibling every time) but reachable by
-        # a partial invocation — `install --no-codex` on a machine an older
-        # release wrote both targets on — and there the current directory is
-        # the one in use, so reporting it alone is correct, not an oversight.
-        if not skill_path.is_file():
-            if (legacy / SKILL_FILENAME).is_file() and _is_ours(legacy):
-                state = (
-                    f"installed at legacy path {legacy} "
-                    "(re-run `rtl-buddy skill install` to migrate)"
+    for label, primary_target in targets:
+        for skill_name in SKILL_DIRNAMES:
+            target_dir = _skill_target(primary_target, skill_name)
+            marker = target_dir / VERSION_MARKER
+            skill_path = target_dir / SKILL_FILENAME
+            legacy = _legacy_dir(target_dir)
+            # The current primary wins over its legacy-path fallback. Specialist
+            # directories never had a legacy spelling.
+            if not skill_path.is_file():
+                if (
+                    skill_name == SKILL_DIRNAME
+                    and (legacy / SKILL_FILENAME).is_file()
+                    and _is_ours(legacy)
+                ):
+                    state = (
+                        f"installed at legacy path {legacy} "
+                        "(re-run `rtl-buddy skill install` to migrate)"
+                    )
+                else:
+                    state = "not installed"
+            elif marker.is_file():
+                on_disk = marker.read_text().strip()
+                state = f"installed @ {on_disk}" + (
+                    ""
+                    if on_disk == current
+                    else " (stale — re-run `rtl-buddy skill install`)"
                 )
             else:
-                state = "not installed"
-        elif marker.is_file():
-            on_disk = marker.read_text().strip()
-            state = f"installed @ {on_disk}" + (
-                ""
-                if on_disk == current
-                else " (stale — re-run `rtl-buddy skill install`)"
-            )
-        else:
-            state = "installed (version unknown — re-run `rtl-buddy skill install`)"
-        typer.echo(f"  [{label:>6}] {target_dir}  — {state}")
+                state = (
+                    "installed (version unknown — re-run `rtl-buddy skill install`)"
+                    if skill_name == SKILL_DIRNAME
+                    else "installed (not managed by rtl_buddy)"
+                )
+            typer.echo(f"  [{label:>6}] {target_dir}  — {state}")
 
 
 @app.command("view")
 def cmd_view():
-    """Print the bundled rtl_buddy skill to stdout."""
+    """Print the primary bundled rtl_buddy skill to stdout."""
     typer.echo(_bundled_skill_text(), nl=False)
 
 

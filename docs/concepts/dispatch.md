@@ -645,6 +645,14 @@ whole array into `OUT_OF_MEMORY` kills. Elaboration is usually the memory
 peak of the entire flow, so size `compile.mem` from a real elaboration, not
 from a simulation.
 
+Large generated structures can make Verilator elaboration the memory peak even
+when the resulting simulation is small. Slurm reports this as
+`OUT_OF_MEMORY`; a local compiler may only end with `Killed`, SIGKILL, or exit
+137. These are memory-allocation failures, not simulation timeouts. Raise the
+governing `mem` field—prefer the machine payload's
+`reservation_advice[*].edit_hint`, which may point at `cfg-dispatch.compile`
+rather than a test's `resources`—and do not raise `sim_timeout` for them.
+
 **Give a VCS build job headroom for the license queue.** `-licqueue` waits
 count against `--time`, so a `compile.time` sized for compute alone will
 eventually land on a busy license server — see [A VCS compile can wait for a

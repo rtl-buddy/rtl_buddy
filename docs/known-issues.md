@@ -152,6 +152,19 @@ On a `vcs` builder, when `simv` prints the `-licqueue` banner (`Queuing for Lice
 
 What "real simulator output" means matters, because the pause ends on the first line outside the banner's vocabulary. If a VCS release adds a line to the banner that rtl_buddy does not recognise, the clock restarts while the sim is still queuing and every queued sim fails with `Sim hit timeout`, which reads as a design or testbench failure rather than a license one. The tell is `Licensed number of users already reached` in `test.err` alongside a timeout verdict. `extra-sim-timeout` on the builder is the backstop; see [Extra simulation timeout per builder](concepts/tests.md#extra-simulation-timeout-per-builder).
 
+## A timeout kill can leave `test.log` with an unflushed tail
+
+When `sim_timeout` expires, rtl_buddy terminates the simulator process group. A
+process killed before it flushes its userspace output buffer can leave
+`artefacts/<test>/test.log` ending mid-line, often at a power-of-two byte count.
+The last captured line is therefore not reliable evidence of the exact cycle or
+transaction where the DUT stopped.
+
+Use the timeout triage order in [Tests](concepts/tests.md#triaging-sim-hit-timeout):
+compare sibling tests, determine whether simulated time was still advancing, and
+identify the last completed activity. Raising `sim_timeout` only helps a slow but
+progressing run; it does not fix a functional wedge or restore the missing tail.
+
 ## VCS hierarchical seed file
 
 When using VCS with hierarchical instance seeding (`-xlrm hier_inst_seed`), VCS writes a `HierInstanceSeed.txt` file in the simulation directory after the run. `rtl_buddy` looks for this file to record the seed for reproducibility.

@@ -1,39 +1,45 @@
 ---
 name: audit-bundled-skill
-description: Audit the rtl_buddy bundled SKILL.md for adherence to its design principles. Use when asked to review, update, or check the skill file at src/rtl_buddy/skill/SKILL.md.
+description: Audit the rtl_buddy bundled skill family for lean, correctly routed, spec-valid agent guidance. Use when reviewing files under src/rtl_buddy/skill/ or their installer.
 ---
 
 # audit-bundled-skill
 
-You are reviewing `src/rtl_buddy/skill/SKILL.md` — the agent skill that ships inside the rtl_buddy wheel.
+Review the primary `src/rtl_buddy/skill/SKILL.md` and specialist
+`src/rtl_buddy/skill/<name>/SKILL.md` files shipped in the rtl_buddy wheel.
 
 ## Design principles
 
-The bundled skill must stay lean. Its purpose is agent workflow guidance, not documentation. It may include brief operational orientation when that helps agents find files, run commands, interpret results, or inspect outputs without reading docs first. Anything deeper belongs in the docs site and should be cited instead.
+The family must stay lean. Its purpose is agent workflow guidance, not documentation. The primary covers basic use and routing; a specialist contains only non-obvious guidance for its topic. Anything deeper belongs in bundled docs and should be cited instead.
 
-**The skill should:**
-- Stay at or under 60 lines
-- Cover agent-specific conventions that are not obvious from the docs: `--machine` flag requirement, JSONL log format, CWD rules for `test` vs `regression`, artefact paths
-- Include the local docs commands so agents know how to reach bundled references
-- Include a brief YAML type overview so agents can find config files and understand their role quickly
-- Include concise pass/fail detection guidance for UVM, cocotb, and default stdout parsing
-- Include concise artefact/log locations needed for debugging and summaries
-- Reference docs via `rtl-buddy docs show <page>` rather than restating content inline
-- Give the agent enough to run correctly without reading the docs first
-- Include the version check instruction (`rtl-buddy --version` at top of every run)
+**Every bundled skill should:**
+- Stay at or under 60 lines and under 8 KiB
+- Match its directory name in frontmatter and have a unique, discriminating description
+- Include the version check instruction (`rb --version` at the top of every run summary)
+- Route option lists, schemas, and how-tos to local `rb docs show <page>` references
 
-**The skill must not:**
+**The primary should:**
+- Cover basic test/regression use, `--machine`, result interpretation, YAML orientation, CWD/output anchoring, and specialist routing
+- Give an agent enough to run a basic suite correctly without loading a specialist
+
+**Each specialist should:**
+- Be self-contained when selected without the primary
+- Contain only non-obvious decision guidance and gotchas for its topic
+- Avoid repeating the primary's general YAML, CWD, and result orientation
+
+**The family must not:**
 - Restate YAML schemas, field references, examples, option lists, or flag descriptions — those live in `docs/reference/`
-- Grow feature-by-feature as rtl_buddy adds commands — only add lines when agent behavior would otherwise be wrong
+- Add a specialist merely because rtl_buddy gained a command — add one only when distinct agent behavior would otherwise be wrong
 - Duplicate docs-site content beyond brief operational orientation
 
 ## How to audit
 
-1. Count lines. If over 60, identify what can be moved to a docs cite.
-2. Read each section. For every paragraph, ask: does an agent need this to act correctly or debug quickly without opening docs first?
-3. Distinguish concise orientation from reference duplication. Keep short file-purpose, pass/fail, and artefact guidance; trim field tables, examples, option details, and command-specific feature docs.
-4. Check the current CLI (`rtl-buddy --help` and per-command `--help`) against what the skill describes. Flag anything stale.
-5. Check that the skill cites the docs site for all feature-specific content rather than embedding it.
+1. Enumerate every bundled skill from `SKILL_DIRNAMES`; check ≤60 lines, <8 KiB, and directory/frontmatter name equality.
+2. Check that descriptions are unique and discriminating enough for automatic selection.
+3. Read each section. Ask whether an agent needs it to act correctly before opening docs.
+4. Move reference detail, option lists, schemas, and worked how-tos to docs citations.
+5. Check current CLI help against commands the family describes; flag stale guidance.
+6. Check install/status/uninstall tests when family membership changes.
 
 ## Output format
 

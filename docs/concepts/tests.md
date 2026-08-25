@@ -75,6 +75,30 @@ This covers the simulation phase only. `compile()` sets no timeout, so a license
 
 Under `--dispatch slurm` or `--dispatch local-parallel`, both paths reach the dispatched job: a builder's `extra-sim-timeout` because the child re-reads `root_config.yaml`, and `--extra-sim-timeout` because it is forwarded in the job's argv.
 
+### Triaging `Sim hit timeout`
+
+`Sim hit timeout` means rtl_buddy's wall-clock timer reached the resolved
+`sim_timeout` and killed the simulator process. It says nothing about a
+testbench's simulated-time watchdog: a design can stop advancing simulated time
+while the wall clock keeps running, or a healthy but slow simulation can advance
+until the harness limit expires.
+
+Before increasing the limit:
+
+1. Run or inspect sibling tests under the same builder. If they also stall, start
+   with the shared build, tool, or environment rather than one test's timeout.
+2. Check `test.log` for timestamp or progress changes. Advancing simulated time
+   suggests a slow test; repeated last activity suggests a functional wedge.
+3. Identify the last completed phase or transaction, then check the corresponding
+   RTL/testbench condition before extending the wall-clock budget.
+4. Confirm the resolved value. A test without `sim_timeout` uses the 60-second
+   default, plus any builder/CLI allowance described above.
+
+Do not treat the final bytes in `test.log` as an exact stop location. A process
+killed at timeout may not flush its userspace output buffer, so the captured log
+can end mid-line—often at a power-of-two size—and omit the simulator's real tail.
+See [Known Issues](../known-issues.md#a-timeout-kill-can-leave-testlog-with-an-unflushed-tail).
+
 ### Regression levels
 
 `reglvl` controls which tests run during a regression:
@@ -128,7 +152,7 @@ Rules to follow:
 - Write the marker to stdout, not stderr.
 - When using `FAIL`, follow it with an `ERR:` or `FAT:` line so the results table can say why the test failed.
 - If a log carries **both** markers, `FAIL` wins, whichever came first, and a `postproc.conflicting_markers` warning is logged. A failure signal is never erased by a `PASS` line elsewhere in the transcript.
-- If no `PASS` or `FAIL` marker is found, `rtl_buddy` records the test as `NA` with description `test result unknown`. `NA` does **not** pass, so such a test fails its regression.
+- If no `PASS` or `FAIL` marker is found, `rtl_buddy` records the test as `NA` with description `test result unknown`. `NA` is non-passing and needs review, but does not by itself make the shell exit status nonzero.
 - Do not rely on the simulator exit code alone to communicate pass/fail in non-UVM tests.
 
 ### UVM report parsing
@@ -160,7 +184,7 @@ The global `-E`/`--early-stop` option halts a run after a given stage (`pre`, `c
 rtl-buddy -E comp test smoke
 ```
 
-Stopping after a successful stage (e.g. `comp`) reports result `NA` (e.g. desc "Stopped early at compile") rather than a `PASS`/`FAIL` transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other `NA`. Because the exit code reflects whether `rtl_buddy` and its tools ran properly rather than the DUT verdict, a successful early stop still exits 0. If compilation itself fails, the result is `FAIL` with exit code 1, regardless of `--early-stop`.
+Stopping after a successful stage (e.g. `comp`) reports result `NA` (e.g. desc "Stopped early at compile") rather than a `PASS`/`FAIL` transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other `NA`. A successful early stop exits 0 because it produced no `FAIL`. If compilation itself fails, the result is `FAIL` with exit code 1, regardless of `--early-stop`.
 
 ### Result statuses
 
@@ -176,12 +200,15 @@ Stopping after a successful stage (e.g. `comp`) reports result `NA` (e.g. desc "
 
 ### Exit codes
 
-The exit code reflects whether `rtl_buddy` and its tools ran, not the DUT verdict:
+The shell exit code is a coarse run status: it distinguishes a result set with a
+real `FAIL` from one without, and separates fatal configuration/environment
+errors. It does not preserve the per-test verdicts or distinguish `PASS`, `SKIP`,
+`XFAIL`, and `NA`; under `--machine`, parse `payload.results` for those details.
 
 | Code | Meaning |
 |------|---------|
 | 0 | No real `FAIL` verdicts — includes `PASS`, `SKIP`, `XFAIL`, and `NA` (early stops included) |
-| 1 | One or more tests resulted in `FAIL` (a real fail verdict, or a tool/flow failure such as compilation failure) |
+| 1 | One or more tests resulted in a real `FAIL`, or strict expected-failure handling produced `XPASS` |
 | 2 | Fatal configuration or environment error |
 
 ## Running tests

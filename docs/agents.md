@@ -52,9 +52,9 @@ rb --machine graph path cocotb_random module:demo_tiny_alu        # how related?
 
 Each tool returns its `--machine` counterpart's `payload` verbatim, wrapped in `{tool, ok, meta: {rtl_buddy_version, project_root, command}, payload}`; a failure is `ok: false` plus `error`, never a transport error. Install with `pip install 'rtl_buddy[mcp]'`. Everything MCP serves is also reachable from the CLI, so MCP is a convenience surface — never a prerequisite.
 
-## Bundled agent skill
+## Bundled agent skills
 
-The `rtl_buddy` wheel ships an agent skill that teaches Claude Code and Codex the conventions for invoking `rtl_buddy` — when to use `--machine`, where logs are written, how multi-suite runs lay out artefacts, and which docs to consult. Because the skill ships with the wheel, its content is locked to the installed `rtl_buddy` major version.
+The `rtl_buddy` wheel ships a small skill family. The primary `rtl-buddy` skill covers basic test/regression use and routes advanced work to focused siblings for tests, dispatch, graph queries, formal verification, and implementation flows. Because the family ships with the wheel, its content matches the installed version.
 
 Users materialize the skill once with `rtl-buddy skill install`:
 
@@ -70,15 +70,17 @@ Install targets:
 
 | Scope | Claude Code | Codex |
 |-------|-------------|-------|
-| User (default) | `~/.claude/skills/rtl-buddy/SKILL.md` | `~/.codex/skills/rtl-buddy/SKILL.md` |
-| Project (`--project`) | `<root>/.claude/skills/rtl-buddy/SKILL.md` | `<root>/.agents/skills/rtl-buddy/SKILL.md` |
-| Explicit dir (`--dir PATH`) | `<PATH>/rtl-buddy/SKILL.md` (single flat target) | — |
+| User (default) | `~/.claude/skills/<member>/SKILL.md` | `~/.codex/skills/<member>/SKILL.md` |
+| Project (`--project`) | `<root>/.claude/skills/<member>/SKILL.md` | `<root>/.agents/skills/<member>/SKILL.md` |
+| Explicit dir (`--dir PATH`) | `<PATH>/<member>/SKILL.md` | — |
 
-User-level is the default because the skill is workflow-pattern guidance that changes rarely across `rtl_buddy` versions; a single copy per machine encourages keeping `rtl_buddy` aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent `rtl_buddy` major — Claude Code's resolution order puts the project copy first, so both scopes can coexist.
+`<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, or `rtl-buddy-implementation`. The primary path remains unchanged from single-skill releases.
 
-Use `--dir PATH` when you need the skill written to an arbitrary directory without the `.claude`/`.agents` layout — it writes a single `PATH/rtl-buddy/SKILL.md` (mutually exclusive with `--project`/`--root`).
+User-level is the default because the skills are workflow-pattern guidance that changes rarely across `rtl_buddy` versions; one family per machine encourages keeping `rtl_buddy` aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent `rtl_buddy` major — Claude Code's resolution order puts the project copies first, so both scopes can coexist.
 
-The directory is named `rtl-buddy` (matching the `name:` in `SKILL.md`'s frontmatter, as the Agent Skills spec requires). Installs made before that rename landed in `rtl_buddy/`; re-running `rtl-buddy skill install` removes the old directory, `rtl-buddy skill status` flags it as a legacy-path install, `rtl-buddy skill uninstall` cleans both spellings, and a project-level install swaps the pre-rename patterns in `.gitignore` for the current ones (exact matches only, so a hand-edited line is left alone). Migration is per **scope**: an install run at one scope never touches the other's directories, so run it once at each scope you use — see [Quirks & Known Issues](known-issues.md#the-skill-directory-rename-migrates-only-the-scope-you-install-at).
+Use `--dir PATH` when you need the family written to an arbitrary directory without the `.claude`/`.agents` layout — it writes the same sibling directories directly under PATH (mutually exclusive with `--project`/`--root`).
+
+Every directory matches its `name:` frontmatter, as the Agent Skills spec requires. Installs made before the primary rename landed in `rtl_buddy/`; re-running `rtl-buddy skill install` removes the old directory, adds missing specialist siblings, and refreshes all markers. `status` reports each member; `uninstall` cleans every managed member plus both primary spellings. Migration remains per **scope** — see [Quirks & Known Issues](known-issues.md#the-skill-directory-rename-migrates-only-the-scope-you-install-at).
 
 For project-level installs, the install command prints the `.gitignore` lines to add. Pass `--no-gitignore` to skip that edit. Project root is discovered by walking up for `root_config.yaml` (falling back to `.git/`), so `rtl-buddy skill install --project` is safe to run from a `verif/` subdirectory.
 

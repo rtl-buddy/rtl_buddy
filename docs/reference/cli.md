@@ -1921,11 +1921,12 @@ Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-│ install          Install the bundled rtl_buddy skill.                                │
-│ uninstall        Remove the installed rtl_buddy skill files from the selected scope. │
-│ status           Report whether the skill is installed and whether it matches the    │
-│                  current package version.                                            │
-│ view             Print the bundled rtl_buddy skill to stdout.                        │
+│ install          Install the bundled rtl_buddy skill family.                         │
+│ uninstall        Remove installed rtl_buddy skill-family files from the selected     │
+│                  scope.                                                              │
+│ status           Report whether each skill is installed and matches the package      │
+│                  version.                                                            │
+│ view             Print the primary bundled rtl_buddy skill to stdout.                │
 │ print-gitignore  Print the gitignore lines for project-level skill installs.         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1935,14 +1936,13 @@ Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...
 ```text
 Usage: rtl-buddy skill install [OPTIONS]                                               
                                                                                         
- Install the bundled rtl_buddy skill.                                                   
+ Install the bundled rtl_buddy skill family.                                            
                                                                                         
  Default scope is user-level (`~/.claude/skills/rtl-buddy/` and                         
  `~/.codex/skills/rtl-buddy/`). Use `--project` to install into the                     
  discovered project root instead; project-level copies take precedence                  
- over user-level when both exist. Use `--dir PATH` to write a single                    
- `PATH/rtl-buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
- layout entirely.                                                                       
+ over user-level when both exist. Use `--dir PATH` to write the family as               
+ sibling directories under PATH, bypassing the `.claude`/`.agents` layout.              
                                                                                         
  Installs made before the directory was renamed to `rtl-buddy` are                      
  migrated: a sibling `rtl_buddy/` carrying our version marker is removed                
@@ -1952,8 +1952,8 @@ Usage: rtl-buddy skill install [OPTIONS]
 │ --project                   install into the discovered project root instead of the  │
 │                             user home                                                │
 │ --root                PATH  explicit target root (implies project-level layout)      │
-│ --dir                 PATH  write a single flat target at <DIR>/rtl-buddy/SKILL.md,  │
-│                             bypassing the .claude/.agents/.codex layout              │
+│ --dir                 PATH  write the skill family directly under <DIR>/, bypassing  │
+│                             the .claude/.agents/.codex layout                        │
 │ --no-claude                 skip writing the Claude Code target                      │
 │ --no-codex                  skip writing the Codex target                            │
 │ --no-gitignore              skip updating .gitignore on project-level installs       │
@@ -1968,7 +1968,7 @@ Usage: rtl-buddy skill install [OPTIONS]
 ```text
 Usage: rtl-buddy skill uninstall [OPTIONS]                                             
                                                                                         
- Remove the installed rtl_buddy skill files from the selected scope.                    
+ Remove installed rtl_buddy skill-family files from the selected scope.                 
                                                                                         
  Both the current `rtl-buddy` directory and the legacy `rtl_buddy` one are              
  cleaned, so an install predating the rename is fully removed.                          
@@ -1988,8 +1988,7 @@ Usage: rtl-buddy skill uninstall [OPTIONS]
 ```text
 Usage: rtl-buddy skill status [OPTIONS]                                                
                                                                                         
- Report whether the skill is installed and whether it matches the current package       
- version.                                                                               
+ Report whether each skill is installed and matches the package version.                
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --project              report status for the discovered project root instead of the  │
@@ -2004,7 +2003,7 @@ Usage: rtl-buddy skill status [OPTIONS]
 ```text
 Usage: rtl-buddy skill view [OPTIONS]                                                  
                                                                                         
- Print the bundled rtl_buddy skill to stdout.                                           
+ Print the primary bundled rtl_buddy skill to stdout.                                   
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
