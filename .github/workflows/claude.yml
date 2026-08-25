@@ -90,24 +90,19 @@ jobs:
             REPO: ${{ github.repository }}
             ISSUE / PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
 
-            Before doing anything else, read the following files and treat them as
-            authoritative axioms for this repository. All feedback, suggestions, and
-            changes must be consistent with them:
-              - docs/development/guidelines.md  (engineering rules: execution contexts,
-                path ownership, artifact layout, subprocesses, dependencies, logging,
-                errors, validation, releases, issue triage, milestones)
-              - docs/development/docs.md        (documentation authoring rules)
+            Before doing anything else, read and follow the authoritative procedures in:
+              - docs/development/reviews.md
+              - docs/development/guidelines.md
+              - docs/development/docs.md
 
             If this workflow was triggered by a PR being opened, marked ready for
-            review (no comment), or a comment asking you to review, perform a review 
-            of the code against the development guidelines. Your primary task is to highlight 
-            how well the implementation adheres to it. Make sure to address this specifically in your review.
-            Back violations up with exact text in the guidelines you can point to.
+            review (no comment), or a comment asking you to review, perform the review
+            defined in docs/development/reviews.md.
 
-            Post top-level feedback by updating your tracking comment with
-            `mcp__github_comment__update_claude_comment`.
-            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`)
-            to highlight specific code issues. Don't duplicate content between the two.
+            The GitHub tools for the feedback channels defined in
+            docs/development/reviews.md are
+            `mcp__github_comment__update_claude_comment` and
+            `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`).
             Do not use `gh` to post comments — it is gated by the sandbox and will fail.
             Only post GitHub comments - don't submit review text as messages.
 

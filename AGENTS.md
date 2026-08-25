@@ -22,6 +22,12 @@ Issue conventions worth knowing up front:
 
 Where this file overlaps with the canonical guidelines, treat the guidelines as authoritative.
 
+## Code Review Rules
+
+The authoritative review procedure and audit routing live in
+[Code Reviews](docs/development/reviews.md). Read and follow that page rather
+than restating review rules here.
+
 ## Key Files
 
 ```text
@@ -29,7 +35,7 @@ src/rtl_buddy/
 ├── __main__.py            # package entry point
 ├── rtl_buddy.py           # Typer CLI and top-level command flow
 ├── skill_install.py       # `rtl-buddy skill ...` subcommands
-├── skill/                 # bundled agent skill (shipped in the wheel)
+├── skill/                 # bundled agent skill family (shipped in the wheel)
 ├── logging_utils.py       # log_event(), setup_logging(), console helpers
 ├── errors.py              # FatalRtlBuddyError, FilelistError, SetupScriptError
 ├── seed_mode.py           # seed handling enum
@@ -163,7 +169,7 @@ Policy lives in [Logging](docs/development/guidelines.md#logging) and [Error Han
 
 ## Skill Distribution
 
-The rtl_buddy agent skill family ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated. Dev-only audit skills live under `.claude/skills/` in this repo and are not distributed.
+The rtl_buddy agent skill family ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated. Maintainer audit procedures are routed from `docs/development/reviews.md`; they are documentation, not invocable skills.
 
 ### Rules when editing skill content
 
