@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.">
+        <meta name="description" content="Authoritative rtl_buddy code-review scope, guideline routing, evidence standards, and feedback rules.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cocotb/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/development/reviews/">
       
       
-        <link rel="prev" href="../plugins/">
+        <link rel="prev" href="../bundled-skills/">
       
       
-        <link rel="next" href="../spec-traceability/">
+        <link rel="next" href="../../migrations/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>cocotb - RTL Buddy</title>
+        <title>Code Reviews - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#cocotb-testbenches-verilator-icarus-vcs-via-vpi" class="md-skip">
+        <a href="#code-reviews" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              cocotb
+              Code Reviews
             
           </span>
         </div>
@@ -308,8 +308,6 @@
       
   
   
-    
-  
   
   
     
@@ -322,11 +320,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -347,7 +345,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -365,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../execution-context/" class="md-nav__link">
+      <a href="../../concepts/execution-context/" class="md-nav__link">
         
   
   
@@ -393,7 +391,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../root-config/" class="md-nav__link">
+      <a href="../../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -421,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tests/" class="md-nav__link">
+      <a href="../../concepts/tests/" class="md-nav__link">
         
   
   
@@ -449,7 +447,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../simulators/" class="md-nav__link">
+      <a href="../../concepts/simulators/" class="md-nav__link">
         
   
   
@@ -477,7 +475,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../regressions/" class="md-nav__link">
+      <a href="../../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -505,7 +503,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../dispatch/" class="md-nav__link">
+      <a href="../../concepts/dispatch/" class="md-nav__link">
         
   
   
@@ -533,7 +531,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../expected-failures/" class="md-nav__link">
+      <a href="../../concepts/expected-failures/" class="md-nav__link">
         
   
   
@@ -561,7 +559,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../coverage/" class="md-nav__link">
+      <a href="../../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -589,7 +587,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../plugins/" class="md-nav__link">
+      <a href="../../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -614,37 +612,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    cocotb
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../concepts/cocotb/" class="md-nav__link">
         
   
   
@@ -660,81 +631,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#supported-simulators" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Supported simulators
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Prerequisites
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#yaml-shape" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        YAML shape
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#passfail-detection" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pass/fail detection
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#testbench-field-reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Testbench field reference
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -747,7 +643,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../spec-traceability/" class="md-nav__link">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
         
   
   
@@ -775,7 +671,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../graph/" class="md-nav__link">
+      <a href="../../concepts/graph/" class="md-nav__link">
         
   
   
@@ -803,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../wave/" class="md-nav__link">
+      <a href="../../concepts/wave/" class="md-nav__link">
         
   
   
@@ -831,7 +727,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../hier/" class="md-nav__link">
+      <a href="../../concepts/hier/" class="md-nav__link">
         
   
   
@@ -859,7 +755,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../hub/" class="md-nav__link">
+      <a href="../../concepts/hub/" class="md-nav__link">
         
   
   
@@ -887,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../synthesis/" class="md-nav__link">
+      <a href="../../concepts/synthesis/" class="md-nav__link">
         
   
   
@@ -915,7 +811,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../pnr/" class="md-nav__link">
+      <a href="../../concepts/pnr/" class="md-nav__link">
         
   
   
@@ -943,7 +839,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../power/" class="md-nav__link">
+      <a href="../../concepts/power/" class="md-nav__link">
         
   
   
@@ -971,7 +867,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../fpga/" class="md-nav__link">
+      <a href="../../concepts/fpga/" class="md-nav__link">
         
   
   
@@ -999,7 +895,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../fpv/" class="md-nav__link">
+      <a href="../../concepts/fpv/" class="md-nav__link">
         
   
   
@@ -1027,7 +923,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../abv-simulation/" class="md-nav__link">
+      <a href="../../concepts/abv-simulation/" class="md-nav__link">
         
   
   
@@ -1055,7 +951,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../mut/" class="md-nav__link">
+      <a href="../../concepts/mut/" class="md-nav__link">
         
   
   
@@ -1083,7 +979,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../xplr/" class="md-nav__link">
+      <a href="../../concepts/xplr/" class="md-nav__link">
         
   
   
@@ -1111,7 +1007,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../axi-profile/" class="md-nav__link">
+      <a href="../../concepts/axi-profile/" class="md-nav__link">
         
   
   
@@ -1139,7 +1035,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tool-check/" class="md-nav__link">
+      <a href="../../concepts/tool-check/" class="md-nav__link">
         
   
   
@@ -1313,8 +1209,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -1325,11 +1223,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -1350,7 +1248,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1368,7 +1266,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/setup/" class="md-nav__link">
+      <a href="../setup/" class="md-nav__link">
         
   
   
@@ -1396,7 +1294,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/guidelines/" class="md-nav__link">
+      <a href="../guidelines/" class="md-nav__link">
         
   
   
@@ -1424,7 +1322,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/docs/" class="md-nav__link">
+      <a href="../docs/" class="md-nav__link">
         
   
   
@@ -1452,7 +1350,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/project-template/" class="md-nav__link">
+      <a href="../project-template/" class="md-nav__link">
         
   
   
@@ -1480,7 +1378,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../development/bundled-skills/" class="md-nav__link">
+      <a href="../bundled-skills/" class="md-nav__link">
         
   
   
@@ -1505,10 +1403,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../development/reviews/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Reviews
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1524,6 +1449,59 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#review-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Review Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#select-guidelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Select Guidelines
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#report-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Report Findings
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1644,10 +1622,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#supported-simulators" class="md-nav__link">
+  <a href="#review-scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Supported simulators
+        Review Scope
       
     </span>
   </a>
@@ -1655,10 +1633,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#select-guidelines" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        Select Guidelines
       
     </span>
   </a>
@@ -1666,32 +1644,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#yaml-shape" class="md-nav__link">
+  <a href="#report-findings" class="md-nav__link">
     <span class="md-ellipsis">
       
-        YAML shape
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#passfail-detection" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pass/fail detection
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#testbench-field-reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Testbench field reference
+        Report Findings
       
     </span>
   </a>
@@ -1718,74 +1674,53 @@
   
 
 
-<h1 id="cocotb-testbenches-verilator-icarus-vcs-via-vpi">cocotb testbenches (Verilator / Icarus / VCS via VPI)</h1>
-<p>Explains how <code>rtl_buddy</code> integrates <a href="https://www.cocotb.org">cocotb</a> — a coroutine-based Python verification framework — to drive RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.</p>
-<h2 id="supported-simulators">Supported simulators</h2>
-<p>cocotb runs against any builder whose simulator family is <strong><code>verilator</code></strong>, <strong><code>icarus</code></strong>, or <strong><code>vcs</code></strong> (resolved from the builder's executable name or an explicit <code>simulator-family:</code>; see <code>rtl-buddy docs show reference/yaml</code>). The simulator is chosen the same way as for any other test — the platform default, a suite/per-test <code>builder:</code> field, or <code>--builder</code> on the CLI:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>--builder<span class="w"> </span>icarus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>my_cocotb_test
-</code></pre></div>
-<p>The backends differ only in how <code>rtl_buddy</code> wires in the VPI shim, and your <code>tests.yaml</code> is identical for all three: Verilator builds a <code>--vpi</code> shared object, VCS loads <code>libcocotbvpi_vcs.so</code> with <code>+acc</code>/<code>-debug_access</code> at elaboration, and Icarus loads <code>libcocotbvpi_icarus</code> into <code>vvp</code> at run time (<code>vvp -M &lt;cocotb-libs&gt; -m libcocotbvpi_icarus</code>). A builder with any other family raises a <code>FatalRtlBuddyError</code> for cocotb tests.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<p><code>cocotb</code> must be installed in the active Python environment:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>add<span class="w"> </span>cocotb
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># or: pip install cocotb</span>
-</code></pre></div>
-<p>The runner calls <code>cocotb-config</code> at compile time. If it is missing, <code>rtl_buddy</code> raises a <code>FatalRtlBuddyError</code> with an actionable message rather than a raw traceback.</p>
-<h2 id="yaml-shape">YAML shape</h2>
-<p>Add <code>toplevel:</code> and a <code>cocotb:</code> block to a testbench entry in <code>tests.yaml</code>. <code>toplevel:</code> is <strong>required</strong> when <code>cocotb:</code> is present — omitting it is a fatal config error caught at load time.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">testbenches</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span><span class="w">          </span><span class="c1"># required: DUT top-level module name</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_my_design</span><span class="w">     </span><span class="c1"># Python module with @cocotb.test() coroutines</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_multi&quot;</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w">                    </span><span class="c1"># list form: all modules are loaded</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_smoke</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_corner_cases</span>
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;test_my_design&quot;</span>
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cocotb</span><span class="nv"> </span><span class="s">test&quot;</span>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/block/models.yaml&quot;</span>
-<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
-</code></pre></div>
-<h2 id="passfail-detection">Pass/fail detection</h2>
-<p>cocotb writes a JUnit XML results file (<code>cocotb_results.xml</code>) instead of <code>PASS</code>/<code>FAIL</code> stdout lines. <code>rtl_buddy</code> parses this file automatically — do <strong>not</strong> add <code>$display("PASS …")</code> in cocotb tests. The <code>desc</code> field reports the first three failure messages with a <code>(+N more)</code> suffix when there are more.</p>
-<h2 id="testbench-field-reference">Testbench field reference</h2>
+<h1 id="code-reviews">Code Reviews</h1>
+<p>This page is the single source of truth for reviewing <code>rtl_buddy</code> changes. It
+routes each change to the applicable domain guidelines while keeping shared
+review behavior in one place.</p>
+<h2 id="review-scope">Review Scope</h2>
+<p>Review only changes introduced by the pull request and the behavior they
+affect. When the pull request edits a guideline or review page, use the
+base-branch version as the rule for reviewing that change.</p>
+<p>Check every change against <a href="../guidelines/">Engineering Guidelines</a>. Report a
+guideline violation only when the changed code conflicts with a rule you can
+cite; do not promote generic preferences into defects.</p>
+<h2 id="select-guidelines">Select Guidelines</h2>
+<p>Apply every row whose scope matches the change:</p>
 <table>
 <thead>
 <tr>
-<th>Field</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
+<th>Guideline</th>
+<th>Apply when the change affects</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>toplevel</code></td>
-<td>string</td>
-<td>Yes (cocotb only)</td>
-<td>Top-level DUT module name → <code>COCOTB_TOPLEVEL</code></td>
+<td><a href="../docs/">Documentation</a></td>
+<td>Documentation, CLI help, configuration fields, or other user-visible behavior.</td>
 </tr>
 <tr>
-<td><code>cocotb.module</code></td>
-<td>string or list</td>
-<td>Yes</td>
-<td>Python test module(s) → <code>COCOTB_TEST_MODULES</code></td>
+<td><a href="../bundled-skills/">Bundled skills</a></td>
+<td>A file under <code>src/rtl_buddy/skill/</code> or the skill installer.</td>
+</tr>
+<tr>
+<td><a href="../project-template/">Project template</a></td>
+<td>Public CLI, configuration, workflow, plugin, or pass/fail behavior.</td>
 </tr>
 </tbody>
 </table>
-<p>See <code>rtl-buddy docs show reference/yaml</code> for the full <code>tests.yaml</code> schema.</p>
+<p>If the project template is unavailable, identify the expected downstream check
+as a follow-up instead of claiming that the downstream review passed.</p>
+<h2 id="report-findings">Report Findings</h2>
+<p>Keep normal pull request findings consequential, actionable, and limited to
+defects or gaps introduced by the change. Cite the exact rule or contract that
+the change violates.</p>
+<p>Put a line-specific finding inline when the review channel supports it. Keep
+summary feedback at the top level and do not duplicate a finding across both
+locations.</p>
+<p>For an explicitly requested full review, use the report format defined by the
+matching guideline page. A full review may report pre-existing gaps; a normal
+pull request review may not.</p>
 
 
 
