@@ -1486,10 +1486,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#bundled-skill" class="md-nav__link">
+  <a href="#bundled-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Bundled Skill
+        Bundled Skills
       
     </span>
   </a>
@@ -1824,10 +1824,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#bundled-skill" class="md-nav__link">
+  <a href="#bundled-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Bundled Skill
+        Bundled Skills
       
     </span>
   </a>
@@ -2156,10 +2156,12 @@ Sweep and preproc failures should return a setup-failure string so the suite rec
 <li>If you discovered or introduced a quirk or non-conventional behavior, add an entry to <code>docs/known-issues.md</code>. Treat this as a default step, not an afterthought.</li>
 <li><strong>If the PR carries the <code>version/major</code> label, add a <code>## vN to vM</code> section to <code>docs/migrations.md</code> covering every breaking behavior change — this is mandatory and blocks merge.</strong> See <a href="#releases">Releases</a>.</li>
 </ol>
-<h2 id="bundled-skill">Bundled Skill</h2>
-<p>The <code>rtl_buddy</code> agent skill ships inside the wheel at <code>src/rtl_buddy/skill/</code> and is installed by <code>rtl-buddy skill install</code>.
+<h2 id="bundled-skills">Bundled Skills</h2>
+<p>The <code>rtl_buddy</code> agent skill family ships inside the wheel at <code>src/rtl_buddy/skill/</code> and is installed by <code>rtl-buddy skill install</code>.
 There is no separate source-of-truth skill repo.</p>
-<p>Keep <code>src/rtl_buddy/skill/SKILL.md</code> short and agent-specific.
+<p>Keep the primary <code>src/rtl_buddy/skill/SKILL.md</code> focused on a basic feature overview and routing.
+Keep every bundled skill under 8 KiB.
+Specialists should contain only non-obvious, topic-specific agent guidance.
 Prefer links to local docs commands over duplicating reference content.
 Project-level installs are an override mechanism; the default install scope should remain user-level unless the policy is deliberately revisited.</p>
 <h2 id="issue-triage">Issue Triage</h2>

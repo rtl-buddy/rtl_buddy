@@ -1607,6 +1607,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-timeout-kill-can-leave-testlog-with-an-unflushed-tail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A timeout kill can leave test.log with an unflushed tail
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vcs-hierarchical-seed-file" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2185,6 +2196,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-timeout-kill-can-leave-testlog-with-an-unflushed-tail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A timeout kill can leave test.log with an unflushed tail
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vcs-hierarchical-seed-file" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2644,6 +2666,16 @@ warnings.</p>
 <h2 id="vcs-license-queue-waits-pause-sim_timeout-so-a-sim-can-visibly-outlive-it">VCS license-queue waits pause <code>sim_timeout</code>, so a sim can visibly outlive it</h2>
 <p>On a <code>vcs</code> builder, when <code>simv</code> prints the <code>-licqueue</code> banner (<code>Queuing for License</code> or <code>Licensed number of users already reached</code>), rtl_buddy pauses the per-sim <code>sim_timeout</code> clock until real simulator output resumes — a sim stuck behind a busy license server can therefore run far longer than its configured timeout without failing. The pause is announced with a <code>sim.license_queue</code> warning and the resume with <code>sim.license_granted</code> (both include the queued seconds in the log). Total queued time is capped at 1 hour; past the cap the normal timeout resumes counting and the eventual <code>sim.timeout</code> error reports the queue wait. Applies only to the <code>vcs</code> simulator family. See <a href="../concepts/tests/#vcs-license-queue-waits-and-sim_timeout">Tests</a>.</p>
 <p>What "real simulator output" means matters, because the pause ends on the first line outside the banner's vocabulary. If a VCS release adds a line to the banner that rtl_buddy does not recognise, the clock restarts while the sim is still queuing and every queued sim fails with <code>Sim hit timeout</code>, which reads as a design or testbench failure rather than a license one. The tell is <code>Licensed number of users already reached</code> in <code>test.err</code> alongside a timeout verdict. <code>extra-sim-timeout</code> on the builder is the backstop; see <a href="../concepts/tests/#extra-simulation-timeout-per-builder">Extra simulation timeout per builder</a>.</p>
+<h2 id="a-timeout-kill-can-leave-testlog-with-an-unflushed-tail">A timeout kill can leave <code>test.log</code> with an unflushed tail</h2>
+<p>When <code>sim_timeout</code> expires, rtl_buddy terminates the simulator process group. A
+process killed before it flushes its userspace output buffer can leave
+<code>artefacts/&lt;test&gt;/test.log</code> ending mid-line, often at a power-of-two byte count.
+The last captured line is therefore not reliable evidence of the exact cycle or
+transaction where the DUT stopped.</p>
+<p>Use the timeout triage order in <a href="../concepts/tests/#triaging-sim-hit-timeout">Tests</a>:
+compare sibling tests, determine whether simulated time was still advancing, and
+identify the last completed activity. Raising <code>sim_timeout</code> only helps a slow but
+progressing run; it does not fix a functional wedge or restore the missing tail.</p>
 <h2 id="vcs-hierarchical-seed-file">VCS hierarchical seed file</h2>
 <p>When using VCS with hierarchical instance seeding (<code>-xlrm hier_inst_seed</code>), VCS writes a <code>HierInstanceSeed.txt</code> file in the simulation directory after the run. <code>rtl_buddy</code> looks for this file to record the seed for reproducibility.</p>
 <p>If the file is missing, a <code>sim.hier_seed_missing</code> warning is emitted in the log and the seed is not recorded, but the test result is not affected.</p>

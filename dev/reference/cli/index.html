@@ -5264,48 +5264,48 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-81-6" name="__codelineno-81-6" href="#__codelineno-81-6"></a>│ --help          Show this message and exit.                                          │
 <a id="__codelineno-81-7" name="__codelineno-81-7" href="#__codelineno-81-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-81-8" name="__codelineno-81-8" href="#__codelineno-81-8"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-81-9" name="__codelineno-81-9" href="#__codelineno-81-9"></a>│ install          Install the bundled rtl_buddy skill.                                │
-<a id="__codelineno-81-10" name="__codelineno-81-10" href="#__codelineno-81-10"></a>│ uninstall        Remove the installed rtl_buddy skill files from the selected scope. │
-<a id="__codelineno-81-11" name="__codelineno-81-11" href="#__codelineno-81-11"></a>│ status           Report whether the skill is installed and whether it matches the    │
-<a id="__codelineno-81-12" name="__codelineno-81-12" href="#__codelineno-81-12"></a>│                  current package version.                                            │
-<a id="__codelineno-81-13" name="__codelineno-81-13" href="#__codelineno-81-13"></a>│ view             Print the bundled rtl_buddy skill to stdout.                        │
-<a id="__codelineno-81-14" name="__codelineno-81-14" href="#__codelineno-81-14"></a>│ print-gitignore  Print the gitignore lines for project-level skill installs.         │
-<a id="__codelineno-81-15" name="__codelineno-81-15" href="#__codelineno-81-15"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-81-9" name="__codelineno-81-9" href="#__codelineno-81-9"></a>│ install          Install the bundled rtl_buddy skill family.                         │
+<a id="__codelineno-81-10" name="__codelineno-81-10" href="#__codelineno-81-10"></a>│ uninstall        Remove installed rtl_buddy skill-family files from the selected     │
+<a id="__codelineno-81-11" name="__codelineno-81-11" href="#__codelineno-81-11"></a>│                  scope.                                                              │
+<a id="__codelineno-81-12" name="__codelineno-81-12" href="#__codelineno-81-12"></a>│ status           Report whether each skill is installed and matches the package      │
+<a id="__codelineno-81-13" name="__codelineno-81-13" href="#__codelineno-81-13"></a>│                  version.                                                            │
+<a id="__codelineno-81-14" name="__codelineno-81-14" href="#__codelineno-81-14"></a>│ view             Print the primary bundled rtl_buddy skill to stdout.                │
+<a id="__codelineno-81-15" name="__codelineno-81-15" href="#__codelineno-81-15"></a>│ print-gitignore  Print the gitignore lines for project-level skill installs.         │
+<a id="__codelineno-81-16" name="__codelineno-81-16" href="#__codelineno-81-16"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="skill-install">skill install</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-82-1" name="__codelineno-82-1" href="#__codelineno-82-1"></a>Usage: rtl-buddy skill install [OPTIONS]                                               
 <a id="__codelineno-82-2" name="__codelineno-82-2" href="#__codelineno-82-2"></a>
-<a id="__codelineno-82-3" name="__codelineno-82-3" href="#__codelineno-82-3"></a> Install the bundled rtl_buddy skill.                                                   
+<a id="__codelineno-82-3" name="__codelineno-82-3" href="#__codelineno-82-3"></a> Install the bundled rtl_buddy skill family.                                            
 <a id="__codelineno-82-4" name="__codelineno-82-4" href="#__codelineno-82-4"></a>
 <a id="__codelineno-82-5" name="__codelineno-82-5" href="#__codelineno-82-5"></a> Default scope is user-level (`~/.claude/skills/rtl-buddy/` and                         
 <a id="__codelineno-82-6" name="__codelineno-82-6" href="#__codelineno-82-6"></a> `~/.codex/skills/rtl-buddy/`). Use `--project` to install into the                     
 <a id="__codelineno-82-7" name="__codelineno-82-7" href="#__codelineno-82-7"></a> discovered project root instead; project-level copies take precedence                  
-<a id="__codelineno-82-8" name="__codelineno-82-8" href="#__codelineno-82-8"></a> over user-level when both exist. Use `--dir PATH` to write a single                    
-<a id="__codelineno-82-9" name="__codelineno-82-9" href="#__codelineno-82-9"></a> `PATH/rtl-buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
-<a id="__codelineno-82-10" name="__codelineno-82-10" href="#__codelineno-82-10"></a> layout entirely.                                                                       
-<a id="__codelineno-82-11" name="__codelineno-82-11" href="#__codelineno-82-11"></a>
-<a id="__codelineno-82-12" name="__codelineno-82-12" href="#__codelineno-82-12"></a> Installs made before the directory was renamed to `rtl-buddy` are                      
-<a id="__codelineno-82-13" name="__codelineno-82-13" href="#__codelineno-82-13"></a> migrated: a sibling `rtl_buddy/` carrying our version marker is removed                
-<a id="__codelineno-82-14" name="__codelineno-82-14" href="#__codelineno-82-14"></a> so no stale second copy is left behind.                                                
-<a id="__codelineno-82-15" name="__codelineno-82-15" href="#__codelineno-82-15"></a>
-<a id="__codelineno-82-16" name="__codelineno-82-16" href="#__codelineno-82-16"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-82-17" name="__codelineno-82-17" href="#__codelineno-82-17"></a>│ --project                   install into the discovered project root instead of the  │
-<a id="__codelineno-82-18" name="__codelineno-82-18" href="#__codelineno-82-18"></a>│                             user home                                                │
-<a id="__codelineno-82-19" name="__codelineno-82-19" href="#__codelineno-82-19"></a>│ --root                PATH  explicit target root (implies project-level layout)      │
-<a id="__codelineno-82-20" name="__codelineno-82-20" href="#__codelineno-82-20"></a>│ --dir                 PATH  write a single flat target at &lt;DIR&gt;/rtl-buddy/SKILL.md,  │
-<a id="__codelineno-82-21" name="__codelineno-82-21" href="#__codelineno-82-21"></a>│                             bypassing the .claude/.agents/.codex layout              │
-<a id="__codelineno-82-22" name="__codelineno-82-22" href="#__codelineno-82-22"></a>│ --no-claude                 skip writing the Claude Code target                      │
-<a id="__codelineno-82-23" name="__codelineno-82-23" href="#__codelineno-82-23"></a>│ --no-codex                  skip writing the Codex target                            │
-<a id="__codelineno-82-24" name="__codelineno-82-24" href="#__codelineno-82-24"></a>│ --no-gitignore              skip updating .gitignore on project-level installs       │
-<a id="__codelineno-82-25" name="__codelineno-82-25" href="#__codelineno-82-25"></a>│ --dry-run                   print what would be written and exit                     │
-<a id="__codelineno-82-26" name="__codelineno-82-26" href="#__codelineno-82-26"></a>│ --force                     overwrite even when content matches                      │
-<a id="__codelineno-82-27" name="__codelineno-82-27" href="#__codelineno-82-27"></a>│ --help                      Show this message and exit.                              │
-<a id="__codelineno-82-28" name="__codelineno-82-28" href="#__codelineno-82-28"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-82-8" name="__codelineno-82-8" href="#__codelineno-82-8"></a> over user-level when both exist. Use `--dir PATH` to write the family as               
+<a id="__codelineno-82-9" name="__codelineno-82-9" href="#__codelineno-82-9"></a> sibling directories under PATH, bypassing the `.claude`/`.agents` layout.              
+<a id="__codelineno-82-10" name="__codelineno-82-10" href="#__codelineno-82-10"></a>
+<a id="__codelineno-82-11" name="__codelineno-82-11" href="#__codelineno-82-11"></a> Installs made before the directory was renamed to `rtl-buddy` are                      
+<a id="__codelineno-82-12" name="__codelineno-82-12" href="#__codelineno-82-12"></a> migrated: a sibling `rtl_buddy/` carrying our version marker is removed                
+<a id="__codelineno-82-13" name="__codelineno-82-13" href="#__codelineno-82-13"></a> so no stale second copy is left behind.                                                
+<a id="__codelineno-82-14" name="__codelineno-82-14" href="#__codelineno-82-14"></a>
+<a id="__codelineno-82-15" name="__codelineno-82-15" href="#__codelineno-82-15"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-82-16" name="__codelineno-82-16" href="#__codelineno-82-16"></a>│ --project                   install into the discovered project root instead of the  │
+<a id="__codelineno-82-17" name="__codelineno-82-17" href="#__codelineno-82-17"></a>│                             user home                                                │
+<a id="__codelineno-82-18" name="__codelineno-82-18" href="#__codelineno-82-18"></a>│ --root                PATH  explicit target root (implies project-level layout)      │
+<a id="__codelineno-82-19" name="__codelineno-82-19" href="#__codelineno-82-19"></a>│ --dir                 PATH  write the skill family directly under &lt;DIR&gt;/, bypassing  │
+<a id="__codelineno-82-20" name="__codelineno-82-20" href="#__codelineno-82-20"></a>│                             the .claude/.agents/.codex layout                        │
+<a id="__codelineno-82-21" name="__codelineno-82-21" href="#__codelineno-82-21"></a>│ --no-claude                 skip writing the Claude Code target                      │
+<a id="__codelineno-82-22" name="__codelineno-82-22" href="#__codelineno-82-22"></a>│ --no-codex                  skip writing the Codex target                            │
+<a id="__codelineno-82-23" name="__codelineno-82-23" href="#__codelineno-82-23"></a>│ --no-gitignore              skip updating .gitignore on project-level installs       │
+<a id="__codelineno-82-24" name="__codelineno-82-24" href="#__codelineno-82-24"></a>│ --dry-run                   print what would be written and exit                     │
+<a id="__codelineno-82-25" name="__codelineno-82-25" href="#__codelineno-82-25"></a>│ --force                     overwrite even when content matches                      │
+<a id="__codelineno-82-26" name="__codelineno-82-26" href="#__codelineno-82-26"></a>│ --help                      Show this message and exit.                              │
+<a id="__codelineno-82-27" name="__codelineno-82-27" href="#__codelineno-82-27"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="skill-uninstall">skill uninstall</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-83-1" name="__codelineno-83-1" href="#__codelineno-83-1"></a>Usage: rtl-buddy skill uninstall [OPTIONS]                                             
 <a id="__codelineno-83-2" name="__codelineno-83-2" href="#__codelineno-83-2"></a>
-<a id="__codelineno-83-3" name="__codelineno-83-3" href="#__codelineno-83-3"></a> Remove the installed rtl_buddy skill files from the selected scope.                    
+<a id="__codelineno-83-3" name="__codelineno-83-3" href="#__codelineno-83-3"></a> Remove installed rtl_buddy skill-family files from the selected scope.                 
 <a id="__codelineno-83-4" name="__codelineno-83-4" href="#__codelineno-83-4"></a>
 <a id="__codelineno-83-5" name="__codelineno-83-5" href="#__codelineno-83-5"></a> Both the current `rtl-buddy` directory and the legacy `rtl_buddy` one are              
 <a id="__codelineno-83-6" name="__codelineno-83-6" href="#__codelineno-83-6"></a> cleaned, so an install predating the rename is fully removed.                          
@@ -5322,20 +5322,19 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <h2 id="skill-status">skill status</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-84-1" name="__codelineno-84-1" href="#__codelineno-84-1"></a>Usage: rtl-buddy skill status [OPTIONS]                                                
 <a id="__codelineno-84-2" name="__codelineno-84-2" href="#__codelineno-84-2"></a>
-<a id="__codelineno-84-3" name="__codelineno-84-3" href="#__codelineno-84-3"></a> Report whether the skill is installed and whether it matches the current package       
-<a id="__codelineno-84-4" name="__codelineno-84-4" href="#__codelineno-84-4"></a> version.                                                                               
-<a id="__codelineno-84-5" name="__codelineno-84-5" href="#__codelineno-84-5"></a>
-<a id="__codelineno-84-6" name="__codelineno-84-6" href="#__codelineno-84-6"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-84-7" name="__codelineno-84-7" href="#__codelineno-84-7"></a>│ --project              report status for the discovered project root instead of the  │
-<a id="__codelineno-84-8" name="__codelineno-84-8" href="#__codelineno-84-8"></a>│                        user home                                                     │
-<a id="__codelineno-84-9" name="__codelineno-84-9" href="#__codelineno-84-9"></a>│ --root           PATH  explicit target root (implies project-level layout)           │
-<a id="__codelineno-84-10" name="__codelineno-84-10" href="#__codelineno-84-10"></a>│ --help                 Show this message and exit.                                   │
-<a id="__codelineno-84-11" name="__codelineno-84-11" href="#__codelineno-84-11"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-84-3" name="__codelineno-84-3" href="#__codelineno-84-3"></a> Report whether each skill is installed and matches the package version.                
+<a id="__codelineno-84-4" name="__codelineno-84-4" href="#__codelineno-84-4"></a>
+<a id="__codelineno-84-5" name="__codelineno-84-5" href="#__codelineno-84-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-84-6" name="__codelineno-84-6" href="#__codelineno-84-6"></a>│ --project              report status for the discovered project root instead of the  │
+<a id="__codelineno-84-7" name="__codelineno-84-7" href="#__codelineno-84-7"></a>│                        user home                                                     │
+<a id="__codelineno-84-8" name="__codelineno-84-8" href="#__codelineno-84-8"></a>│ --root           PATH  explicit target root (implies project-level layout)           │
+<a id="__codelineno-84-9" name="__codelineno-84-9" href="#__codelineno-84-9"></a>│ --help                 Show this message and exit.                                   │
+<a id="__codelineno-84-10" name="__codelineno-84-10" href="#__codelineno-84-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="skill-view">skill view</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-85-1" name="__codelineno-85-1" href="#__codelineno-85-1"></a>Usage: rtl-buddy skill view [OPTIONS]                                                  
 <a id="__codelineno-85-2" name="__codelineno-85-2" href="#__codelineno-85-2"></a>
-<a id="__codelineno-85-3" name="__codelineno-85-3" href="#__codelineno-85-3"></a> Print the bundled rtl_buddy skill to stdout.                                           
+<a id="__codelineno-85-3" name="__codelineno-85-3" href="#__codelineno-85-3"></a> Print the primary bundled rtl_buddy skill to stdout.                                   
 <a id="__codelineno-85-4" name="__codelineno-85-4" href="#__codelineno-85-4"></a>
 <a id="__codelineno-85-5" name="__codelineno-85-5" href="#__codelineno-85-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-85-6" name="__codelineno-85-6" href="#__codelineno-85-6"></a>│ --help          Show this message and exit.                                          │

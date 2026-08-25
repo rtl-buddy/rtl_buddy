@@ -411,10 +411,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#set-up-the-agent-skill" class="md-nav__link">
+  <a href="#set-up-the-agent-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Set Up The Agent Skill
+        Set Up The Agent Skills
       
     </span>
   </a>
@@ -1702,10 +1702,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#set-up-the-agent-skill" class="md-nav__link">
+  <a href="#set-up-the-agent-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Set Up The Agent Skill
+        Set Up The Agent Skills
       
     </span>
   </a>
@@ -1904,11 +1904,11 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">dependencies</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;rtl_buddy==2.3.0rc1&quot;</span><span class="p">]</span>
 </code></pre></div>
 <p>This works without any <code>--pre</code> flag because the exact version is specified.</p>
-<h2 id="set-up-the-agent-skill">Set Up The Agent Skill</h2>
-<p><code>rtl_buddy</code> ships an agent skill for Claude Code and Codex. After installing <code>rtl_buddy</code>, run once per machine:</p>
+<h2 id="set-up-the-agent-skills">Set Up The Agent Skills</h2>
+<p><code>rtl_buddy</code> ships a small agent skill family for Claude Code and Codex. After installing <code>rtl_buddy</code>, run once per machine:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>skill<span class="w"> </span>install
 </code></pre></div>
-<p>This writes <code>SKILL.md</code> to <code>~/.claude/skills/rtl-buddy/</code> and <code>~/.codex/skills/rtl-buddy/</code>. Agents pick it up automatically. Re-run after upgrading <code>rtl_buddy</code> to refresh the content.</p>
+<p>This writes the primary <code>rtl-buddy</code> skill and its focused siblings under <code>~/.claude/skills/</code> and <code>~/.codex/skills/</code>. Agents pick them up automatically. Re-run after upgrading <code>rtl_buddy</code> to refresh the family.</p>
 <p>To install at project scope instead (overrides the user-level copy for that project):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>skill<span class="w"> </span>install<span class="w"> </span>--project
 </code></pre></div>

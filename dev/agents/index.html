@@ -1273,10 +1273,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#bundled-agent-skill" class="md-nav__link">
+  <a href="#bundled-agent-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Bundled agent skill
+        Bundled agent skills
       
     </span>
   </a>
@@ -1620,10 +1620,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#bundled-agent-skill" class="md-nav__link">
+  <a href="#bundled-agent-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Bundled agent skill
+        Bundled agent skills
       
     </span>
   </a>
@@ -1737,8 +1737,8 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;rtl-buddy&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;mcp&quot;</span><span class="p">]}}}</span>
 </code></pre></div>
 <p>Each tool returns its <code>--machine</code> counterpart's <code>payload</code> verbatim, wrapped in <code>{tool, ok, meta: {rtl_buddy_version, project_root, command}, payload}</code>; a failure is <code>ok: false</code> plus <code>error</code>, never a transport error. Install with <code>pip install 'rtl_buddy[mcp]'</code>. Everything MCP serves is also reachable from the CLI, so MCP is a convenience surface — never a prerequisite.</p>
-<h2 id="bundled-agent-skill">Bundled agent skill</h2>
-<p>The <code>rtl_buddy</code> wheel ships an agent skill that teaches Claude Code and Codex the conventions for invoking <code>rtl_buddy</code> — when to use <code>--machine</code>, where logs are written, how multi-suite runs lay out artefacts, and which docs to consult. Because the skill ships with the wheel, its content is locked to the installed <code>rtl_buddy</code> major version.</p>
+<h2 id="bundled-agent-skills">Bundled agent skills</h2>
+<p>The <code>rtl_buddy</code> wheel ships a small skill family. The primary <code>rtl-buddy</code> skill gives a basic purpose, use case, and invocation for each major feature, then routes advanced work to focused siblings for tests, dispatch, graph queries, formal verification, and implementation flows. Because the family ships with the wheel, its content matches the installed version.</p>
 <p>Users materialize the skill once with <code>rtl-buddy skill install</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w">             </span><span class="c1"># default: user-level</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w"> </span>--project<span class="w">   </span><span class="c1"># project-level (overrides user-level for that project)</span>
@@ -1757,24 +1757,25 @@
 <tbody>
 <tr>
 <td>User (default)</td>
-<td><code>~/.claude/skills/rtl-buddy/SKILL.md</code></td>
-<td><code>~/.codex/skills/rtl-buddy/SKILL.md</code></td>
+<td><code>~/.claude/skills/&lt;member&gt;/SKILL.md</code></td>
+<td><code>~/.codex/skills/&lt;member&gt;/SKILL.md</code></td>
 </tr>
 <tr>
 <td>Project (<code>--project</code>)</td>
-<td><code>&lt;root&gt;/.claude/skills/rtl-buddy/SKILL.md</code></td>
-<td><code>&lt;root&gt;/.agents/skills/rtl-buddy/SKILL.md</code></td>
+<td><code>&lt;root&gt;/.claude/skills/&lt;member&gt;/SKILL.md</code></td>
+<td><code>&lt;root&gt;/.agents/skills/&lt;member&gt;/SKILL.md</code></td>
 </tr>
 <tr>
 <td>Explicit dir (<code>--dir PATH</code>)</td>
-<td><code>&lt;PATH&gt;/rtl-buddy/SKILL.md</code> (single flat target)</td>
+<td><code>&lt;PATH&gt;/&lt;member&gt;/SKILL.md</code></td>
 <td>—</td>
 </tr>
 </tbody>
 </table>
-<p>User-level is the default because the skill is workflow-pattern guidance that changes rarely across <code>rtl_buddy</code> versions; a single copy per machine encourages keeping <code>rtl_buddy</code> aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent <code>rtl_buddy</code> major — Claude Code's resolution order puts the project copy first, so both scopes can coexist.</p>
-<p>Use <code>--dir PATH</code> when you need the skill written to an arbitrary directory without the <code>.claude</code>/<code>.agents</code> layout — it writes a single <code>PATH/rtl-buddy/SKILL.md</code> (mutually exclusive with <code>--project</code>/<code>--root</code>).</p>
-<p>The directory is named <code>rtl-buddy</code> (matching the <code>name:</code> in <code>SKILL.md</code>'s frontmatter, as the Agent Skills spec requires). Installs made before that rename landed in <code>rtl_buddy/</code>; re-running <code>rtl-buddy skill install</code> removes the old directory, <code>rtl-buddy skill status</code> flags it as a legacy-path install, <code>rtl-buddy skill uninstall</code> cleans both spellings, and a project-level install swaps the pre-rename patterns in <code>.gitignore</code> for the current ones (exact matches only, so a hand-edited line is left alone). Migration is per <strong>scope</strong>: an install run at one scope never touches the other's directories, so run it once at each scope you use — see <a href="../known-issues/#the-skill-directory-rename-migrates-only-the-scope-you-install-at">Quirks &amp; Known Issues</a>.</p>
+<p><code>&lt;member&gt;</code> is <code>rtl-buddy</code>, <code>rtl-buddy-test</code>, <code>rtl-buddy-dispatch</code>, <code>rtl-buddy-graph</code>, <code>rtl-buddy-fpv</code>, or <code>rtl-buddy-implementation</code>. The primary path remains unchanged from single-skill releases.</p>
+<p>User-level is the default because the skills are workflow-pattern guidance that changes rarely across <code>rtl_buddy</code> versions; one family per machine encourages keeping <code>rtl_buddy</code> aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent <code>rtl_buddy</code> major — Claude Code's resolution order puts the project copies first, so both scopes can coexist.</p>
+<p>Use <code>--dir PATH</code> when you need the family written to an arbitrary directory without the <code>.claude</code>/<code>.agents</code> layout — it writes the same sibling directories directly under PATH (mutually exclusive with <code>--project</code>/<code>--root</code>).</p>
+<p>Every directory matches its <code>name:</code> frontmatter, as the Agent Skills spec requires. Installs made before the primary rename landed in <code>rtl_buddy/</code>; re-running <code>rtl-buddy skill install</code> removes the old directory, adds missing specialist siblings, and refreshes all markers. <code>status</code> reports each member; <code>uninstall</code> cleans every managed member plus both primary spellings. Migration remains per <strong>scope</strong> — see <a href="../known-issues/#the-skill-directory-rename-migrates-only-the-scope-you-install-at">Quirks &amp; Known Issues</a>.</p>
 <p>For project-level installs, the install command prints the <code>.gitignore</code> lines to add. Pass <code>--no-gitignore</code> to skip that edit. Project root is discovered by walking up for <code>root_config.yaml</code> (falling back to <code>.git/</code>), so <code>rtl-buddy skill install --project</code> is safe to run from a <code>verif/</code> subdirectory.</p>
 <h2 id="local-docs-access">Local docs access</h2>
 <p>The wheel ships the full Markdown docs site alongside the CLI, exposed through:</p>

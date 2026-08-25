@@ -537,6 +537,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#triaging-sim-hit-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Triaging Sim hit timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#regression-levels" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1771,6 +1782,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#triaging-sim-hit-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Triaging Sim hit timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#regression-levels" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2045,6 +2067,27 @@
 <p>It is added to the test's own <code>sim_timeout</code> rather than replacing it, so per-test values keep their meaning. Keeping it per-builder is the point: a licensed simulator can wait, while a builder that never blocks keeps a tight timeout so a genuinely hung test still fails fast. <code>--extra-sim-timeout N</code> overrides every builder for one run, and <code>--extra-sim-timeout 0</code> turns a configured allowance off. When either applies, the resolved value is logged as <code>sim.timeout_extended</code>. A negative value is rejected: on the CLI by <code>min=0</code>, and in <code>root_config.yaml</code> with a fatal config error, because it would shrink the timeout rather than extend it.</p>
 <p>This covers the simulation phase only. <code>compile()</code> sets no timeout, so a license-queue wait during elaboration is bounded by the dispatch job's own time limit rather than by anything here; <code>has_license_queue_marker</code> attributes such a compile after the fact so a slow build is not mistaken for an undersized reservation.</p>
 <p>Under <code>--dispatch slurm</code> or <code>--dispatch local-parallel</code>, both paths reach the dispatched job: a builder's <code>extra-sim-timeout</code> because the child re-reads <code>root_config.yaml</code>, and <code>--extra-sim-timeout</code> because it is forwarded in the job's argv.</p>
+<h3 id="triaging-sim-hit-timeout">Triaging <code>Sim hit timeout</code></h3>
+<p><code>Sim hit timeout</code> means rtl_buddy's wall-clock timer reached the resolved
+<code>sim_timeout</code> and killed the simulator process. It says nothing about a
+testbench's simulated-time watchdog: a design can stop advancing simulated time
+while the wall clock keeps running, or a healthy but slow simulation can advance
+until the harness limit expires.</p>
+<p>Before increasing the limit:</p>
+<ol>
+<li>Run or inspect sibling tests under the same builder. If they also stall, start
+   with the shared build, tool, or environment rather than one test's timeout.</li>
+<li>Check <code>test.log</code> for timestamp or progress changes. Advancing simulated time
+   suggests a slow test; repeated last activity suggests a functional wedge.</li>
+<li>Identify the last completed phase or transaction, then check the corresponding
+   RTL/testbench condition before extending the wall-clock budget.</li>
+<li>Confirm the resolved value. A test without <code>sim_timeout</code> uses the 60-second
+   default, plus any builder/CLI allowance described above.</li>
+</ol>
+<p>Do not treat the final bytes in <code>test.log</code> as an exact stop location. A process
+killed at timeout may not flush its userspace output buffer, so the captured log
+can end mid-line—often at a power-of-two size—and omit the simulator's real tail.
+See <a href="../../known-issues/#a-timeout-kill-can-leave-testlog-with-an-unflushed-tail">Known Issues</a>.</p>
 <h3 id="regression-levels">Regression levels</h3>
 <p><code>reglvl</code> controls which tests run during a regression:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Same level for all builders</span>
@@ -2085,7 +2128,7 @@
 <li>Write the marker to stdout, not stderr.</li>
 <li>When using <code>FAIL</code>, follow it with an <code>ERR:</code> or <code>FAT:</code> line so the results table can say why the test failed.</li>
 <li>If a log carries <strong>both</strong> markers, <code>FAIL</code> wins, whichever came first, and a <code>postproc.conflicting_markers</code> warning is logged. A failure signal is never erased by a <code>PASS</code> line elsewhere in the transcript.</li>
-<li>If no <code>PASS</code> or <code>FAIL</code> marker is found, <code>rtl_buddy</code> records the test as <code>NA</code> with description <code>test result unknown</code>. <code>NA</code> does <strong>not</strong> pass, so such a test fails its regression.</li>
+<li>If no <code>PASS</code> or <code>FAIL</code> marker is found, <code>rtl_buddy</code> records the test as <code>NA</code> with description <code>test result unknown</code>. <code>NA</code> is non-passing and needs review, but does not by itself make the shell exit status nonzero.</li>
 <li>Do not rely on the simulator exit code alone to communicate pass/fail in non-UVM tests.</li>
 </ul>
 <h3 id="uvm-report-parsing">UVM report parsing</h3>
@@ -2107,7 +2150,7 @@
 <p>The global <code>-E</code>/<code>--early-stop</code> option halts a run after a given stage (<code>pre</code>, <code>comp</code>, <code>sim</code>, or <code>post</code>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span>-E<span class="w"> </span>comp<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
 </code></pre></div>
-<p>Stopping after a successful stage (e.g. <code>comp</code>) reports result <code>NA</code> (e.g. desc "Stopped early at compile") rather than a <code>PASS</code>/<code>FAIL</code> transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other <code>NA</code>. Because the exit code reflects whether <code>rtl_buddy</code> and its tools ran properly rather than the DUT verdict, a successful early stop still exits 0. If compilation itself fails, the result is <code>FAIL</code> with exit code 1, regardless of <code>--early-stop</code>.</p>
+<p>Stopping after a successful stage (e.g. <code>comp</code>) reports result <code>NA</code> (e.g. desc "Stopped early at compile") rather than a <code>PASS</code>/<code>FAIL</code> transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other <code>NA</code>. A successful early stop exits 0 because it produced no <code>FAIL</code>. If compilation itself fails, the result is <code>FAIL</code> with exit code 1, regardless of <code>--early-stop</code>.</p>
 <h3 id="result-statuses">Result statuses</h3>
 <p><code>rtl_buddy</code> reports one of these result statuses per test:</p>
 <table>
@@ -2141,7 +2184,10 @@
 </tbody>
 </table>
 <h3 id="exit-codes">Exit codes</h3>
-<p>The exit code reflects whether <code>rtl_buddy</code> and its tools ran, not the DUT verdict:</p>
+<p>The shell exit code is a coarse run status: it distinguishes a result set with a
+real <code>FAIL</code> from one without, and separates fatal configuration/environment
+errors. It does not preserve the per-test verdicts or distinguish <code>PASS</code>, <code>SKIP</code>,
+<code>XFAIL</code>, and <code>NA</code>; under <code>--machine</code>, parse <code>payload.results</code> for those details.</p>
 <table>
 <thead>
 <tr>
@@ -2156,7 +2202,7 @@
 </tr>
 <tr>
 <td>1</td>
-<td>One or more tests resulted in <code>FAIL</code> (a real fail verdict, or a tool/flow failure such as compilation failure)</td>
+<td>One or more tests resulted in a real <code>FAIL</code>, or strict expected-failure handling produced <code>XPASS</code></td>
 </tr>
 <tr>
 <td>2</td>
