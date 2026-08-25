@@ -92,18 +92,20 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 ## test
 
 ```text
-Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
+Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...                                         
                                                                                         
  run a simple test                                                                      
                                                                                         
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│   test_name      [TEST_NAME]  name of test [default: (run all tests)]                │
+│   test_name      [TEST_NAME]...  names of tests [default: (run all tests)]           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --test-config                  -c      TEXT     test_config.yaml to use              │
 │                                                 [default: tests.yaml]                │
 │ --list                                          list tests in the selected           │
 │                                                 test-config and exit                 │
+│ --filter                               TEXT     case-sensitive Python regex matched  │
+│                                                 against configured test names        │
 │ --coverage-merge                                merge coverage across selected       │
 │                                                 tests; uses raw merge for            │
 │                                                 summary/html and info-process for    │

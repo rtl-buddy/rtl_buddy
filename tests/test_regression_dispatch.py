@@ -1928,6 +1928,26 @@ def test_single_test_dispatch_submits_one_build_and_one_gated_job(
     assert "PASS" in result.output
 
 
+def test_multiple_test_dispatch_uses_one_build_and_selected_jobs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, rb = _invoke(["test", "extra", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in fake_backend.submitted] == ["extra", "basic"]
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.dependencies == ["fake-build", "fake-build"]
+    assert rb.share_build is True
+    assert [
+        cfg.get_name() for cfg in read_plan_configs(fake_backend.submitted[0].plan_path)
+    ] == [
+        "extra",
+        "basic",
+    ]
+
+
 def test_single_test_dispatch_keeps_the_test_commands_builder_mode(
     minimal_project: Path,
     fake_backend: _FakeBackend,

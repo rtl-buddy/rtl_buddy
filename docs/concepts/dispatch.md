@@ -95,7 +95,7 @@ recompiles (and fails) in its own sim job. `--dispatch` cannot be combined
 with `--early-stop`, and dispatched jobs deliberately skip the per-tree
 lock (see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
 
-## One test on the cluster: `rb test --dispatch`
+## Selected tests on the cluster: `rb test --dispatch`
 
 The three test-family commands take the same pair of flags, and they mean
 the same thing on each — only the *selection* differs:
@@ -104,25 +104,27 @@ the same thing on each — only the *selection* differs:
 |---|---|
 | `rb regression` | every suite in the regression config, at `-l`/`-s` |
 | `rb randtest <test> N` | one test, N seeds |
-| `rb test [<test>]` | one named test — or the suite, when no name is given |
+| `rb test [<test> ...]` | named tests, `--filter` matches, or the suite when neither is given |
 
 ```bash
-rb -B verilator -M reg test my_test -c verif/sch/tests.yaml --dispatch slurm
+rb -B verilator -M reg test smoke reset_error -c verif/sch/tests.yaml --dispatch slurm
 ```
 
-This is the **same planning path**, narrowed: one plan manifest, one sim
-job, one collected envelope — with a build job in front of it, gated with
-`afterok`, whenever the test's builder can share a build. When it cannot
-(a VCS builder, or one pinned with an absolute `builder-simv:`) there is no
-build job at all and the single sim job compiles inside its own allocation,
-ungated — the same rule the whole page follows,
+This is the **same planning path**, narrowed: one plan manifest, one sim job
+per selected test, and one collected envelope — with a build job in front,
+gated with `afterok`, whenever the test's builder can share a build. When it
+cannot (an unsupported simulator family, or one pinned with an absolute
+`builder-simv:`) there may be no build job and each sim job compiles inside
+its own allocation, ungated — the same rule the whole page follows,
 [below](#how-arrays-interact-with-the-shared-build). It exists because a
 single-test cluster run is what iterating on one failing test needs, and
 because on a shared submit host a large top-level build is not something to
 run locally at all
 ([#440](https://github.com/rtl-buddy/rtl_buddy/issues/440)).
 
-Everything `rb test` already carried composes unchanged: `-c`,
+Selection may be an explicit list or a case-sensitive regex such as
+`--filter '^smoke_'`; the two forms are mutually exclusive. Everything else
+`rb test` already carried composes unchanged: `-c`,
 `--reg-level` / `--start-level` (a test filtered out by level is skipped
 before the plan, exactly as in-process), `--share-build` (implied by
 `--dispatch` anyway), the `--coverage-*` set, and `-n` / `-l` seed
