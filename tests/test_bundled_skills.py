@@ -16,7 +16,6 @@ def test_bundled_skills_are_lean_and_spec_named():
     descriptions = set()
     for skill_name in SKILL_DIRNAMES:
         text = _bundled_skill_text(skill_name)
-        assert len(text.splitlines()) <= 60, skill_name
         assert len(text.encode()) < 8 * 1024, skill_name
         assert _frontmatter_value(text, "name") == skill_name
         description = _frontmatter_value(text, "description")

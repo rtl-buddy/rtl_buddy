@@ -54,7 +54,7 @@ Each tool returns its `--machine` counterpart's `payload` verbatim, wrapped in `
 
 ## Bundled agent skills
 
-The `rtl_buddy` wheel ships a small skill family. The primary `rtl-buddy` skill covers basic test/regression use and routes advanced work to focused siblings for tests, dispatch, graph queries, formal verification, and implementation flows. Because the family ships with the wheel, its content matches the installed version.
+The `rtl_buddy` wheel ships a small skill family. The primary `rtl-buddy` skill gives a basic purpose, use case, and invocation for each major feature, then routes advanced work to focused siblings for tests, dispatch, graph queries, formal verification, and implementation flows. Because the family ships with the wheel, its content matches the installed version.
 
 Users materialize the skill once with `rtl-buddy skill install`:
 

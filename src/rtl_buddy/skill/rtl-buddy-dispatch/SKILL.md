@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy-dispatch
-description: Run and diagnose rtl_buddy Slurm or local-parallel test dispatch, including shared builds, job dependencies, resource reservations, OOMs, retries, and right-sizing advice.
+description: Run and diagnose rtl_buddy Slurm or local-parallel dispatch; use for resources, OOMs, retries, and shared-build dependencies.
 ---
 
 # rtl_buddy dispatch

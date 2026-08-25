@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy-test
-description: Run and debug rtl_buddy simulation tests, randomized tests, and regressions, including result parsing, timeout triage, artefact locations, and shared-build behavior.
+description: Run and debug rtl_buddy tests, randtests, and regressions; use for verdicts, timeouts, artefacts, and shared builds.
 ---
 
 # rtl_buddy tests and regressions
@@ -39,6 +39,9 @@ testbench's simulated-time watchdog. Before raising it:
 3. Identify the last completed activity and distinguish slow progress from a
    functional wedge.
 4. Confirm the resolved timeout; an omitted `sim_timeout` defaults to 60 s.
+
+A recognized VCS `-licqueue` wait pauses the `sim_timeout` clock. Check the
+reported queue duration before treating a visibly long run as a timeout bug.
 
 A killed process may not flush its final output. A log ending mid-line, often at
 a power-of-two size, is a truncated buffer—not the point where the DUT stopped.

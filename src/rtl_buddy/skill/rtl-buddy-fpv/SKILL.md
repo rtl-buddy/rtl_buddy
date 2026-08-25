@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy-fpv
-description: Author, run, and review rtl_buddy formal property verification, including proof modes, UNKNOWN results, frontend limits, vacuity, cone-of-influence checks, and mutation guardrails.
+description: Run and review rtl_buddy formal verification; use for UNKNOWN results, frontend limits, vacuity, COI, and mutation guardrails.
 ---
 
 # rtl_buddy formal verification

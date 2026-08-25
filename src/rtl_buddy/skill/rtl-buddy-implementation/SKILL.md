@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy-implementation
-description: Run and interpret rtl_buddy synthesis, place-and-route, power, FPGA implementation, timing-closure, and XPLR design-space exploration workflows.
+description: Run and interpret rtl_buddy synthesis, P&R, power, FPGA, timing-closure, and XPLR design-space exploration workflows.
 ---
 
 # rtl_buddy implementation flows

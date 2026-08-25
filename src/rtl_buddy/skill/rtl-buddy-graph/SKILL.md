@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy-graph
-description: Query rtl_buddy's design knowledge graph, hierarchy, source locations, result overlay, hub, or MCP surface when an RTL question crosses files or design/config relationships.
+description: Query rtl_buddy graphs, hierarchy, sources, results, hub, or MCP when an RTL question crosses files or project relationships.
 ---
 
 # rtl_buddy graph and hierarchy

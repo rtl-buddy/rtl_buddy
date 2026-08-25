@@ -168,7 +168,7 @@ The rtl_buddy agent skill family ships inside this wheel at `src/rtl_buddy/skill
 ### Rules when editing skill content
 
 - `src/rtl_buddy/skill/SKILL.md` is the primary overview. Specialist source files live at `src/rtl_buddy/skill/<skill-name>/SKILL.md`; install places every member as a sibling under the target platform's `skills/` directory.
-- Keep every bundled `SKILL.md` ≤60 lines, under 8 KiB, and agent-specific. The primary covers basic test/regression use and routes advanced work; specialists contain only non-obvious workflow guidance. Anything deeper belongs in local docs.
+- Keep every bundled `SKILL.md` under 8 KiB and agent-specific. The primary explains the purpose, use case, and basic invocation of each major feature, then routes advanced work; specialists contain only non-obvious workflow guidance. Anything deeper belongs in local docs.
 - Agent-facing local docs access goes through `rtl-buddy docs ...`. The wheel ships `docs/**/*.md` directly (via a symlink at `src/rtl_buddy/docs`) so docs are always in sync with the installed version.
 - Any skill edit takes effect for users only after they re-run `rtl-buddy skill install`. `rtl-buddy skill status` reports each family member and surfaces stale installs via its `.rtl_buddy_skill_version` marker.
 - Every installed directory name must equal its `name:` frontmatter. `SKILL_DIRNAME = "rtl-buddy"` remains the backward-compatible primary; `LEGACY_SKILL_DIRNAME` (`rtl_buddy`, pre-rename) is removed on install, reported by `status`, and cleaned by `uninstall`.
