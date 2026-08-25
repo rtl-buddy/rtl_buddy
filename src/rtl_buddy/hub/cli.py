@@ -146,11 +146,9 @@ def cmd_start(
             "--model",
             help=(
                 "Generate view.json on hub start for this model name (looked "
-                "up in models.yaml). Replaces the legacy workflow of running "
-                "`rb hier <model> --format json -o .rtl-buddy/view.json` "
-                "manually before each hub start. When unset the hub falls "
-                "back to [mapping].view_json from hub.toml. Requires "
-                "--serve-viewer."
+                "up in models.yaml), avoiding a separate `rb hier` invocation. "
+                "When unset the hub falls back to [mapping].view_json from "
+                "hub.toml. Requires --serve-viewer."
             ),
         ),
     ] = None,

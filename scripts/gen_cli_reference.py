@@ -24,6 +24,7 @@ SUBCOMMANDS = [
     "filelist",
     "hier",
     "hier-query",
+    "mcp",
     "wave",
     "wave-fpv",
     "nvim-install",
@@ -32,13 +33,16 @@ SUBCOMMANDS = [
     "pnr",
     "power",
     "power-regression",
+    "fpga",
+    "fpga-regression",
     "saif",
+    "lint",
+    "lint-regression",
     "fpv",
     "fpv-regression",
     "tool-check",
     "graph",
     "cov",
-    "mcp",
     "axi-profile",
     "verible",
     "mut",
@@ -46,6 +50,7 @@ SUBCOMMANDS = [
     "skill",
     "docs",
     "spec",
+    "xplr",
 ]
 
 EXCLUDED_COMMANDS = {"cdc", "cdc-regression"}
@@ -58,7 +63,7 @@ description: Auto-generated CLI reference for documented rtl-buddy commands and 
 # CLI Reference
 
 This page is auto-generated from `rtl-buddy --help` output.
-Run `python scripts/gen_cli_reference.py` from the repo root to regenerate it.
+Run `uv run python scripts/gen_cli_reference.py` from the repo root to regenerate it.
 
 <!-- AUTO-GENERATED: do not edit below this line manually -->"""
 
@@ -74,7 +79,7 @@ def run_help(*args):
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{result.stderr}")
     plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
-    return plain.strip()
+    return "\n".join(line.rstrip() for line in plain.splitlines()).strip()
 
 
 def extract_subcommands(help_text):

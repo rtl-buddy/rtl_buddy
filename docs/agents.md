@@ -1,183 +1,143 @@
 ---
-description: How rtl_buddy is built for AI-agent use — the bundled skill, local docs access, machine mode, and the structured log and stdout contracts agents can rely on.
+description: Install the bundled agent skills, query version-matched local docs, and consume RTL Buddy's machine-readable command, graph, and log interfaces.
 ---
 
 # Agent use of rtl-buddy
 
-`rtl_buddy` is designed to be driven by AI coding agents as well as humans. This page describes the affordances that make agent integration practical:
+Agents should prefer RTL Buddy's local docs and structured command surfaces over parsing terminal formatting or searching the repository without context.
 
-- a **bundled agent skill** that installs into Claude Code and Codex,
-- **local docs access** through the `rtl-buddy docs` command, so reference material always matches the installed version,
-- a **machine mode** (`--machine`) that switches the orchestration log to JSON Lines and emits a stable stdout envelope on exit,
-- a **design knowledge graph** you query instead of grepping the tree, plus an **MCP server** (`rb mcp`) that exposes the same answers as discoverable tools,
-- and deterministic [exit codes](concepts/tests.md#exit-codes) that let an orchestrator distinguish test failures from configuration errors.
+## Find design context
 
-## Graph first, files last
-
-The default way to find anything in an rtl_buddy project is the [design knowledge graph](concepts/graph.md), not a file read. One `graph.json` holds modules, instances and ports from the elaborated RTL alongside tests, testbenches, models, spec blocks and coverage items from the YAML, in one id namespace, with the last regression result joined on.
-
-The contract is two steps:
-
-1. **Locate** with `rb --machine graph query "<question>"`. Matching is deterministic keyword scoring — no model call — and every match arrives with its neighbourhood, so structural context and pass/fail status come back together.
-2. **Cite** with `rb hier-query <model> source-snippet <path>`. Every node the graph returns carries a `cite` block with its `file` and `line`, and instance nodes carry the exact `source-snippet` command that quotes them.
-
-Raw file reads are the fallback for finding things, not the default: read a file once the graph has told you which file, and which lines.
-
-Where that rule stops, measured over six tasks in [Token Efficiency](concepts/graph.md#token-efficiency) — a hop through the graph is worth it when the file it saves you is bigger than the payload that replaces it, which today means:
-
-- **Ask the graph for relations grep cannot compute.** "Which tops contain `ip_cdc_sync`?" is one `explain` on the module node, exact, with the whole transitive closure already flattened by elaboration. Grep needs an iterative fixpoint over mentions, gets false positives from comments, and is quietly wrong if you stop a round early. Measured at token parity and roughly half the calls.
-- **Ask it for chains that cross tiers.** Coverage item to tests to testbenches to model to DUT to spec doc to golden model is two calls and the cheapest of the two routes.
-- **Do not ask it to enumerate a config tier.** Which tests exercise a block, at which `reglvl`, claiming which coverage items — the `tests.yaml` that answers it is smaller than the `explain` payloads that would replace it, every time.
-- **Do not ask it a single-file question.** A module's port list, one instance's connections: let the graph name the file and the line range, then read those lines.
-
-Edges come back lean by default — the peer's id, label and type, enough to decide whether to hop. `--expand` (CLI) / `"expand": true` (MCP) restores a full node summary per peer; it costs about a peer summary each, so prefer a second lean call on the one peer you need.
+Build the [design knowledge graph](concepts/graph.md) after source or config changes, refresh its results after a regression, and use it for relationships that require elaboration or cross config boundaries:
 
 ```bash
-rb --machine graph build                                    # once per source change
-rb --machine graph results                                  # after a regression
-rb --machine graph query "which tests cover SAND-FUNC-FLAG-C-ADD"  # locate + status
-rb --machine graph explain test:verif/demo_tiny_alu#flags          # one node in full
-rb --machine graph path cocotb_random module:demo_tiny_alu        # how related?
+rb --machine graph build
+rb --machine graph results
+rb --machine graph query "which tests cover SAND-FUNC-FLAG-C-ADD"
+rb --machine graph explain test:verif/demo_tiny_alu#flags
+rb --machine graph path cocotb_random module:demo_tiny_alu
 ```
 
-`graph query` exits 1 when nothing matched (a graceful "no"), 2 when there is no graph to query — the error names `rb graph build`. Details, flags and the node/edge vocabulary: `rtl-buddy docs show concepts/graph`.
+Use the graph to locate a source, then cite the exact implementation with the returned `cite` information or:
 
-### MCP
+```bash
+rb hier-query <model> source-snippet <instance-path>
+```
 
-`rb mcp` serves the same verbs — plus `cov_summary`, `cov_module`, `find_module`, `instances_of`, `port_connections`, `source_snippet` and, when a hub is running, the live-session tools — as MCP tools over stdio. It needs no daemon and is configured statically:
+A query exits 1 when nothing matches and 2 when no graph exists. Full node expansion costs more; request `--expand` only when the lean peer summaries are insufficient. Read files directly for single-file questions or when the relevant config is smaller than a graph response.
+
+## Use the MCP server
+
+`rb mcp` exposes graph, coverage, hierarchy, and available live-hub operations as MCP tools over stdio:
 
 ```json
 {"mcpServers": {"rtl-buddy": {"command": "rb", "args": ["mcp"]}}}
 ```
 
-Each tool returns its `--machine` counterpart's `payload` verbatim, wrapped in `{tool, ok, meta: {rtl_buddy_version, project_root, command}, payload}`; a failure is `ok: false` plus `error`, never a transport error. Install with `pip install 'rtl_buddy[mcp]'`. Everything MCP serves is also reachable from the CLI, so MCP is a convenience surface — never a prerequisite.
+Install the optional SDK first:
+
+```bash
+uv add "rtl_buddy[mcp]"
+```
+
+Each response wraps the corresponding `--machine` payload in `{tool, ok, meta, payload}`. Command-level failures return `ok: false` and an `error`; they do not become transport failures. The CLI provides the same operations when MCP is unavailable.
 
 ## Bundled agent skills
 
-The `rtl_buddy` wheel ships a small skill family. The primary `rtl-buddy` skill gives a basic purpose, use case, and invocation for each major feature, then routes advanced work to focused siblings for tests, dispatch, graph queries, formal verification, and implementation flows. Because the family ships with the wheel, its content matches the installed version.
-
-Users materialize the skill once with `rtl-buddy skill install`:
+The wheel includes a version-matched skill family for Claude Code and Codex. The primary `rtl-buddy` skill routes advanced work to focused test, dispatch, graph, formal, and implementation skills.
 
 ```bash
-rtl-buddy skill install             # default: user-level
-rtl-buddy skill install --project   # project-level (overrides user-level for that project)
-rtl-buddy skill uninstall           # remove skill files
+rb skill install
+rb skill status
+rb skill uninstall
 ```
 
-See [cli reference](reference/cli.md) for full `rb skill` interface.
-
-Install targets:
+Install scope determines the target:
 
 | Scope | Claude Code | Codex |
-|-------|-------------|-------|
+| --- | --- | --- |
 | User (default) | `~/.claude/skills/<member>/SKILL.md` | `~/.codex/skills/<member>/SKILL.md` |
 | Project (`--project`) | `<root>/.claude/skills/<member>/SKILL.md` | `<root>/.agents/skills/<member>/SKILL.md` |
 | Explicit dir (`--dir PATH`) | `<PATH>/<member>/SKILL.md` | — |
 
-`<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, or `rtl-buddy-implementation`. The primary path remains unchanged from single-skill releases.
+`<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, or `rtl-buddy-implementation`.
 
-User-level is the default because the skills are workflow-pattern guidance that changes rarely across `rtl_buddy` versions; one family per machine encourages keeping `rtl_buddy` aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent `rtl_buddy` major — Claude Code's resolution order puts the project copies first, so both scopes can coexist.
+Use project scope only to override user-level skills for a project pinned to a different major. Project discovery walks up for `root_config.yaml`, then `.git/`. Use `--dir PATH` for a flat family outside the normal layout; it cannot be combined with `--project` or `--root`.
 
-Use `--dir PATH` when you need the family written to an arbitrary directory without the `.claude`/`.agents` layout — it writes the same sibling directories directly under PATH (mutually exclusive with `--project`/`--root`).
-
-Every directory matches its `name:` frontmatter, as the Agent Skills spec requires. Installs made before the primary rename landed in `rtl_buddy/`; re-running `rtl-buddy skill install` removes the old directory, adds missing specialist siblings, and refreshes all markers. `status` reports each member; `uninstall` cleans every managed member plus both primary spellings. Migration remains per **scope** — see [Quirks & Known Issues](known-issues.md#the-skill-directory-rename-migrates-only-the-scope-you-install-at).
-
-For project-level installs, the install command prints the `.gitignore` lines to add. Pass `--no-gitignore` to skip that edit. Project root is discovered by walking up for `root_config.yaml` (falling back to `.git/`), so `rtl-buddy skill install --project` is safe to run from a `verif/` subdirectory.
+Re-run installation after upgrading. It refreshes every member and removes obsolete skill directories at the selected scope. Install or uninstall once at every scope you use. Project installation updates `.gitignore`; pass `--no-gitignore` to suppress that edit.
 
 ## Local docs access
 
-The wheel ships the full Markdown docs site alongside the CLI, exposed through:
+The wheel includes the docs for its installed version:
 
 ```bash
-rtl-buddy docs list
-rtl-buddy docs show agents
-rtl-buddy --machine docs show reference/yaml
+rb docs list
+rb docs show agents
+rb docs show concepts/tests#interpret-results
+rb --machine docs list
+rb --machine docs show reference/yaml
 ```
 
-This is the recommended reference surface for agents: the docs are local (no network), and their content always matches the installed version of `rtl_buddy`. `docs list` enumerates each page's slug, title, and description; `docs show` returns the canonical Markdown for a single page. GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> remains available as a human-facing fallback.
+`docs list` returns each page's slug, title, and frontmatter description. `docs show` accepts a slug and optional section anchor.
 
-Note one exception to the [machine-mode envelope](#machine-mode) below: under `--machine`, `docs show` prints the raw page payload as a **bare JSON object** (not wrapped in the standard `{command, exit_code, meta, payload}` envelope), because its whole purpose is to hand you the page content directly. `docs list` does use the standard envelope — the page list is under `payload.pages`.
+In machine mode, `docs list` uses the standard command envelope. `docs show` is the exception: it prints the page payload as a bare JSON object so consumers can use the content directly.
 
 ## Machine mode
 
-Passing `--machine` switches `rtl_buddy` into a mode designed for programmatic consumption:
-
-- `rtl_buddy.log` is written as **JSON Lines** instead of human-readable text.
-- Console output drops Rich formatting, colors, and spinners.
-- Commands that produce structured results print a single JSON envelope to **stdout** on exit.
-- Anything a `sweep` / `preproc` hook script **prints** is captured and re-emitted as a `hook.stdout` log event (console on stderr, plus `rtl_buddy.log` with the hook `script` and `stage`), so a hook's own progress output can never precede the envelope. The capture rebinds `sys.stdout`, so it does not cover a hook that shells out to a tool inheriting fd 1 — see [Hooks](concepts/plugins.md#hooks).
-
-The intent is that an orchestrator can determine the outcome of a run by parsing the stdout envelope, and reconstruct timing or per-event detail from `rtl_buddy.log`, without screen-scraping human-formatted output.
+Pass `--machine` before the subcommand:
 
 ```bash
-rtl-buddy --machine test basic
-rtl-buddy --machine regression -c design/regression.yaml
+rb --machine test basic
+rb --machine regression -c regression.yaml
 ```
 
-### Stdout envelope
+Machine mode:
 
-In machine mode, structured-result commands print a single JSON object to stdout on exit:
+- writes `rtl_buddy.log` as JSON Lines;
+- disables Rich formatting, colors, and spinners;
+- prints one structured JSON result to stdout for supported commands;
+- captures Python hook stdout as `hook.stdout` events so it cannot corrupt the result.
+
+A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process explicitly; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
+
+## Parse command results
+
+Structured commands emit this top-level shape:
 
 ```json
 {
   "command": "test",
   "exit_code": 0,
   "meta": {
-    "rtl_buddy_version": "2.4.0",
-    "argv": ["rtl-buddy", "--machine", "test", "basic"],
+    "rtl_buddy_version": "6.40.0",
+    "argv": ["rb", "--machine", "test", "basic"],
     "cwd": "/path/to/suite",
     "git": {"branch": "main", "commit": "abc1234", "modified": 0, "staged": 0}
   },
   "payload": {
-    "results": [
-      {"name": "basic", "result": "PASS", "desc": "basic completed"}
-    ]
+    "results": [{"name": "basic", "result": "PASS", "desc": "basic completed"}]
   }
 }
 ```
 
-The envelope shape is the same across commands:
+Parse the whole stdout value with `json.loads()`. The stable top-level fields are `command`, `exit_code`, `meta`, and command-specific `payload`. Optional fields may be added under `meta` or `payload`; incompatible changes require a major version change.
 
-- `command` — the subcommand that was run (`"test"`, `"regression"`, `"synth"`, …).
-- `exit_code` — integer exit code (see [exit codes](concepts/tests.md#exit-codes)).
-- `meta` — version, argv, working directory, and git status at invocation.
-- `payload` — command-specific structured data.
+Common payload conventions:
 
-`json.loads()` on the whole of stdout is the supported way to read it — no line-scanning for the object is needed, including for suites whose hooks print. The one way a suite can still break that is a hook that runs an external process without redirecting its stdout; `docs/concepts/plugins.md` says how to avoid it.
+- listing commands use `payload.names`;
+- regression results use `payload.results` and include `suite`;
+- `docs list` uses `payload.pages`;
+- coverage and formal commands attach structured metrics and artefact paths to their results.
 
-The top-level envelope fields are reserved and versioned by `meta.rtl_buddy_version` under `rtl_buddy`'s normal semantic-versioning rules. Adding optional fields under `meta` or `payload` is non-breaking; removing fields, renaming fields, changing field types, or changing the meaning of an existing field is breaking.
+Use [Coverage](concepts/coverage.md) and [Formal Property Verification](concepts/fpv.md) for their payload-specific contracts. Use [Tests](concepts/tests.md#interpret-results) for status and exit-code semantics.
 
-Conventions inside `payload`:
+## Read event logs
 
-- `--list` commands (`test --list`, `synth --list`, …) populate `payload.names`.
-- Regression commands populate `payload.results`, with a `"suite"` field on each entry.
-- `docs list` populates `payload.pages` with `slug`, `title`, and `description` from page frontmatter.
-
-When a run computes coverage or formal guardrail results, they ride on `payload` as structured numbers (not display strings), so a consumer can gate on them without re-parsing artifacts:
-
-- **Coverage** (`test`, `regression` with a `--coverage-merge*` flag): each `payload.results` entry that produced coverage carries `"coverage": {line, branch, toggle, expression, functional}` (percentages as floats in `[0, 1]`, or `null` when a metric wasn't collected). A merged run also adds a top-level `payload.coverage` with `merged` (the same fields aggregated across the run) and, when `--coverage-dir-summary` is given, `dir_summary` (a list of `{prefix, line, branch, toggle, functional}`).
-- **Coverage artefacts** (`test`, `regression`, no flag required): `payload.coverage.artefacts` names every coverage artefact the run wrote, project-relative — `manifest`, `model`, `merged_info`, `merged_raw`, `merged_desc`, `html_dir`, `datasets`, `descriptions`, `coverview_zip`, `coverview_per_test_zip`. Paths, not the display lines the summary prints. `manifest` points at `cov_dir/manifest.json`, and `model` at the [structured coverage model](concepts/coverage.md#the-coverage-model) — per file, per point, with the per-test attribution behind each point. Read them back later with `rb --machine cov summary` / `rb --machine cov module <name>` instead of re-running the regression.
-- **Cover points** (`test`, `regression`): where `functional` is one scalar for the whole run, `covers` names the individual points behind it — a list of `{name, file, line, module, hits}`, present both on each `payload.results` entry (that test's counts) and on `payload.coverage` (summed across the run). `name` is the SVA `cover property` label, which is what lets you grade *which* verification-plan items a suite exercised rather than just how many. `hits` sums every instance of a point within its module, so treat `hits > 0` as "covered" — Verilator folds a point's instances together before writing the database, so a point instantiated three times arrives as one entry with the counts added up. Entries are one per point per containing `module`, so the list always lines up with `functional`: same points, same hit/total.
-    - **`name` is not a unique key.** Two files can use the same label, and one cover property compiled into several modules (typically one living in an `include`d file) appears once per module. Key on `(file, line, name, module)` — that is what the list is folded on. Grading by label alone means folding by `name` yourself, which is deliberate: a point hit in one module and never in another shows as two entries here, and combining them would hide that hole behind a single nonzero count.
-    - `name` is `null` only if the simulator recorded a user coverage point carrying neither a comment nor a hierarchy path, which should not happen for a labeled `cover property`. Such a point still counts toward `functional` and still appears in the list — dropping it would make the list disagree with the ratio — but it cannot be mapped to a plan item. If you see one, `rtl_buddy.log` carries a `coverage.cover_point.unnamed` DEBUG event with its file and line.
-    - Unlike the metrics above this needs no `--coverage-merge*` flag — the points are read from the per-test raw databases. `file` is the path as the simulator recorded it, which may be relative to the run directory. Verilator only: on other simulator families the field is absent, which means "not collected", not "nothing covered".
-- **FPV guardrails** (`fpv`, `fpv-regression`): each `payload.results` entry carries `"vacuity"` (per-property witnesses plus `vacuous`/`candidates` counts) and `"coi"` (`percent`, `coi_cells`, `total_cells`, and an `assumes` block with `total`/`in_assert_coi`/`dead`) whenever the run computed them. A vacuous PASS or a dead assume is a false green — gate on these, not just `result`.
-
-These same summaries are also emitted to `rtl_buddy.log` as a `"summary"` event (with `rows` and `metadata`) in machine mode, mirroring the human results table.
-
-### JSONL log format
-
-In machine mode, each line of `rtl_buddy.log` is a JSON object describing one event:
+Each line in a machine-mode `rtl_buddy.log` is one JSON event:
 
 ```json
-{"event": "sim.completed", "test": "smoke", "duration_sec": 4.2, "message": "smoke: simulation completed in 4.20s"}
-{"event": "postproc.completed", "test": "smoke", "result": "PASS", "desc": "smoke completed", "message": "smoke: post-processing completed with result PASS (smoke completed)"}
+{"event":"sim.completed","test":"smoke","duration_sec":4.2,"message":"smoke: simulation completed in 4.20s"}
+{"event":"postproc.completed","test":"smoke","result":"PASS","desc":"smoke completed","message":"smoke: post-processing completed with result PASS"}
 ```
 
-Common fields:
-
-- `event` — dotted event name identifying what happened (`sim.start`, `compile.failed`, `postproc.completed`, …).
-- `message` — the human-readable rendering of the event.
-- Event-specific fields — test name, duration, seed, exit code, file paths, etc.
-
-The authoritative per-test outcome is the `postproc.completed` event's `result` and `desc` fields. For multi-suite commands, each suite directory gets its own `rtl_buddy.log`.
+Use `event` as the discriminator and consume event-specific fields rather than parsing `message`. For a test, `postproc.completed.result` and `.desc` are authoritative. Multi-suite runs also write a log in each suite directory.

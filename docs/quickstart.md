@@ -1,36 +1,28 @@
 ---
-description: Run your first rtl_buddy test, regression, synthesis, and supporting commands in an already-installed project.
+description: Run tests, regressions, synthesis, and randomized simulation in an existing RTL Buddy project.
 ---
 
 # Quick Start
 
-Use this guide to run your first `rtl_buddy` test, regression, synthesis, and supporting commands in an already-installed project.
+Run these commands from an installed project. See [Installation](install.md) if `uv run rb --version` fails.
 
-## Run a test
+## Run tests
 
-Run the test named `basic` using `tests.yaml` in the current directory:
+From a suite directory containing `tests.yaml`:
 
 ```bash
+uv run rb test --list
 uv run rb test basic
+uv run rb test
 ```
 
-Specify a different test config file:
+The first command lists tests, the second runs `basic`, and the third runs every test. From another directory, identify the suite explicitly:
 
 ```bash
 uv run rb test basic --test-config path/to/tests.yaml
 ```
 
-Run all tests in a config:
-
-```bash
-uv run rb test
-```
-
-List available tests without running them:
-
-```bash
-uv run rb test --list
-```
+Outputs land beside `tests.yaml`, not in the directory where you invoked the command. See [Execution Context](concepts/execution-context.md).
 
 ## Run a regression
 
@@ -38,65 +30,47 @@ uv run rb test --list
 uv run rb regression
 ```
 
-This uses the regression config path from `root_config.yaml`. To specify a different file:
+This uses `./regression.yaml` when present, then the path configured in `root_config.yaml`. To choose another manifest:
 
 ```bash
 uv run rb regression --reg-config path/to/regression.yaml
 ```
 
-## Run synthesis
+See [Regressions](concepts/regressions.md) for level filtering and parallel dispatch.
 
-List synthesis entries in a config:
-
-```bash
-uv run rb synth --list --synth-config path/to/synth.yaml
-```
-
-Run a synthesis entry:
-
-```bash
-uv run rb synth smoke_synth --synth-config path/to/synth.yaml
-```
-
-See [Synthesis](concepts/synthesis.md) for `synth.yaml`, tool, and library configuration.
-
-## Run with randomization
-
-Run a test once with a new random seed:
+## Run randomized tests
 
 ```bash
 uv run rb test basic --rnd-new
-```
-
-Run the same test 5 times with different seeds:
-
-```bash
 uv run rb randtest basic 5
-```
-
-Repeat a specific iteration from a previous `randtest` run:
-
-```bash
 uv run rb randtest basic 5 --rnd-rpt 3
 ```
 
-## Check logs
+These commands run once with a new seed, run five distinct iterations, and replay iteration 3 respectively. Seeds are recorded with the test artefacts.
 
-`rtl_buddy` writes orchestration logs to `rtl_buddy.log` in the directory where it is run.
+## Run synthesis
 
-Simulation output for each test goes to `artefacts/{test_name}/`. A single run writes `test.log`, `test.err`, `test.randseed`, and (if coverage is enabled) `coverage.dat` directly there. Repeated runs (via `randtest`) write each iteration into a numbered subdirectory: `artefacts/{test_name}/run-0001/`, `run-0002/`, and so on. For convenience, the symlinks `test.log`, `test.err`, and `test.randseed` in the suite root always point to the latest run.
+```bash
+uv run rb synth --list --synth-config path/to/synth.yaml
+uv run rb synth smoke_synth --synth-config path/to/synth.yaml
+```
 
-For machine-readable output (useful with CI or AI agents):
+The required backend and library configuration is covered in [Synthesis](concepts/synthesis.md).
+
+## Inspect results
+
+Each suite writes orchestration output to `rtl_buddy.log` and per-test output under `artefacts/<test>/`. A `randtest` iteration uses `artefacts/<test>/run-NNNN/`; latest-run symlinks remain at the test artefact root.
+
+For programmatic output:
 
 ```bash
 uv run rb --machine test basic
 ```
 
-In machine mode, `rtl_buddy.log` is written as JSON Lines and console output is plain text. See [For Agents](agents.md) for more on machine mode.
+See [Agent Use](agents.md#machine-mode) for the JSON contract and [Tests](concepts/tests.md#interpret-results) for verdicts and exit codes.
 
-## Next steps
+## Configure a project
 
-- [Concepts: Tests](concepts/tests.md) — understand the test config model
-- [Concepts: Regressions](concepts/regressions.md) — run multi-suite regressions
-- [Concepts: Synthesis](concepts/synthesis.md) — run Yosys synthesis flows
-- [YAML Formats](reference/yaml.md) — full config file reference
+- [Root Config](concepts/root-config.md) — platforms, builders, and tool paths
+- [Tests](concepts/tests.md) — `tests.yaml`
+- [YAML Formats](reference/yaml.md) — complete schemas

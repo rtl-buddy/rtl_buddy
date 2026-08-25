@@ -1,123 +1,74 @@
 ---
-description: How to install rtl_buddy into a project using uv, including prerequisites and verification steps.
+description: Install RTL Buddy with uv, verify it, and add the external tools required by each workflow.
 ---
 
 # Installation
 
-`rtl_buddy` is available on PyPI and installed into your project environment with `uv`.
+Install RTL Buddy in a Python 3.11 or newer project with [uv](https://docs.astral.sh/uv/).
 
-## Prerequisites
-
-- Python 3.11 or later
-- `uv`
-
-Everything else is feature-dependent: which external tools you need is decided by which `rb` commands you use. The matrix below maps each command to its required and optional tools.
-
-## Dependency types
-
-rtl_buddy classifies dependencies into four buckets:
-
-- **Required dependency**: Installed automatically with the `rtl_buddy` wheel; no external setup.
-- **Integrated tool**: A rtl_buddy feature is built around one specific tool; you must install that exact tool to use the feature with no alternatives supported.
-- **Pluggable**: rtl_buddy defines an interface; any tool that fits the interface works. rtl_buddy does not know what the tool specifically is or does — it just hands it the inputs the interface promises and consumes the outputs the interface promises.
-- **Pluggable, curated**: tools that plug into the same plug point as **Pluggable**, but rtl_buddy carries first-class optimizations triggered by the tool name (e.g. coverage merging tuned for a specific simulator, a two-stage flow when a specific synthesis backend is selected). Having curated tools does not prevent non-curated tools from plugging into the same plug points.
-
-## Required dependencies
-
-These are installed automatically when you `uv add rtl_buddy` — no action needed:
-
-- `typer`, `click`, `pyserde[yaml]`, `ruamel.yaml`, `rich` — core CLI and config parsing.
-- `pywellen` — FST/VCD waveform reader. Used by `rb wave` annotation regardless of which waveform viewer is configured; the data layer is viewer-independent, which is why it ships with the wheel rather than as a Surfer-side install step.
-
-## External tools by feature
-
-| Command / feature | Integration type | Curated tools | Sub-deps and notes |
-|---|---|---|---|
-| `rb test`, `rb randtest`, `rb regression` | Pluggable | Verilator, Icarus Verilog (`brew install icarus-verilog` / `apt install iverilog`), VCS | Select the simulator per suite/test with `builder:` (or `--builder`); see [tests.yaml](reference/yaml.md#selecting-the-simulator-builder). Install the `lcov` package in your OS for LCOV / HTML coverage export from Verilator runs (coverage is Verilator-only — see [Known Issues](known-issues.md#coverage-follows-the-platform-builder-not-a-per-testsuite-builder)). |
-| `rb regression --dispatch slurm`, `rb randtest --dispatch slurm`, `rb test --dispatch slurm` | Optional external | Slurm client (`sbatch`/`squeue`/`sacct`/`scancel`) | Only for dispatching regression jobs to a Slurm cluster; the default `--dispatch local` needs nothing extra. Requires a shared filesystem between submit host and compute nodes; `sacct` (slurmdbd accounting) drives reservation right-sizing telemetry and degrades gracefully when absent. No native macOS build — use a Linux submit host, or `--dispatch local-parallel` for parallelism on one machine (below). See [Parallel dispatch](concepts/dispatch.md). |
-| `rb regression --dispatch local-parallel`, `rb randtest --dispatch local-parallel`, `rb test --dispatch local-parallel` | Built-in | — | Parallel regression on one host with **no external dependency**: jobs are subprocesses, capped by `-j/--jobs`. Works on macOS. It cannot enforce `resources:` reservations and has no usage accounting, so no right-sizing advice. See [Parallel dispatch](concepts/dispatch.md#on-one-machine-dispatch-local-parallel). |
-| `rb verible` | Integrated tool | Verible | `brew tap chipsalliance/verible && brew install verible` on macOS; or see [Verible releases](https://github.com/chipsalliance/verible/releases). |
-| Coverview packaging (under `rb regression`) | Integrated tool | Antmicro [Coverview](https://github.com/antmicro/coverview) | Install the `info-process` package in your OS via Coverview's own setup for full package generation. |
-| `rb synth`, `rb synth-regression` | Pluggable | `yosys`, `openroad` | `yosys` is required (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see below); `openroad` is required only when `tool: openroad`. See [Synthesis](concepts/synthesis.md). |
-| `rb pnr` | Integrated tool | OpenROAD ≥ `25Q1` | Optional: `klayout` for `--gds` / `--png` streamout and rendering. See [Place-and-Route](concepts/pnr.md). |
-| `rb wave` | Integrated tool | Surfer (rtl-buddy fork, `rtl-buddy` branch) | nvim for full annotation round-trip; any editor configurable via `editor-cmd` for one-way "open at line". Vaporview / VS Code support is on the roadmap — tracked in [issue #84](https://github.com/rtl-buddy/rtl_buddy/issues/84). See [Waveform Viewer](concepts/wave.md). |
-| `rb nvim-install` (alias `rb wave-install-nvim`) | Integrated tool | [rtl-buddy-nvim](https://github.com/rtl-buddy/rtl-buddy-nvim) | Requires **`git` + network** — clones the pinned, hub-compatible plugin revision into the nvim pack dir and writes a managed setup file. For air-gapped installs point at a local checkout: `--source <path> --ref <ref>`. See [Waveform Viewer → nvim setup](concepts/wave.md#nvim-setup). |
-| `rb power`, `rb power-regression` | Integrated tool | OpenROAD ≥ `25Q1` | `rb saif` (FST/VCD → SAIF, used to feed activity) needs no extra tool. See [Power Analysis](concepts/power.md). |
-| `rb fpga`, `rb fpga-regression` | Pluggable | AMD/Xilinx Vivado (default) or openXC7 (`yosys` + `nextpnr-xilinx` + prjxray) | Vivado is proprietary; driven in non-project batch mode (`vivado -mode batch`); larger parts need a purchased license. `tool: openxc7` selects the open toolchain for 7-series parts (install via the [openXC7 toolchain installer](https://github.com/openXC7/toolchain-installer)). Optional feature — runs report SKIP when the selected backend's tools are absent. See [FPGA Implementation](concepts/fpga.md). |
-| `rb fpv`, `rb fpv-regression`, `rb wave-fpv` | Integrated tool | SymbiYosys (`sby`) ≥ `0.40` + ≥ 1 SMT solver | Solvers: yices / z3 / boolector / bitwuzla / btormc. `yosys` (for COI / dead-assume) and the optional yosys-slang plugin (for `frontend: slang`). `rb wave-fpv` reuses the `rb wave` Surfer entry (plain VCD — mainline Surfer suffices). See [Formal Property Verification](concepts/fpv.md). |
-| `rb hier`, `rb hier-query` | Pluggable — curated | [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view) | `uv tool install rtl-buddy-sch` (≥ 0.3.0 for the `hier-query` verbs; ≥ 0.8.0 for `rb hier --format dot --block-diagram`, which is forwarded ahead of that release and fails with an upgrade hint until it ships; the distribution was renamed from `rtl-buddy-view`, which is frozen at 0.5.0 — the executable is still `rtl-buddy-view`). Optional: `graphviz` (`dot`) for `--format dot` → SVG/PNG; `pyslang` for `--frontend slang`. See [Hierarchy Rendering](concepts/hier.md). |
-| `rb graph build` | Pluggable — curated | [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view), optional [rtl-buddy-graph-extract](https://github.com/rtl-buddy/rtl-buddy-graph-extract) | The design tier needs `rtl-buddy-view` with the `graph` verb (≥ 0.4.0); an older viewer fails that tier with an upgrade hint. The binding-tier extractor is **optional** — without it the merged graph still carries the design + config tiers and the binding tier is reported as skipped. Install it with the `rtl_buddy[graph-extract]` extra (or directly: `uv pip install rtl-buddy-graph-extract`). Gate with `rb tool-check --explain rtl-buddy-view` / `--explain rtl-buddy-graph-extract`. See [Design Knowledge Graph](concepts/graph.md). |
-| `rb graph query`, `rb graph path`, `rb graph explain` | None | — | Pure readers of `artefacts/graph/graph.json` and the results overlay beside it; no external tool, no daemon. They need a graph, so run `rb graph build` first. See [Design Knowledge Graph](concepts/graph.md#querying-the-graph). |
-| `rb mcp` | Python extra | `mcp` SDK ≥ 1.2.0 | The stdio Model Context Protocol server. Enable with the `[mcp]` extra: `uv add "rtl_buddy[mcp]"` (or `pip install "rtl_buddy[mcp]"`); without it `rb mcp` exits 2 with an install hint and nothing else in rtl_buddy imports the SDK. The hierarchy tools additionally need `rtl-buddy-view` (as `rb hier-query` does); the graph tools need none. See [The MCP Server](concepts/graph.md#the-mcp-server). |
-| `rb axi-profile` | Pluggable — curated | [rtl-buddy-axi-profiler](https://github.com/rtl-buddy/rtl-buddy-axi-profiler) | `uv tool install rtl-buddy-axi-profiler`. Optional extras: `[parquet]` (pyarrow) for `--emit-txns-parquet`; `[notebook]` (marimo) for `rb axi-profile notebook`. Optional for VCS traces: `vpd2vcd` (ships with VCS) converts `vcdplus.vpd` dumps at profile time, and GTKWave's `vcd2fst` compacts the result — without it the intermediate VCD is kept (~15x larger). See [AXI Profiling](concepts/axi-profile.md). |
-| `rb mut` | Pluggable — curated | [rtl-buddy-xeno](https://github.com/rtl-buddy/rtl-buddy-xeno) | Optional mutation engine, not installed by default. Enable it with the `[mut]` extra: `uv add "rtl_buddy[mut]"` (or `pip install "rtl_buddy[mut]"`), which pulls `rtl-buddy-xeno[verible,slang] >= 0.1.0`; the `verible`/`slang` extras provide the Verible CST + pyslang toolchain the operators need. Kill oracles reuse `rb fpv` and/or `rb test` tooling. See [Mutation Testing](concepts/mut.md). |
-
-### Forks required
-
-rtl_buddy currently validates against two forks rather than upstream:
-
-- **Surfer** — required. Use the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) repo, branch `rtl-buddy`. Mainline Surfer works for basic FST viewing but does not support the WCP signal-value annotation features `rb wave` relies on.
-- **Yosys** — required. Use the [`rtl-buddy/yosys`](https://github.com/rtl-buddy/yosys) repo, which tracks upstream with rtl-buddy-specific patches.
-
-Build instructions live on the respective concept pages: [Surfer build](concepts/wave.md#surfer-build) and [Installing Yosys](concepts/synthesis.md#installing-yosys).
-
-## Install Into A Project With `uv`
-
-Add `rtl_buddy` to your project environment:
+## Install and verify
 
 ```bash
 uv add rtl_buddy
-```
-
-Then verify the install:
-
-```bash
 uv run rb --version
 ```
 
-## Updating
+RTL Buddy installs its Python runtime dependencies automatically. External EDA tools are required only for the commands that use them.
 
-To move a project to a newer `rtl_buddy` version:
+## Dependency types
+
+RTL Buddy's wheel provides required Python dependencies. Integrated tools are fixed by a feature; pluggable tools implement a supported interface; curated pluggable tools additionally receive tool-specific handling. External tools remain optional until you invoke their workflow.
+
+## External tools by feature
+
+| Workflow | Required tools | Notes |
+| --- | --- | --- |
+| `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
+| Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` recommended | Requires a Linux submit host and shared filesystem. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
+| `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
+| `synth`, `synth-regression` | [rtl-buddy Yosys fork](https://github.com/rtl-buddy/yosys); OpenROAD for `tool: openroad` | See [Synthesis](concepts/synthesis.md#install-the-tools). |
+| `pnr`, `power` | OpenROAD 25Q1 or newer | KLayout is optional for P&R GDS and PNG output. |
+| `fpv`, `fpv-regression` | SymbiYosys 0.40 or newer and at least one SMT solver | Yosys is used for COI analysis; yosys-slang is optional. |
+| `wave` | Surfer from the [rtl-buddy fork and branch](https://github.com/rtl-buddy/surfer/tree/rtl-buddy) | Mainline Surfer opens traces but lacks live editor annotation. `rb nvim-install` additionally needs Git and network access. |
+| `hier`, `hier-query` | `uv tool install rtl-buddy-sch` | Graphviz is optional for DOT rendering; pyslang is optional for the slang frontend. |
+| `graph build` | `rtl-buddy-sch`; optional `rtl_buddy[graph-extract]` | Query commands need only an existing graph. |
+| `mcp` | `rtl_buddy[mcp]` | Install with `uv add "rtl_buddy[mcp]"`. |
+| `fpga` | Vivado, or Yosys + nextpnr-xilinx + prjxray for `tool: openxc7` | Missing optional FPGA tools produce `SKIP`. |
+| `axi-profile` | `uv tool install rtl-buddy-axi-profiler` | Extras provide Parquet and notebook support. |
+| `mut` | `rtl_buddy[mut]` | Install with `uv add "rtl_buddy[mut]"`; the selected oracle also needs its normal tools. |
+| Coverview packaging | Coverview and its `info-process` dependency | Basic coverage collection does not require Coverview. |
+
+Use `rb tool-check` where supported to diagnose missing or incompatible tools. The linked concept page for each command contains setup and recovery details.
+
+## Update RTL Buddy
 
 ```bash
 uv add rtl_buddy@latest
 uv sync
 ```
 
-Commit the resulting lockfile change in your project repo.
+Commit the resulting `pyproject.toml` and lockfile changes with the project.
 
-## Installing A Pre-release
+## Install a pre-release
 
-Pre-release versions follow PEP 440 (`2.3.0rc1`, `2.3.0rc2`, …). They are published to PyPI but excluded from the default resolver — an unqualified range like `>=2.2.0` will not pull one in.
-
-To install a specific pre-release, pin it exactly:
+Pin a pre-release exactly; unqualified dependency ranges do not select release candidates:
 
 ```bash
 uv add "rtl_buddy==2.3.0rc1"
 ```
 
-Or in `pyproject.toml`:
+## Install the agent skills
 
-```toml
-dependencies = ["rtl_buddy==2.3.0rc1"]
-```
-
-This works without any `--pre` flag because the exact version is specified.
-
-## Set Up The Agent Skills
-
-`rtl_buddy` ships a small agent skill family for Claude Code and Codex. After installing `rtl_buddy`, run once per machine:
+Install the bundled Claude Code and Codex skill family at user scope:
 
 ```bash
 uv run rb skill install
 ```
 
-This writes the primary `rtl-buddy` skill and its focused siblings under `~/.claude/skills/` and `~/.codex/skills/`. Agents pick them up automatically. Re-run after upgrading `rtl_buddy` to refresh the family.
-
-To install at project scope instead (overrides the user-level copy for that project):
+For a project pinned to a different RTL Buddy major, install a project-local override:
 
 ```bash
 uv run rb skill install --project
 ```
 
-See [For Agents](agents.md) for scope semantics and `.gitignore` guidance.
+Re-run installation after upgrading to refresh every family member. See [Agent Use](agents.md#bundled-agent-skills) for members, paths, status checks, and project `.gitignore` guidance.

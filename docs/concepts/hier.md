@@ -1,168 +1,117 @@
 ---
-description: How to render module hierarchy diagrams with rtl_buddy via the rb hier command and the standalone rtl-buddy-view renderer.
+description: Render or query a model or testbench hierarchy with `rb hier`, `rb hier-query`, and the external `rtl-buddy-view` renderer.
 ---
 
 # Hierarchy Rendering
 
-> **Integration type:** Pluggable — curated. `rb hier` shells out to the standalone [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view) renderer at subprocess granularity; rtl_buddy is not coupled to its Python API.
->
-> **External binary required:** `rtl-buddy-view` — install with `uv tool install rtl-buddy-sch` (or `pip install rtl-buddy-sch`).
->
-> **Optional:** `graphviz` (`dot`) for SVG/PNG conversion of `--format dot`; `pyslang` for `--frontend slang`.
->
-> See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
+Use `rb hier` to inspect hierarchy as text or diagram source. Use `rb hier-query` when a script or agent needs a specific structural answer.
 
-`rb hier <model>` produces a module-hierarchy view of a model defined in `models.yaml`. It writes a stripped, deduplicated filelist into `artefacts/hier/<model>/hier.f`, then runs `rtl-buddy-view --top <model> --filelist hier.f` with the requested format and forwards the renderer's stdout to the terminal so it composes with shell pipes.
+## Install the renderer
 
-`rb hier <test> --view tb` (rtl-buddy-view #99 / 6b) renders the **testbench** hierarchy for a test from `tests.yaml`, with the DUT called out as a subtree. The test pins both the model (DUT side) and the TB top, so the positional argument is a test name in this mode. The merged DUT + TB filelist is written to `artefacts/hier/<model>/tb/<tb_name>/hier.f` and the renderer is invoked with both `--top <model>` and `--tb-top <tb.toplevel>`. Cache key is `(model, tb_name)`, so two tests sharing a TB share the artefact.
-
-## Installing the viewer
+`rb hier` shells out to the `rtl-buddy-view` executable. Install the current `rtl-buddy-sch` distribution:
 
 ```bash
-uv tool install rtl-buddy-sch    # recommended — isolated tool env
-# or
-uv pip install rtl-buddy-sch     # into the project venv
+uv tool install rtl-buddy-sch
+rb tool-check --explain rtl-buddy-view
 ```
 
-The **distribution** is `rtl-buddy-sch` from 0.7.0 onwards. Releases up to 0.5.0 were published as `rtl-buddy-view`, which is now frozen; rtl_buddy probes both names, `rtl-buddy-sch` first, so either install works.
+Use `--tool /absolute/path/to/rtl-buddy-view` to pin a development build. Optional dependencies are:
 
-The **executable** is `rtl-buddy-view` under either name, and so are its `rtl-buddy-view <X.Y.Z>` `--version` output and the `tool.name` stamp in exported JSON. Nothing that calls the renderer had to move. Once installed the binary lands on `PATH` as `rtl-buddy-view` (0.7.0+ installs an `rtl-buddy-sch` alias beside it); override with `--tool /absolute/path/to/rtl-buddy-view` if you need a specific build.
+- Graphviz `dot` to convert DOT into SVG or PNG.
+- `pyslang` when using `--frontend slang`.
 
-Upgrading from the old distribution needs an uninstall first — pip has no rename metadata, so installing one over the other leaves both claiming the same files. See [Quirks & Known Issues](../known-issues.md#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view).
+See [Installation](../install.md#external-tools-by-feature) for tool setup and [Known Issues](../known-issues.md#the-viewer-distribution-and-executable-have-different-names) if an older `rtl-buddy-view` package conflicts with `rtl-buddy-sch`.
 
-For `--format dot` rendering to SVG/PNG, install Graphviz (`brew install graphviz` / `apt install graphviz`) and pipe the output through `dot` (see [Output formats](#output-formats) below).
+## Render a hierarchy
 
-## Output formats
-
-`--format` selects one of four renderers:
-
-| Format | What you get |
-|--------|--------------|
-| `tree` (default) | ASCII tree, ideal for terminal inspection |
-| `dot` | Graphviz DOT source — pipe through `dot -Tsvg` / `-Tpng` for graphics |
-| `mermaid` | Mermaid diagram source — paste into Markdown that renders Mermaid |
-| `json` | Structured JSON (schema_version, tool.\*, design.top, nodes, edges) for programmatic consumption |
-
-When `-o`/`--output` is not set, the renderer's stdout passes through to your terminal so `rb hier x --format dot | dot -Tsvg -o x.svg` works as a one-liner.
-
-## Block diagrams
-
-`--format dot --block-diagram` switches the DOT renderer from the hierarchy dump to a **block diagram**: sibling-to-sibling dataflow, drawn as cluster-nested boxes joined by net-labeled directed edges. It answers "what talks to what" rather than "what instantiates what" — the figure you would draw by hand for a design document, where a CSR block whose traffic flows through top-scope nets is connected rather than floating.
+Run from a directory where rtl_buddy can find the relevant configuration, or pass `-c` explicitly:
 
 ```bash
-# sibling dataflow instead of the instantiation tree
-rb hier demo_top --format dot --block-diagram | dot -Tsvg -o demo_top_block.svg
-```
-
-Like `--clock-legend`, the flag is only meaningful for `--format dot` — how the other renderers respond to it is the renderer's business, not rtl_buddy's, which forwards it verbatim.
-
-!!! note "Requires a renderer that has not shipped yet"
-
-    `--block-diagram` is implemented by [rtl-buddy-sch#160](https://github.com/rtl-buddy/rtl-buddy-sch/pull/160) and needs **rtl-buddy-sch ≥ 0.8.0**, which is not released — the flag is forwarded ahead of it so the mode works the moment that release lands. Against every renderer available today the run fails with a message naming the version to upgrade to, rather than an unknown-option traceback (see [Quirks & Known Issues](../known-issues.md#rb-hier-block-diagram-needs-a-renderer-that-has-not-been-released-yet)):
-
-    ```text
-    hier: --block-diagram needs rtl-buddy-sch >= 0.8.0 (rtl-buddy-sch#160),
-    but the installed viewer is 0.7.1. Upgrade the renderer, or drop
-    --block-diagram to render the hierarchy instead:
-        pip uninstall -y rtl-buddy-view && pip install -U "rtl-buddy-sch >= 0.8.0"
-    ```
-
-## Running `rb hier`
-
-```bash
-# ASCII tree (default)
 rb hier demo_top
-
-# Save Mermaid source to a file
 rb hier demo_top --format mermaid -o demo_top.mmd
-
-# DOT → SVG via Graphviz
 rb hier demo_top --format dot | dot -Tsvg -o demo_top.svg
-
-# JSON export for downstream tooling
 rb hier demo_top --format json -o demo_top.hier.json
-
-# Point at a non-default models.yaml
 rb hier demo_top -c design/demo_top/models.yaml
+```
 
-# Pin a renderer build
-rb hier demo_top --tool /opt/rtl-buddy-view/bin/rtl-buddy-view
+The positional name selects a model from `models.yaml`. rtl_buddy builds a stripped, deduplicated filelist from that model and passes its name as the renderer top.
 
-# TB-rooted view — render the testbench for a test, DUT called out as subtree
+Available formats are:
+
+| Format | Use |
+| --- | --- |
+| `tree` | Terminal inspection; default. |
+| `dot` | Graphviz input for diagrams. |
+| `mermaid` | Mermaid source for Markdown. |
+| `json` | Structured data for downstream tools. |
+
+Without `-o`, renderer output goes to stdout and can be piped. With `-o`, the renderer writes the requested file.
+
+## Render a testbench hierarchy
+
+Use TB view when you need the hierarchy above and around the DUT:
+
+```bash
 rb hier basic_traffic --view tb
 ```
 
-The model argument matches the `name:` of an entry in `models.yaml`. The runner uses that entry's filelist verbatim — same source of truth that `rb test` and `rb synth` consume. In `--view tb` mode the positional argument is a test name from `tests.yaml` instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from `--tb-top`.
+In this mode the positional name selects a test from `tests.yaml`, not a model. The test identifies the DUT model and testbench top. Tests that share the same `(model, testbench)` reuse the generated hierarchy artefact.
 
-## Querying with `rb hier-query`
+## Render a block diagram
 
-`rb hier-query <model> <verb> <arg>` is `rb hier`'s machine-readable sibling: instead of rendering a diagram, it answers a structural question about the model's hierarchy with JSON on stdout, ready for `jq`, shell pipelines, and agent tool use. It shells out to `rtl-buddy-view query` (requires rtl-buddy-view ≥ 0.3.0) and shares `rb hier`'s generated filelist artefact.
+For sibling dataflow instead of an instantiation tree, generate block-diagram DOT:
 
 ```bash
-# the full definition of a module: ports, parameters, instances
+rb hier demo_top --format dot --block-diagram | dot -Tsvg -o demo_top_block.svg
+```
+
+This requires `rtl-buddy-sch >= 0.8.0`. Older renderers fail with an upgrade instruction. The option is meaningful only with DOT output.
+
+## Query hierarchy data
+
+`rb hier-query` returns focused answers without rendering the full hierarchy:
+
+```bash
 rb hier-query demo_top find-module axi_arbiter
-
-# the hierarchy subtree below an instance path (add --format tree for ASCII)
-rb hier-query demo_top subtree demo_top.u_fabric
-
-# every instance of a module, as instance paths
-rb hier-query demo_top instances-of axi_arbiter | jq -r '.[].instance_path'
-
-# the .port(net) connection list of one instance
+rb hier-query demo_top subtree demo_top.u_fabric --format tree
+rb hier-query demo_top instances-of axi_arbiter
 rb hier-query demo_top port-connections demo_top.u_fabric.u_arb0
-
-# the module-definition source of an instance, line-number-prefixed for citation
 rb hier-query demo_top source-snippet demo_top.u_fabric.u_arb0 --context 4
 ```
 
-Verb arguments are a module name (`find-module`, `instances-of`) or a dot-separated instance path rooted at the model name (`subtree`, `port-connections`, `source-snippet`). `source-snippet` prints plain text rather than JSON — its output is the line-number-prefixed citation block itself (`--no-line-numbers` disables the prefixes, `--context N` widens the window).
+`find-module` and `instances-of` take a module name. The other verbs take a dot-separated instance path rooted at the model name. Results are JSON except `source-snippet`, which prints source text with line numbers by default.
 
-Exit codes follow the query semantics: `0` for an answer (an empty `instances-of` list is a valid answer), `1` for a lookup miss or parse failure — the viewer's diagnostic (e.g. `query: instance path '…' not found`) streams to stderr rather than being captured into a log. `artefacts/hier/<model>/query.log` records the underlying invocation.
+A lookup miss or parse failure exits 1 and prints the viewer diagnostic to stderr. An empty `instances-of` result is a successful answer and exits 0.
 
-## Parser frontend
+## Select a parser and annotations
 
-`--frontend` is forwarded as-is to `rtl-buddy-view`. The default frontend ships with the renderer; `--frontend slang` uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.
+Pass `--frontend slang` for SystemVerilog that the default parser cannot elaborate. Frontend names are validated by the renderer.
 
-## Domain annotations
-
-`rb hier` can overlay domain information when a compatible analyzer pass has emitted a JSON map:
+Domain overlays are JSON maps keyed by hierarchical instance path:
 
 ```bash
-# With a side legend mapping color → clock name (dot format only)
-rb hier demo_top --format dot --clock-legend | dot -Tsvg -o hier.svg
-
-# Reset-domain overlay — colors each module by its primary reset
-rb hier demo_top --format dot --rdc-annotations resets.json | dot -Tsvg -o hier.svg
+rb hier demo_top --format dot --clock-legend | dot -Tsvg -o clocks.svg
+rb hier demo_top --format dot --rdc-annotations resets.json | dot -Tsvg -o resets.svg
 ```
 
-Both annotation files are JSON keyed by hierarchical instance path. `rb hier` validates that the files exist before invoking the renderer; the renderer's JSON contract (`schema_version`, `tool.*`, `design.top`, `nodes`, `edges`) is the integration boundary.
+rtl_buddy checks that annotation files exist before starting the renderer. `--clock-legend` applies only to DOT output.
 
-`--clock-legend` is honored only for `--format dot`; the tree and Mermaid renderers ignore it.
+## Find outputs and diagnose failures
 
-## Artefacts
+Outputs are anchored to the primary configuration directory, not the shell's current directory. A model render writes:
 
-Per-model outputs land under the model's command root — `<dir of models.yaml>/artefacts/hier/<model>/` (in `--view tb` mode, `<dir of tests.yaml>/artefacts/hier/<model>/tb/<tb_name>/`). The artefact tree is anchored on the primary config's directory, not your shell's cwd — see [Execution Context](execution-context.md). For example, `rb hier demo_top -c design/demo_top/models.yaml` writes under `design/demo_top/artefacts/hier/demo_top/`:
+```text
+<models.yaml directory>/artefacts/hier/<model>/
+├── hier.f
+└── hier.log
+```
 
-| File | Contents |
-|---|---|
-| `hier.f` | Stripped, deduplicated filelist passed to the renderer |
-| `hier.log` | Renderer stderr (its stdout goes to your terminal when `-o` is not set) |
+TB view writes under the `tests.yaml` directory at `artefacts/hier/<model>/tb/<testbench>/`. `hier.f` is the generated filelist and `hier.log` captures renderer stderr. Query invocations also write `query.log`.
 
-When `-o <path>` is supplied the renderer writes directly to that path; otherwise its stdout is the diagram source itself.
+`rb hier` returns the renderer's exit code. For parse, elaboration, or output failures, inspect `hier.log`. If the executable cannot be found, run:
 
-## Pass/fail detection
+```bash
+rb tool-check --explain rtl-buddy-view
+```
 
-`rb hier` exits with the renderer's exit code. A non-zero exit means the renderer reported a parse, elaboration, or output error — check `hier.log` for the captured stderr.
-
-The `Failed to locate rtl-buddy-view` error before the renderer runs is the most common failure mode and indicates that `rtl-buddy-view` is not installed in the active venv or on `PATH`. Run `rb tool-check --explain rtl-buddy-view` for the install hint.
-
-## Hub integration
-
-The [coordination hub](hub.md) consumes `rb hier`'s JSON output (`--format json`) to drive the rtl-buddy-view SPA's interactive hierarchy view. The reset overlay (`--rdc-annotations`) is a real CLI flag and is surfaced in the SPA. The AXI-perf overlay is **not** a `rb hier` flag — it is baked into the SPA view only via `rb hub start --axi-perf-from <axi-perf.json>` (see [Hub](hub.md#axi-perf-overlay-and-notebook-spawning)), which invokes the renderer with `--overlay axi-perf=<path>` internally.
-
-`rb hub start --model <name>` discovers the model's `models.yaml`, invokes `rb hier` under the hood, and serves the result alongside live diagnostics and AXI-perf overlays — `rb hier` is the underlying renderer for both the static CLI use case and the live SPA flow.
-
-## Out of scope (today)
-
-- **rtl-buddy-view only.** No alternative hierarchy renderers are wired up. The integration is intentionally subprocess-granularity so a viewer release can be picked up via `uv sync` without code changes here.
-- **In-place SVG/PNG.** `rb hier` does not directly emit SVG or PNG — it emits DOT and lets you pipe through Graphviz. This keeps the rtl_buddy ↔ renderer boundary at "text in, text out" and avoids a Graphviz dependency for the common terminal-inspection flow.
+For interactive browsing, `rb hub start --serve-viewer --model <name>` builds and serves the same JSON hierarchy. See [Hub](hub.md).

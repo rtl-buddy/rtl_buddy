@@ -1,143 +1,96 @@
 ---
-description: How to use specs.yaml, models.yaml spec pointers, and tests.yaml covers fields to trace functional requirements through to tests.
+description: Link specification items to design models, simulation tests, and formal verifications, then check traceability with rb spec.
 ---
 
-# Spec Traceability
+# Spec traceability
 
-`rtl_buddy` provides a lightweight traceability layer that links functional specification items to design models and tests. It is driven by three files across the three-tier ownership model:
+Traceability links functional coverage items in `specs.yaml` to models in `models.yaml` and verification entries in `tests.yaml` or `fpv.yaml`. These fields do not affect execution.
 
-| Tier | File | Role |
-|------|------|------|
-| `spec/<block>/` | `specs.yaml` | Defines blocks and their functional coverage items |
-| `design/<block>/` | `models.yaml` | Links a design model to its spec block via `spec:` |
-| `verif/<block>/` | `tests.yaml` | Declares which coverage items each test addresses via `covers:` |
+## Define coverage items
 
-None of these fields affect simulation. They are consumed only by the `rb spec` commands.
-
-## Workflow
-
-### 1. Write the spec
-
-Create `spec/<block>/specs.yaml` with one or more blocks, each listing its functional coverage items:
+Create `spec/<block>/specs.yaml`:
 
 ```yaml
 rtl-buddy-filetype: spec_config
 
 blocks:
-  - name: "my_block"
-    desc: "Brief description"
-    docs:
-      - "README.md"
-      - "behavior.md"
+  - name: my_block
+    desc: Brief description
+    docs: [README.md, behavior.md]
     coverage-items:
-      - id: "MYBLK-COV-01"
-        desc: "Normal operation path verified"
-      - id: "MYBLK-COV-02"
-        desc: "Error handling and recovery"
+      - id: MYBLK-COV-01
+        desc: Normal operation
+      - id: MYBLK-COV-02
+        desc: Error recovery
 ```
 
-Coverage item IDs are arbitrary strings; a block-prefix convention (e.g. `MYBLK-COV-NN`) keeps them unique across a multi-block project.
+IDs are arbitrary strings. Use a block prefix to keep them unique across the project. One file may define several blocks.
 
-### 2. Link the design model
+## Link the design model
 
-Add a `spec:` field to the relevant entry in `design/<block>/models.yaml`, pointing to the `specs.yaml` relative to that `models.yaml`:
+Point the model at `specs.yaml` with a path relative to `models.yaml`:
 
 ```yaml
 models:
-  - name: "my_block"
-    filelist:
-      - "-F my_block.f"
-    spec: "../../spec/my_block/specs.yaml"
+  - name: my_block
+    filelist: [-F my_block.f]
+    spec: ../../spec/my_block/specs.yaml
 ```
 
-The model `name` is matched against the block `name` in the referenced `specs.yaml`. In a single-block `specs.yaml` the match is unconditional.
+For a multi-block spec, the model name selects the block with the same name. A single-block spec is matched unconditionally.
 
-### 3. Annotate tests
+## Declare verification coverage
 
-Add `covers:` to each test in `verif/<block>/tests.yaml` listing the IDs it exercises:
+Add coverage item IDs to simulation tests:
 
 ```yaml
 tests:
-  - name: "basic"
-    model: "my_block"
-    model_path: "../../design/my_block/models.yaml"
-    testbench: "tb_top"
-    covers:
-      - "MYBLK-COV-01"
-      - "MYBLK-COV-02"
+  - name: basic
+    model: my_block
+    model_path: ../../design/my_block/models.yaml
+    testbench: tb_top
+    covers: [MYBLK-COV-01, MYBLK-COV-02]
 ```
 
-A single test can cover multiple items; multiple tests can cover the same item.
-
-Formal runs participate too: an entry in `fpv.yaml` accepts the same `covers:` field, and `check-coverage` counts a verification exactly as it counts a test. FPV suites are discovered through the project root's `fpv_regression.yaml` (they live under `fpv/`, outside the `--verif-dir` walk).
+Formal verifications use the same field:
 
 ```yaml
 verifications:
-  - name: "my_block_safety"
-    model: "my_block"
-    model_path: "../../design/my_block/models.yaml"
-    tool: "sby"
-    mode: "prove"
-    covers:
-      - "MYBLK-COV-03"
+  - name: my_block_safety
+    model: my_block
+    model_path: ../../design/my_block/models.yaml
+    tool: sby
+    mode: prove
+    covers: [MYBLK-COV-03]
 ```
 
-### 4. Check traceability
+Multiple verifications may cover one item, and one verification may cover several items. Formal suites are discovered through the project-root `fpv_regression.yaml`.
+
+## Check traceability
+
+Run from the project tree:
 
 ```bash
-rb spec list             # discover all spec blocks in the project
-rb spec check-design     # which spec blocks have a linked design model
-rb spec check-coverage   # which coverage items are addressed by at least one test
+rb spec list
+rb spec check-design
+rb spec check-coverage
 ```
 
-`check-coverage` prints a table of all items with a `Covered: yes/no` column and calls out uncovered IDs at the end. Use `--machine` to get JSON output for programmatic consumption.
+- `list` discovers blocks under `spec/` or `--spec-dir`.
+- `check-design` reports whether each block has a linked model. Use `--design-dir` to change the search root.
+- `check-coverage` reports the tests and formal verifications that declare each item. Use `--verif-dir` to change the simulation-suite search root.
 
-### Filtering by block
-
-Both `check-design` and `check-coverage` accept a repeatable `--block NAME` to restrict output to specific spec blocks:
+Filter either check to one or more blocks:
 
 ```bash
 rb spec check-design --block my_block
-rb spec check-coverage --block ip_cdc_sync --block ip_cdc_handshake
+rb spec check-coverage --block ip_fifo --block ip_arbiter
 ```
 
-Human output shows only the selected blocks; `--machine` output contains only the selected records. An unknown block name is a configuration error (nonzero exit) rather than an empty successful result.
+An unknown block is a configuration error. If a discovered `tests.yaml` cannot load, `check-coverage` reports the suite failure and exits nonzero instead of treating its items as uncovered. Machine output includes `suite_load_failures`.
 
-### Suite load failures
+Use the global `--machine` flag for structured output. See the [CLI reference](../reference/cli.md) for all options and [YAML formats](../reference/yaml.md) for schemas.
 
-If a `tests.yaml` suite referenced under `--verif-dir` cannot be loaded — for example its `model_path` or design sources are unavailable — `check-coverage` surfaces the load failure and exits nonzero instead of silently dropping the suite and reporting its coverage items as uncovered. In `--machine` mode, the payload includes a `suite_load_failures` list naming the suites that failed to load.
+## Query the relationships as a graph
 
-## Multi-block specs.yaml
-
-A single `specs.yaml` can contain multiple blocks — useful when a directory holds several closely related IP:
-
-```yaml
-blocks:
-  - name: "ip_fifo"
-    desc: "Small synchronous FIFO"
-    coverage-items:
-      - id: "FIFO-COV-01"
-        desc: "..."
-
-  - name: "ip_arbiter"
-    desc: "Round-robin arbiter"
-    coverage-items:
-      - id: "ARB-COV-01"
-        desc: "..."
-```
-
-Each design model still points to the same `specs.yaml`; the model `name` selects the correct block.
-
-## Command reference
-
-| Command | What it checks |
-|---------|----------------|
-| `rb spec list` | Lists all spec blocks discovered under `spec/` (or `--spec-dir`) |
-| `rb spec check-design` | For every spec block, shows whether a design model references it |
-| `rb spec check-coverage` | For every coverage item, shows which tests cover it and flags uncovered items |
-
-All three commands accept `--spec-dir` to target a subdirectory. `check-design` also accepts `--design-dir`; `check-coverage` accepts `--verif-dir`. `check-design` and `check-coverage` also accept a repeatable `--block NAME` (see [Filtering by block](#filtering-by-block)).
-
-## Graph export
-
-The same relationships are also emitted as a queryable graph. `rtl_buddy.graph.build_config_tier()` turns these loaders into the config tier of the [design knowledge graph](graph.md), where a path query walks test to testbench to model to spec block in one hop each. It reads through the loaders behind the commands above, so the two views never disagree.
+The [design knowledge graph](graph.md) contains the same spec, model, test, and formal-run relationships. It uses the same loaders as `rb spec`, so graph queries and traceability checks share one interpretation of the YAML.

@@ -1,132 +1,81 @@
 ---
-description: Where rtl_buddy puts artifacts and logs, and how relative paths are resolved when you invoke rb from outside the suite directory.
+description: Resolve RTL Buddy command roots, configuration paths, logs, artefacts, hook paths, and concurrent-run conflicts.
 ---
 
 # Execution Context
 
-`rtl_buddy` commands always anchor their work on the **primary config file** (`tests.yaml`, `synth.yaml`, `fpv.yaml`, …), not on the directory you happened to run `rb` from. This means the same command produces the same artifact layout regardless of where you invoked it.
+Config-driven commands anchor generated work to their primary configuration file, regardless of the directory from which you invoke `rb`.
 
-If you've ever run `rb` from a design directory and ended up with a stray `verif/artefacts/` or `rtl_buddy.log` next to your RTL sources, this page explains why that no longer happens.
+## Resolve command paths
 
-## The three anchors
+RTL Buddy uses three anchors:
 
-Every command has three paths it cares about:
-
-| Anchor | What it is |
+| Anchor | Meaning |
 | --- | --- |
-| `invocation_cwd` | The directory you ran `rb` from — your shell's working directory. |
-| `command_root` | The directory containing the command's primary config file. |
-| `artifact_root` | Where the artifact tree lives. Defaults to `command_root/artefacts/`. |
+| `invocation_cwd` | The shell directory where `rb` was invoked |
+| `command_root` | The directory containing the command's primary config |
+| `artifact_root` | `<command_root>/artefacts/` |
 
-And one rule that ties them together:
+Generated artefacts, builder scratch, and `rtl_buddy.log` use the command root. Explicit CLI input and output paths use normal shell semantics and are resolved from `invocation_cwd`.
 
-> **Config-driven commands anchor to their primary config. Explicit CLI input/output paths anchor to your shell's cwd.**
-
-Generated outputs (`artefacts/<name>/`, `rtl_buddy.log`, builder scratch) go under the command root. Things you typed on the command line (`-o out.svg`, an output filelist path) follow normal shell semantics — they land where you told them to.
-
-## A worked example
-
-Suppose your repo looks like this:
-
-```text
-repo/
-├── design/<block>/        # RTL sources
-└── verif/<block>/
-    └── tests.yaml
-```
-
-You're sitting in `repo/design/<block>` (looking at the RTL) and want to run a quick test. You point `rb` at the suite with `-c`:
+For example:
 
 ```bash
-cd repo/design/<block>
-rb test basic -c ../../verif/<block>/tests.yaml
+cd repo/design/block
+rb test basic -c ../../verif/block/tests.yaml
 ```
 
-Here is what each anchor resolves to:
+The test runs under `repo/verif/block/artefacts/basic/` and writes `repo/verif/block/rtl_buddy.log`. An explicit output such as `rb filelist model out.f ...` still writes `out.f` in `repo/design/block`.
 
-- `invocation_cwd` = `repo/design/<block>`
-- `command_root` = `repo/verif/<block>` (`dirname(tests.yaml)`)
-- `artifact_root` = `repo/verif/<block>/artefacts`
+## Find each command root
 
-So the test creates `repo/verif/<block>/artefacts/basic/...` and `repo/verif/<block>/rtl_buddy.log`. Nothing lands in `design/<block>`.
+| Command | Command root | Artefact or tool directory |
+| --- | --- | --- |
+| `test`, `randtest`, `wave` | Directory containing `tests.yaml` | `artefacts/<test>[/run-NNNN]` |
+| `regression` | Directory containing `regression.yaml` | Each suite's own artefact tree |
+| `synth`, `fpv`, `pnr`, `power` | Directory containing that flow's YAML | `artefacts/<run>` |
+| `mut` | Directory containing `mut.yaml` | `artefacts/mut/<campaign>` |
+| `hier --view dut` | Directory containing `models.yaml` | `artefacts/hier/<model>` |
+| `hier --view tb` | Directory containing `tests.yaml` | `artefacts/hier/<model>/tb/<testbench>` |
+| `axi-profile run` | Directory containing `tests.yaml` | `artefacts/axi/<test>` |
+| `axi-profile discover` | Directory containing `models.yaml` | `artefacts/axi/<model>` |
+| `filelist`, `saif` | Config root for reads; shell CWD for explicit output | Explicit output path |
+| `hub` | Project root | `.rtl-buddy/` |
 
-If you'd passed an explicit output:
+External tools run inside the listed artefact directory. A regression re-anchors each suite's outputs and log to that suite, then writes its final log and merged outputs beside `regression.yaml`.
 
-```bash
-rb filelist <model> out.f -c ../../verif/<block>/models.yaml
-```
+## Resolve config paths
 
-The filelist lands at `repo/design/<block>/out.f` (your shell's cwd) because `out.f` is a user-supplied output path. The orchestration log still lands at `dirname(models.yaml)/rtl_buddy.log`.
+Relative paths declared in YAML resolve from the file that owns them:
 
-## Per-command mapping
+- Regression manifests resolve their listed suite or flow configs from the manifest directory.
+- `tests.yaml` resolves testbench filelists, hook scripts, and suite assets from the suite directory.
+- `models.yaml` resolves model filelist entries from its own directory.
+- Flow configs such as `synth.yaml`, `fpv.yaml`, `pnr.yaml`, and `power.yaml` resolve their fields from their own directory.
 
-| Command | command_root | artifact_root | External tool CWD |
-| --- | --- | --- | --- |
-| `test`, `randtest` | `dirname(tests.yaml)` | `<command_root>/artefacts` | `<artifact>/<test>[/run-NNNN]` |
-| `regression` | `dirname(regression.yaml)` | each suite's own `artefacts/` | per-suite, same as `test` |
-| `wave`, `wave --resim` | `dirname(tests.yaml)` | `<command_root>/artefacts` | `<artifact>/<test>` |
-| `synth` | `dirname(synth.yaml)` | `<command_root>/artefacts` | `<artifact>/<synth>` |
-| `fpv` | `dirname(fpv.yaml)` | `<command_root>/artefacts` | `<artifact>/<fpv>` |
-| `pnr` | `dirname(pnr.yaml)` | `<command_root>/artefacts` | `<artifact>/<pnr>` |
-| `power` | `dirname(power.yaml)` | `<command_root>/artefacts` | `<artifact>/<power>` |
-| `mut` | `dirname(mut.yaml)` | `<command_root>/artefacts` | `<artifact>/mut/<campaign>` |
-| `hier --view dut` | `dirname(models.yaml)` | `<model_root>/artefacts/hier/<model>` | `<artifact>` |
-| `hier --view tb` | `dirname(tests.yaml)` | `<suite>/artefacts/hier/<model>/tb/<tb_name>` | `<artifact>` |
-| `axi-profile run` | `dirname(tests.yaml)` | `<suite>/artefacts/axi/<test>` | `<artifact>` |
-| `axi-profile discover` | `dirname(models.yaml)` | `<model_root>/artefacts/axi/<model>` | `<artifact>` |
-| `filelist` | `dirname(models.yaml)` (reads) | explicit `-o` / argument | — |
-| `saif` | `invocation_cwd` | explicit output argument | — |
-| `hub` | project root | `.rtl-buddy/...` | project root |
+Absolute paths pass through unchanged. A YAML path never changes meaning based on `invocation_cwd`.
 
-For a fuller reference (`docs`, `skill`, edge cases), see the [engineering guidelines](../development/guidelines.md#command-roots) — the table there is the policy this page describes.
+## Write hook outputs safely
 
-## Where `rtl_buddy.log` lives
-
-The orchestration log is always written to `command_root/rtl_buddy.log`. In `--machine` mode it is JSONL; otherwise plain text. For `regression`, each suite's iteration re-anchors the log to that suite's directory, and the final summary phase re-anchors back to `dirname(regression.yaml)`. Open the latest log from wherever the *primary* config lives, not from where you ran `rb`.
-
-## Hook scripts (`sweep`, `preproc`)
-
-The `sweep` and `preproc` hook scripts execute via `exec()` inside the `rb` process and receive `suite_dir` and `artifact_dir` as namespace variables. **Always use these variables.** Do not call `os.getcwd()` inside a hook — the process CWD stays at `invocation_cwd` (the same as your shell), which is no longer the same as `suite_dir`. (The `postproc` hook is parsed from config but the runtime currently relies on built-in post-processing rather than running a user script — see [Plugins](plugins.md).)
+In `sweep` and `preproc` scripts, use the supplied `suite_dir` and `artifact_dir` variables. The process working directory remains `invocation_cwd`.
 
 ```python
-# inside a sweep / preproc script
-import os
-out = os.path.join(artifact_dir, "gen.sv")   # correct
-out = os.path.join(os.getcwd(), "gen.sv")    # wrong — invocation cwd
+out = os.path.join(artifact_dir, "gen.sv")  # correct
+out = os.path.join(os.getcwd(), "gen.sv")  # wrong: invocation cwd
 ```
 
-## Path resolution rules for config files
+The configured `postproc` script is not currently executed; built-in post-processing determines results. See [Hook execution context](plugins.md#handle-hook-execution-context).
 
-`rtl_buddy` resolves config-owned paths from the config file that owns them:
+## Handle an artefact lock
 
-- `regression.yaml` resolves listed suite configs relative to itself.
-- `tests.yaml` resolves testbench filelists, hook script paths, and suite-local assets relative to the suite directory.
-- `models.yaml` resolves model filelist entries relative to the `models.yaml` file that declared them.
-- `synth.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml` resolve their own fields relative to their config directory.
+Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holding PID, command, and start time.
 
-A relative path inside a YAML file never depends on where you ran `rb`. Absolute paths pass through unchanged.
+Wait for the first process to finish or terminate that process if it is stale. The kernel releases the lock on normal exit, crash, or kill; the metadata file itself does not need removal. Listing commands do not take the lock.
 
-## One run per artefact tree
+The lock covers the entire artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Commands using different artefact roots can run concurrently.
 
-Two `rb` processes writing into the same `artefacts/` tree would interleave compile workspaces, `run-NNNN` directories, and the latest-run symlinks. To prevent this, every artifact-writing command takes an exclusive advisory lock (`flock`) on `<artifact_root>/.rtl-buddy.lock` when it starts, and **fails immediately** — it never waits — if another run already holds it:
+This protection is host-local. Do not run the same suite concurrently from multiple machines on a shared filesystem unless the environment provides equivalent coordination.
 
-```text
-<suite>/artefacts: another rtl-buddy run is already using this artefact tree
-(pid 12345, rb test, started 2026-06-10T14:03:21) — wait for it to finish or kill it
-```
+## Find the log
 
-The lock is released by the kernel when the holding process exits — normal completion, crash, or `kill` alike — so there are no stale locks to clean up; the `.rtl-buddy.lock` file itself is just holder metadata and is harmless to leave behind. `rb regression` locks each suite it enters for the lifetime of the run. Metadata-only invocations (`--list`) never take the lock, so listing tests while a run is in flight always works. Suites with *different* artefact trees never contend — run as many in parallel as you like.
-
-The lock covers the **whole artefact tree**, not just the subtree a command writes: when `tests.yaml`, `synth.yaml`, `fpv.yaml`, etc. share a suite directory, any two artifact-writing commands contend — `rb hier` during a long `rb test` in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the `--list` paths and commands anchored elsewhere (another suite, `rb docs`, `rb hub`) remain available.
-
-**The protection is per host.** The guarantee relies on local `flock(2)` semantics and ends at the machine boundary. On a workspace shared over NFS, two runs on **different hosts** may both acquire "the" lock — whether `flock` propagates across NFS depends on the protocol version, mount options, and server lock-daemon configuration, and rtl_buddy does not rely on it. Concurrent runs against the same suite from two machines are not protected; coordinate those yourself.
-
-## Future: redirecting the artifact root
-
-The artifact root defaults to `command_root/artefacts/`. The `ExecutionContext` carrier is built to accept an explicit override so a future `--artifact-root` flag (or `root_config.yaml` field) can redirect large artifacts — synthesis netlists, simulation waveforms — onto a separate disk without touching command code. None of this is wired today; this page will update when it ships.
-
-## See also
-
-- [Engineering Guidelines — Execution Contexts](../development/guidelines.md#execution-contexts) — the policy form of this page.
-- [Regressions](regressions.md) — how the orchestration log re-anchors per suite.
-- [Root Config](root-config.md) — how `root_config.yaml` is discovered (walks up from the command root).
+Read `<command_root>/rtl_buddy.log`. It is plain text by default and JSON Lines under `--machine`. For regressions, inspect the relevant suite log for test details and the manifest-root log for the final summary.

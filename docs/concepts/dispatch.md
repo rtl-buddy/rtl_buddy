@@ -1,753 +1,201 @@
 ---
-description: Fan regression tests out in parallel — as Slurm jobs on a cluster or as capped subprocesses on one machine — after a single shared build, with per-test resource reservations and right-sizing advice.
+description: Run tests concurrently on one host or Slurm, configure resources and retries, and diagnose dispatched builds and jobs.
 ---
 
 # Parallel dispatch
 
-By default `rb regression` runs every test in-process, one at a time.
-**Dispatch** instead fans the tests out in parallel after a single shared
-build, with one of two backends:
+Dispatch runs `test`, `randtest`, or regression work in parallel after planning the run and sharing compilations where possible.
 
 ```bash
-rb regression --dispatch slurm             # a cluster
-rb regression --dispatch local-parallel    # this machine, no scheduler
-rb randtest my_test 500 --dispatch slurm   # seed fan-out
-rb test my_test --dispatch slurm           # one test, on the cluster
+rb regression --dispatch local-parallel
+rb regression --dispatch slurm
+rb randtest my_test 500 --dispatch slurm
+rb test smoke reset_error --dispatch slurm
+rb test --filter '^smoke_' --dispatch slurm
 ```
 
-`--dispatch local` (the default) is the unchanged in-process path.
+| Backend | Execution | Concurrency | Resource enforcement | Usage advice |
+|---|---|---|---|---|
+| `local` | Current process | 1 | None | None |
+| `local-parallel` | Subprocesses on this host | `--jobs` or `cfg-dispatch.jobs` | No | No |
+| `slurm` | Cluster jobs | Per-array throttle | Yes | From `sacct` |
 
-| | `local` | `local-parallel` | `slurm` |
-|---|---|---|---|
-| Runs where | this process | this host, N subprocesses | cluster nodes |
-| Needs | nothing | nothing | Slurm client + shared FS |
-| Concurrency | 1 | `--jobs` / `cfg-dispatch.jobs` | `max-jobs-per-array` × arrays |
-| `resources:` reservations | n/a | ignored (advisory) | enforced by the scheduler |
-| Right-sizing advice | n/a | none (no accounting) | from `sacct` |
+`local` is the default. `rb test` uses dispatch only when `--dispatch` is given explicitly; it does not inherit `cfg-dispatch.backend`. Other dispatch settings still apply after a backend is selected.
 
-Both dispatch backends sit behind one interface and share everything that
-is not the transport: the head expands sweeps **once** into a plan
-manifest, submits one build job per suite, gates the sims on that build,
-and collects a `result.json` per job. The sections below describe the
-Slurm path first; [On one machine](#on-one-machine-dispatch-local-parallel)
-covers what differs on a laptop.
+`rb test` accepts the same explicit-name list or regex filter locally and under dispatch, creating one simulation job per selected test. See [Run tests](tests.md#run-tests) for selection order and validation.
 
-## How it works
+Dispatch cannot be combined with `--early-stop`. It implies [`--share-build`](tests.md#sharing-compiled-builds-across-tests), expands sweep hooks once on the head, and skips the per-tree lock in worker jobs.
 
-**Nothing heavy runs on the submit host** — it is usually an interactive
-login node where a big Verilation is against policy. The head process only
-plans and submits; the compile and the sims both run as scheduler jobs.
+## Run on one host
 
-1. **Build job.** The head submits one `sbatch` job per suite that runs
-   `rb _build-job` on a compute node: it compiles one shared `simv` per
-   unique compile key (`--dispatch` implies
-   [`--share-build`](tests.md#sharing-compiled-builds-across-tests)) and
-   writes the shared build to the shared filesystem. Those compiles run
-   **serially inside that one job**, so a suite with several compile keys
-   needs a `compile.time` covering their total — see [Sizing the
-   reservations](#sizing-the-reservations). If no test in the
-   suite uses a share-build-capable builder there is nothing for the sim
-   jobs to read, so the build job is skipped entirely rather than burning
-   a compile — see [Builders that compile inside the
-   job](#builders-that-compile-inside-the-job).
-2. **Fan-out gated on the build.** One job per `(test, run_id)` is
-   submitted, grouped by identical resolved resources into a Slurm
-   **array** (`cfg-dispatch.max-jobs-per-array` maps to the array's `%N`
-   throttle), each with `--dependency=afterok:<build-job>`. Slurm holds
-   the sim elements until the build succeeds; each then re-invokes
-   `rb _test-job`, whose own compile short-circuits on the shared-build
-   stamp, so it runs simulation + post only.
-3. **Collect.** The head waits for the queue to drain (once, across all
-   suites), then loads each job's result and feeds the normal summary and
-   exit code. A job that produced no result — a scheduler kill, a crash,
-   or a build-job failure that made `afterok` cancel it — counts as a
-   fail, never silently dropped.
-
-The compile carries its own reservation (`cfg-dispatch.compile`,
-defaulting to `resources`) since a large Verilation or VCS elaboration is
-often heavier than the sims it precedes. Normally that reservation belongs
-to the build job; when the builder cannot share a build the compile runs
-inside each sim job instead and the block is folded into *that* job's
-reservation. If the reservation is too small the build is
-killed, `afterok` cancels the sims, and they surface as dispatch failures
-pointing at the build log.
-
-!!! note "Dependents are reaped, not left queued"
-    Slurm reports a sim whose build failed as `PENDING` with reason
-    `DependencyNeverSatisfied`, and by default leaves it queued **forever** —
-    it is only reaped if the site sets `kill_invalid_depend` in
-    `SchedulerParameters`. Two things prevent that stray:
-
-    - every dependent submit carries **`--kill-on-invalid-dep=yes`**, so
-      Slurm itself removes the job the moment the dependency fails. This is
-      the one that matters, because it holds even when the head process is
-      `SIGKILL`ed (a CI abort or timeout) and never gets to clean up;
-    - failing that, collection notices such jobs, cancels them, and logs
-      `dispatch.dependency_never_satisfied` instead of polling jobs that can
-      never run.
-
-    Pass `--kill-on-invalid-dep=no` in `sbatch-args` to opt out — user
-    `sbatch-args` are appended last and win.
-
-A single test's compile failure does **not**
-fail the build job — the other sims still run, and the failing test
-recompiles (and fails) in its own sim job. `--dispatch` cannot be combined
-with `--early-stop`, and dispatched jobs deliberately skip the per-tree
-lock (see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
-
-## Selected tests on the cluster: `rb test --dispatch`
-
-The three test-family commands take the same pair of flags, and they mean
-the same thing on each — only the *selection* differs:
-
-| Command | What is dispatched |
-|---|---|
-| `rb regression` | every suite in the regression config, at `-l`/`-s` |
-| `rb randtest <test> N` | one test, N seeds |
-| `rb test [<test> ...]` | named tests, `--filter` matches, or the suite when neither is given |
+`local-parallel` uses one global subprocess pool across all suites and resource groups:
 
 ```bash
-rb -B verilator -M reg test smoke reset_error -c verif/sch/tests.yaml --dispatch slurm
-```
-
-This is the **same planning path**, narrowed: one plan manifest, one sim job
-per selected test, and one collected envelope — with a build job in front,
-gated with `afterok`, whenever the test's builder can share a build. When it
-cannot (an unsupported simulator family, or one pinned with an absolute
-`builder-simv:`) there may be no build job and each sim job compiles inside
-its own allocation, ungated — the same rule the whole page follows,
-[below](#how-arrays-interact-with-the-shared-build). It exists because a
-single-test cluster run is what iterating on one failing test needs, and
-because on a shared submit host a large top-level build is not something to
-run locally at all
-([#440](https://github.com/rtl-buddy/rtl_buddy/issues/440)).
-
-Selection may be an explicit list or a case-sensitive regex such as
-`--filter '^smoke_'`; the two forms are mutually exclusive. Everything else
-`rb test` already carried composes unchanged: `-c`,
-`--reg-level` / `--start-level` (a test filtered out by level is skipped
-before the plan, exactly as in-process), `--share-build` (implied by
-`--dispatch` anyway), the `--coverage-*` set, and `-n` / `-l` seed
-selection, which travels to the job as its `--seed-mode`.
-
-**Dispatching `rb test` is opt-in per invocation.** It is the one command
-that does *not* take its backend from `cfg-dispatch.backend`: `rb test` is
-the local iteration command, and a project that configured a cluster
-backend for its regressions should not find single-test runs queueing (nor
-`--early-stop` rejected) because of a config key it set for something else.
-Without `--dispatch` on the command line, nothing about `rb test` changes.
-The rest of the `cfg-dispatch` block — `resources`, `compile`, `retry`,
-`jobs`, `max-wait`, … — configures the run as usual once `--dispatch`
-selects a backend.
-
-## How arrays interact with the shared build
-
-Dispatch buckets tests by **two independent keys**, and they need not line
-up:
-
-- **Share-build groups by *compile key*** — a fingerprint of the compile
-  inputs (filelist + compile flags + plusdefines + the resolved builder
-  executable). Tests whose inputs hash identically reuse one `simv` under
-  `artefacts/.shared-builds/obj_dir_<key>/simv`. Because dispatch implies
-  `--share-build`, the toolchain has to be part of that key or a dispatched
-  run would reuse a build the current simulator never produced — see
-  [the stamp](tests.md#sharing-compiled-builds-across-tests).
-- **Arrays group by *resolved resources*** — the `cpus`/`mem`/`time`
-  reservation. Tests resolving to the same reservation share one `sbatch`
-  array.
-
-These are orthogonal because reservations are about *sim-time* needs while
-compile keys are about *compile inputs*. A smoke test and a soak test of
-the same DUT+testbench reuse one compiled `simv` (same compile key) but
-reserve very different memory/time, so they land in **different arrays**.
-Conversely, two unrelated blocks that happen to reserve the same slot
-share one array but each build their own `simv`.
-
-The sharing happens in the **build job**: it Verilates each unique compile
-key exactly once (later configs with the same key short-circuit on the
-stamp), and the sim arrays are gated on it by `afterok`, so no sim starts
-until its shared build exists. So the counts are independent — distinct
-`simv`s built = distinct compile keys; arrays submitted = distinct
-resource tuples — and any combination is possible (one `simv` shared
-across a 12-element array; three arrays all pointing at one `simv`; a
-single array whose members each have their own `simv`).
-
-Every array element re-runs `compile()`, finds the shared stamp on the
-shared filesystem, short-circuits, and reads the same on-disk `simv`
-**read-only** — which is why elements across different arrays (or suites)
-that share a compile key all point at the same build, and why concurrent
-elements are safe (`_test-job` is a cooperative reader that skips the
-per-tree lock).
-
-## Builders that compile inside the job
-
-Share-build works for the builders whose compile output rtl_buddy can
-redirect wholesale into the shared dir: **Verilator** (`--Mdir`), **VCS**
-(`-o` for the executable plus `-Mdir` for its `csrc` tree, so the build is
-self-contained), and **Icarus** (`-o` for the `.vvp` snapshot). All three
-build once per compile key and short-circuit on the stamp.
-
-Any other builder — and a builder configured with an *absolute*
-`builder-simv:`, which pins the executable somewhere a per-compile-key dir
-cannot honour — cannot put its build where other tests would find it, so
-**the build stays inside the test's own `artefacts/<test>/`**. Under
-`--share-build` it is still stamped there, which means it can be *reused*
-by the next process to compile that same test even though it can never be
-*shared* with a different one. That is what lets a build job compile it once
-and the sim jobs skip their own compile. Two further consequences dispatch
-handles for you:
-
-- **No build job is submitted** when nothing in the suite can share a
-  build *and* no test is fanned out over several runs. The build pass would
-  compile on a compute node and produce something no sim job needs, so it
-  is skipped and the elements run ungated (logged as
-  `dispatch.build_job_skipped`). That is safe because each test owns its own
-  `artefacts/<test>/`, so there is exactly one writer per directory.
-- **A fanned-out test gets one anyway**, because there the one-writer
-  property does not hold: `artefacts/<test>/` is keyed on the *test*, not on
-  the run, so `randtest <test> N --dispatch` would otherwise run N full
-  compiles into one directory at once and the losers would report
-  `Compile failed` with nothing wrong
-  ([#369](https://github.com/rtl-buddy/rtl_buddy/issues/369)). The build job
-  is the single writer: it compiles once, and every element waits for it and
-  short-circuits on the stamp it leaves. So whenever a build job exists,
-  **every** group is gated on it with `afterok` — including the
-  self-compiling ones, since the build job runs PRE+COMPILE for the whole
-  plan and therefore writes into their directories too. The gate orders the
-  elements but does not exclude them, so the stamp is what actually keeps
-  them from recompiling; an element that compiles anyway logs
-  `compile.prebuilt_stamp_invalid` — see
-  [Known Issues](../known-issues.md#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling).
-- **The job's reservation covers both phases.** A compile is frequently
-  hungrier than the sim it precedes — a VCS elaboration usually is — so a
-  sim-sized reservation would be killed during it. One allocation cannot
-  carry two reservations, so the element-wise maximum of
-  `cfg-dispatch.resources` (as resolved for that test) and
-  `cfg-dispatch.compile` is used, field by field, and logged as
-  `dispatch.compile_in_job`. Tests whose builder *can* share a build are
-  unaffected: they keep the sim-sized reservation, and the compile
-  reservation stays with the build job where it belongs. The combined size
-  is kept even where a build job exists and the element expects to skip its
-  compile — a stamp that fails to validate for any reason puts the compile
-  back inside the job, and being over-reserved is cheaper than being killed.
-
-!!! note "A VCS compile can wait for a license"
-    `vcs` elaboration honours `-licqueue` exactly as `simv` does, so part
-    of a compile's wall-clock can be time spent queuing for a seat rather
-    than compiling — and Slurm's `--time` clock keeps running through it.
-    rtl_buddy cannot pause the scheduler's clock, but it detects the queue
-    banner and logs `compile.license_queued` with the compile transcript,
-    so a build job killed at its time limit is diagnosable as a busy
-    license server rather than an undersized reservation. Give a VCS
-    `compile.time` headroom for it. Sharing the build helps here too: the
-    build job compiles each key once, serially, taking one seat at a time
-    instead of one per concurrent array element.
-
-## On one machine: `--dispatch local-parallel`
-
-Slurm needs a cluster, and it has no native macOS build — so on a laptop
-the only options used to be "one test at a time" or "stand up a scheduler".
-`local-parallel` closes that gap: the same plan → build job → gated
-fan-out, with every job a plain subprocess on this host, throttled by one
-pool of slots.
-
-```bash
-rb regression --dispatch local-parallel          # min(4, cpu count) jobs
-rb regression --dispatch local-parallel -j 8     # eight at a time
+rb regression --dispatch local-parallel       # min(4, CPU count)
+rb regression --dispatch local-parallel -j 8
 rb randtest my_test 20 --dispatch local-parallel -j 4
 ```
 
-Nothing to install: no scheduler client, no shared filesystem (the local
-one is trivially "visible at the same paths"), no accounting database.
-Concurrency comes from `-j/--jobs`, or `cfg-dispatch.jobs`, defaulting to
-`min(4, cpu count)`. It is **one global pool** — across every suite and
-every resource group, not per array — so `-j 4` means at most four
-`rb` jobs alive at once, full stop. Build jobs jump the queue ahead of
-waiting sims, since a build unblocks a whole suite and a sim unblocks
-nothing.
+The default is `min(4, CPU count)`. Build jobs are prioritized because they unblock their suite. A simulation starts only after its build exits 0; a failed build prevents dependent simulations from starting and makes them dispatch failures.
 
-What carries over unchanged: the sweep hook runs once on the head; each
-suite's shared build compiles once and the sims short-circuit on its
-stamp; a sim only starts once its build **exited 0** (this backend's
-version of `afterok`), and if the build fails its sims never start and are
-reported as producing no result, pointing at the build log.
+CPU, memory, and time reservations are not enforced locally. A non-default reservation logs `dispatch.reservations_ignored`; choose `--jobs` for the memory demand of the heaviest concurrent tests. Local runs also produce no reservation advice.
 
-Two things are deliberately **not** supported, and they are the reason to
-still prefer Slurm where you have it:
+Use `Ctrl-C` to stop the head and its process groups. `SIGKILL` prevents cleanup and may leave child processes running.
 
-- **Reservations are not enforced.** `resources:` cpus/mem/time are
-  ignored rather than half-honoured — one host has no portable per-process
-  cap (`ulimit`/`nice`/`taskset` are coarse and platform-specific). Any
-  reservation that resolves to something non-default — from `cfg-dispatch`
-  *or* from a per-testbench / per-test `resources:` — **warns** once
-  (`dispatch.reservations_ignored`) so it cannot read as enforced. `-j` is
-  the only backpressure, so size it for the *memory* your heaviest tests
-  need, not just for cores.
-- **No usage telemetry, so no right-sizing advice.** There is no `sacct`
-  to ask, so `payload.reservation_advice` comes back empty instead of
-  guessing. Right-size against a real cluster run.
+## Meet the Slurm requirements
 
-!!! note "Ctrl-C cleans up; `kill -9` does not"
-    Jobs run in their own process session, so an interrupt goes to the
-    head, which takes the fleet down itself — the same shape as `scancel`,
-    and it lets a simulator flush on a graceful signal. Teardown signals
-    **every** job before waiting on any, so the grace period is one 5 s
-    window for the whole fleet rather than 5 s per job, and an impatient
-    second `Ctrl-C` can at worst skip the escalation to `SIGKILL` — never
-    leave a job unsignalled. The trade-off: a `SIGKILL`ed head runs no
-    cleanup at all and, unlike Slurm, there is no scheduler to reap the
-    orphans — its children finish their runs. Prefer `Ctrl-C` over
-    `kill -9` on a dispatched run.
+Before using `--dispatch slurm`, provide:
 
-## Requirements (Slurm)
+- `sbatch`, `squeue`, `sacct`, and `scancel` on the submit host. Run `rb tool-check --explain slurm`.
+- A shared filesystem exposing the project, artefacts, and Python environment at identical absolute paths on submit and compute hosts.
+- The project's Python environment on compute hosts; workers run `sys.executable -m rtl_buddy`.
 
-- A Slurm client on the submit host (`sbatch`/`squeue`/`sacct`/`scancel`)
-  — see [Installation](../install.md). `rb tool-check --explain slurm`
-  reports readiness.
-- A **shared filesystem** visible at the same absolute paths on the submit
-  host and every compute node: the project checkout, the `artefacts/`
-  tree, and the Python environment.
-- The project's `rb` runnable on the compute nodes (the job runs
-  `sys.executable -m rtl_buddy _test-job`).
-- A share-build-capable builder (Verilator, VCS, or Icarus) to compile
-  once per compile key; other builders still work but recompile inside
-  each job — see [Builders that compile inside the
-  job](#builders-that-compile-inside-the-job).
+The submit process only plans, submits, waits, and collects. Compilation and simulation run on compute nodes.
 
-## Configuration: `cfg-dispatch`
+## Understand build and simulation jobs
 
-All optional, in `root_config.yaml`:
+For each suite, dispatch:
+
+1. Writes a plan and, when needed, submits one build job.
+2. Builds each unique compile key serially. Compile keys fingerprint sources, flags, defines, and the resolved builder.
+3. Groups simulations with identical resolved resources into Slurm arrays and gates them with `afterok` on the build.
+4. Collects each worker's `result.json` into the normal summary and exit status.
+
+Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. `max-jobs-per-array` is a `%N` throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.
+
+Verilator, VCS, and Icarus can place outputs in a shared compile-key directory. Other builders, and builders with an absolute `builder-simv`, keep the build under the test artefact directory:
+
+- Without shared-capable tests or seed fan-out, no separate build job is submitted; each simulation job compiles in its own directory.
+- A fanned-out test still gets a build job to prevent concurrent compiles into the same test directory. Workers use the stamp left by that job.
+- A job that may compile uses the field-wise maximum of its simulation and compile reservations. This protects against a missing or invalid prebuilt stamp.
+
+When a build job exists, every dependent is submitted with `--kill-on-invalid-dep=yes`. A failed build therefore removes jobs that could never satisfy `afterok`; collection also cancels any `DependencyNeverSatisfied` remnants. A user-supplied `--kill-on-invalid-dep=no` in `sbatch-args` overrides the default.
+
+A missing result from a scheduler kill, worker crash, or dependency failure is a failed row, not a dropped test. A compile failure for one compile key does not stop unrelated keys; the affected worker retries its own compile and reports the failure.
+
+## Configure dispatch
+
+Set defaults in `root_config.yaml`:
 
 ```yaml
 cfg-dispatch:
-  backend: slurm            # local (in-process, default) | local-parallel | slurm
-  jobs: 4                   # local-parallel only: concurrent subprocesses
-  resources:                # cluster-wide per-SIM-job defaults
+  backend: slurm
+  jobs: 4
+  resources:
     cpus: 2
     mem: 4G
-    time: "01:00:00"        # QUOTE time values (see below)
-  compile:                  # reservation for the COMPILE (defaults to resources)
+    time: "01:00:00"
+  compile:
     cpus: 8
     mem: 16G
     time: "02:00:00"
-  sbatch-args:              # passed to sbatch verbatim
+  sbatch-args:
     - --partition=verif
     - --account=chip
-  max-jobs-per-array: 200   # concurrency throttle, PER submitted array
-  poll-interval: 10         # seconds between queue polls (> 0)
-  progress-interval: 60     # seconds between console progress lines (0 = quiet)
-  max-wait: 7200            # seconds to wait for the fleet (unset = unbounded)
-  retry:                    # retry budget for license-queue kills (off by default)
-    attempts: 2             # EXTRA attempts after the first
-    backoff-sec: 60         # first delay, doubling per attempt
-    backoff-max-sec: 600    # cap
-    jitter: 0.5             # +/- fraction applied to each delay
-    classifiers: [license-queue]   # what may be retried
-  rightsize:                # reservation right-sizing (see below)
+  max-jobs-per-array: 200
+  poll-interval: 10
+  progress-interval: 60
+  max-wait: 7200
+  retry:
+    attempts: 2
+    backoff-sec: 60
+    backoff-max-sec: 600
+    jitter: 0.5
+    classifiers: [license-queue]
+  rightsize:
     report: true
     over-threshold: 0.5
     near-limit: 0.9
     margin: 1.5
 ```
 
-`jobs` and `max-jobs-per-array` belong to different backends and do not
-interact: `jobs` is `local-parallel`'s single global pool, while
-`max-jobs-per-array` is a Slurm `%N` throttle (and is ignored by
-`local-parallel`, which has no arrays).
+`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array. See [YAML formats](../reference/yaml.md#root_configyaml) for defaults and validation.
 
-`max-jobs-per-array` throttles each *submitted array*
-(`--array=1-N%max-jobs-per-array`), not the run as a whole — a regression with several reservation shapes across
-several suites submits several arrays, so peak concurrency is roughly
-`max-jobs-per-array × arrays`. Size it per array, not per cluster.
+Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations.
 
-!!! warning "Quote `time` values"
-    YAML 1.1 reads an unquoted `time: 4:00:00` as the **integer 14400**
-    (sexagesimal), which Slurm would take as 14400 *minutes* — 10 days.
-    rtl_buddy rejects the unquoted form loudly, so this costs you a config
-    error rather than a ten-day reservation; always write
-    `time: "4:00:00"` (bare minutes work as a string too, `time: "240"`).
+## Set per-test resources
 
-    The trap is easy to miss because it is inconsistent: a leading-zero form
-    like `01:00:00` happens to survive as a string, so a file full of
-    unquoted times can load fine until someone writes a single-digit hour.
-    Quote every one, in `cfg-dispatch.resources`, `cfg-dispatch.compile`,
-    and per-testbench / per-test `resources:` alike. See
-    [Known Issues](../known-issues.md#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal).
-
-## Retrying a license-queue kill
-
-A dispatched sim that waits for a VCS license seat waits **inside its
-allocation**: the seat and the reservation are two different clocks, and
-when the reservation runs out first the scheduler kills the job. It leaves
-no result envelope, so the head scores it a failure — `dispatch job 6553_2
-produced no result (scheduler state TIMEOUT)`. Nothing about the test was
-wrong; it never got to run.
-
-`retry:` gives those jobs another go. It is **off unless you set
-`attempts`**, and it is deliberately narrow — a job is retried only when
-*both* hold:
-
-- the scheduler state is a **resource condition**: `TIMEOUT`, `NODE_FAIL`
-  or `PREEMPTED` (a `FAILED` or `CANCELLED` job decided its own outcome
-  and is never retried), **and**
-- the job's own output ends **inside the license queue**: after the last
-  `-licqueue` marker, everything the job captured is queue-banner
-  vocabulary — the repeated banner, the polling dots, the `HIT CTRL-C to
-  exit` hint, a truncated last line. rtl-buddy looks in `test.log` /
-  `test.err`, then the job's `rtl_buddy-*.log` and the scheduler's log
-  beside it, and only accepts files written since this attempt was
-  submitted (`artefacts/<test>/test.log` is keyed on the test, not on the
-  run, so an older one is a previous run's).
-
-The banner's *presence* is deliberately not the rule. Most jobs that
-print it go on to get a seat and run perfectly well — 376 of 657 in the
-run that motivated this — so a sim that queued, was granted its seat, ran
-and *then* hung would be resubmitted by a rule that only looked for the
-marker. The discriminator is the same one that pauses the `sim_timeout`
-clock live: a complete line outside the banner's vocabulary means the seat
-was granted. A testbench that hung after its seat has such a line; a
-testbench that hung without ever queueing has no marker at all. Neither is
-retried — retrying either would re-run a genuine failure and burn the
-reservation twice.
-
-A job is also never retried when its suite's **build job did not report
-success**. Such a sim never started (`afterok` cancelled it), so it has no
-evidence of its own to classify, and resubmitting it would launch a job
-the head deliberately skipped — ungated, because a retry carries no
-`afterok` edge (the build job has left the queue and an `afterok` on a job
-the scheduler has forgotten never becomes satisfiable). Requiring the gate
-to have opened is what keeps the retry safe: the shared build's stamp is
-on disk, so the retried element short-circuits its own compile exactly as
-the first attempt did.
-
-And a job that vanishes still fails when the budget runs out: **no retry
-ever turns a missing result green.** The exhausted row says how many
-attempts it got.
-
-On `local-parallel` there is no scheduler and no accounting source, so
-there is no state to require: the **queue evidence alone** decides there.
-Nothing killed the job from outside, so a missing envelope from a sim that
-was demonstrably still waiting for a seat is the same shape without a
-scheduler to name it.
-
-Retry covers **sim jobs only**. A build job's elaboration honours
-`-licqueue` the same way and can lose the same race, but a build kill
-dooms a whole suite's fan-out at once and re-running it is a much larger
-bet than re-running one sim, so it stays out for now.
-
-```yaml
-cfg-dispatch:
-  retry:
-    attempts: 2            # at most three submissions of one job
-    backoff-sec: 60
-    backoff-max-sec: 600
-    jitter: 0.5
-    classifiers: [license-queue]   # the only classifier that exists today
-```
-
-(The key is `classifiers`, not `on`: PyYAML parses YAML 1.1, where an
-unquoted `on:` key is the boolean `true` — the pin would never reach the
-config and an unknown classifier could never be rejected.)
-
-The delay before attempt *n* is
-`min(backoff-max-sec, backoff-sec × 2^(n-1))`, multiplied by
-`uniform(1 - jitter, 1 + jitter)`.
-
-!!! note "Why the delay is both growing and random"
-    The jobs that lose a seat race lose it *together*: they queued behind
-    the same exhausted pool, so their reservations expire within seconds of
-    each other. Resubmitting them immediately puts the whole batch back in
-    front of a pool that is still full and they time out together again —
-    a synchronised retry storm. A *fixed* delay keeps the batch in
-    lockstep; the jitter decorrelates them so they trickle back as seats
-    free.
-
-The wait is served by the **backend**, never slept in the head: Slurm gets
-`--begin=now+<delay>` and holds the job `PENDING` (occupying no
-allocation — the point, since the pool that killed the first attempt is
-not made freer by a second allocation sitting on it), and `local-parallel`
-holds it in its own queue, taking no pool slot. Each attempt writes its
-own **scheduler** log (`slurm-<tag>-retry<N>.log`), so those are kept side
-by side; the result envelope path does not move, and neither does the
-sim's own capture — `artefacts/<test>/test.log` and the per-job
-`rtl_buddy-<tag>.log` are **truncated by the next attempt**, so if the
-banner landed only there, the retry overwrites the evidence for itself.
-The `dispatch.retry` console line and the `dispatch.result_missing` entry
-in `rtl_buddy.log` are the durable record of why the retry happened.
-
-Every retry logs `dispatch.retry` **on the console**, naming the attempt,
-the delay and the classifier, so a green run that needed three attempts is
-not indistinguishable from one that needed none:
-
-```text
-dispatch: retrying seqr_add_fp16_cpc8 (job 6553_2) in 1m04s — license-queue, attempt 1 of 2
-```
-
-A retry that cannot be launched — `sbatch` refusing the submission, or
-`max-wait` elapsing on the second round — is **not** fatal to the run: the
-rows for that pass are already written and already say the jobs produced
-no result, so rtl-buddy logs `dispatch.retry_abandoned` and keeps the
-regression it has scored rather than discarding the summary and the exit
-code.
-
-!!! note "Retry and `max-wait`"
-    `max-wait` bounds **each** wait, not their sum: a run with retry
-    enabled can take up to roughly `attempts × (backoff + max-wait)`. The
-    backoff itself is not charged against it — a held job is outstanding
-    for the whole delay (Slurm reports it `PENDING`/`BeginTime`, the pool
-    keeps it queued), so each retry round's deadline is widened by the
-    delay the head asked for. Without that, a `max-wait` shorter than the
-    backoff would trip on every retry before the job was allowed to start.
-
-!!! note "`--begin` and `sbatch-args`"
-    The retry's `--begin=now+<delay>` is emitted **before**
-    `cfg-dispatch.sbatch-args`, and `sbatch` takes the last occurrence of a
-    duplicated flag. A site that passes its own `--begin` through
-    `sbatch-args` therefore wins — consistent with how every other
-    `sbatch-args` override behaves, but it means the retry's hold does not
-    happen. Drop `--begin` from `sbatch-args` if you want the backoff.
-
-!!! warning "Retry is the portable half of the fix"
-    A retried job still occupies a full allocation per attempt and can
-    still lose the race. The complete fix is scheduler-side license
-    gating — `Licenses=` in `slurm.conf`, then `--licenses=<name>:1`
-    through `cfg-dispatch.sbatch-args` — where the job stays `PENDING`
-    with no allocation until a token frees. That needs a cluster admin, so
-    retry is what rtl-buddy can ship on its own
-    ([#405](https://github.com/rtl-buddy/rtl_buddy/issues/405)).
-
-## Watching a run
-
-A dispatched regression's console is often the **only** artifact anyone
-sees — a Jenkins log, an agent's transcript — so the wait narrates itself
-at default verbosity, without `-v` and without pretending any of it is a
-warning. Four things appear, in this order:
-
-1. **The job ids, before the wait starts.** One line per suite as it is
-   submitted (`dispatch.suite_submitted`):
-
-    ```text
-    dispatch: verif/tb_a → build job 1234, sim jobs 1235_[1-40] 1236 (41 jobs on slurm)
-    ```
-
-    The ordering is deliberate. If the head dies — killed by CI, or by
-    the machine it ran on — those ids are the only route to
-    `squeue`/`sacct`, and the only way to tell whether the fleet outlived
-    the process that submitted it.
-
-2. **Progress, on change and as a heartbeat.** Every time the outstanding
-   count moves, and at least once every `progress-interval` seconds while
-   any job is still outstanding, queued or running (`dispatch.progress`):
-
-    ```text
-    dispatch: 42/88 jobs remaining (12 running, 30 pending), 12m34s elapsed, longest running rb:demo_alu 8m02s
-    ```
-
-    The count is in **jobs**, not queue lines: one pending array is as
-    many jobs as it has elements. At most one line per interval, so a 10 s
-    `poll-interval` does not print 360 lines an hour.
-
-3. **Suites, as they drain** (`dispatch.suite_drained`) —
-   `dispatch: verif/tb_a — all 41 jobs finished (12m34s)`. "Finished", not
-   "passed": results are collected once the whole fleet has drained, so at
-   this point nobody has looked at them.
-
-4. **`max-wait`, if it fires.** The collect wait is otherwise a `while
-   True` with no wall-clock bound, so anything that never leaves the queue
-   blocks the head forever and silently. Set `max-wait` and that becomes a
-   loud failure instead: `dispatch.max_wait_exceeded` at WARNING, the run
-   fails, the head **cancels the fleet** (as it does on any interrupt),
-   and the message names the outstanding ids in the grouped form
-   `squeue`/`sacct` take back. `dispatch.cancelled` carries them too, so
-   an interrupted run leaves a post-mortem trail either way.
-
-`progress-interval: 0` opts a developer's terminal out of all three
-console lines; the head's `rtl_buddy.log` still records every change at
-INFO, and it is the head's alone — see
-[Where each log lives](#where-each-log-lives). There
-is no CLI flag for either knob — CI sets them once in `root_config.yaml`,
-where the value belongs to the site rather than to the invocation.
-
-!!! note "A heartbeat also protects against CI idle timeouts"
-    A build that prints nothing for long enough is a candidate for being
-    killed as hung by the very system running it. Before this, a healthy
-    half-hour regression printed nothing at all between "Running
-    regression from …" and the summary
-    ([#435](https://github.com/rtl-buddy/rtl_buddy/issues/435)).
-
-### Where each log lives
-
-Head and jobs are separate processes, so they get separate log files
-([#437](https://github.com/rtl-buddy/rtl_buddy/issues/437)) — a job never
-opens the head's, because a process's first open of a log path truncates
-it:
-
-| Process | rtl_buddy log | Beside it |
-|---|---|---|
-| head | `<suite>/rtl_buddy.log` (and `dirname(regression.yaml)/rtl_buddy.log`, which a regression re-anchors back to between suites) | the console |
-| sim job | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` (`local-parallel-<tag>.log`) |
-| build job | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log` |
-
-`<tag>` is the run id (`0001`) or `single` for an unnumbered run, and
-`<pid>` is the head's. The scheduler's log holds the job's raw
-stdout/stderr; the `rtl_buddy-*.log` beside it holds the same events the
-head records for itself, as JSON Lines — a dispatched job runs in
-`--machine` mode. A dispatch failure names both in its
-result description, so a failed row leads to the files without a search.
-
-## Per-test reservations
-
-Not every test deserves the same slot. Override the reservation per
-testbench or per test in `tests.yaml`, using the same fields; the
-effective reservation is layered **test → testbench →
-`cfg-dispatch.resources` → built-in defaults**, field by field:
+Reservations resolve field by field in this order: test, testbench, `cfg-dispatch.resources`, built-in defaults.
 
 ```yaml
 testbenches:
   - name: axi_tb
-    resources: { cpus: 2, mem: 8G, time: "00:30:00" }
+    resources: {cpus: 2, mem: 8G, time: "00:30:00"}
+
 tests:
   - name: axi_smoke
-    # inherits the testbench reservation
   - name: axi_soak
-    resources: { mem: 24G, time: "04:00:00" }   # cpus inherited
+    resources: {mem: 24G, time: "04:00:00"}
 ```
 
-Tests that resolve to the same reservation share one Slurm array;
-differing reservations split into separate arrays.
+Tests with identical resolved reservations share an array. Compilation normally uses `cfg-dispatch.compile`; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.
 
-## Sizing the reservations
+Size `compile.time` for all unique compile keys in the suite because the build job processes them serially. Size `compile.mem` from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
 
-[Right-sizing](#reservation-right-sizing) tunes these numbers from real
-usage, but it can only
-report on jobs that survived long enough to be measured. Four things decide
-the first sizing, and each has bitten someone:
+VCS license wait under `-licqueue` counts against the Slurm time limit. Give `compile.time` queue headroom; `compile.license_queued` records only completed builds that waited.
 
-**`compile.time` covers the whole suite, not one compile.** The build job
-compiles each of the suite's unique compile keys **serially**, in one job,
-under one `--time`. A suite with six testbenches over one DUT has six keys,
-so its build job needs roughly six compiles' worth of time — and the whole
-array waits behind it, since every sim job is gated on that one job with
-`afterok`. Sizing `compile.time` from a single observed compile is the usual
-way to get a build job killed at its limit and a suite of dispatch failures
-pointing at a build log that just stops. Two ways to shrink the number
-rather than raise it: collapse compile keys (tests differing only in
-`plusdefines:` each cost a key — see
-[How arrays interact with the shared build](#how-arrays-interact-with-the-shared-build)),
-or split the suite. Full consequences in
-[Known Issues](../known-issues.md#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation).
+Dispatch requests `--acctg-freq=task=1` unless `sbatch-args` already supplies it. Keep fine-grained accounting if you want useful memory advice for short jobs.
 
-**A job that compiles inside itself must be reserved for the compile.**
-Where the builder cannot share a build, the compile happens under the
-*sim* job's reservation. rtl_buddy folds `cfg-dispatch.compile` into it
-field by field (see [Builders that compile inside the
-job](#builders-that-compile-inside-the-job)), so the thing to get right is
-`cfg-dispatch.compile` itself — a sim-sized `mem` there is what turns a
-whole array into `OUT_OF_MEMORY` kills. Elaboration is usually the memory
-peak of the entire flow, so size `compile.mem` from a real elaboration, not
-from a simulation.
+<a id="retrying-a-license-queue-kill"></a>
 
-Large generated structures can make Verilator elaboration the memory peak even
-when the resulting simulation is small. Slurm reports this as
-`OUT_OF_MEMORY`; a local compiler may only end with `Killed`, SIGKILL, or exit
-137. These are memory-allocation failures, not simulation timeouts. Raise the
-governing `mem` field—prefer the machine payload's
-`reservation_advice[*].edit_hint`, which may point at `cfg-dispatch.compile`
-rather than a test's `resources`—and do not raise `sim_timeout` for them.
+## Retry license-queue timeouts
 
-**Give a VCS build job headroom for the license queue.** `-licqueue` waits
-count against `--time`, so a `compile.time` sized for compute alone will
-eventually land on a busy license server — see [A VCS compile can wait for a
-license](#builders-that-compile-inside-the-job). `compile.license_queued` is
-logged when a compile *completes* after queueing, so a build job killed at
-its limit produces no such event of its own: the evidence comes from the
-keys that finished before it, or from a previous run.
+Retry is disabled until `retry.attempts` is nonzero. It applies to simulation jobs only and retries a missing result only when evidence identifies a VCS license wait:
 
-**Ask for accounting fine enough to advise from.** Dispatch requests
-`--acctg-freq=task=1` for you unless your `sbatch-args` already set
-`--acctg-freq`; leave it alone unless the site requires otherwise, because
-at the stock 30 s interval every sim job shorter than half a minute reports
-a memory peak far below the truth. See [Reservation
-right-sizing](#reservation-right-sizing).
+- Slurm state is `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED`; `FAILED` and `CANCELLED` are not retried.
+- Captured output ends in license-queue banner content after the last `-licqueue` marker.
+- The suite build job succeeded, so the shared-build stamp is available.
 
-## Reservation right-sizing
+For `local-parallel`, queue evidence is sufficient because there is no scheduler state. Build jobs are never retried.
 
-After a dispatched run, rtl_buddy compares what each test *reserved*
-against what it *used* (from `sacct` accounting) and reports advice —
-which resource is over- or under-reserved and what to set it to. It
-**reports and suggests; it never edits `tests.yaml`** — you (or an agent)
-apply the change as a reviewable diff.
+Delay for retry number `n` is `min(backoff-max-sec, backoff-sec * 2^(n-1))`, multiplied by jitter. Slurm holds retries with `--begin`; local-parallel holds them outside the worker pool. User `sbatch-args` occur last, so a user `--begin` overrides retry backoff.
 
-In human mode this is a "Reservation Advice" table after the summary. In
-`--machine` mode, `payload.reservation_advice` carries one event per
-finding:
+`max-wait` bounds each collection round, not the total run, and excludes the requested backoff. An exhausted retry remains a failure. A retry submission failure logs `dispatch.retry_abandoned` and preserves the already-scored run.
 
-```json
-{
-  "event": "reservation-advice",
-  "suite": "verif/demo_axi/tests.yaml",
-  "test": "axi_soak",
-  "resource": "mem",
-  "reserved": "24G", "peak": "3G", "utilization": 0.13,
-  "direction": "reduce", "suggested": "5G",
-  "runs": 4, "reg_level": 1000, "states": ["COMPLETED"],
-  "phase": "sim",
-  "edit_hint": {"file": "verif/demo_axi/tests.yaml",
-                "path": "tests[name=axi_soak].resources.mem"}
-}
+Each retry gets a scheduler log named `slurm-<tag>-retry<N>.log`. Test capture files are reused and truncated by the next attempt; `dispatch.retry` and `dispatch.result_missing` in `rtl_buddy.log` are the durable reason trail.
+
+Scheduler-side license gating with Slurm `Licenses=` and `--licenses=<name>:1` is preferable when available because jobs wait without consuming an allocation.
+
+<a id="watching-a-run"></a>
+
+## Monitor and stop a run
+
+At normal verbosity dispatch prints:
+
+- suite submission lines with build and simulation job IDs;
+- progress when counts change and at `progress-interval` heartbeats;
+- a line when each suite drains;
+- a warning with outstanding IDs when `max-wait` expires.
+
+Set `progress-interval: 0` to suppress console progress; events remain in the head log. On timeout or interrupt, the head cancels the outstanding fleet.
+
+Logs are separated by process:
+
+| Process | rtl_buddy log | Related files |
+|---|---|---|
+| Head | `<suite>/rtl_buddy.log` | Console output |
+| Simulation | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` or `local-parallel-<tag>.log` |
+| Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log` |
+
+`<tag>` is the run ID or `single`; `<pid>` is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.
+
+## Apply reservation advice
+
+After a Slurm run, rtl_buddy compares reservations with `sacct` usage and prints a Reservation Advice table. Machine output returns findings in `payload.reservation_advice`. It never edits configuration.
+
+Advice is calculated per test using the peak across runs in this invocation:
+
+- utilization below `over-threshold` suggests a reduction;
+- utilization above `near-limit`, `TIMEOUT`, or `OUT_OF_MEMORY` suggests an increase;
+- suggestions use peak times `margin`, with floors of 5 minutes and 128 MiB;
+- time advice is limited to Verilator because VCS license wait distorts elapsed time;
+- memory advice is suppressed when the longest run is shorter than the accounting sample interval, except that an out-of-memory state still suggests an increase;
+- `phase` is `sim` or `compile+sim` and `edit_hint` identifies the configuration field that actually controlled the allocation.
+
+Advice records the run count and regression level; do not use a smoke run to shrink a nightly reservation. Apply the provided `edit_hint`, rerun, and confirm the finding clears. Disable reports with `rightsize: {report: false}`. Without `sacct` accounting, dispatch completes but emits no advice.
+
+To inspect accounting manually, query step rows without `sacct -X`:
+
+```bash
+sacct -j <jobid> --format=JobID,Elapsed,MaxRSS
 ```
-
-Semantics:
-
-- Utilization is judged **per test**, using the peak across the test's
-  runs/seeds this invocation, so a suggestion covers the worst run.
-- Below `over-threshold` → `reduce`; above `near-limit`, or a scheduler
-  `TIMEOUT`/`OUT_OF_MEMORY` kill → `raise` (the kill wins even without
-  usage numbers). Suggested = peak × `margin`, floored at 5 min / 128M.
-- **Time advice is Verilator-only.** A VCS `-licqueue` wait would
-  masquerade as compute time, so time advice is suppressed off Verilator
-  (see [#329](https://github.com/rtl-buddy/rtl_buddy/issues/329)); memory
-  and CPU-efficiency advice are unaffected.
-- **Memory advice needs a peak that was sampled.** `MaxRSS` is a high-water
-  mark over accounting samples, so a test whose longest run finished inside
-  one sampling interval was measured at most once and reports near-nothing.
-  Dispatch therefore asks for per-second task accounting
-  (`--acctg-freq=task=1`) on every job unless your `sbatch-args` already set
-  `--acctg-freq`, and *still* suppresses utilization-based memory advice for
-  any test that ran shorter than the interval actually in force — logging
-  `rightsize.mem_advice_unsampled` with the test names rather than leaving
-  the gap silent. An `OUT_OF_MEMORY` kill still raises, being a fact about
-  the reservation rather than a measurement of it. Background:
-  [#365](https://github.com/rtl-buddy/rtl_buddy/issues/365).
-- Advice is labelled with `runs` and `reg_level`, so a `-l 0` smoke run
-  is never used to shrink a nightly test's reservation.
-- **`phase` says what the numbers cover.** `"sim"` is the usual case. A
-  job that also compiled (its builder [compiles inside the
-  job](#builders-that-compile-inside-the-job)) is labelled
-  `"compile+sim"`: `MaxRSS` and `Elapsed` are high-water marks over the
-  whole job, so they legitimately span both phases — do not read them as
-  sim-only.
-- **The hint names the field that actually governs.** A `compile+sim`
-  job's allocation is the maximum of the sim and compile reservations, so
-  where the compile side won, editing `tests[...].resources` would change
-  nothing. Those findings point at `cfg-dispatch.compile.<field>` in
-  `root_config.yaml` instead. Always apply the `edit_hint`'s `file` and
-  `path` rather than inferring the field from `test`.
-- Requires `sacct` (slurmdbd accounting). Without it, dispatch still works
-  and right-sizing degrades gracefully to no advice. Turn it off with
-  `rightsize: { report: false }`.
-
-!!! note "`MaxRSS` populates on step rows only"
-    Checking the advice by hand with `sacct -X` shows the field **blank** —
-    `-X` returns allocation rows, and usage is recorded on the steps
-    (`.batch`, `.extern`, …) and folded up. rtl_buddy queries without `-X`
-    and gets this right; a human reproducing it may conclude the field is
-    simply empty. Use `sacct -j <jobid> --format=JobID,Elapsed,MaxRSS` with
-    no `-X`.
-
-## Agent loop
-
-An agent driving `--dispatch slurm --machine` closes the loop: run,
-read `reservation_advice`, apply each `edit_hint` (raise under-reservations
-first — those cost failed runs — then trim over-reservations), rerun to
-confirm the advice retires. See the [bundled skill](../agents.md).

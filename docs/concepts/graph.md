@@ -1,572 +1,225 @@
 ---
-description: The design knowledge graph — the shared graph.json contract, the node and edge vocabulary of each tier, how rtl_buddy extracts the config tier from tests.yaml, models.yaml and specs.yaml, and the measured token cost of querying it against reading the tree.
+description: Build and query rtl_buddy's design knowledge graph, join test and coverage results, and use its CLI, MCP, and browser interfaces.
 ---
 
 # Design Knowledge Graph
 
-The design knowledge graph is one JSON file describing how a project fits together: which test runs on which testbench, which testbench exercises which model, which module that model is, which spec block specifies it, and which coverage items each test claims. Agents query it instead of grepping the tree.
+The design knowledge graph connects project configuration, elaborated RTL hierarchy, tests, specifications, and source bindings. Use it for questions that cross files or require elaborated relationships; read a source or config file directly for a fact contained in one file.
 
-It is assembled from three independent tiers that share one node-id namespace:
+## Build and refresh the graph
 
-| Tier | Produced by | Covers |
-| --- | --- | --- |
-| design | `rtl-buddy-view` | modules, instances, ports, parameters, interfaces — of every model *and* of every testbench |
-| config | `rtl_buddy` (this page) | suites, tests, testbenches, models, spec blocks, coverage items, spec docs, golden models |
-| binding | `rtl_buddy`, plus [rtl-buddy-graph-extract](https://github.com/rtl-buddy/rtl-buddy-graph-extract) when installed | cocotb test to Python module to DUT, `dut.<signal>` to port, test to golden model |
-
-Merging is a node-id union. Identical ids emitted by different tiers are the stitch points, so each tier can be produced, cached and re-exported on its own.
-
-```bash
-rb graph build                    # every model under design/, all available tiers
-rb graph build --model blk_a      # one model's design tier (repeatable)
-rb graph build -c regression.yaml # the models that regression's suites run
-rb graph results                  # refresh the results overlay beside it
-
-rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"   # locate, with status
-rb graph path cocotb_random module:demo_tiny_alu          # how are these related?
-rb graph explain test:verif/demo_tiny_alu#flags           # one node, every edge
-rb mcp                                                    # the same, over MCP
-
-rb hub start --serve-viewer                               # then open /graph
-rb hub send graph-focus test:verif/demo_tiny_alu#flags    # drive the pane
-```
-
-## graph.json Envelope
-
-The file is [NetworkX node-link JSON](https://networkx.org/documentation/stable/reference/readwrite/json_graph.html), so `networkx.node_link_graph(data, edges="links")` loads it directly:
-
-```json
-{
-  "directed": true,
-  "multigraph": true,
-  "graph": {
-    "schema_version": 1,
-    "generator": {"tool": "rtl_buddy", "version": "6.24.0", "tier": "config"},
-    "project_root_rel": "."
-  },
-  "nodes": [
-    {"id": "test:verif/demo_tiny_alu_cocotb#cocotb_random", "type": "test", "label": "cocotb_random", "tier": "config", "file": "verif/demo_tiny_alu_cocotb/tests.yaml", "reglvl": 1000}
-  ],
-  "links": [
-    {"source": "test:verif/demo_tiny_alu_cocotb#cocotb_random", "target": "tb:verif/demo_tiny_alu_cocotb#tb_alu_random", "type": "runs_on", "confidence": "EXTRACTED"}
-  ]
-}
-```
-
-Every node carries `id`, `type`, `label` and `tier`; `file` (repo-relative) is present wherever the source is a file. Every link carries `confidence`: `EXTRACTED` for anything read straight out of config or source, `INFERRED` / `AMBIGUOUS` only for the binding tier's `dut.<signal>` scan.
-
-Paths inside ids are always repo-relative and posix-separated, so an id computed on macOS matches one computed on Linux.
-
-## Output Paths
-
-The merged graph lives at `<project root>/artefacts/graph/graph.json`, with provenance beside it in `graph-meta.json`. The sidecar holds the generator identity and the SHA-256 of every input file per tier — that is how a consumer knows whether a cached graph is stale.
-
-Each tier's own export is kept next to the merged file, so a surprising merge can be traced back to the tier that produced it:
-
-```text
-artefacts/graph/
-├── graph.json              # the merged graph — this is what you query
-├── graph-meta.json         # fingerprint, tool versions, per-tier provenance
-├── results-overlay.json    # last status / seed / artefact paths per test node
-├── design/<model>/graph.json            # one design-tier export per model
-├── design/<model>/tb/<tb>/graph.json    # one per testbench, rooted at its top
-├── design/<model>/run/<top>/graph.json  # one per flow run top, rooted at its `top:`
-├── config/graph.json            # the config tier on its own
-├── binding/graph.json           # the extractor's tier, when it ran
-├── bind/graph.json              # the post-merge binding stage's own edges
-└── extract.log                  # the extractor's stdout/stderr, when it ran
-```
-
-The design tier's filelist is `rb hier`'s: `artefacts/hier/<model>/hier.f`, generated by the same machinery, so a graph export and a hierarchy render always see the same sources. The viewer's stderr for a model lands in `artefacts/hier/<model>/graph.log`. A testbench export reuses `rb hier --view tb`'s DUT+TB merged filelist at `artefacts/hier/<model>/tb/<tb>/hier.f` the same way; a flow-run export's model + flow-sources merge lands at `artefacts/hier/<model>/run/<top>/hier.f`.
-
-Volatile data never enters `graph.json`: no pass/fail status, no seeds, no artefact paths, no timestamps. Results are a separate overlay file keyed by node id, so re-running a regression does not churn the graph. See [Results Overlay](#results-overlay).
-
-## Building the Graph
-
-`rb graph build` runs each tier and merges the results. Model selection is `--model NAME` (repeatable), `-c/--regression FILE` (every model the regression's suites run), or, by default, every model declared under `--design-dir`. `--model` and `--regression` are mutually exclusive.
-
-| Flag | Effect |
-| --- | --- |
-| `--spec-dir` / `--verif-dir` / `--design-dir` | Search roots, same defaults as the `rb spec` commands |
-| `-o, --out-dir` | Output directory (default `artefacts/graph`) |
-| `--frontend` | Viewer parser frontend (`verible`, `slang`) |
-| `--no-design` | Skip the design tier — config-only graph, no viewer needed |
-| `--no-tb` | Skip the TB-rooted half of the design tier (DUT hierarchies only) |
-| `--no-flow-tops` | Skip the run-rooted exports (formal/synth/cdc run tops over the flow's own filelist) |
-| `--no-bind` | Skip the post-merge binding stage (no `binds_to` / `drives` / `checks_against` / `implemented_by` edges) |
-| `--no-extract` | Skip the extractor's binding tier without probing for the tool |
-| `--no-extract-cross-check` | Don't run the extractor's `merge-graphs` as a second opinion |
-| `--force` | Rebuild even when nothing changed |
-| `--strict` | Exit non-zero on any per-item failure, not just a dead tier |
-| `--tool` | Path to the `rtl-buddy-view` binary |
-
-The design tier needs `rtl-buddy-view` with the `graph` verb; `rb tool-check --explain rtl-buddy-view` reports it. An older viewer fails that tier with an upgrade hint instead of producing a half-graph.
-
-### Testbenches are part of the design tier
-
-A `tb:` node on its own carries what `tests.yaml` says about a testbench and nothing about the SystemVerilog it elaborates. So the design tier is exported twice per design: once rooted at the model (`--top`), and once per testbench rooted at that testbench's top (`--tb-top`), over the same DUT+TB filelist the compile flow builds. Both are the same `rtl-buddy-view graph` invocation and both land in the same tier — `--design/--no-design` governs them together, and `--no-tb` drops just the testbench half when the extra elaboration is not worth its cost.
-
-The weld is the shared `module:<name>` id: a testbench's instance of the DUT emits `instance_of` pointing at the very `module:` node the DUT-rooted export produced, so "which testbenches instantiate this module?" is answerable from the graph.
-
-Two testbenches are the same export when they resolve to the same model, suite, testbench filelist and top — so ten tests sharing a testbench elaborate it once. A testbench whose top *is* the DUT top is not exported at all: that is the cocotb and SystemC case, where `toplevel:` names the DUT and there is no SystemVerilog testbench above it. Its `tb:` node still stitches to the DUT via `elaborates_as`.
-
-### Flow run tops are part of the design tier too
-
-A formal run's `top:` is often a module the model filelist has never heard of — the template's fpv checker tops live in `properties:` files, and elaborate only over model + properties together. Without an export rooted there, the run's `targets` stitch points at a module the graph cannot define: a dangling ghost on the graph pane, and a checker hierarchy that is invisible.
-
-So every non-simulation run whose `top:` is **not** the model's own name gets the testbench treatment: one run-rooted export over the model filelist plus the flow's own sources (an fpv run's `properties:` and `constraints:`; synthesis and CDC runs have none and top at the model anyway, so today this is the formal case). The mechanics are the TB export's — same `--tb-top` invocation with `--top` staying the DUT, same suite-qualification when two suites define the same checker name in different files, same per-item failure handling — and the observed stitch replaces the config tier's declared `targets` edge exactly as an observed `elaborates_as` replaces a declared one. Runs de-duplicate on (suite, model, flow sources, top), so a suite proving one checker under `bmc` and `prove` elaborates it once — but every collapsed run's `test:` node still gets its own stitch. `--no-flow-tops` drops this half, the same kind of cost switch as `--no-tb`.
-
-#### When two testbenches share a top module name
-
-`module:<name>` is a global id, but a SystemVerilog module name is only unique inside one elaboration, and the conventional name for a testbench top is `tb_top` — a project with eight suites has eight different modules called that. Unioned naively they become one node that instantiates every DUT in the project, and one `inst:tb_top/tb_top.i_dut` that is `instance_of` four different modules; both are statements the graph would be making that are false.
-
-So when the same id is claimed by more than one *file*, the testbench copies are qualified with the suite that owns them — the full path from the project root: `module:tb_top@verif/template`, `inst:tb_top/tb_top.i_dut@verif/template`. Reusing a conventional top name across suites is a **supported pattern**, not something to rename away — the graph, not the project, is responsible for keeping the copies apart.
-
-Two things distinguish the copies:
-
-- **Ids** carry the suite path, as above, and each node records `unqualified_id` / `qualified_by`.
-- **Rendered labels** are indexed: the colliding module node and its root-scope instance are labelled `tb_top(0)` … `tb_top(N-1)`, deterministically — the index is keyed on the suite path (sorted), so it is stable across rebuilds and always identical for a module and its root instance. The original name stays in `base_label`, which query scoring and node resolution treat exactly like `label`: `tb_top` still matches at the exact-name tier, and `rb graph explain tb_top` still raises the matches-N-use-a-full-id error listing the qualified copies. Deeper nodes (ports, child instances) keep their own labels; they render nested under an indexed parent.
-
-DUT ids are never qualified — they are the weld. Every qualification is listed in `graph-meta.json` under the design tier's `id_collisions`, including the assigned `labels`; each entry's `qualified` list is sorted and deduped — the order the label index derives from.
-
-### A missing tier is not a failed build
-
-The extractor is optional. Without one installed the merged graph still holds the design and config tiers and is fully queryable; the binding tier is reported as `skipped` with the reason. Only a tier that was asked for and *broke* — an unparseable model, an extractor crash — is `failed`, which is what makes the exit code non-zero. Per-item failures (one model of five) leave the exit code at 0 unless `--strict` is passed, and are always listed in `graph-meta.json`.
-
-The extractor is [rtl-buddy-graph-extract](https://github.com/rtl-buddy/rtl-buddy-graph-extract): stdlib-only, deterministic, installed with the `rtl_buddy[graph-extract]` extra (or directly: `uv pip install rtl-buddy-graph-extract`). The extract contract — verbs, envelope, node vocabulary — is owned by rtl-buddy and documented in that repo's `extract-contract.md`; it has no semantic/LLM pass and no coupling to any external tool. The extractor's version lands in the build fingerprint, so an upgrade invalidates the cached build.
-
-### Merging
-
-The union is implemented in `rtl_buddy.graph.merge`, not delegated to the extractor — an optional dependency cannot own the step that every build needs. Nodes are unioned by `id` with earlier tiers winning attribute conflicts (design, then config, then binding), and links are unioned by their full content, so two `connects` edges that differ only in `formal` both survive while byte-identical duplicates collapse.
-
-When an extractor *is* installed, its `merge-graphs` verb runs over the same per-tier files as a cross-check and the comparison lands in `graph-meta.json` under `merge.extract_cross_check`. A disagreement is reported, never adopted.
-
-`merge.dangling` lists link endpoints with no node of their own. On a merged graph it should be empty; a `module:<name>` in that list means the config tier names a model whose design tier never exported.
-
-### Binding cocotb to the DUT
-
-The design tier has never heard of Python; the config tier has never heard of `dut.a`. A stage that runs **after** the merge closes that gap, because it is the only point where both halves are readable at once. It needs no external tool and runs on every build unless `--no-bind` is passed.
-
-For every test whose testbench has a `cocotb: {module: M}` entry it emits:
-
-- `binds_to` from the test node to `M`'s Python-module node, and from that module to the testbench's `toplevel:` as a `module:` node. Both come straight out of `tests.yaml`, so both are `EXTRACTED`. That is the two-hop path from any cocotb test to its DUT.
-- `imports` between Python-module nodes, from a real `ast` parse. This is what makes a shared helper such as `verif/demo_tiny_alu_cocotb/_alu_common.py` reachable from the tests that use it.
-- `drives` from a Python module to a `port:` node, one per `dut.<name>` attribute access.
-- `checks_against` from the test to a `golden_model` node, when the cocotb module imports one — directly, or through a helper.
-
-The same stage stitches DPI (rtl-buddy-sch#127). For every `dpi_function` node the design tier contributed with `direction: import` — imports are the C-implements-it direction, and a node that omits the field binds nothing rather than being assumed an import — its C symbol is matched against the C/C++/Python sources under `verif/` and `spec/`.
-
-**`EXTRACTED` means a definition site, not a mention.** A whole-word hit fires on a header's prototype, a call in a driver, or a string literal just as readily as on the implementation, so the scan looks for the shape of a definition — `<declarator> symbol(...) {`, or `def symbol(` in Python — and grades the evidence on a four-rung ladder: an exact-case *definition* is `EXTRACTED`; an exact-case *mention* is `INFERRED` with `resolved: false`; a case-insensitive definition is `INFERRED` (name similarity); a case-insensitive mention is `INFERRED` with `resolved: false`. The best rung present wins outright, so the ordinary project of `alu_ref.h` declaring, `alu_ref.c` defining and `tb_driver.c` calling gets **one** edge — the definition — instead of three an agent cannot choose between, and mentions survive only when nothing defines the symbol at all. When the matching file is a golden model under `spec/`, the edge lands on the existing `golden_model` node — that is the DPI leg of the golden-model loop, alongside the cocotb `checks_against` path. A graph whose design tier predates `dpi_function` nodes (rtl-buddy-sch ≤ 0.5.0) simply has none, and the DPI pass is a silent no-op.
-
-`dut.<name>` is found with `ast`, so the string `"dut.a"` and `self.dut.a` are not mistaken for accesses and the reported `line` is the real one. The handle is `dut` plus the first parameter of every `@cocotb.test()` function, so a suite that calls it `alu` still binds. A file that does not parse falls back to a regex sweep rather than contributing nothing.
-
-Confidence on a `drives` edge is decided by the port table and nothing else:
-
-| Case | Confidence | Target |
-| --- | --- | --- |
-| `<name>` is a port of the toplevel | `EXTRACTED` | that port |
-| differs only in case | `INFERRED` | the real port |
-| no port matches (a bus wrapper, an internal signal) | `INFERRED` + `resolved: false` | `port:<top>.<name>`, which will dangle |
-| no design tier was exported, so no port is known | `INFERRED` | `port:<top>.<name>` |
-
-Reach is transitive but honest. `test_alu_random.py` never says `dut.a` — `_alu_common.py` does, and the test imports it. The `drives` edge is emitted from *both* Python modules, and the inherited one carries `via` naming the file the access really came from, so first-hand evidence stays distinguishable from inherited. `file` and `line` on the edge always point at the file that contains the access.
-
-A golden model is the one import not resolved as a file. It lives under `spec/` and cocotb suites reach it through a runtime `sys.path` insert, which no static resolver should emulate; instead an import whose name matches a config-tier `golden_model` node's stem binds to that node.
-
-When an extractor is installed, its Python nodes are reused rather than duplicated: the tools are matched on the node's repo-relative `file`, so one file never ends up with two ids. (The bundled rtl-buddy-graph-extract emits `py:<rel>` directly, making the adoption an exact id match.) Without an extractor the stage synthesizes minimal `py:<path>` nodes, which is what keeps the binding useful on a machine that has never installed one.
-
-Counts land in `graph-meta.json` under `binding` (and in the machine envelope's `payload.binding`), including `drives_extracted` / `drives_inferred` and a bounded `unresolved` list naming cocotb modules whose file was not found and accesses that matched no port.
-
-### Caching
-
-Every input is hashed before any exporter runs, and the combined fingerprint — input hashes plus tool versions plus schema version — is stored in `graph-meta.json`. A re-run whose fingerprint still matches skips the build entirely and reports `unchanged`, with each tier marked `cached`. Tool versions are part of the fingerprint because upgrading `rtl-buddy-view` can change the design tier without a single source file moving. A tier that failed in the cached build stays `failed` — a matching fingerprint proves the inputs held still, not that a broken viewer got fixed.
-
-### Machine mode
-
-`rb --machine graph build` emits the standard [envelope](../agents.md#machine-mode). `payload` carries `graph` and `meta` (repo-relative paths), `unchanged`, `nodes`, `links`, `fingerprint`, a `tiers` list of `{tier, status, nodes, links}` (plus `detail` / `failures` / `models` / `testbenches` / `flow_runs` where they apply — `testbenches` and `flow_runs` list one entry per **export**, not per declaration, so a de-duplicated flow-run export names the runs it collapsed in parentheses, `fpv/demo#chk_bmc (+chk_prove)`; every collapsed run still gets its own `targets` stitch), `merge` with `strategy`, `stitch_points` and `dangling`, and `binding` with the stage's per-edge-class counts. Exit code 0 means the graph was written; 1 means a tier failed; 2 is the usual fatal-configuration exit.
-
-## Results Overlay
-
-The graph answers *what exists and what covers what*. "What passed last night, and where are its artefacts" is a different question with a different lifetime, so it gets a different file:
-
-```bash
-rb graph results          # refresh artefacts/graph/results-overlay.json
-```
-
-`results-overlay.json` sits next to `graph.json` and is keyed by **test node id** — the same `test:<suite dir>#<name>` the config tier emits — so joining the two needs no name mangling and no knowledge of the artefact layout:
-
-```json
-{
-  "rtl-buddy-filetype": "graph_results_overlay",
-  "schema_version": 1,
-  "graph": {"path": "artefacts/graph/graph.json", "present": true, "fingerprint": "9f2c..."},
-  "tests": {
-    "test:verif/demo_tiny_alu#random": {
-      "id": "test:verif/demo_tiny_alu#random",
-      "suite": "verif/demo_tiny_alu",
-      "test": "random",
-      "status": "PASS",
-      "run_token": "e10b2eb8aebf4feb",
-      "randseed": 481723,
-      "timestamp": "2026-08-04T22:19:35Z",
-      "source": "result-envelope",
-      "result_json": "verif/demo_tiny_alu/artefacts/random/result.json",
-      "artefacts": {
-        "dir": "verif/demo_tiny_alu/artefacts/random",
-        "log": "verif/demo_tiny_alu/artefacts/random/test.log",
-        "coverage": "verif/demo_tiny_alu/artefacts/random/coverage.dat",
-        "trace": "verif/demo_tiny_alu/artefacts/random/dump.fst"
-      },
-      "in_graph": true
-    }
-  },
-  "summary": {"tests": 4, "with_results": 4, "statuses": {"PASS": 3, "FAIL": 1}, "missing": [], "unmatched": [], "problems": []}
-}
-```
-
-| Flag | Effect |
-| --- | --- |
-| `--verif-dir` | Tree searched for `tests.yaml` (default `verif/`, the config tier's) |
-| `-o, --out-dir` | Output directory (default `artefacts/graph`) |
-| `--graph` | `graph.json` to cross-check ids against; read, never written |
-| `--strict` | Exit non-zero on an unreadable envelope, a test node with no result, or a result matching no node |
-| `--coverage` | Coverage source to join: `auto` (default, and what a bare `--coverage` means — the manifest's model, then the per-test `coverage.dat` databases this scan finds), `model` (the manifest only), `none`, or a path to a merged LCOV `.info` — see [Coverage on the Graph](#coverage-on-the-graph) |
-| `--no-coverage` | Skip the coverage join (same as `--coverage none`) |
-| `--cov-dir` / `--cov-manifest` | Which run's coverage to join (default: the newest `cov_dir/` under the project) |
-
-### Where the numbers come from
-
-Two sources, both already on disk after a run:
-
-- The per-run **result envelope** (`runner/result_io.py`) gives `status`, `run_token`, `run_id` and the rtl_buddy version that wrote it. Every run writes one to `<suite>/artefacts/<test>/result.json` (or `run-NNNN/result.json` for a `randtest` iteration); a dispatched run additionally writes the head's collection copy at `<suite>/artefacts/<test>/dispatch/result-<tag>.json`. Both are read, and the newer wins.
-- The documented **artefact layout** gives the paths: `test.log`, `test.err`, `test.randseed`, `coverage.dat`, the newest trace (`dump.fst` / `dump.vcd` / `vcdplus.vpd`) and the compile transcript. Only files that exist are listed, so a key that is present is a path that resolves.
-
-`timestamp` is the **envelope file's** mtime, never a wall clock read at refresh time. That is what makes a refresh with nothing re-run byte-identical to the previous one — the overlay is a function of the tree, not of when you asked.
-
-A `randtest` reports every iteration under `runs`, and the entry's own `status` is the last of them (newest timestamp, ties broken by highest `run_id`).
-
-A test directory with artefacts but no envelope still gets an entry, with `status: "UNKNOWN"` and `source: "artefacts"`. Its seed and paths are real and replayable; only the verdict is unknown. That is the honest answer for a tree written before the envelope existed, or a run that died before POST.
-
-`run_token` is the per-invocation nonce: every run of one `rb regression` shares it, and the dispatch path reuses the head's plan token. Two tests carrying different tokens are results from different invocations, whatever their timestamps say.
-
-### Joining it back to the graph
-
-The overlay never mutates `graph.json` — refreshing it after ten regressions leaves the graph byte-for-byte identical, and leaves the build fingerprint alone too (artefact directories are not inputs to any tier). Consumers join on the id:
-
-```python
-from rtl_buddy.graph import load_overlay, overlay_for_node, annotate_graph
-
-overlay = load_overlay("/path/to/project")     # file, its dir, or the project root
-entry = overlay_for_node(overlay, "test:verif/demo_tiny_alu#random")
-print(entry["status"], entry["artefacts"]["log"])
-
-annotate_graph(graph, overlay)                  # attach entries in memory, for a query
-```
-
-`load_overlay()` returns `None` for an absent, unreadable or foreign file — a graph with no overlay is still fully queryable, so "no results known" is a state every consumer must handle anyway. `annotate_graph()` mutates the dict you hand it and nothing on disk; do not write the annotated graph back over `graph.json`.
-
-`--graph` cross-checking adds `in_graph` to each entry and fills `summary.missing` (test nodes with no result at all) and `summary.unmatched` (results whose id no node claims — typically a sweep expansion such as `t_basic_1`, which runs under a name `tests.yaml` never declares).
-
-### Machine mode
-
-`rb --machine graph results` emits the standard [envelope](../agents.md#machine-mode). `payload` carries `overlay` (repo-relative), `graph` (the linkage block), `tests`, `with_results`, `statuses`, `missing`, `unmatched`, `problems` and `coverage` (the join's summary, or `null`). Exit code 0 unless `--strict` turned one of the last three into a failure.
-
-## Coverage on the Graph
-
-The graph knows what a suite **meant** to cover: a `covers:` entry in `tests.yaml` becomes a `test:<suite>#<name> --covers--> covitem:<block>#<id>` edge. The [coverage model](coverage.md) knows what the simulator **observed**: SVA cover points with hits and per-test attribution. `rb graph results` correlates the two and writes the answer into the same overlay.
-
-Nothing is re-run. The numbers come from files already on disk — never by invoking `verilator_coverage` — so the overlay stays a function of the tree, and refreshing it with nothing re-run still rewrites identical bytes. `graph.json` is untouched, as always.
-
-Three sources feed the join, and `--coverage` picks one (the block records it in `source`):
-
-- **`model`** — `cov_dir/manifest.json` and the coverage model it names, written by any coverage-mode run of `rb test` / `rb regression`. The richest source: per-test attribution, SVA cover points, and the simulator's own module names.
-- **`artefacts`** — no manifest, but the overlay's own artefact scan found per-test `coverage.dat` databases: a model is synthesized in memory from those and joined identically. This is where `auto` (the default) falls back to when no manifest is discovered — a cleaned `cov_dir` or an out-of-process run still gets its numbers. `build_model` is not told a simulator family, so the block's `simulator` is `null` on this source where `model` names one.
-- **`info`** — a merged LCOV `.info` named on the command line (`rb graph results --coverage merged.info`). LCOV carries no module names, so the design heat is joined **by file**: an `SF:` record is attributed to a `module:` node only when it resolves to exactly the file that node claims. Two modules declared in one file therefore share that file's numbers; the entry says so with `joined_by: "file"`.
-
-    `SF:` resolution has one rule and one bound. Raw verilator paths are test-workspace-relative (`../../../../design/...`), so a record is absolutized against the `.info`'s own directory, or re-anchored on the project root by trimming leading segments. The bound is that trimming stops before a bare basename: a repo-scope `--coverage-merge` can rewrite duplicate basenames against the wrong suite root, so a basename that happens to exist under your root is never evidence. Records that only resolved after trimming are inferred rather than exact and are listed in `summary.reanchored_files`. Records that resolved to nothing land in `summary.unresolved_files` (with `summary.unmatched_files` for the ones that resolved but match no node) and a `problems` row, instead of being guessed at.
-
-    Per-test badges and `covitem:` verdicts still come from the per-test `coverage.dat` databases when the tree has them, since a merged `.info` carries neither a test column nor cover points. With none present, `summary.items` counts what the graph *declares* while `summary.items_scored` is `0` — the pair is what distinguishes "nothing scored these" from "the run hit none of them".
-
-The overlay grows a `coverage` block and a `coverage` key on each test entry:
-
-```json
-{
-  "coverage": {
-    "schema_version": 1,
-    "manifest": "verif/demo_tiny_alu/cov_dir/manifest.json",
-    "model": "verif/demo_tiny_alu/cov_dir/coverage-model.json",
-    "generated_at": "2026-08-06T11:04:12+08:00",
-    "run_command": "regression",
-    "simulator": "verilator",
-    "totals": {"line": {"found": 812, "hit": 731, "ratio": 0.900}, "...": {}},
-    "tint_metric": "line",
-    "summary": {
-      "tests": 4, "modules": 6, "items": 16,
-      "exercised": 11, "declared-only": 5, "observed-but-undeclared": 2,
-      "unjoined_tests": [], "unmatched_modules": []
-    },
-    "nodes": {
-      "module:demo_tiny_alu": {
-        "kind": "design", "module": "demo_tiny_alu",
-        "elaborations": ["demo_tiny_alu"], "ratio": 0.88,
-        "totals": {"...": {}}, "files": ["design/demo_tiny_alu/demo_tiny_alu.sv"],
-        "tests": ["basic", "random"]
-      },
-      "covitem:demo_tiny_alu#SAND-FUNC-OP-ADD": {
-        "kind": "item", "status": "exercised",
-        "item": "SAND-FUNC-OP-ADD", "block": "demo_tiny_alu", "hits": 42,
-        "declared_by": ["test:verif/demo_tiny_alu#basic"],
-        "declared_by_status": {"PASS": 1},
-        "hit_by": ["basic"],
-        "observed": [{"name": "cov_op_add", "module": "demo_tiny_alu",
-                      "file": "design/demo_tiny_alu/demo_tiny_alu.sv",
-                      "line": 61, "hits": 42, "match": "affix"}]
-      }
-    },
-    "undeclared": [
-      {"kind": "cover", "status": "observed-but-undeclared", "name": "cov_overflow",
-       "module": "demo_tiny_alu", "file": "…", "line": 74, "hits": 9,
-       "hit_by": ["random"]}
-    ]
-  },
-  "tests": {
-    "test:verif/demo_tiny_alu#random": {
-      "coverage": {
-        "totals": {"line": {"found": 812, "hit": 690, "ratio": 0.849}, "...": {}},
-        "raw": "verif/demo_tiny_alu/artefacts/random/coverage.dat"
-      }
-    }
-  }
-}
-```
-
-### Three statuses
-
-| Status | Meaning |
-| --- | --- |
-| `exercised` | A declared item correlated with an observed cover point that fired. |
-| `declared-only` | A declared item nothing exercised. `observed: []` means the RTL has no such cover point at all; a non-empty `observed` with `hits: 0` means the cover exists and never fired — different bugs, same verdict. |
-| `observed-but-undeclared` | A cover point in the RTL that no `covers:` entry claims. These have no node in the graph, so they are listed under `undeclared` rather than keyed by an id nothing can look up. |
-
-### The match ladder
-
-A spec item id (`SAND-FUNC-OP-ADD`) and an SVA cover label (`cov_op_add`) are written by different people in different files, so the correlation is heuristic. It is a four-rung ladder, strongest first, and every match records the rung it came off in its `match` field:
-
-| Rung | Matches |
-| --- | --- |
-| `exact` | The label is the item id. |
-| `nocase` | Same, ignoring case. |
-| `normalized` | Same, ignoring case and punctuation (`A_COV_1` ≡ `a-cov-1`). |
-| `affix` | Same after dropping a leading/trailing `cov`/`cvr`/`c` token from the **label**, and after taking the last dotted component. |
-
-Affixes are stripped from the observed label only, never from the declared id: an id is what a human wrote in `specs.yaml`, and stripping both sides would let `SHARED-COV` and `SHARED` collide as if they were one item. A `match` of `affix` on an item you did not expect is the signal that the correlation guessed — rename one side and it moves up the ladder. Note that the bottom rung covers two loosenings at once, decoration stripping and the hierarchy tail, so `tb_top.A_COV_1` reports `affix` even though no `cov` token was dropped.
-
-An id declared by two blocks has two `covitem:` nodes, and `covers:` already fans out to both; the observation does too, so the two nodes never disagree.
-
-### Which nodes carry a ratio
-
-Module coverage reaches every node that *is* that module: `module:<name>` (including its suite-qualified form), every `instance` node whose `module` attribute names it, and the `model:` node that `maps_to` it — the `maps_to` stitch is an identity, so a model node is its module under another name. Ports and parameters are deliberately left out: a per-port tint says nothing anyone can act on.
-
-#### Elaborated names vs source names
-
-The two sides do not spell modules the same way. The coverage model keys on the name the **simulator elaborated** — verilator appends a mangled parameterisation suffix, so one `ip_async_fifo` in the source is `ip_async_fifo__DB13` in the model, and an `ip_cdc_handshake` instantiated with two parameter sets is `ip_cdc_handshake__W13` *and* `ip_cdc_handshake__Wc`. The graph keys on the **source** name, `module:ip_cdc_handshake`, which is what you read in the file.
-
-One trailing `__<alnum>` group is the whole difference, so the join is a two-rung ladder:
-
-| Rung | Matches |
-| --- | --- |
-| exact | The model's name is the graph's name. |
-| stripped | Same after dropping one trailing `__<alnum>` group from each — and only when a non-empty base survives, since `__A8` on its own is a whole name, not a suffix. |
-
-Exact comes first and it matters: a model can hold both `ip_cdc_sync` and `ip_cdc_sync__W4`, and only exact-first keeps the plain one off the parameterised one's node. It is also the mitigation for the obvious caveat — a module a project really did call `axi__lite` strips to `axi`, but it matches its own node before it can be offered `axi`'s.
-
-Several elaborations of one module therefore land on one node, and their coverage is **aggregated** there: counts summed per metric, ratios recomputed from the sums, file and test lists unioned. The entry names the elaborations it was built from in `elaborations`, so the aggregate can be taken apart again. The aggregate is computed over the whole set of elaborations at once rather than by adding up per-elaboration totals — verilator's line points carry no module at all, so they belong to *every* elaboration of their file, and adding would count them once per elaboration.
-
-The same rule runs client-side on the `/cov` pane (the `module-names` block in `cov_page.html`); the two ends cite each other, and neither may change alone.
-
-A module whose name matches no node either way still gets an entry, keyed by the `module:<name>` id the design tier would have emitted, and is listed in `summary.unmatched_modules` under its elaborated name — the name that is in the coverage model, and so the name you can grep for. Coverage that exists is never silently dropped.
-
-The ratio itself is `rb cov module`'s — one implementation, so the tint on the pane cannot contradict the number in the verb. The one place they legitimately differ is a multi-elaboration module: `rb cov module ip_cdc_handshake__W13` answers for *that* elaboration, because the model's vocabulary is what the verb takes, while the graph node answers for the source module and so for both. Same arithmetic, different question — and `elaborations` says which.
-
-### Reading it back
-
-```python
-from rtl_buddy.graph import load_overlay, coverage_for_node, annotate_coverage
-
-overlay = load_overlay("/path/to/project")
-coverage_for_node(overlay, "covitem:demo_tiny_alu#SAND-FUNC-OP-ADD")["status"]
-annotate_coverage(graph, overlay)     # attach entries in memory, like annotate_graph
-```
-
-`rb graph explain` returns the node's entry as `coverage` and the manifest behind it as `coverage_run`; `rb graph query` puts it on every node it returns; the MCP `test_status` tool returns the per-test scalars and its own `coverage_run`. The `/gph` pane reads the same block — see [the graph pane](#coverage-on-the-pane).
-
-## Querying the Graph
-
-Three verbs read the graph back. All three join the results overlay onto every node they return, so a structural question and a "did it pass" question are one command, not two.
-
-They are also **lock-free**: unlike the commands that write, they do not take the artefact lock, so you can query the graph while a regression is running in the same tree — which is exactly when you want to.
-
-```bash
-rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"  # match + neighbourhood
-rb graph path cocotb_random module:demo_tiny_alu         # how are these related?
-rb graph explain test:verif/demo_tiny_alu#flags          # one node in full
-```
-
-### `rb graph query`
-
-Keyword search, then a bounded neighbourhood expansion around every match. The expansion is what makes one round-trip enough: asking about a coverage item returns the item *and* the tests that cover it *and* their last status.
-
-On the project template, after `rb graph build` and `rb graph results`:
-
-```console
-$ rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"
-                Graph Query — which tests cover SAND-FUNC-FLAG-C-ADD
-┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┓
-┃ Node                 ┃ Type          ┃ Score ┃ Status ┃ Where               ┃
-┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━┩
-│ covitem:demo_tiny_a… │ coverage_item │ 60    │ -      │ spec/demo_tiny_alu… │
-└──────────────────────┴───────────────┴───────┴────────┴─────────────────────┘
-
-covitem:demo_tiny_alu#SAND-FUNC-FLAG-C-ADD
-  <- declares spec:demo_tiny_alu
-  <- covers test:verif/demo_tiny_alu#flags (FAIL)
-  <- covers test:verif/demo_tiny_alu_cocotb#cocotb_flags
-```
-
-Two tests claim the item; one has a recorded verdict and one has never run. Both facts came out of one command, and neither `specs.yaml` nor `tests.yaml` was read.
-
-Matching is a **fixed keyword rubric, not a model** — an exact id beats an exact label beats a whole-word hit beats a substring, a match in the id beats the same match in a file path, and ties break on the node id. The graph exists to cost fewer tokens than reading the tree; spending an LLM call to search it would defeat the exercise. The same question over the same graph returns the same bytes on every machine.
-
-Words that name a node type (`tests`, `module`, `ports`, `coverage`, …) are pulled out of the search terms and become a **preference**, never a filter. "Which tests cover SAND-FUNC-FLAG-C-ADD" therefore scores on `sand-func-flag-c-add` alone — and still finds the coverage item, because that is where the tests hang off. A type word can promote a node that already matched; it can never conjure a match.
-
-| Flag | Effect |
-| --- | --- |
-| `--type` | Restrict to one node type (`module`, `test`, `coverage_item`, …) |
-| `--tier` | Restrict to one tier (`design`, `config`, `binding`) |
-| `--limit` | Maximum matches (default 10) |
-| `--depth` | Hops of expansion per match (default 1, maximum 3, `0` for the bare match) |
-| `--no-results` | Skip the overlay join — a purely structural answer |
-| `--graph` / `--overlay` | Read a graph / overlay from somewhere other than `artefacts/graph` |
-
-Expansion follows edges in **both** directions, because half the questions read an edge backwards: `covers` runs test → item, and "which tests cover this item" is the reverse.
-
-Exit code is 0 when at least one node matched and 1 when nothing did — a graceful "no", so a shell loop can branch on it.
-
-### `rb graph path`
-
-The shortest chain of edges between two nodes: how a test reaches a module, how a coverage item reaches its spec doc.
-
-```console
-$ rb graph path test:verif/demo_tiny_alu_cocotb#cocotb_random module:demo_tiny_alu
-2 hop(s):
-  test:verif/demo_tiny_alu_cocotb#cocotb_random
-    --binds_to--> py:verif/demo_tiny_alu_cocotb/test_alu_random.py
-    --binds_to--> module:demo_tiny_alu
-```
-
-**Undirected by default.** Edge direction in this graph encodes *role* (a suite declares a test, a test runs on a testbench), not reachability, so "how are these two related" has to be allowed to walk an edge backwards. Pass `--directed` when the direction is the question. `--max-paths` (default 3) caps how many equally-short paths are reported; enumeration is depth-first over sorted ids, so it is stable.
-
-Both endpoints accept a full node id or a bare name. A bare name that matches more than one node **fails with the candidates listed** rather than picking one — silently answering about the wrong `blk_a` is worse than asking again.
-
-### `rb graph explain`
-
-One node's attributes, every edge on it with the far endpoint already resolved (so no second lookup is needed to know what the peer is), the in/out degree per edge type, the node's last regression result, and — when the overlay carries a [coverage join](#coverage-on-the-graph) — its `coverage` entry plus the `coverage_run` that produced it. On a `covitem:` node that is the answer to "is this spec item actually exercised, by which tests, and did they pass":
-
-```console
-$ rb graph explain covitem:demo_tiny_alu#SAND-FUNC-OP-ADD
-covitem:demo_tiny_alu#SAND-FUNC-OP-ADD  (coverage_item, tier config)
-  cov:    exercised (42 hit(s); cov_op_add ×42 [affix])
-  from:   verif/demo_tiny_alu/cov_dir/manifest.json
-```
-
-An **instance** node's summary carries a `cite` block, because it is the one node whose source can be quoted by a runnable command — built from the id. Every other node carries `file` and `line` directly on the summary and no `cite` key at all: a block that only repeated two fields already present was padding (#388), so a `test:`, `covitem:` or `spec:` summary has none.
-
-```json
-"cite": {
-  "command": "rb hier-query demo_cdc_open_top source-snippet demo_cdc_open_top.u_flag_sync -c design/demo_cdc_open/models.yaml",
-  "file": "design/demo_cdc_open/demo_cdc_open_top.sv",
-  "line": 66
-}
-```
-
-That is the "locate in the graph, cite from source" contract in [agent use](../agents.md) made mechanical: the payload hands over the second half instead of leaving it to be reconstructed. `-c` is filled in from the config tier's `maps_to` edge — the *model* stitch specifically, which is why the three config-to-design edges are three types: a testbench's `elaborates_as` and a run's `targets` point at the same `module:` node from a `tests.yaml` or a `synth.yaml`, and neither is a `-c` a `hier-query` would accept. Without it the command would only run from that `models.yaml`'s own directory. Both it and `file` are repo-relative, so run the command from the project root (where `rb graph query` itself runs).
-
-### Machine mode
-
-All three verbs emit the standard [envelope](../agents.md#machine-mode). `payload` always carries `schema_version`, `graph`, `overlay` (or `null`) and `counts`; then `matches` for `query`, `paths` for `path`, and `node` / `attributes` / `degree` / `outgoing` / `incoming` / `coverage` / `coverage_run` for `explain`. An unresolvable node reference exits 2 with `payload.error` and `payload.candidates`. Every node summary any of the three returns carries `coverage` when the join knows about it, so the numbers never need a second call.
-
-## Looking at the Graph
-
-A static per-directory graph page would be the obvious answer. The hub can do better, because it is the process that already owns view↔wave↔src resolution and speaks `selection_changed` / `open_source` to every connected peer — so the graph is not a picture you look at, it is a picture you click through.
+Build structural data first, then refresh the independent results overlay after tests or coverage runs:
 
 ```bash
 rb graph build
-rb hub start --serve-viewer          # prints the http_port
-# then open http://127.0.0.1:<http_port>/gph
-# (or http://127.0.0.1:<http_port>/ — the hub landing links every app)
+rb graph results
 ```
 
-The pane needs nothing but `rb graph build`: the design + config tiers are enough to render, the extractor is not required, and neither is a viewer bundle. Nothing on the page comes from off the machine — no CDN, no external font, no build step; the one stylesheet it links, the hub's [shared token sheet](hub.md#design-tokens-hubthemecss), is served by the same hub process.
+By default, `graph build` finds every model under the design directory. Select a smaller scope with a repeatable `--model NAME` or with `-c/--regression FILE`; those two selectors are mutually exclusive.
 
-What it shows:
+The normal build includes:
 
-- **Flow columns.** Eight of them, left to right, with a small force relaxation inside each and its own colour. Columns are deliberately *not* tiers: a tier says which tool produced a node, which is a fact about the build, and `design` + `config` between them hold the spec, the DUT, four flows' suites and every testbench hierarchy — a three-column picture put two thirds of the graph in one stripe. The bucketing is:
+- DUT, testbench, and non-simulation run hierarchies from `rtl-buddy-view`.
+- Test, model, regression, specification, and coverage declarations from rtl_buddy configs.
+- cocotb, Python import, signal-access, golden-model, and DPI bindings.
+- An optional external binding tier when `rtl-buddy-graph-extract` is installed.
 
-  | Column | What lands in it |
-  | --- | --- |
-  | `spec` | `spec_block`, `coverage_item`, `spec_doc`, `golden_model` |
-  | `design` | the DUT hierarchy, plus the `model` nodes that alias its modules |
-  | `test-config` | `flow: sim` suites/tests/testbenches, **and** their SystemVerilog testbench hierarchies |
-  | `syn-config` | `flow: synth` and `flow: fpga` |
-  | `formal-config` | `flow: fpv` |
-  | `cdc-config` | `flow: cdc` |
-  | `test-cocotb` | anything stamped `cocotb: true`, plus the binding tier's `python_module` nodes |
-  | `other` | anything the rules cannot place — rendered, never dropped |
+Useful reductions are `--no-design`, `--no-tb`, `--no-flow-tops`, `--no-bind`, and `--no-extract`. Use `--force` to ignore a valid cache. See the [CLI reference](../reference/cli.md#graph) for the complete option list.
 
-  A testbench *hierarchy* follows its suite's flow, so an fpv suite's testbench top and everything under it land in `formal-config` rather than sitting in the middle of the design. Recognising those nodes is the one non-obvious part, because both halves of `rb graph build` are `tier: design`: a node is testbench-side when it carries `qualified_by`, when it is the module a `tb:` node `elaborates_as` (unless a `models.yaml` `maps_to` it too — a cocotb testbench tops at the DUT itself), or when its `inst:<root>/…` id is rooted at such a module. A module under a testbench root that is none of those stays in `design`: over-claiming would file a vendor IP block under someone's testbench.
-
-  The column is computed server-side into a `category` attribute on `GET /graph.json` — two of its inputs are graph-wide joins not worth redoing per render — and is deliberately **not** written into `graph.json`, for the same reason the results overlay is not: the layout is a presentation choice and must never make the built graph churn.
-- **Pass/fail from the overlay.** Test nodes get a status ring straight from `results-overlay.json`, so a failing test is visible in the picture and its `desc`, seed, timestamp and artefact paths are one click away in the inspector. The join happens in memory — `graph.json` on disk is never rewritten (see [Results Overlay](#results-overlay)).
-- **Dangling targets.** A link into a tier that was never exported (a config-to-design stitch → a module whose design tier was skipped) is drawn as a hollow node rather than dropped, matching what [`merge.dangling_targets`](#merging) records.
-- **Coverage, when there is any.** See below.
-
-### Coverage on the pane
-
-A **coverage** checkbox appears in the toolbar only when the served payload carries a coverage block, and arrives ticked — a run that produced coverage is usually the reason the pane was opened. With it on:
-
-- **Design-column nodes are filled by their line ratio** instead of their column colour, using the [shared `--cov-*` ramp](hub.md#design-tokens-hubthemecss) — `hsl(ratio × 120, var(--tint-s), var(--cov-l))`, the same formula the `/cov` app and the schematic overlay use, so one palette edit reaches all three. A node with no coverage gets `--cov-none`. The column bands behind the nodes still carry the column identity, so nothing is lost by borrowing the fill; the legend grows a 0 / 50 / 100 / no-data ramp.
-- **Tests and modules wear a percentage badge** under their label — only where there is a number, since a badge reading `—` on every test that ran without coverage is a row of labels saying nothing.
-- **A `coverage_item` node's ring becomes its verdict**: green `exercised`, amber `declared-only`, and the run's `observed-but-undeclared` count sits in the header. Tests keep their pass/fail ring; the two never collide, because a node is one or the other.
-- **The inspector spells the join out.** For an item: its status, its hit count, which tests hit it, which tests *declared* they cover it and how those tests fared, and each observed cover point with the [match rung](#the-match-ladder) it came off. For a module: its ratio, its per-metric totals, its files, the tests that touched it, and the cover points inside it that nothing declares — those have no node of their own, so the module they live in is where they can be seen at all.
-
-The header line reports the run's line ratio, the exercised-of-declared count and the undeclared count. Everything comes from the overlay's coverage block, joined in memory by the same `annotate_coverage` the query verbs use: the pane ingests no LCOV of its own, and `graph.json` is not written.
-
-What it does:
-
-| Click target | Envelope | Effect |
-|---|---|---|
-| `instance` node | `selection_changed {instance_path}` | The SPA pans/highlights that instance. The id *is* the coordinate: `inst:<top>/<dot.path>`. |
-| `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the schematic can select, its instances are. |
-| any node with `file` | `open_source {file, line, col}` | The `src` peer (nvim) opens it. Test, coverage-item, spec-block and Python-module nodes all carry `file`/`line`. |
-
-Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol.
-
-A selection can land outside the schematic's *active model* — clicking `module:blk_b` while the schematic shows `blk_a` highlights nothing there. The pane detects this (reconfirming against a fresh `state_snapshot`, since the SPA's picker can move without telling it) and arms the **switch model** button in the toolbar, greyed out until then. Clicking it issues the same `GET /view.json?model=NAME` the SPA's own picker uses — the hub builds that model's view if needed, activates it, broadcasts `view_changed` — and then re-sends the selection so the freshly switched view lands on the node that was clicked. From the other direction:
+The design tier requires a compatible `rtl-buddy-view`:
 
 ```bash
-rb hub send graph-focus test:verif/dma#smoke
+rb tool-check --explain rtl-buddy-view
+```
+
+The external extractor is optional. If absent, its tier is `skipped` and the graph remains usable. A requested tier that breaks is `failed`; per-model failures become non-zero only with `--strict`. Inspect `graph-meta.json` for tier status and failure details.
+
+Unchanged inputs, tool versions, and schema produce a cached no-op build. A failure remains cached until an input or tool version changes, or `--force` is used.
+
+## Query the graph
+
+Use the three read verbs from the project root:
+
+```bash
+rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"
+rb graph path cocotb_random module:demo_tiny_alu
+rb graph explain test:verif/demo_tiny_alu#flags
+```
+
+- `query` performs deterministic keyword matching and bounded neighbourhood expansion. Use `--type`, `--tier`, `--depth`, or `--limit` to narrow the result.
+- `path` returns shortest paths. Traversal is undirected by default because edge direction expresses role, not reachability; pass `--directed` when direction matters.
+- `explain` returns one node's attributes, incident edges, test result, coverage entry, and a source-citation command for instance nodes.
+
+Bare names are accepted only when they identify one node. Ambiguous names fail with candidate ids instead of choosing silently. `query` exits 1 when nothing matches; an invalid or ambiguous node reference exits 2.
+
+All three verbs read without taking the graph write lock, so they can run while a regression is writing separate test artefacts. Pass `--no-results` for a structural-only query.
+
+With `--machine`, each command emits the standard [machine envelope](../agents.md#machine-mode). Query payloads include the graph and overlay paths plus `matches`, `paths`, or the explained node. Truncation metadata reports neighbours omitted by bounded expansion; raise the corresponding limit or explain a specific peer rather than assuming the result is complete.
+
+## Choose graph or source lookup
+
+The graph is most useful for:
+
+- transitive impact through elaborated hierarchy;
+- paths that cross design, test, specification, and binding data;
+- stable node ids and exact structural relationships;
+- joining current results or coverage to those relationships.
+
+For a port list, a YAML field, or another single-file fact, use the graph to locate the source and read the relevant lines. Do not enumerate a small config file through many `explain` calls. Use `explain --expand` only when the full attributes of every peer are needed.
+
+`scripts/graph_token_benchmark.py` compares graph and raw-file routes on a built project. Run it after changing query payloads:
+
+```bash
+uv run python scripts/graph_token_benchmark.py -p /path/to/project --markdown
+```
+
+## Results Overlay
+
+`rb graph results` writes current run state to `artefacts/graph/results-overlay.json` without modifying structural `graph.json`:
+
+```bash
+rb graph results
+rb graph results --strict
+```
+
+Entries are keyed by `test:<suite dir>#<test name>` and contain the latest result status, seed, timestamp, and paths to artefacts that exist. The timestamp is the result envelope's file modification time, so refreshing unchanged inputs is byte-stable.
+
+Result status comes from each run's `result.json`, not from log parsing. A test directory with artefacts but no result envelope is retained as `UNKNOWN`. Random-test iterations remain available under `runs`; the newest iteration supplies the entry's top-level status.
+
+When cross-checking against `graph.json`:
+
+- `missing` identifies graph test nodes with no result.
+- `unmatched` identifies results with no declared test node, such as generated sweep names.
+- `problems` identifies unreadable result data.
+
+These are reported normally and become failures with `--strict`. A missing or unreadable overlay does not prevent structural queries.
+
+## Coverage on the Graph
+
+`rb graph results` can correlate declared `covers:` relationships with observed coverage already on disk. It never reruns the simulator or rewrites `graph.json`.
+
+The default `--coverage auto` uses the newest coverage manifest and model, then falls back to per-test `coverage.dat` files. You can select a manifest with `--cov-dir` or `--cov-manifest`, pass a merged LCOV `.info` file, require the model source with `--coverage model`, or disable the join with `--no-coverage`.
+
+Coverage items receive one of three states:
+
+| State | Meaning |
+| --- | --- |
+| `exercised` | A declared item matched an observed cover point with hits. |
+| `declared-only` | The item was declared but no matched point fired. |
+| `observed-but-undeclared` | An observed cover point has no `covers:` declaration. |
+
+Name correlation prefers exact, case-insensitive, normalized, then `cov`/`cvr`/`c`-affix matches. The selected rung is recorded; treat an `affix` match as a prompt to align the names. Module coverage joins exact elaborated names first, then names with one trailing parameterization suffix removed. Multiple elaborations are aggregated onto the source-module node.
+
+LCOV lacks module and per-test identity. It joins design coverage by resolved file and still uses any available per-test databases for test badges and coverage-item verdicts. Unresolved, re-anchored, or unmatched paths are reported rather than guessed.
+
+See [Coverage](coverage.md) for metric semantics and coverage collection.
+
+## Graph data model
+
+`graph.json` is directed, multigraph [NetworkX node-link JSON](https://networkx.org/documentation/stable/reference/readwrite/json_graph.html). Every node has `id`, `type`, `label`, and `tier`; source-backed nodes also carry a project-relative `file`. Every edge has `type` and `confidence`.
+
+The tiers share one id namespace and merge by node id:
+
+| Tier | Contents |
+| --- | --- |
+| `design` | Modules, instances, ports, parameters, interfaces, and modports from `rtl-buddy-view`. |
+| `config` | Suites, tests, testbenches, flow runs, models, specs, coverage items, docs, and golden models. |
+| `binding` | Python modules, imports, cocotb-to-DUT and signal bindings, golden-model checks, and DPI implementations. |
+
+Paths inside ids are project-relative and POSIX-separated. When different testbench files declare the same module name, testbench-side ids are qualified with `@<suite dir>`; DUT ids remain unqualified so the tiers can stitch through them. Use the full qualified id when a label is ambiguous.
+
+## Node Types
+
+| Type | Id form |
+| --- | --- |
+| `module` | `module:<name>` |
+| `instance` | `inst:<top>/<dot.path>` |
+| `port` | `port:<module>.<port>` |
+| `parameter` | `param:<module>.<name>` |
+| `interface`, `modport` | `iface:<name>`, `modport:<interface>.<name>` |
+| `suite` | `suite:<suite dir>` |
+| `test` | `test:<suite dir>#<name>` |
+| `testbench` | `tb:<suite dir>#<name>` |
+| `model` | `model:<models.yaml>#<name>` |
+| `spec_block` | `spec:<block>` |
+| `coverage_item` | `covitem:<block>#<id>` |
+| `spec_doc`, `golden_model` | `doc:<path>`, `golden:<path>` |
+| `python_module` | Normally `py:<path>`; an extractor may supply another id for the same file. |
+
+`reglvl` is stored as written because resolving builder-specific values requires runtime context.
+
+## Edge Types
+
+Design edges are `instantiates`, `child_of`, `instance_of`, `connects`, `implements`, and `overrides`.
+
+Important cross-tier and config edges are:
+
+| Edge | Relationship |
+| --- | --- |
+| `declares` | Suite to test/testbench, or spec block to coverage item. |
+| `runs_on` | Test to testbench. |
+| `exercises` | Testbench or non-simulation run to model. |
+| `covers` | Test or formal run to coverage item. |
+| `specified_by`, `documented_by`, `implements` | Model, spec block, document, and golden-model traceability. |
+| `maps_to` | Model declaration to design module. |
+| `elaborates_as` | Testbench to its elaborated top module. |
+| `targets` | Non-simulation run to its top module. |
+
+Binding edges are `binds_to`, `imports`, `drives`, `checks_against`, and `implemented_by`. Only `drives` and `implemented_by` may be `INFERRED`; unresolved signal or symbol matches carry `resolved: false`. A `via` field identifies evidence inherited through a helper module.
+
+The config tier reads the same loaders as the test, spec, and regression commands.
+
+## Flow provenance
+
+Flow ownership comes from each flow's regression manifest, first at the project root and then at the path configured in [`cfg-rtl-reg`](../reference/yaml.md#root_configyaml). A missing manifest means the project does not use that flow; an invalid manifest is reported. Unclaimed `tests.yaml` suites default to `sim`.
+
+## Output Paths
+
+The stable outputs are:
+
+```text
+artefacts/graph/
+├── graph.json
+├── graph-meta.json
+├── results-overlay.json
+├── design/<model>/graph.json
+├── config/graph.json
+├── binding/graph.json
+└── bind/graph.json
+```
+
+`graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
+
+Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
+
+## Looking at the Graph
+
+Serve the interactive graph pane through the hub:
+
+```bash
+rb graph build
+rb graph results
+rb hub start --serve-viewer
+```
+
+Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage.
+
+Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:
+
+```bash
 rb hub send graph-focus module:dma_engine
 ```
 
-centres and selects that node. The hub caches the focus and replays it on registration, so sending it *before* the tab is open works. A `selection_changed` arriving from the SPA or the editor highlights the matching instance node in the graph.
-
-Selecting or hovering a node highlights its neighbourhood and dims the rest. The **hops** selector in the toolbar sets how far that highlight reaches; the default 1 is direct neighbours only. The reachable set is a breadth-first walk over *both* edge directions — direction encodes role, not reachability, the same convention `rb graph path` uses. The walk does not enter a hidden column, and an edge lights up when both its endpoints are inside the ball, so what you see is a coherent subgraph rather than a star. Two hops from a test reaches its testbench and coverage items and then the model and DUT they touch; three from a module usually spans config to spec.
-
-Full details of the two routes (`GET /graph`, `GET /graph.json`) are in the [hub concept page](hub.md#design-knowledge-graph-pane).
+The hub caches the focus so it is delivered when the pane connects. See [Hub](hub.md#design-knowledge-graph-pane) for browser behavior.
 
 ## The MCP Server
 
-`rb mcp` serves the same answers over the [Model Context Protocol](https://modelcontextprotocol.io) on stdio. It is a **second** agent surface, not a replacement: `--machine` is versioned by semver and works everywhere, while MCP adds discoverable tool schemas, removes the per-query shell-permission prompt, and makes rtl_buddy reachable from agent hosts that cannot invoke `rb` at all (IDE agents, web-hosted agents).
+Install the optional MCP dependency and configure an agent host to launch the stateless stdio server:
+
+```bash
+uv add 'rtl_buddy[mcp]'
+rb mcp --list-tools
+```
 
 ```json
 {
@@ -576,394 +229,22 @@ Full details of the two routes (`GET /graph`, `GET /graph.json`) are in the [hub
 }
 ```
 
-The SDK is an optional extra:
+Graph, test-status, coverage, and hierarchy tools mirror their `rb --machine` payloads. Each call rereads graph and coverage files, so no daemon is required and updates are visible without restarting the MCP server.
 
-```bash
-pip install 'rtl_buddy[mcp]'
-rb mcp --list-tools          # the tool schemas, without serving
-```
+When a live hub is discoverable, the server also advertises tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage focus. Without a hub those tools are omitted rather than exposed in a permanently failing state.
 
-Without the extra, `rb mcp` exits 2 with an install hint. Nothing else in rtl_buddy imports the SDK, so an install that never serves MCP does not pay for it.
+## Load graph.json directly
 
-### No daemon required
-
-The server is spawned per agent session and holds no state: every call re-reads `artefacts/graph/graph.json`, the overlay and (for the coverage tools) `cov_dir/manifest.json`, and the hierarchy tools shell out to `rtl-buddy-view` exactly as `rb hier-query` does. Requiring a running hub to answer "what instantiates X?" would be a regression against `rb hier-query` on a CI or dispatch node, and it would collide with the hub's dynamic port versus the static `.mcp.json` a host wants. Re-reading rather than caching also means an agent that runs `rb graph build` in one turn sees the new graph in the next, with no restart.
-
-### Stateless tools
-
-| Tool | CLI mirror |
-| --- | --- |
-| `graph_status` | — (what exists: graph, overlay, hub, node-type counts) |
-| `graph_query` | `rb graph query` |
-| `graph_path` | `rb graph path` |
-| `graph_explain` | `rb graph explain` |
-| `test_status` | `rb graph results` |
-| `cov_summary` | `rb cov summary` |
-| `cov_module` | `rb cov module` |
-| `find_module` | `rb hier-query <model> find-module` |
-| `instances_of` | `rb hier-query <model> instances-of` |
-| `port_connections` | `rb hier-query <model> port-connections` |
-| `source_snippet` | `rb hier-query <model> source-snippet` |
-
-Every result is the `--machine` payload **verbatim**, wrapped in a thin envelope:
-
-```json
-{
-  "tool": "graph_query",
-  "ok": true,
-  "meta": {"rtl_buddy_version": "6.24.0", "project_root": "/path/to/project", "command": "rb graph query"},
-  "payload": {"...": "identical to `rb --machine graph query`"}
-}
-```
-
-The two surfaces call the same functions on purpose: two agent-facing descriptions of one graph would drift within a release, and the payload is the contract both are versioned against. A bad question — unknown tool, missing graph, unknown model, ambiguous node — comes back as `ok: false` with a message (and `candidates` where they exist), never as a transport error.
-
-### Hub tools dial in
-
-When a live hub is discovered — `.rtl-buddy/hub.json`, the very record `rb hub send` reads, including its stale-PID check — six more tools appear in the listing and drive the session the user is actually looking at:
-
-| Tool | CLI mirror |
-| --- | --- |
-| `hub_state` | `rb hub send state` |
-| `hub_select` | `rb hub send select` |
-| `hub_open_source` | `rb hub send open-source` |
-| `hub_resolve` | `rb hub send resolve {view-to-wave,wave-to-view,signal-to-view}` |
-| `hub_diagnose` | `rb hub send diagnose` |
-| `cov_focus` | `rb hub send cov-focus` |
-
-`cov_focus` keeps the coverage name rather than a `hub_` prefix because that is the vocabulary its CLI mirror and its wire type already use; what makes it hub-gated is the pane it drives, not its name. The reads next to it (`cov_summary`, `cov_module`) stay stateless for the same reason in reverse: coverage artefacts are files, so a CI node answers them with no hub at all.
-
-Headless they are simply absent, so an agent on a CI node is never offered a tool that can only fail. The client is the same `rtl_buddy.hub.client.HubClient` every other peer uses, connecting as `origin: cli` and closing after each call — the hub's server-only invariant holds, because this is one more peer dialling in. Discovery happens once, at server start: an MCP host reads the tool list at session start, so a tool set that changed mid-session would not be seen anyway.
-
-### Python API
-
-The tool set is SDK-free and importable, which is what makes it testable on a machine without `mcp`:
-
-```python
-from rtl_buddy.mcp import build_toolset
-
-ts = build_toolset("/path/to/project")
-[spec.name for spec in ts.specs()]
-ts.call("graph_query", {"question": "which tests cover SAND-FUNC-FLAG-C-ADD"})
-```
-
-`rtl_buddy.mcp.server` is the only module that imports the SDK, and it supports both the 1.x decorator API and the 2.x constructor-callback API.
-
-## Token Efficiency
-
-The point of the graph is that an agent should answer a question about the project without reading the project. Knowledge-graph tools advertise large tokens-per-query savings measured on software corpora, so we measured our own on RTL, with `scripts/graph_token_benchmark.py`.
-
-The first two rounds found the graph route costing about 3x _more_ than grep-and-read on all six questions, and the itemized run blamed one thing: an `explain` payload embedded a full node summary for every edge endpoint, so it cost about a thousand tokens whatever it described. [#388](https://github.com/rtl-buddy/rtl_buddy/issues/388) replaced that with a lean edge — the link's own facts plus the peer's id, label and type — moved a node's own attributes onto every full summary, and put the old shape behind `--expand`.
-
-**The diet cut the graph route by 39% on the same graph, from 0.33x to 0.54x overall: one task now wins outright, a second is at parity, and all twelve route runs still answer correctly.** The graph route is still the more expensive way to answer four of the six questions on a template whose files are tiny. The rest of this section is the measurement that says which four, and what is left to blame.
-
-### Method
-
-Six questions an agent actually asks are answered twice: once through the **graph route** (`rb --machine graph query|path|explain` against `artefacts/graph/graph.json`) and once through the **raw route** (`grep`, `ls`, whole-file reads — what an agent does in a tree with no graph). Both answers are compared against a key hand-checked against the template sources; a route that answers wrong does not get to be the cheap one. All twelve runs were correct, so the token numbers are comparable.
-
-Before and after #388 were measured against the **same** `graph.json` at the same template commit, so the deltas below are payload shape and nothing else. Where the payload change moved a route's cheapest path — the module interface no longer needs a source read, the deep chain needs one `explain` more — the route in the script moved with it, because the question is what the cheapest correct answer costs, not what the old script costs on new payloads.
-
-Four of the questions are the ones an agent asks all day. The last two were added specifically to test the hypothesis that the graph pays off on *structure* — a chain too long to hold in one grep, and a transitive closure grep cannot compute in one pass:
-
-- **Deep chain** — five hops across three tiers: coverage item `SAND-FUNC-OP-ADD` → the three tests that claim it → the two testbenches they run on (one SV, one cocotb) → the model → the DUT source file → its spec doc and its Python golden model.
-- **Change impact on shared IP** — `design/common/ip_cdc_sync.sv` changed; which runs must re-run? Every consumer counts, direct or transitive: `ip_cdc_handshake` and `ip_async_fifo` instantiate it, `demo_tiny_alu_subsys_top` instantiates all three, `mem_subsys` reaches it through the handshake, and `demo_tiny_alu_subsys_synth_top` wraps the subsystem.
-
-The token proxy is `len(text) // 4`, applied to every byte crossing into the agent's context — the command it types plus the output it reads. No tokenizer is imported: a real BPE would pin the published number to one vendor's vocabulary, and the ratio between two routes is insensitive to the constant. Repeating a command is free on both routes, the same way re-reading a file is: an agent does not re-run a query whose answer is still in its transcript.
-
-Two costs are deliberately not charged to the graph route. `rb graph build` is an index — 7.1 s cold and 1.3 s cached on the template, paid once per source change and amortized over every question, like a `ctags` database. And `graph.json` itself (641 KiB, about 164 k tokens) is never read whole; that is what the verbs are for.
-
-`--machine` is the only surface measured because it is the only one an agent can use: the human rendering is a Rich table that does not survive a pipe (`rb graph query` prints nothing at all through one) and truncates long ids with an ellipsis where it does render.
-
-```bash
-uv run python scripts/graph_token_benchmark.py -p /path/to/rtl-buddy-project-template
-uv run python scripts/graph_token_benchmark.py -p ... --markdown   # the table below
-uv run python scripts/graph_token_benchmark.py -p ... --json       # every step, itemized
-```
-
-#### What "must re-run" means
-
-The change-impact task needs an inclusion criterion, or the answer is unfalsifiable. A run counts when **the project-root regression manifests claim its suite** — `regression.yaml`, `synth_regression.yaml`, `fpv_regression.yaml`, `fpga_regression.yaml` — **and the elaboration that run drives contains an `ip_cdc_sync` instance**. Synthesis of an affected top counts as much as simulation of one: the netlist changes either way.
-
-The template's CDC analyses were out of scope for *both* routes when this was measured, and not by preference: `cdc_regression.yaml` lives at `lint/cdc/`, not the project root, so the flow discovery of the day — root filename only — never saw it, and there was no root manifest for the raw route to read either. Three analyses would otherwise be in the answer (`ip_cdc_handshake_lint`, `demo_tiny_alu_subsys_lint`, `demo_cdc_mem_macro_lint`). Recorded here rather than silently dropped. Flow discovery now also honours the `cfg-rtl-reg` manifest paths in `root_config.yaml`, so a project that declares `cdc-reg-cfg-path: lint/cdc/cdc_regression.yaml` gets those analyses into the graph — see [Flow provenance](#flow-provenance).
-
-One finding falls out of the answer rather than the tokens: `mem_subsys` is affected and **no run in any root manifest touches it**. Its only consumer is the out-of-scope CDC analysis. Both routes report it in `models` and neither can name a run for it.
-
-### Results
-
-Measured on [rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template) at `6507c3a` (clean), against a graph of 643 nodes and 1 392 links built from all three tiers by rtl_buddy `feat/graph-lean-explain-388` and rtl-buddy-view 0.5.0. "Answer" is the answer itself as compact JSON — the floor either route could hit. Ratio is raw / graph: above 1.00 the graph is cheaper. The "pre-#388" column is the same benchmark run against `main` on the same graph.
-
-| Task | Answer | Raw tokens | Raw calls | Graph tokens, pre-#388 | Graph tokens | Graph calls | Ratio (raw / graph) | Both correct |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Trace a signal | 46 | 2979 | 7 | 11029 | 6775 | 10 | 0.44x (was 0.27x) | yes |
-| Tests for a block | 66 | 1782 | 5 | 11944 | 7385 | 14 | 0.24x (was 0.15x) | yes |
-| Traceability chain | 49 | 1672 | 5 | 2474 | 1493 | 2 | 1.12x (was 0.68x) | yes |
-| Module interface | 35 | 800 | 2 | 2017 | 2064 | 2 | 0.39x (was 0.40x) | yes |
-| Deep chain | 92 | 1806 | 6 | 8909 | 6187 | 9 | 0.29x (was 0.20x) | yes |
-| Change impact on shared IP | 109 | 9021 | 24 | 18816 | 9572 | 14 | 0.94x (was 0.48x) | yes |
-| **all 6** | 397 | **18060** | 49 | **55189** | **33476** | 51 | **0.54x** (was 0.33x) | |
-
-The first four tasks are: what drives `rst_b_n` in `demo_cdc_open_top` and which instances load it; which tests exercise `demo_tiny_alu` and at which `reglvl`; which tests, spec block, spec doc and golden model chain off coverage item `SAND-FUNC-FLAG-C-ADD`; and every port of `demo_tiny_alu` with its direction, plus its parameters.
-
-The two structural tasks are where the diet paid best, which is the result the previous round predicted and could not show. **Traceability chain is the first task the graph wins outright** — 1.12x, in two calls against the raw route's five — and change impact went from half price to parity (0.94x) while still being the only task where the graph needs *fewer* calls than grep (14 against 24). The deep chain improved by less than either, and for the same reason it was the second worst before: every hop it adds is a hop through the config tier, where the file an `explain` replaces is a 200-to-800-token YAML, and no payload diet makes an `explain` cheaper than that.
-
-Module interface is the one row that did not improve, and it is a fair trade rather than a regression: its 20-match port query grew by 185 tokens because a match now carries its own `dir`, and that bought the deletion of the source-span read the route used to need — one call instead of three, 47 tokens more, same answer.
-
-### Where the tokens went
-
-397 tokens of answer cost the graph route 33 476, down from 55 189 on the identical graph, and `explain` is still where nearly all of it goes: 30 961 tokens over 48 of the 51 calls, 92%. Four effects accounted for the old number. Two are gone, one is smaller, one was never a payload problem.
-
-**Fixed — every peer is no longer repeated in full.** An `explain` edge is now the link's own facts plus `peer`, `peer_label` and `peer_type`; the full summary arrives only under `--expand`. `explain module:ip_cdc_sync` — 44 edges, and the one call that makes the change-impact answer possible — went from 6 192 tokens to **2 357**. `spec:demo_tiny_alu` went 1 927 → 1 042, `test:verif/demo_tiny_alu#basic` 1 206 → 695, `module:demo_tiny_alu_subsys_top` 1 976 → 1 055. The payload still grows with degree, because an edge is still an edge — it grows roughly three times more slowly.
-
-**Fixed — attributes no longer need their own call.** A full node summary carries its own type-specific attributes, so one `reglvl` integer or one port `dir` string no longer costs a whole `explain`. That is what let the module-interface route delete its source-span read. It is also the one place the diet spends rather than saves: the 20-match port query grew 1 613 → 1 798, which is the whole of that row's 47-token regression.
-
-**Smaller — the `cite` block earns its bytes.** A cite that only repeated `file` (everything but an instance node) is dropped; `file` and `line` are already on the summary. Only the instance-node cite, which carries the runnable `rb hier-query … source-snippet` command, survives.
-
-**Unchanged — a module's ports are not a traversal.** No edge ties a `port:` node to its `module:` node — only the `owner` attribute does — so "the ports of `demo_tiny_alu`" is still a substring search, and `port:demo_tiny_alu_subsys_compute.*` still scores identically. Half the twenty nodes returned are still noise. This is a graph-shape gap, not a payload one, and #388 did not touch it.
-
-The shape effect from the previous round also survives, now with a receipt: the 25-neighbour budget in `query` is spent breadth-first, so at `--depth 2` from the model node all sixteen sibling coverage items arrive before the tests and the tests are cut. What changed is that the cut is no longer silent — `neighbors_truncated` (and `explain`'s `truncated`) is `{"dropped": N, "kinds": {…}}` instead of a bare `true`, absent entirely when nothing was cut, and `--max-neighbors` raises the budget. `kinds` counts by the entry's own type, which is a *node* type for `query` and an *edge* type for `explain` — the two verbs drop different things. `explain` also carries `buckets`, naming what `outgoing` and `incoming` each lost, since hitting the limit one way is a different answer from hitting it both. It costs a few tokens; an answer that is quietly missing the thing you asked for costs more. The traceability route still uses `--depth 1` plus one `explain` for that reason.
-
-### When the graph does win
-
-Both routes are linear in the size of the answer; what differs is the unit price of one step.
-
-| | count | min | median | mean | max |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `explain` payload, pre-#388 | 47 | 451 | 957 | 1 120 | 6 192 |
-| `explain` payload | 48 | 334 | 570 | 645 | 2 357 |
-| unique file read, RTL (`.sv`) | 12 | 236 | 632 | 695 | 2 019 |
-| unique file read, config (YAML etc.) | 16 | 133 | 208 | 265 | 831 |
-
-**A hop pays for itself exactly when the file it replaces is bigger than the payload that replaces it.** The median `explain` is now 570 tokens against a median RTL file of 632 — so on this template an RTL hop is now, on average, the cheaper move rather than a 50% loss. `demo_tiny_alu_subsys_top.sv` costs 2 019 tokens to read and 1 055 to `explain`, where before the diet it was 1 976 and a dead heat. The config tier is where the rule still bites: a `tests.yaml` costs 130–830 tokens, a median of 208, and no `explain` reaches down there.
-
-Per task, the mean file the raw route opened, against the mean file size at which the two routes would cost the same:
-
-| Task | Files read | Mean file read | Break-even file size | Pre-#388 | What the files are |
-| --- | ---: | ---: | ---: | ---: | --- |
-| Trace a signal | 5 | 558 | 1 317 | 2 168 | RTL |
-| Tests for a block | 4 | 434 | 1 834 | 2 974 | config |
-| Traceability chain | 3 | 522 | 462 | 789 | config |
-| Module interface | 1 | 678 | 1 942 | 1 895 | RTL |
-| Deep chain | 3 | 522 | 1 982 | 2 890 | config |
-| Change impact on shared IP | 20 | 429 | 456 | 918 | 8 RTL, 12 config |
-
-Break-even now lands between 460 and 1 980 tokens per file, down from 780–2 950 — roughly 115 to 500 lines instead of 200 to 750. Two of the six tasks now break even *below* the template's own median file, which is exactly why those two crossed over. The line to carry away is unchanged in kind and halved in size: **the graph tier crosses over on designs whose files are large, not on designs whose file *count* is large.** Adding consumers still does not help by itself, because each extra consumer costs the graph route an `explain` and the raw route a file read — but a lean `explain` is now within a factor of two of a template RTL file rather than a factor of ten.
-
-Two things the token column does not price, both real and both in the graph's favour, and both clearest in the change-impact task:
-
-- **The closure is exact, and it is one call.** Elaboration already flattened the hierarchy, so every instance of `ip_cdc_sync` anywhere in the project hangs off the module node by one `instance_of` edge. The raw route has to iterate: grep finds *mentions*, so the consumers of a consumer need another round, and it took three rounds to reach a fixpoint. It also read two files — `cdc_open_sync.sv` and `cdc_open_handshake.sv`, 1 244 tokens, 14% of that route — whose only mention of the IP is a comment. An agent that stopped after round one would have missed `mem_subsys` and `demo_tiny_alu_subsys_synth_top` and shipped a wrong answer cheaply.
-- **The answers are node ids.** The graph route's output is machine-checkable and stable; the raw route's is whatever the agent parsed out of SystemVerilog and YAML by eye, and it only found the right files because the template names modules, models and suites alike. `_module_instantiations` in the benchmark leans on the template's `u_` instance-name convention to tell an instantiation from a declaration — the raw route is as good as the conventions, and the graph route is not.
-
-### What this gates
-
-The measurement is the epic's success gate. Two rounds said the same thing — the graph tier is right and the read surface is not yet — and named the fix: an `explain` that returns edges without expanding every peer, and node summaries that carry their type's own attributes. That is #388, and the third round says it worked and did not finish the job: 0.33x → 0.54x, one win, one parity, four still-losing rows.
-
-What is left is no longer padding. A lean `explain` is a list of edges and a node's own facts; the remaining gap is that a file in this template costs 200–600 tokens to read, and there is no payload smaller than the relation it describes. So the guidance — the one in `docs/agents.md` and in the bundled skill — narrows rather than reverses:
-
-- **Use the graph for relations grep cannot compute.** A transitive closure over elaborated hierarchy — which tops contain this IP, what does this instance path resolve to — is one call with no false positives and no iteration, and getting it wrong with grep is easy and quiet. It is now also at token parity (0.94x) in 14 calls against grep's 24, so the correctness argument no longer has to be paid for.
-- **Use it for chains that cross tiers.** Coverage item → tests → testbenches → model → DUT → spec doc → golden model is 1.12x in two calls; following it by hand is five reads and a lot of grepping for names.
-- **Do not enumerate a config tier through it.** Which tests exercise a block, at which `reglvl`, claiming which coverage items: the YAML that answers it is 200–800 tokens, and the eleven `explain` calls that replace it are still 0.24x. Read the `tests.yaml`.
-- **Do not route a single-file question through it.** A module's port list is 0.39x. Let the graph name the file and the line range, then read those lines.
-- **`--expand` is for the caller who really does want every peer whole** — a one-round-trip dump for a human or a wide review. It costs about the pre-#388 payload; a second lean call on the one peer you actually need is cheaper nearly every time.
-
-Re-run the benchmark after any change to the query payloads; the script is the regression guard for this number, and `tests/test_graph_benchmark.py` keeps its route logic and hand-checked key honest in CI (correctness only — token counts are not asserted, since they depend on the project you point it at).
-
-## Node Types
-
-Design tier (`rtl-buddy-view`):
-
-| Type | Id |
-| --- | --- |
-| `module` | `module:<module_name>` (`…@<suite dir>` when two files claim the name) |
-| `instance` | `inst:<top>/<dot.path>` (same suffix when its root is qualified) |
-| `port` | `port:<module_name>.<port_name>` |
-| `parameter` | `param:<module_name>.<name>` |
-| `interface` | `iface:<name>` |
-| `modport` | `modport:<iface>.<name>` |
-
-Config tier (`rtl_buddy`):
-
-| Type | Id | Notable attributes |
-| --- | --- | --- |
-| `suite` | `suite:<suite dir>` | `flow` |
-| `test` | `test:<suite dir>#<test name>` | `flow`, `reglvl` (raw, as written), `cocotb`, `cocotb_modules`, `xfail`; on a non-simulation run also `tool` and `toplevel`, and on a formal run with `params:` the top-module parameter overrides as `params` |
-| `testbench` | `tb:<suite dir>#<tb name>` | `flow`, `toplevel`, `kind` (`cocotb`/`systemc`/`hdl`), `cocotb` |
-| `model` | `model:<models.yaml>#<name>` | `desc` |
-| `spec_block` | `spec:<block name>` | `desc` |
-| `coverage_item` | `covitem:<block name>#<ID>` | `desc`, `block` |
-| `spec_doc` | `doc:<path>` | `exists` |
-| `golden_model` | `golden:<path>` | `referenced_by` |
-
-Binding tier (`rtl_buddy`'s stage, or an installed extractor):
-
-| Type | Id | Notable attributes |
-| --- | --- | --- |
-| `python_module` | `py:<repo-rel path>` | `cocotb_module`, `exists` (only when `false`) |
-
-`py:` ids are only synthesized when nothing else already claims the file. An extractor names its Python nodes however it likes; the two are reconciled on the node's repo-relative `file`, so a project with an extractor installed gets the extractor's ids and everything binds to those.
-
-`reglvl` is kept exactly as written, including the per-builder dict form. Resolving it needs a builder, which is a run-time choice with no place in a static graph.
-
-## Edge Types
-
-Design tier: `instantiates`, `child_of`, `instance_of`, `connects`, `implements` (module to modport), `overrides`.
-
-Config tier:
-
-| Edge | From | To |
-| --- | --- | --- |
-| `declares` | suite | test, testbench |
-| `declares` | spec block | coverage item |
-| `runs_on` | test | testbench |
-| `exercises` | testbench | model |
-| `covers` | test | coverage item |
-| `specified_by` | model | spec block |
-| `documented_by` | spec block | spec doc |
-| `implements` | golden model | spec block |
-| `exercises` | test | model (a synth / fpv / cdc / fpga run, which has no testbench) |
-| `maps_to` | model | **design-tier** module |
-| `elaborates_as` | testbench | **design-tier** module (the top it elaborates) |
-| `targets` | test | **design-tier** module (a non-simulation run's `top:`) |
-
-Binding tier:
-
-| Edge | From | To | Notable attributes |
-| --- | --- | --- | --- |
-| `binds_to` | test | Python module | |
-| `binds_to` | Python module | **design-tier** module | `toplevel` |
-| `imports` | Python module | Python module | |
-| `drives` | Python module | **design-tier** port | `signal`, `file`, `line`, `via`, `resolved` |
-| `checks_against` | test | golden model | `via` |
-| `implemented_by` | **design-tier** DPI function | golden model / Python module / source file | `symbol`, `file`, `line`, `resolved` |
-
-`drives` and `implemented_by` are the only edge classes in the whole graph that are allowed to be `INFERRED`; everything else, in every tier, is `EXTRACTED`. `via` on a `drives` or `checks_against` edge names the helper module the fact was inherited through — absent means the module says it itself. `resolved: false` on an `implemented_by` edge says the same thing `drives` says with it: the file was matched on a *mention* of the symbol, which is known not to be a definition of it.
-
-### The config-to-design stitch is three verbs
-
-`maps_to`, `elaborates_as` and `targets` are one relation — "this config thing is that design module" — stated by three kinds of source, and the edge type is what says which:
-
-| Edge | The source says | Where the module name comes from |
-| --- | --- | --- |
-| `maps_to` | a `models.yaml` **declares** this module | the model's own `name` |
-| `elaborates_as` | a testbench **elaborates from** this module | `toplevel:`, or the top the viewer really elaborated |
-| `targets` | a synth / fpv / cdc / fpga run **runs against** this module | the run's `top:` |
-
-They were one `maps_to` at first, on the reasoning that a second word for an identical relation costs every consumer a lookup. What that missed is that the *source kind* is the thing consumers actually ask about, and one verb threw it away: the hub pane has to know whether a `module:` is a testbench root or a DUT before it can column it, and `cite_hint`'s `-c` must come from a `models.yaml` and never from the `tests.yaml` behind an identically-shaped edge. Both were recovering the answer by re-reading the source id's prefix — a fact the edge already knew and was declining to say. Three types say it once, and leave the renderer free to colour them the same if that reads better.
-
-Everything else about them is shared. All three point config → design, all three are `EXTRACTED`, and all three target a `module:<name>` id that the config tier never creates — exporting the config tier alone leaves those targets dangling, which node-link readers resolve by auto-creating an attribute-less node. Merging with a design-tier export fills them in.
-
-`elaborates_as` and `targets` each have two sources: the config tier emits the declaration (a testbench's `toplevel:`, a run's `top:`), and `rb graph build` replaces it with the top it saw the viewer elaborate when the [TB-rooted](#testbenches-are-part-of-the-design-tier) or [run-rooted](#flow-run-tops-are-part-of-the-design-tier-too) export runs. The config tier never guesses a top from a testbench's name — a declaration and an observation of the same fact are both welcome, and where both exist the observation wins.
-
-`exercises` is deliberately *not* split the same way, even though it too runs from two source types (a testbench, and a non-simulation run that has no testbench). The split above pays for itself because a consumer of the stitch has a different question per source kind — which `models.yaml` to cite, which column to draw a module in. Nobody asks a different question of `exercises`: "what verifies this model" wants both answers in one list, and two verbs there would make every such query a union.
-
-## What the Config Tier Reads
-
-Everything comes from the loaders that back `rb test`, `rb spec check-coverage` and `rb spec check-design`; there is no second YAML parser, so the graph cannot disagree with those commands.
-
-- `specs.yaml` under `<root>/spec` gives spec blocks, their `docs:` and their `coverage-items`.
-- `models.yaml` under `<root>/design` gives models, and each model's `spec:` back-pointer gives `specified_by`.
-- `tests.yaml` under `<root>/verif` gives suites, testbenches and tests. A test's `testbench:` becomes `runs_on`, its `model:` becomes `exercises` on the testbench, and each entry in its `covers:` becomes a `covers` edge.
-- The repo-level regression files at the project root give the `flow` stamp — see below.
-- Golden models are found by convention: non-private Python files sitting next to a `specs.yaml`, for example `spec/demo_tiny_alu/tiny_alu_model.py`. Each node records the verif files that mention it in `referenced_by`.
-
-A `covers:` entry names a bare coverage-item id, and more than one block may declare the same id. `rb spec check-coverage` treats every such block as covered, and the graph matches it: one `covers` edge per declaring block. An **fpv run** may declare `covers:` too — same field in `fpv.yaml`, same edge from its `test:` node, same fan-out — which is what lets a formal run reach the spec tier; `rb spec check-coverage` counts those runs alongside tests.
-
-A testbench's `toplevel:`, when declared, also becomes an `elaborates_as` edge to `module:<toplevel>`.
-
-Testbenches declared but used by no test still become nodes — a dead testbench should be visible in the graph, not silently absent. Suites that fail to load are reported rather than fatal; the failure list lands in `graph-meta.json`.
-
-### Flow provenance
-
-A `tests.yaml` does not know that it is a *simulation* suite, and nothing under `verif/` mentions the `fpv.yaml` next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all six — each through its own `RegConfig`, the same class `rb <flow>-regression` constructs — and stamps `flow` on every `suite`, `test` and `testbench` node:
-
-| Manifest | `flow` | Suites it lists |
-| --- | --- | --- |
-| `regression.yaml` | `sim` | `tests.yaml` |
-| `synth_regression.yaml` | `synth` | `synth.yaml` |
-| `fpv_regression.yaml` | `fpv` | `fpv.yaml` |
-| `cdc_regression.yaml` | `cdc` | `cdc.yaml` |
-| `fpga_regression.yaml` | `fpga` | `fpga.yaml` |
-| `lint_regression.yaml` | `lint` | `lint.yaml` |
-
-Each manifest is looked for at the project root first, then at the flow's `cfg-rtl-reg` path from `root_config.yaml` (`reg-cfg-path` for `sim`, `<flow>-reg-cfg-path` for the rest) — the same precedence `rb <flow>-regression` applies when no `-c` is passed, so a manifest kept away from the root (the template's `cdc_regression.yaml` lives under `lint/cdc/`) is visible to the graph exactly when it is runnable by the command. See [`cfg-rtl-reg`](../reference/yaml.md#root_configyaml).
-
-Four consequences:
-
-- **A suite no regression file claims is `sim`.** A `tests.yaml` nobody has wired up yet is still a simulation suite, and an "unknown" bucket would hide exactly the suites a project is in the middle of adding.
-- **The four non-simulation flows become nodes too.** No `verif/` walk reaches `synth/tiny_alu/synth.yaml`, so before this the graph could not answer "what synthesises this module?". Each of those files is a `suite:<dir>` whose named runs are `test:<dir>#<name>` — the same types and the same ids a `tests.yaml` produces, not a parallel vocabulary. There is no testbench between a run and its model, so `exercises` starts at the run; a run's `top:` (which a formal verification may point at a wrapper) becomes `targets`, the run's own [config-to-design stitch](#the-config-to-design-stitch-is-three-verbs).
-- **A suite claimed by two flows gets a list**, in the table's order. That happens when one directory holds two flows' configs — a `synth.yaml` and a `cdc.yaml` side by side. Individual runs are always stamped with the single flow of the file that declared them.
-- **`cocotb: true`** is stamped on a cocotb test *and* on its testbench. `kind: cocotb` already says it on the testbench and `cocotb_modules` implies it on the test; the flat boolean is so a consumer bucketing nodes does not have to know which type spells it which way.
-
-All five files, every suite they list, and `root_config.yaml` itself join the config tier's input hashes — wiring a suite into a flow, or a manifest path into `cfg-rtl-reg`, changes the graph, so [the no-op re-run check](#caching) has to see the edit.
-
-A missing manifest — at the root *and* at any configured path — is not an error, it is a project that does not run that flow; one that will not load is reported like a bad suite and costs only its own flow's nodes. A `cfg-rtl-reg` key the schema does not know (`cdc-reg-cfg-paths:` for `cdc-reg-cfg-path:`) is reported by name rather than ignored, since a silently-dropped key looks exactly like a project that does not run the flow.
-
-## Python API
-
-Everything `rb graph build` does is importable:
-
-```python
-from rtl_buddy.graph import build_graph, extract_config_tier, merge_graphs
-
-build = build_graph("/path/to/project")       # all tiers, writes artefacts/graph/
-print(build.nodes, build.links, build.unchanged)
-for tier in build.tiers:
-    print(tier.tier, tier.status, tier.detail)
-```
-
-`build_graph()` never raises for a tier it could not build — inspect `failed_tiers()` / `has_failures()`. Only an unrecoverable setup problem (an unreadable regression config, an unwritable output directory) propagates.
-
-The tiers are usable on their own:
-
-```python
-from rtl_buddy.graph import extract_config_tier, write_graph_json, write_graph_meta
-
-result = extract_config_tier("/path/to/project")
-write_graph_json(result.graph, "artefacts/graph/graph.json")
-write_graph_meta(result.meta, "artefacts/graph/graph-meta.json")
-```
-
-`build_config_tier(project_root)` is the shorthand when only the graph dict is wanted. `spec_dir`, `verif_dir` and `design_dir` override the search roots; each defaults to the same directory the `rb spec` commands use. Node and link lists are sorted, so re-exporting an unchanged project produces a byte-identical file.
-
-`merge_graphs([(tier, graph), ...])`, `stitch_points()` and `dangling_targets()` are the merge primitives; `models_from_regression()` and `models_from_design_tree()` are the two model-selection paths behind the CLI flags.
-
-The binding stage is a pure function of an already-merged graph, so it can be re-run over a `graph.json` on disk without rebuilding anything:
+The file is plain JSON; NetworkX is optional:
 
 ```python
 import json
-from rtl_buddy.graph import bind_python, scan_python_source
+import networkx as nx
 
-merged = json.load(open("artefacts/graph/graph.json"))
-stage = bind_python(merged, "/path/to/project")
-print(stage.summary())          # counts, and any unresolved accesses
-print(stage.graph["links"][0])  # the contribution, ready to merge back in
+with open("artefacts/graph/graph.json") as handle:
+    data = json.load(handle)
 
-scan_python_source("verif/demo_tiny_alu_cocotb/_alu_common.py").accesses
-# {'a': 24, 'b': 25, 'clk': 18, ...} — signal name to first line
+graph = nx.node_link_graph(data, edges="links")
 ```
 
-The read side is importable too, and returns the same payloads the CLI and MCP surfaces emit:
-
-```python
-from rtl_buddy.graph import load_context, query_graph, query_path, explain
-
-ctx = load_context("/path/to/project")       # graph + the overlay beside it
-query_graph(ctx, "which tests cover SAND-FUNC-FLAG-C-ADD")["matches"]
-query_path(ctx, "cocotb_random", "module:demo_tiny_alu")["paths"]
-explain(ctx, "inst:demo_tiny_alu/demo_tiny_alu.u_alu")["node"]["cite"]["command"]
-```
-
-`load_context()` accepts a project root, a graph directory or `graph.json` itself, and raises `GraphQueryError` (a `FatalRtlBuddyError`) naming `rb graph build` when there is no graph. A missing overlay is never an error — pass `with_results=False` to skip loading one at all.
-
-## Loading the Graph
-
-The envelope is what `networkx` writes, so any node-link reader loads it:
-
-```python
-import json, networkx as nx
-
-data = json.load(open("artefacts/graph/graph.json"))
-g = nx.node_link_graph(data, edges="links")
-print(nx.shortest_path(g, "test:verif/blk_a#t_cocotb", "module:blk_a"))
-```
-
-`networkx` is not an rtl_buddy dependency — the graph is plain JSON and most consumers only need `json`.
+Do not assume that a config-only graph has no dangling endpoints: config-to-design edges intentionally name modules that the design tier supplies when included.

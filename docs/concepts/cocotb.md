@@ -1,72 +1,52 @@
 ---
-description: How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.
+description: Configure cocotb testbenches for Verilator, Icarus Verilog, or VCS and interpret their results.
 ---
 
-# cocotb testbenches (Verilator / Icarus / VCS via VPI)
+# cocotb Testbenches
 
-Explains how `rtl_buddy` integrates [cocotb](https://www.cocotb.org) — a coroutine-based Python verification framework — to drive RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.
+RTL Buddy runs cocotb tests through VPI on builders whose simulator family is `verilator`, `icarus`, or `vcs`.
 
-## Supported simulators
+## Install cocotb
 
-cocotb runs against any builder whose simulator family is **`verilator`**, **`icarus`**, or **`vcs`** (resolved from the builder's executable name or an explicit `simulator-family:`; see `rtl-buddy docs show reference/yaml`). The simulator is chosen the same way as for any other test — the platform default, a suite/per-test `builder:` field, or `--builder` on the CLI:
-
-```bash
-rb --builder icarus test my_cocotb_test
-```
-
-The backends differ only in how `rtl_buddy` wires in the VPI shim, and your `tests.yaml` is identical for all three: Verilator builds a `--vpi` shared object, VCS loads `libcocotbvpi_vcs.so` with `+acc`/`-debug_access` at elaboration, and Icarus loads `libcocotbvpi_icarus` into `vvp` at run time (`vvp -M <cocotb-libs> -m libcocotbvpi_icarus`). A builder with any other family raises a `FatalRtlBuddyError` for cocotb tests.
-
-## Prerequisites
-
-`cocotb` must be installed in the active Python environment:
+Install cocotb in the same environment as RTL Buddy:
 
 ```bash
 uv add cocotb
-# or: pip install cocotb
 ```
 
-The runner calls `cocotb-config` at compile time. If it is missing, `rtl_buddy` raises a `FatalRtlBuddyError` with an actionable message rather than a raw traceback.
+RTL Buddy calls `cocotb-config` during compilation and reports an installation error if it is unavailable.
 
-## YAML shape
+## Configure the testbench
 
-Add `toplevel:` and a `cocotb:` block to a testbench entry in `tests.yaml`. `toplevel:` is **required** when `cocotb:` is present — omitting it is a fatal config error caught at load time.
+Add a required `toplevel:` and a `cocotb.module` string or list to the testbench entry:
 
 ```yaml
 testbenches:
-  - name: "tb_my_design"
+  - name: tb_my_design
     filelist:
-      - "my_design.sv"
-    toplevel: my_design          # required: DUT top-level module name
-    cocotb:
-      module: test_my_design     # Python module with @cocotb.test() coroutines
-
-  - name: "tb_multi"
-    filelist:
-      - "my_design.sv"
+      - my_design.sv
     toplevel: my_design
     cocotb:
-      module:                    # list form: all modules are loaded
+      module:
         - test_smoke
         - test_corner_cases
 
 tests:
-  - name: "test_my_design"
-    desc: "cocotb test"
+  - name: cocotb_smoke
+    model: my_design
+    model_path: ../../design/block/models.yaml
+    testbench: tb_my_design
     reglvl: 0
-    model: "my_design"
-    model_path: "../../design/block/models.yaml"
-    testbench: "tb_my_design"
 ```
 
-## Pass/fail detection
+Select the simulator as for any other test:
 
-cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/`FAIL` stdout lines. `rtl_buddy` parses this file automatically — do **not** add `$display("PASS …")` in cocotb tests. The `desc` field reports the first three failure messages with a `(+N more)` suffix when there are more.
+```bash
+rb --builder icarus test cocotb_smoke
+```
 
-## Testbench field reference
+Unsupported simulator families and a missing `toplevel:` are fatal configuration errors. See [Tests YAML](../reference/yaml.md#testsyaml) for the complete schema and [Simulation Backends](simulators.md) for backend differences.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `toplevel` | string | Yes (cocotb only) | Top-level DUT module name → `COCOTB_TOPLEVEL` |
-| `cocotb.module` | string or list | Yes | Python test module(s) → `COCOTB_TEST_MODULES` |
+## Interpret results
 
-See `rtl-buddy docs show reference/yaml` for the full `tests.yaml` schema.
+cocotb writes `cocotb_results.xml`. RTL Buddy parses that file automatically and reports up to the first three failure messages, plus a remaining-count suffix. Do not add transcript `PASS` or `FAIL` markers for cocotb tests.

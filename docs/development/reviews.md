@@ -1,46 +1,31 @@
 ---
-description: Authoritative rtl_buddy code-review scope, guideline routing, evidence standards, and feedback rules.
+description: Rules for rtl_buddy review scope, guideline selection, evidence, and feedback.
 ---
 
 # Code Reviews
 
-This page is the single source of truth for reviewing `rtl_buddy` changes. It
-routes each change to the applicable domain guidelines while keeping shared
-review behavior in one place.
+Use this page to select the rules for a change and report actionable findings once.
 
-## Review Scope
+## Set Review Scope
 
-Review only changes introduced by the pull request and the behavior they
-affect. When the pull request edits a guideline or review page, use the
-base-branch version as the rule for reviewing that change.
+Review changes introduced by the pull request and the behavior they affect. If the pull request edits a guideline, use the base-branch version of that guideline to review the edit.
 
-Check every change against [Engineering Guidelines](guidelines.md). Report a
-guideline violation only when the changed code conflicts with a rule you can
-cite; do not promote generic preferences into defects.
+Apply [Engineering Guidelines](guidelines.md) to every change. Report a violation only when changed code conflicts with a rule or contract you can cite; preferences are not defects.
 
-## Select Guidelines
+## Select Additional Guidelines
 
-Apply every row whose scope matches the change:
+Apply every matching row:
 
 | Guideline | Apply when the change affects |
-|---|---|
-| [Documentation](docs.md) | Documentation, CLI help, configuration fields, or other user-visible behavior. |
-| [Bundled skills](bundled-skills.md) | A file under `src/rtl_buddy/skill/` or the skill installer. |
-| [Project template](project-template.md) | Public CLI, configuration, workflow, plugin, or pass/fail behavior. |
+| --- | --- |
+| [Documentation](docs.md) | Docs, CLI help, configuration, or user-visible behavior |
+| [Bundled skills](bundled-skills.md) | `src/rtl_buddy/skill/` or the skill installer |
+| [Project template](project-template.md) | Public CLI, configuration, workflow, plugin, or verdict behavior |
 
-If the project template is unavailable, identify the expected downstream check
-as a follow-up instead of claiming that the downstream review passed.
+If the project template is unavailable, report the required downstream check instead of claiming it passed.
 
 ## Report Findings
 
-Keep normal pull request findings consequential, actionable, and limited to
-defects or gaps introduced by the change. Cite the exact rule or contract that
-the change violates.
+Normal pull request findings must be consequential, actionable, introduced by the change, and tied to an exact rule or contract. Put line-specific findings inline when possible. Keep summary feedback at the top level and do not repeat the same finding in both places.
 
-Put a line-specific finding inline when the review channel supports it. Keep
-summary feedback at the top level and do not duplicate a finding across both
-locations.
-
-For an explicitly requested full review, use the report format defined by the
-matching guideline page. A full review may report pre-existing gaps; a normal
-pull request review may not.
+For an explicitly requested full audit, use the report format in the applicable guideline. A full audit may include pre-existing gaps; a normal pull request review may not.
