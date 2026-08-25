@@ -1,15 +1,49 @@
 ---
-description: Authoring and review guidelines for rtl_buddy documentation, including page types, structure, generated files, completeness, and validation.
+description: Rules for concise, operational rtl_buddy documentation, including page types, content ownership, structure, review, and validation.
 ---
 
 # Documentation Guidelines
 
-These rules apply to files under `docs/`.
-The docs are both the human-facing site and the local reference surface exposed by `rb docs list` and `rb docs show`.
+These rules apply to `docs/`, the website and the local reference exposed by `rb docs list` and `rb docs show`.
+
+## Write Operational Documentation
+
+Help readers complete a task or make a decision with the current release.
+
+- Lead with what the feature does, when to use it, or the command to run.
+- Put prerequisites before the procedure and expected results after it.
+- Keep commands and their required context together.
+- Preserve constraints, defaults, failure behavior, and recovery steps.
+- Use present tense and describe current behavior only.
+- Remove origin stories, implementation chronology, release-by-release narration, and roadmap discussion. Put required upgrade history in `migrations.md`.
+- Delete commentary that does not change what a reader should do.
+
+Prefer a short, complete page. Keep information required to use the feature safely.
+
+## State Each Fact Once
+
+Give each rule, schema, or workflow one canonical home and link to it elsewhere.
+
+- Do not repeat CLI option reference already generated in `reference/cli.md`.
+- Do not copy YAML field definitions across concept pages; link to `reference/yaml.md`.
+- Fold new behavior into the section that owns it. Do not append a release note or correction to otherwise stale prose.
+- Merge overlapping sections. Delete superseded text instead of preserving both versions.
+- Keep page boundaries task-based. A page should answer one recognizable user need.
+
+## Structure for Retrieval
+
+Agents may fetch one section with `rb docs show slug#anchor`, so every H2 must make sense on its own.
+
+- Use descriptive headings based on tasks or decisions.
+- Keep one topic per H2.
+- Start each section with its answer, then add commands, constraints, or examples.
+- Prefer short prose. Use lists for choices, procedures, and checklists; use tables only for comparison.
+- Avoid H3 headings when separate H2 sections or tighter prose are clearer.
+- Keep examples minimal and runnable. Show only the fields or output relevant to the point.
 
 ## Frontmatter
 
-Every docs page must start with a YAML frontmatter block containing a `description:` field:
+Every page except generated `reference/cli.md` starts with an accurate one- or two-sentence `description`:
 
 ```markdown
 ---
@@ -19,47 +53,9 @@ description: One or two sentences describing what this page covers.
 # Page Title
 ```
 
-The `description:` value is used as the page summary in `rb docs list` and `rb docs show --machine`.
-Agents read it to decide which page to fetch; make it accurate and specific.
+The description is the page summary in `rb docs list` and `rb docs show --machine`; agents use it to decide what to fetch. State what the page covers, not that it "explains" something. CI checks it with `scripts/check_docs_frontmatter.py --check`.
 
-Rules:
-
-- Required on every page except `reference/cli.md`, which is auto-generated.
-- One or two sentences; focus on what the page covers, not that it "explains" or "describes" something.
-- CI enforces this via `scripts/check_docs_frontmatter.py --check`.
-
-## Writing Style
-
-Write for both humans and agents:
-
-- Be concise. Agents parse these pages programmatically. Long preambles add noise.
-- Be complete. Every H2 section should stand alone. Agents may fetch a single section via `rb docs show slug#anchor`.
-- Keep one topic per H2. If a section covers two things, split it.
-- Prefer prose for explanations. Bullets are fine for option lists, checklists, and step sequences.
-
-## Page Structure
-
-Use this shape for hand-written pages:
-
-```markdown
----
-description: ...
----
-
-# Title
-
-Opening sentence or short paragraph that orients the reader.
-
-## Section One
-
-Content.
-
-## Section Two
-
-Content.
-```
-
-Avoid deeply nested subsections (`###` and below) when the content can be reorganized into top-level H2 sections.
+Start content with one H1 and a sentence stating what the page helps the reader do. Use only necessary sections; do not add generic Overview, Background, or Conclusion sections.
 
 ## Page Types
 
@@ -79,12 +75,7 @@ Field tables, flag descriptions, and schema examples are appropriate there.
 
 ## Generated Pages
 
-`docs/reference/cli.md` is generated from `rtl-buddy --help` output by `scripts/gen_cli_reference.py`.
-Do not edit it by hand; changes will be overwritten.
-Edit CLI help strings in `src/rtl_buddy/rtl_buddy.py` instead.
-
-CI auto-commits regenerated `cli.md` if it drifts.
-Its `description:` frontmatter is part of the generated output and is maintained by the generator, not by hand.
+`docs/reference/cli.md` is generated from CLI help by `scripts/gen_cli_reference.py`. Edit help strings in `src/rtl_buddy/rtl_buddy.py`, then regenerate; do not edit the page by hand. The generator owns its frontmatter, and CI auto-commits drift.
 
 ## Review Documentation
 

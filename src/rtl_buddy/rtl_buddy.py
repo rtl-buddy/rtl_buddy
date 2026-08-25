@@ -5627,8 +5627,7 @@ class RtlBuddy:
                 "--foreground/--daemon",
                 help=(
                     "Run marimo in the foreground (default). --daemon is "
-                    "accepted but currently falls back to foreground; "
-                    "background detach is a follow-up."
+                    "accepted for compatibility and also runs in the foreground."
                 ),
             ),
         ] = True,
@@ -5637,11 +5636,8 @@ class RtlBuddy:
             typer.Option(
                 "--headless",
                 help=(
-                    "Forward `--headless --no-token` to marimo. Used by the "
-                    "hub-initiated 'Open in marimo' flow (Phase 2 of the "
-                    "marimo umbrella) — the SPA opens the URL itself, so "
-                    "marimo shouldn't auto-pop a browser and the auth "
-                    "token is disabled for the loopback-only handoff."
+                    "Forward `--headless --no-token` to marimo for hub launches. "
+                    "The hub opens the URL, and the handoff is loopback-only."
                 ),
             ),
         ] = False,

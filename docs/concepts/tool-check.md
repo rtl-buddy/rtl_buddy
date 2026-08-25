@@ -1,186 +1,79 @@
 ---
-description: How to verify the rtl_buddy external-tool environment with the rb tool-check command, the declarative tool manifest, and the per-subcommand readiness report.
+description: Check external-tool availability and versions, diagnose blocked subcommands, and gate CI with rb tool-check.
 ---
 
-# Tool Dependency Check
+# Tool dependency check
 
-`rb tool-check` reports which external tools `rtl_buddy` has located, which subcommands are ready to run, and which are blocked on a missing or outdated dependency. It is a diagnostic surface for the declarative [tool manifest](#how-the-manifest-works) — the same source of truth that subcommand wrappers consult when they refuse to run because a tool is missing.
+`rb tool-check` reports detected external tools and the `rb` subcommands blocked by missing or outdated dependencies. It works without a project, and applies project-specific paths and version pins when it discovers `root_config.yaml`.
 
-`rb tool-check` must work both inside and outside a project: it opportunistically discovers a `root_config.yaml` to honor project pins (verible/surfer paths, `cfg-tools` min-versions, `cfg-fpv-tools` solver pins), but degrades gracefully when none is present.
-
-## Quick start
+## Check the environment
 
 ```bash
-# Default — text report of all tools + per-subcommand readiness
-rb tool-check
-
-# JSON for scripting / CI
-rb tool-check --format json
-
-# Only the deps relevant to one subcommand
-rb tool-check --required-for fpv
-
-# Install instructions for a single tool
-rb tool-check --explain surfer
-
-# Fail the shell when something required is missing/outdated
-rb tool-check --strict
+rb tool-check                         # informational text report
+rb tool-check --required-for fpv      # only FPV dependencies; enforced
+rb tool-check --explain surfer        # status and install instructions
+rb tool-check --strict                # gate all required tools
+rb tool-check --format json           # bare JSON for scripts
+rb --machine tool-check               # standard machine envelope
 ```
 
-`rb tool-check` runs at the top level — it does not require a `root_config.yaml`, a suite directory, or any prior command. The `--include-optional/--no-include-optional` flag (default on) controls whether optional tools (gtkwave, klayout, graphviz, pyslang, cocotb, FPV solvers, etc.) appear in the report.
+Optional tools appear by default. Use `--no-include-optional` to hide them. The report contains:
 
-## Output
+- **Tools:** canonical name, `ok` / `missing` / `outdated`, detected version, resolved path, minimum version, and optional status.
+- **Subcommand readiness:** each declared `rb` command and the dependencies that block it. An optional feature does not make unrelated commands unready.
 
-The default text format has two sections plus a hint line:
+Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, and platform-specific install hints.
 
-```
-Tools (12 ok, 1 missing, 1 outdated)
-----------------------------------------------------------------------
-Tool                  Status      Version       Path
-verible               ok          v0.0-3724     /opt/homebrew/bin/verible-verilog-syntax
-yosys                 ok          0.45+115      /opt/homebrew/bin/yosys
-verilator             outdated    5.0.18        /opt/homebrew/bin/verilator  (need ≥ 5.020)
-surfer                ok          0.3.0         /opt/homebrew/bin/surfer
-sby                   missing     —             —  (optional)
-...
+Aliases are accepted by `--explain` and runtime dependency checks. Output always uses the canonical tool name. For example, `rtl-buddy-sch` resolves to `rtl-buddy-view`; an unknown-name machine response includes the known names and alias mapping.
 
-Subcommand readiness
-----------------------------------------------------------------------
-  ok        rb test                 (verible, yosys, verilator, ...)
-  outdated  rb regression           (outdated: verilator)
-  missing   rb fpv                  (needs: sby)                            (optional feature)
-  ...
+## Gate scripts and CI
 
-Hint: `rb tool-check --explain <tool>` for install instructions.
-```
+Exit behavior depends on the invocation:
 
-The **Tools** section is the per-tool table — name, status (`ok` / `missing` / `outdated`), captured version, resolved path. Python-package detectors show `(python)` in the Path column. A `(need ≥ X)` suffix appears when a tool is present but below `minimum_version`. An `(optional)` suffix appears for tools whose absence does not gate any subcommand.
+| Invocation | Exit | Meaning |
+|---|---:|---|
+| `rb tool-check` | 0 | Informational, regardless of tool state |
+| `rb tool-check --strict` | 0 | All required tools are ready |
+| `rb tool-check --strict` | 1 | A required tool is missing or outdated |
+| `rb tool-check --required-for <subcommand>` | 0 | That command's required tools are ready |
+| `rb tool-check --required-for <subcommand>` | 2 | That command is blocked |
 
-The **Subcommand readiness** section lists every `rb <subcommand>` whose deps are declared in the manifest. The gloss after each subcommand calls out what is missing or outdated, or lists the participating tools when everything is OK. `(optional feature)` indicates a subcommand whose deps are all optional — `rb wave` is ready even without `gtkwave` installed, for example.
+`--required-for` implies enforcement. Optional dependencies do not fail `--strict`.
 
-## Subcommand: `--required-for`
+The JSON payload contains `tools`, `subcommands`, and `exit_code`. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
+
+Example focused CI gate:
 
 ```bash
-rb tool-check --required-for fpv
-```
-
-Narrows the report to just the tools whose `used_by:` includes the named subcommand. Pairs naturally with `--strict` for a "is `rb fpv` ready right now?" CI check:
-
-```bash
-rb tool-check --required-for fpv --strict || \
-  { echo "rb fpv is not ready — see above"; exit 1; }
-```
-
-Exit code semantics under `--required-for` differ slightly from the default — see [Exit codes](#exit-codes) below.
-
-## Subcommand: `--explain`
-
-```bash
-rb tool-check --explain surfer
-```
-
-Prints the full manifest entry for a single tool — description, used-by subcommands, per-platform install hints, minimum version, and optional notes. Example:
-
-```
-surfer — Web-native waveform viewer
-  Status:  ok
-  Version: 0.3.0
-  Path:    /opt/homebrew/bin/surfer
-  Used by: rb wave, rb wave-fpv, rb hub
-  Install:
-    source   https://github.com/rtl-buddy/surfer (branch rtl-buddy)
-    build    cd ../surfer && cargo build --release
-```
-
-This is also what subcommand wrappers point you at when they refuse to run because a tool is missing — e.g. `rb wave` saying "surfer not found — run `rb tool-check --explain surfer`".
-
-A tool may also be looked up by an **alias**: `rb tool-check --explain rtl-buddy-sch` resolves to the `rtl-buddy-view` entry, because the viewer's PyPI distribution was renamed to `rtl-buddy-sch` at 0.7.0 while the executable kept its old name. An alias is an input courtesy only — the canonical `name` is what every line of output (status rows, `--format json` / `--machine` keys) reports, so consumers keyed on it never see it drift by spelling. Aliases are listed in the `Known:` hint you get for an unrecognised name, and the `--machine` rejection carries them as an `aliases` map (`{canonical: [alias, ...]}`) beside the bare-name `known` list — so an agent that guessed the dist name can discover the mapping from the envelope it just got.
-
-## JSON output
-
-```bash
-rb tool-check --format json
-```
-
-Emits a structured payload with `tools`, `subcommands`, and a top-level `exit_code` (the same code the process exits with). Schema sketch:
-
-```json
-{
-  "tools": {
-    "verible": { "status": "ok", "version": "v0.0-3724", "path": "/opt/homebrew/bin/...", "optional": false },
-    "sby":     { "status": "missing", "version": null, "path": null, "optional": true }
-  },
-  "subcommands": {
-    "fpv":  { "status": "missing", "missing": ["sby"], "outdated": [], "optional_feature": true },
-    "test": { "status": "ok", "missing": [], "outdated": [] }
-  },
-  "exit_code": 1
+rb tool-check --required-for fpv --strict || {
+  echo "rb fpv is not ready"
+  exit 1
 }
 ```
 
-JSON output is the wire format for CI agents and IDE integrations — `rb tool-check --format json` is stable enough to script against. Combine with `--required-for` to narrow the result to a single subcommand.
+## Apply project configuration
 
-The global `--machine` flag is also honored: `rb --machine tool-check ...` wraps the same `tools` / `subcommands` / `exit_code` structure inside the standard machine-mode envelope (`{"command": "tool-check", "exit_code": ..., "payload": {...}}`) on stdout, exactly like every other command. Agents driving the [`--machine` loop](../agents.md) should use this form — they get one parseable envelope without needing the command-specific `--format json` flag. `--format json` remains for non-machine callers who want the bare manifest dict.
+When a project is discoverable, tool-check reconciles the built-in manifest with `root_config.yaml`:
 
-## How the manifest works
+- `cfg-verible` and the active `cfg-surfer` entry add preferred detectors while retaining `PATH` fallback. Absolute paths are supported.
+- `cfg-tools` overrides minimum versions. Platform-qualified entries apply only to the matching configured OS and take precedence over unqualified entries.
+- `cfg-fpv-tools[*].opts.solver-versions` supplies solver version expectations. Runtime FPV checks exact equality; tool-check presents a mismatch as outdated.
+- Other `cfg-*-tools` blocks do not select a detector because each flow chooses its entry at run time. A flow's pinned `tool:` path is honored when that flow runs.
 
-The single source of truth lives in `src/rtl_buddy/tool_manifest.py`. Each `ToolSpec` declares:
+Without `root_config.yaml`, built-in detectors and version floors apply.
 
-| Field | Purpose |
-|-------|---------|
-| `name` | Canonical key used by `--explain`, JSON output, and runtime `require()` |
-| `aliases` | Extra spellings accepted by `--explain` / `require()`; never reported back (see above). Must not collide with another spec's name or alias — the manifest asserts this when it is built |
-| `binaries` | Binary names to look for; first one found wins |
-| `version_cmd` / `version_regex` | How to probe and parse the installed version |
-| `minimum_version` | Lower bound; if violated, status flips to `outdated` |
-| `detection` | Ordered detectors (`PathDetector`, `VendorDetector`, `AbsolutePathDetector`, `PythonPackageDetector`, `PythonSiblingDetector`) — first `found=True` wins |
-| `install_hint` | Per-platform install instructions for `--explain` |
-| `used_by` | Subcommands gated by this tool; drives the readiness section |
-| `optional` | If true, missing does not gate subcommand readiness |
+Detected versions are cached at `${XDG_CACHE_HOME:-~/.cache}/rtl_buddy/tool_versions.json`, keyed by binary path and modification time. Use `--no-probe-versions` for a faster presence-only check; versions then display as unknown.
 
-`PythonSiblingDetector` additionally takes `legacy_packages`: distribution names the same tool was published under before a rename, tried only when the current name yields no metadata. The viewer uses it for the `rtl-buddy-sch` / `rtl-buddy-view` pair, so either install reports a version. A version that came from a legacy name is dropped when the binary is also on `PATH`, letting the `version_cmd` probe answer instead — an abandoned distribution's frozen metadata should not outrank the executable it no longer owns. See [Quirks & Known Issues](../known-issues.md#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view).
+## Understand the manifest
 
-The same `ToolSpec` is consulted at runtime when a wrapper invokes `tool_manifest.require("<name>")` — which resolves aliases through the same `resolve_spec()` helper `--explain` uses, and reports the canonical name in its error — that's how subcommand wrappers produce a uniform "missing tool, see `rb tool-check --explain X`" message instead of an opaque `FileNotFoundError`.
+`src/rtl_buddy/tool_manifest.py` is the source of truth for both reports and runtime dependency errors. Each tool declares its canonical name and aliases, ordered detection methods, version probe and minimum, install hints, dependent subcommands, and whether it is optional.
 
-## Reconciliation with `root_config.yaml`
+The first successful detector wins. Detectors cover `PATH`, configured absolute or vendor paths, Python packages, and sibling Python distributions. Manifest construction rejects name or alias collisions.
 
-When a project's `root_config.yaml` is discoverable from the current directory, `rb tool-check` reconciles it with the manifest:
+Runtime wrappers call the same manifest and produce a consistent recovery hint:
 
-- **`cfg-verible`** — the active platform's verible directory is added to verible's detector chain as the *preferred* lookup, with `PATH` retained as fallback.
-- **`cfg-surfer`** — the entry the active platform routes via `cfg-platforms[].surfer` (falling back to `surfer-default` when nothing is routed) has its resolved path added similarly. An entry that pins an absolute path outright now gets a detector too; previously only a bare name resolved through `PATH` did.
-- The `cfg-*-tools` blocks contribute **no** detector. Their entry is chosen per run by the flow YAML's `tool:`, so tool-check has no way to know which one a future run will pick — reporting one of them would make the report disagree with the run rather than agree with it. A `tool:` that pins a path is honoured by the run itself.
-- **`cfg-tools`** — overrides `minimum_version` for any matching tool. Project pins always win over manifest defaults. An entry carrying `platform:` applies only on the matching `cfg-platforms[].os` and beats an unqualified entry for the same tool, so a platform pinned to a newer shared tool tree can declare its real floor.
-- **`cfg-fpv-tools[*].opts.solver-versions`** — pins each FPV solver to an exact version. Runtime semantics is exact-equality (`rb fpv` hard-fails on mismatch); `rb tool-check` surfaces the pin as `minimum_version` so users see a single "outdated" indication for solvers that don't match.
+```text
+<tool> not found — run `rb tool-check --explain <tool>` for install instructions
+```
 
-Outside a project (no `root_config.yaml` discoverable), the manifest defaults apply unchanged. The "outside a project" mode is important for first-run setup: `rb tool-check` after `pip install rtl_buddy` is a valid invocation and tells the user what to install before they create a project.
-
-## Version cache
-
-Probed versions are cached to `${XDG_CACHE_HOME:-~/.cache}/rtl_buddy/tool_versions.json` keyed by `(path, mtime)`. The cache makes repeated `rb tool-check` invocations cheap — most tools don't need to be re-probed if their binary hasn't changed. Pass `--no-probe-versions` to skip version probing entirely (faster, but the Version column shows `—` for everything).
-
-## Exit codes
-
-The default invocation is **purely informational and always exits `0`**, even when a required tool is missing or outdated — so a bare `rb tool-check` in a script never fails the shell. Pass `--strict` (or `--required-for`) to make the process exit non-zero:
-
-| Invocation | Exit | Meaning |
-|------------|------|---------|
-| `rb tool-check` (no flag) | `0` | Always — the report is printed and the command exits cleanly regardless of tool state |
-| `rb tool-check --strict` | `0` | All required tools present and up-to-date (optional gaps don't matter) |
-| `rb tool-check --strict` | `1` | At least one required tool is missing or outdated |
-| `rb tool-check --required-for <sub>` | `0` | That subcommand's required deps are all present and up-to-date |
-| `rb tool-check --required-for <sub>` | `2` | That subcommand's deps are missing/outdated |
-
-`--required-for` always enforces (it implies `--strict`), and uses exit `2` to make the "this one subcommand is broken" case distinguishable from `--strict`'s broader "some required tool, somewhere, is missing" exit `1`. Note that the JSON output's top-level `exit_code` always reports the *would-be strict* code (e.g. `1` when a required tool is missing) even in the default mode where the process itself exits `0` — so CI can either read that field or use `--strict` to gate on the process exit.
-
-## When to use it
-
-- **First-time setup.** Right after `uv add rtl_buddy`, run `rb tool-check` to see which external tools you still need to install for the subcommands you care about.
-- **CI gate.** A `rb tool-check --strict` step at the start of a CI job fails fast with an actionable error if the runner image drifted from the expected toolchain.
-- **Triaging a "tool not found" error.** When a subcommand wrapper says "X not found — run `rb tool-check --explain X`", that's the canonical entry point.
-- **After upgrading a tool.** Re-running `rb tool-check` after `brew upgrade verilator` (etc.) updates the cached version and re-evaluates `minimum_version` checks.
-
-## Out of scope (today)
-
-- **Tool installation.** `rb tool-check` reports state and gives install hints; it does not run installers itself. Treat the install hints as documentation, not as automation.
-- **Cross-platform install scripts.** Hints are per-OS (`macos`, `linux`, `source`, `vendor`, `any`); a unified setup script generator is a future possibility but not built today.
-- **Custom user manifests.** The manifest is built-in; projects can pin versions and binary paths via `root_config.yaml`, but they cannot add wholly new tools to the manifest. Adding a tool is a code change to `src/rtl_buddy/tool_manifest.py`.
+`rb tool-check` diagnoses and explains dependencies; it does not install tools or accept project-defined tool specifications. Projects may override known tool paths and versions through `root_config.yaml`. See [YAML formats](../reference/yaml.md#root_configyaml) and the [CLI reference](../reference/cli.md).

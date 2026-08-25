@@ -1,40 +1,29 @@
 ---
-description: Engineering guidelines for rtl_buddy maintainers, covering execution contexts, paths, artifacts, subprocesses, logging, errors, validation, and release-sensitive files.
+description: Engineering contracts for rtl_buddy paths, artifacts, subprocesses, dependencies, logging, validation, and releases.
 ---
 
 # Engineering Guidelines
 
-These are maintainer rules for code and docs changes in `rtl_buddy`.
-They describe the contracts new work should preserve and existing code should converge toward.
-When implementation and guideline disagree, treat the mismatch as a bug or documented exception.
+Preserve these contracts in runtime and documentation changes. Treat an implementation mismatch as a bug or a documented exception.
 
 ## Public Contracts
 
-Treat CLI behavior, YAML config loading, generated artifact layout, machine-mode output, event names, and bundled skill behavior as public interfaces.
-Downstream RTL projects and automation depend on them.
-
-Prefer targeted changes over broad refactors.
-When a change intentionally alters a contract, update docs, tests, generated references, and downstream validation assets in the same PR.
+CLI behavior, YAML loading, artifact layout, machine output, event names, and bundled-skill behavior are public interfaces. For intentional changes, update tests, docs, generated references, and downstream validation assets in the same PR.
 
 ## Quirks and Known Issues
 
-When behavior does not follow convention — a surprising default, a simulator-specific workaround, a non-obvious gotcha, or anything that works differently than a reader would reasonably expect — record it on the [Quirks & Known Issues](../known-issues.md) page.
-
-That page is the canonical home for non-conventional behavior. Keep it alive: write the quirk down as you hit or introduce it, rather than leaving it in commit history or tribal memory. Use one `##` section per quirk, name it after the behavior, and say what a user or agent should do about it.
+Record surprising defaults, limitations, and workarounds in [Quirks & Known Issues](../known-issues.md). Give each quirk one H2 section that states the effect and the action to take.
 
 ## Execution Contexts
 
-Keep command execution rooted in explicit contexts rather than ambient `os.getcwd()`:
+Use explicit contexts, never ambient `os.getcwd()`:
 
 - `invocation_cwd`: the directory where the user ran `rb`. Use it to resolve relative CLI arguments before they become absolute.
 - `command_root`: the directory containing the command's primary config file.
 - `suite_dir`: the command root for per-suite flows such as `tests.yaml`, `synth.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, and `fpga.yaml`.
 - `artifact_dir`: the generated workspace for one command item, normally `suite_dir/artefacts/<name>`.
 
-Config-driven commands should be rooted at their primary config file.
-Generated artifacts should go under the command root.
-External tools should run from their artifact directory.
-Explicit CLI input and output paths should remain relative to `invocation_cwd`, matching normal shell behavior.
+Config-driven commands use their primary config's directory as `command_root`. Managed outputs go below it, external tools run from their artifact directory, and explicit CLI paths resolve from `invocation_cwd`.
 
 ## Command Roots
 
@@ -58,8 +47,8 @@ Use these roots unless a command documents a narrower exception:
 | `axi-profile notebook` | `dirname(tests.yaml)` | `<suite>/artefacts/axi/<test>` | `<artifact>` |
 | `axi-profile discover` | `dirname(models.yaml)` | `<model_root>/artefacts/axi/<model>` | `<artifact>` |
 | `axi-profile gen-monitor` | `dirname(models.yaml)` | configured or explicit output; fallback artifact dir | `<artifact>` |
-| `graph build` | project root | `<root>/artefacts/graph/` | `rtl-buddy-view` per model in `<model_root>/artefacts/hier/<model>` — deliberately `rb hier`'s artefact dir, not the graph's, so the two flows share one filelist + CST cache |
-| `graph results` / `graph query` / `graph path` / `graph explain` / `mcp` | project root | `<root>/artefacts/graph/` (read-only; `graph results` writes the overlay) | none, except `mcp`'s hierarchy tools which invoke `rtl-buddy-view` as `graph build` does |
+| `graph build` | project root | `<root>/artefacts/graph/` | viewer: `<model_root>/artefacts/hier/<model>` |
+| `graph results` / query commands / `mcp` | project root | `<root>/artefacts/graph/` | none, except viewer-backed MCP tools |
 | `filelist` | `dirname(models.yaml)` for config reads | explicit output path | no hidden tool CWD |
 | `saif` | invocation CWD for explicit paths | explicit output path | no hidden tool CWD |
 | `hub` | project root | `.rtl-buddy/...` | project root or `.rtl-buddy`, depending subcommand |
@@ -75,72 +64,43 @@ Resolve config-owned paths from the config file that owns them:
 - `models.yaml` resolves model filelist entries relative to the `models.yaml` file that defined them.
 - `synth.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, and `fpga.yaml` resolve their own fields relative to their config directory.
 
-Do not let relative paths silently depend on where the user happened to invoke the command.
-If a path is passed to an external tool, prefer an absolute path unless the value is intentionally artifact-relative.
+Pass absolute paths to external tools unless a value is intentionally artifact-relative.
 
 ## Artifact Layout
 
-Generated outputs should live under `artefacts/<name>/` below the command root.
-Repeated or randomized runs should use stable run directories such as `run-0001`, `run-0002`, and so on.
-Convenience symlinks may point at the latest run, but they must not be the only durable location.
+Write generated outputs under `artefacts/<name>/`. Keep compile outputs (`run.f`, `compile.log`, builder output) in the test root and randomized simulation output in `run-NNNN/`. Latest-run symlinks are conveniences, not durable storage.
 
-Compile-side generated files such as `run.f`, `compile.log`, builder outputs, and relative `builder-simv` paths belong in the per-test artifact root.
-Simulation outputs for `randtest` belong in the per-run artifact directory to avoid side-file clobbering across iterations.
-
-Every run writes its result envelope (`runner/result_io.py`) as `result.json` in the run's artifact directory — the per-test root for a single run, `run-NNNN/` for a `randtest` iteration.
-This is the durable, machine-readable record of what a test did; `rb graph results` reads it, and a consumer must never have to parse `test.log` to learn a verdict.
-Writing it is best-effort: a run that passed is never reported as failed because its envelope could not be written.
-Dispatched runs additionally write the head's collection copy under `<test>/dispatch/result-<tag>.json`; that one is the dispatch protocol's, not the artifact layout's.
+Every run writes `result.json` beside its durable output. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
 
 ## Subprocesses
 
-Every external tool invocation should pass an explicit `cwd`.
-Use the command's artifact directory unless the command has a documented reason to run elsewhere.
-
-Use `run_managed_process()` for long-running or tool-managed subprocesses so cleanup, timeout handling, and signal behavior stay consistent.
-Plain `subprocess.run()` is acceptable only for short probes or helpers where lifecycle management is not needed; document that choice when it is not obvious.
+Pass an explicit `cwd` to every external tool. Use the artifact directory unless the command documents another location. Use `run_managed_process()` for long-running tools; reserve `subprocess.run()` for short probes and helpers.
 
 ## Dependencies
 
-Classify every dependency using the buckets in [Installation](../install.md#dependency-types): required dependency, integrated tool, pluggable, or pluggable curated.
-Use the classification to decide whether the dependency belongs in `pyproject.toml`, user install instructions, tool manifests, root-config schema, or command-specific docs.
+Classify dependencies as required, integrated, pluggable, or pluggable curated; see [Installation](../install.md#dependency-types). Keep required Python dependencies minimal and use optional tools for feature-specific functionality.
 
-Every new feature or dependency must update `docs/install.md` in the same PR.
-The install page is the source of truth for feature-to-dependency mapping, required external tools, optional sub-dependencies, curated tools, and fork requirements.
-
-Every external tool dependency must also be represented in `src/rtl_buddy/tool_manifest.py` unless there is a documented reason it cannot be checked.
-The manifest is the source used by `rb tool-check`, `rb tool-check --required-for`, `rb tool-check --explain`, and runtime `tool_manifest.require()` errors.
-Keep the manifest's `used_by`, `optional`, `minimum_version`, detector, install hint, and notes fields aligned with `docs/install.md`.
-
-When a new feature adds or changes tool requirements, update `tests/test_tool_manifest.py` so `rb tool-check` reports the right readiness and install guidance.
-Update [Tool Dependency Check](../concepts/tool-check.md) when manifest semantics, detector behavior, exit-code behavior, or command coverage changes.
-
-Required Python dependencies should be kept minimal because they are installed for every user.
-Prefer optional external tools for feature-specific functionality unless the dependency is needed by the core CLI, config loading, local docs access, or a command that cannot operate without it.
-
-When adding an external tool integration, document:
+For every external tool, update `docs/install.md`, `src/rtl_buddy/tool_manifest.py`, and `tests/test_tool_manifest.py` together. Keep `used_by`, optional status, minimum version, detector, install hint, and notes aligned. Document:
 
 - the command or feature that needs it;
 - whether it is integrated, pluggable, or pluggable curated;
 - any required version or fork;
 - optional sub-dependencies such as coverage, rendering, or notebook extras;
 - the concept page that explains build or setup details.
-- the `rb tool-check --explain <tool>` hint users should see when it is missing.
+- the `rb tool-check --explain <tool>` recovery hint.
+
+Update [Tool Dependency Check](../concepts/tool-check.md) when manifest behavior changes.
 
 ## Logging
 
-All runtime logging goes through `log_event()` in `src/rtl_buddy/logging_utils.py`.
-Do not use direct `logger.info(f"...")` calls for runtime events.
-
-Human mode converts events into readable text for `rtl_buddy.log` and console output.
-Machine mode writes JSON Lines with the event name, fields, and human message.
+Send runtime events through `log_event()` in `logging_utils.py`; do not call `logger.info()` directly. Human mode renders readable text and machine mode writes JSON Lines.
 
 When adding events:
 
 - Use dotted names such as `compile.start`, `sim.timeout`, or `suite_config.load_failed`.
 - Include structured fields that are stable and useful for agents.
 - Add a dedicated human-message case for WARNING or ERROR events.
-- Use `log_console_event()` instead of `log_event()` only for two cases: an event that is a run's sole liveness signal on a default-verbosity console (dispatch progress, submitted job ids), and output that was **previously written to stdout and is being re-framed** rather than newly added (hook `print()` capture) — routing it through `log_event()` alone would hide at default verbosity text the user could always see before, which is a regression, not a cleanup. Either way it prints the human message as well, so such an event need not be misfiled at WARNING or hidden behind `-v`. Anything genuinely new stays on `log_event()`.
+- Use `log_console_event()` only for default-verbosity liveness signals or output previously visible on stdout, such as captured hook `print()` calls.
 - Keep DEBUG and INFO events concise enough for machine logs.
 
 ## Error Handling
@@ -148,13 +108,9 @@ When adding events:
 Fatal config and environment errors should log at ERROR and raise `FatalRtlBuddyError`.
 The top-level command exits with code 2.
 
-Per-test setup and filelist failures should become structured test results when the broader command can continue.
-Use `FilelistError` for filelist failures caught by `TestRunner`.
-Sweep and preproc failures should return a setup-failure string so the suite records `SetupFailResults`.
+Convert recoverable per-item failures into structured results. Use `FilelistError` for filelist failures caught by `TestRunner`, and return setup-failure strings from sweep or preproc failures so the suite records `SetupFailResults`.
 
-Do not use process-wide abort patterns for recoverable per-item failures.
-
-## Validation
+## Validation And Follow-Through
 
 Let validation scale with risk:
 
@@ -163,11 +119,7 @@ Let validation scale with risk:
 - Path, artifact, or subprocess changes: add focused tests proving roots, generated paths, and subprocess `cwd`.
 - Shared command-dispatch or config-loader changes: run the affected test module subset, then broaden if the change crosses command families.
 
-Report skipped checks in the PR with the reason.
-
-## Required Follow-Through
-
-After meaningful `rtl_buddy` changes:
+Report skipped checks and the reason. Complete the applicable follow-through:
 
 1. If CLI command names, flags, help text, or output behavior changed, regenerate `docs/reference/cli.md` with `uv run python scripts/gen_cli_reference.py`.
 2. If a feature, command, optional extra, or external tool dependency changed, update `docs/install.md`.
@@ -175,34 +127,24 @@ After meaningful `rtl_buddy` changes:
 4. If docs changed, keep frontmatter valid and run the docs build. See [Documentation Guidelines](docs.md).
 5. If behavior, YAML schema, version expectations, or validation workflows changed, update user docs and the bundled skill if agents rely on the behavior.
 6. If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.
-7. If you discovered or introduced a quirk or non-conventional behavior, add an entry to `docs/known-issues.md`. Treat this as a default step, not an afterthought.
-8. **If the PR carries the `version/major` label, add a `## vN to vM` section to `docs/migrations.md` covering every breaking behavior change — this is mandatory and blocks merge.** See [Releases](#releases).
+7. Record new non-conventional behavior in `docs/known-issues.md`.
+8. For `version/major`, add a complete `## vN to vM` section to `docs/migrations.md`.
 
 ## Bundled Skills
 
-The `rtl_buddy` agent skill family ships inside the wheel at `src/rtl_buddy/skill/` and is installed by `rtl-buddy skill install`.
-There is no separate source-of-truth skill repo.
+The bundled skill family ships from `src/rtl_buddy/skill/`; there is no separate source repository. Keep the primary skill focused on feature routing and each specialist on non-obvious topic guidance. Every member must stay below 8 KiB and link to local docs instead of copying reference material.
 
-Keep the primary `src/rtl_buddy/skill/SKILL.md` focused on a basic feature overview and routing.
-Keep every bundled skill under 8 KiB.
-Specialists should contain only non-obvious, topic-specific agent guidance.
-Prefer links to local docs commands over duplicating reference content.
-Project-level installs are an override mechanism; the default install scope should remain user-level unless the policy is deliberately revisited.
+Project installs are overrides; user scope remains the default.
 
 ## Issue Triage
 
-Issues are classified along three axes that live on GitHub itself, not in this repo:
+Set these GitHub fields on every issue:
 
 - **Type** — the org-level Issue Type: `Bug`, `Feature`, or `Docs`. Set once on every issue.
 - **Priority** — the org-level Issue Field: `Urgent`, `High`, `Medium`, or `Low`. Reflects how soon the work should land, not how big it is.
 - **Effort** — the org-level Issue Field: `High`, `Medium`, or `Low`. Optional; fill it in when the answer is non-obvious.
 
-Type, Priority, and Effort are not labels.
-They are GitHub Issue Fields configured at the `rtl-buddy` organization level and are queryable via the REST and GraphQL APIs.
-
-Area is captured with `area/*` labels, kept consistent across all rtl-buddy repos.
-The taxonomy is defined once in `.github/labels.json` and propagated to every repo with `.github/sync-labels.sh` — edit the JSON and re-run the script rather than creating labels by hand.
-Pick one or more from the table below; an issue with no area label is fine for cross-cutting work but a single area is preferred when one fits.
+Type, Priority, and Effort are fields, not labels. Apply one preferred `area/*` label when possible. Edit the shared taxonomy in `.github/labels.json` and run `.github/sync-labels.sh`; do not create labels by hand.
 
 | Label | Covers |
 |---|---|
@@ -222,37 +164,18 @@ Pick one or more from the table below; an issue with no area label is fine for c
 | `area/tooling` | `tool-check`, `tool_manifest.py`, and external-tool integration |
 | `area/infra` | CI workflows, packaging, release mechanics, dependencies, machine-mode logging, and the rtl-buddy CLI |
 
-One extra label exists outside the area set:
-
-- `discussion` — for issues that are scope or design conversations rather than tracked work.
-
-The `version/patch`, `version/minor`, and `version/major` labels are reserved for PRs and drive the release workflow.
-Do not apply them to issues.
+Use `discussion` for scope or design conversations. Reserve `version/*` labels for PRs.
 
 ## Pull Requests
 
-Close issues via a `Closes #NN` keyword in the PR **description** (`Fixes`/`Resolves` also work), one line per issue for multi-issue PRs.
-A number in the *title* or a range like `#334-#340` does not autoclose.
+Put `Closes #NN` in the PR description, one line per issue. Titles and ranges do not autoclose issues.
 
 ## Milestones
 
-Use milestones to group issues and PRs that share a long-running, multi-issue effort.
-Single-issue work does not need a milestone.
-
-Name milestones by theme, not by version — for example `Hub Phase 3` or `ABV in sim`.
-Release impact already lives on the `version/*` labels and PyPI tags, so milestones should carry orthogonal information.
-
-Open a milestone when the effort is scoped enough to enumerate its first few issues, and close it when the last constituent issue is closed.
-Roll over remaining work into a follow-up milestone rather than leaving the original open indefinitely.
+Use theme-named milestones for multi-issue efforts, not single issues or releases. Open one after the first issues are scoped; close it when the work finishes and move remaining work to a follow-up milestone.
 
 ## Releases
 
-Stable releases are produced by merging to `main` with one of the `version/patch`, `version/minor`, or `version/major` labels.
-Pre-releases are cut from feature branches by workflow dispatch and should not be produced by merging pre-release branches into `main`.
+Merge stable releases to `main` with one `version/patch`, `version/minor`, or `version/major` label. Cut prereleases from feature branches by workflow dispatch. Do not merge a prerelease branch to release it or push a downstream pin before the PyPI release exists.
 
-Docs publishing, PyPI publishing, and downstream template updates depend on that sequence.
-Do not push a template pin for an unreleased `rtl_buddy` version.
-
-Every `version/major` bump must add a `## vN to vM` section to `docs/migrations.md` before merge — one page, one section per bump (do not create per-version files).
-The section documents every breaking behavior change — moved outputs, changed defaults, removed or renamed config fields, and any contract that downstream projects or hook scripts depend on — and tells readers what to update.
-A recurring failure mode is a silent contract change buried in a PR description; the migration section is where it must live so users and agents find it. Labeling a PR `version/major` without adding the section is the single most common miss — treat the two as inseparable.
+A `version/major` PR must add one `## vN to vM` section to `docs/migrations.md` covering every moved output, changed default, removed or renamed field, and downstream contract change.

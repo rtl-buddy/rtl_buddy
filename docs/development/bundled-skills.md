@@ -1,97 +1,48 @@
 ---
-description: Authoring and review guidelines for the bundled rtl_buddy skill family, including content boundaries, routing, and installer coverage.
+description: Authoring and review rules for the bundled rtl_buddy skill family, including content boundaries, packaging, and installer coverage.
 ---
 
 # Bundled Skill Guidelines
 
-These guidelines apply to the primary `src/rtl_buddy/skill/SKILL.md`, specialist
-`src/rtl_buddy/skill/<name>/SKILL.md` files, and the installer that distributes
-them. The family is operational guidance, not a second documentation site.
+Use these rules for `src/rtl_buddy/skill/SKILL.md`, specialist skill files, and the installer that distributes them. Skills provide agent-specific operating guidance; the docs remain the detailed reference.
 
-## Family Rules
+## Set Content Boundaries
 
-Every bundled skill must:
+Every skill must:
 
 - Stay under 8 KiB.
 - Match its directory name in frontmatter.
-- Have a unique description that discriminates it from other family members
-  during automatic selection.
-- Require `rb --version` at the top of every run summary.
-- Route option lists, schemas, and how-tos to local `rb docs show <page>`
-  references.
+- Have a description that distinguishes it from every other family member.
+- Require `rb --version` at the top of each run summary.
+- Link option lists, schemas, and procedures through `rb docs show <page>` instead of copying them.
 
-Do not restate schemas, field references, option lists, or worked how-tos from
-`docs/reference/`. Brief operational orientation is appropriate only when an
-agent needs it to act correctly before opening the docs.
+The primary skill covers the minimum needed for ordinary work: feature selection, basic commands, `--machine`, result interpretation, YAML orientation, path anchoring, and specialist routing.
 
-## Primary Skill
+A specialist must work when selected alone and contain only non-obvious decisions and failure modes for its topic. Do not repeat general guidance from the primary or create a specialist solely because a command exists.
 
-The primary should explain the purpose, use case, and basic valid command for
-each major feature. It should cover `--machine`, result interpretation, YAML
-orientation, working-directory and output anchoring, and specialist routing.
-An agent should be able to start ordinary work correctly without loading a
-specialist.
+## Preserve Packaging And Installation Contracts
 
-## Specialist Skills
+The primary source is `src/rtl_buddy/skill/SKILL.md`; specialists live at `src/rtl_buddy/skill/<skill-name>/SKILL.md`. Hatchling includes that tree in the wheel. Installed family members are sibling directories under the selected platform's `skills/` directory.
 
-Each specialist should be self-contained when selected without the primary,
-contain only non-obvious decisions and gotchas for its topic, and avoid
-repeating the primary's general YAML, working-directory, and result guidance.
+The wheel also includes the docs through `src/rtl_buddy/docs` and `pyproject.toml` `force-include`, so `rb docs` matches the installed version. Keep docs excluded from package discovery to avoid packaging them twice.
 
-Do not add a specialist merely because `rtl_buddy` gained a command. Add one
-only when distinct agent behavior would otherwise be wrong.
+Installation uses these contracts:
 
-## Source And Packaging
+- `SKILL_DIRNAMES` lists every family member.
+- Each installed directory matches its skill `name:`.
+- `rtl-buddy skill install` refreshes the family; `status` compares `.rtl_buddy_skill_version`; `uninstall` removes managed copies.
+- `src/rtl_buddy/skill/gitignore_snippet.txt` supplies project-install and `print-gitignore` output.
+- User scope is the default. `--project` and `--root PATH` create project copies that override user copies.
+- Install, status, uninstall, version markers, gitignore handling, and managed obsolete-directory cleanup cover the same family membership.
 
-`src/rtl_buddy/skill/SKILL.md` is the primary overview. Specialist sources live
-at `src/rtl_buddy/skill/<skill-name>/SKILL.md`; installation places every family
-member as a sibling under the target platform's `skills/` directory. There is
-no separate source-of-truth skill repository.
+Do not change the default scope without an explicit policy decision. When membership changes, update the lifecycle tests with the source files and constants.
 
-Files under `src/rtl_buddy/skill/` are included in the wheel automatically by
-hatchling. The docs ship through the `src/rtl_buddy/docs` symlink and the
-`force-include` configuration in `pyproject.toml`, so local `rb docs ...`
-references match the installed version. Keep the docs excluded from package
-discovery to avoid double inclusion.
+## Review A Skill Change
 
-`src/rtl_buddy/skill/gitignore_snippet.txt` is the source printed by
-project-level installs and `rtl-buddy skill print-gitignore`.
+1. Enumerate the family from `SKILL_DIRNAMES`.
+2. Check size, directory/frontmatter names, and description uniqueness.
+3. Apply the primary or specialist content boundary above.
+4. Verify commands against `uv run rb --help` and relevant subcommand help.
+5. Verify packaging and installer lifecycle tests when files or membership change.
 
-## Installation Contract
-
-Skill changes reach an existing installation only after the user reruns
-`rtl-buddy skill install`. `rtl-buddy skill status` reports every family member
-and detects stale content through its `.rtl_buddy_skill_version` marker.
-
-Every installed directory name must equal its `name:` frontmatter.
-`SKILL_DIRNAME = "rtl-buddy"` remains the backward-compatible primary, while
-`LEGACY_SKILL_DIRNAME` (`rtl_buddy`) is removed on install, reported by status,
-and cleaned by uninstall.
-
-User-level installation is the default at
-`~/.claude/skills/<family-member>/` and
-`~/.codex/skills/<family-member>/`. `--project` or `--root PATH` opts into
-project-level siblings under `.claude/skills/` and `.agents/skills/`; those
-copies override user-level members for projects pinned to a divergent major.
-Do not change the default scope without deliberately revisiting this policy.
-
-Keep `SKILL_DIRNAMES`, packaged files, install, status, uninstall, version
-markers, gitignore output, and legacy migration consistent across the family.
-When family membership changes, update the install, status, and uninstall tests
-that guard those contracts.
-
-## Review The Skill Family
-
-1. Enumerate every bundled skill from `SKILL_DIRNAMES` and check the 8-KiB
-   limit plus directory/frontmatter name equality.
-2. Check that descriptions are unique and discriminating enough for automatic
-   selection.
-3. Verify every section against the family, primary, and specialist rules
-   above.
-4. Compare described commands with `uv run rb --help` and relevant command
-   help.
-5. Verify installer lifecycle tests whenever family membership changes.
-
-For a full review, list findings under **Trim** and **Missing**. Each item should
-give a one-line reason and a recommended fix. Follow
-[Code Reviews](reviews.md) for pull request scope and feedback rules.
+For a full audit, report findings under **Trim** and **Missing**, with one reason and one action per item. Apply [Code Reviews](reviews.md) to pull request scope and feedback.

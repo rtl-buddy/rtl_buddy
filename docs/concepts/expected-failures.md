@@ -1,56 +1,24 @@
 ---
-description: How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, pnr, and power runs.
+description: Mark known failures and choose whether an unexpected pass should fail a test, formal, synthesis, P&R, or power run.
 ---
 
-# Expected failures (xfail)
+# Expected Failures
 
-Mark a verification that is **known not to hold** — a teaching property
-that is true but not inductive under FPV `mode: prove`, a test guarding
-an unfixed bug, a synthesis or P&R configuration whose current failure
-is documented — when you want it tracked in the suite rather than
-deleted.
+Use an expected-failure marker only for a known, understood failure that should remain visible in a suite. The fields are available on runs in `tests.yaml`, `fpv.yaml`, `synth.yaml`, `pnr.yaml`, and `power.yaml`.
 
-`xfail` and `xfail_strict` are one shared mechanism wired across every
-command whose results carry a PASS / FAIL / SKIP verdict: `fpv.yaml`,
-`tests.yaml`, `synth.yaml`, `pnr.yaml`, and `power.yaml`. A
-verification is treated as expected-to-fail when **either** marker is
-set; the verdict is then re-interpreted:
+## Choose strictness
 
-| Actual outcome | Reported as | Counts as |
-|---|---|---|
-| FAIL | `XFAIL` | **pass** — the expected failure happened, so it does not fail the run or the regression |
-| PASS | `XPASS` | depends on strictness (see below) |
-| SKIP / NA | unchanged | unchanged |
+| Marker | Actual failure | Unexpected pass | Use when |
+| --- | --- | --- | --- |
+| `xfail: true` | `XFAIL`, counts as pass | `XPASS`, counts as pass | Either outcome is acceptable |
+| `xfail_strict: true` | `XFAIL`, counts as pass | `XPASS`, counts as fail | A pass means the marker is stale |
 
-## Strict vs non-strict
+If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged.
 
-The two markers differ **only** in how an unexpected pass is counted:
+Prefer `xfail_strict: true` for a known bug or intentionally failing teaching case so the regression reports when the underlying behavior changes.
 
-| Marker | `XPASS` counts as | Use when |
-|---|---|---|
-| `xfail: true` | **pass** (non-strict) | the run *may* start passing and that is fine / not worth failing on |
-| `xfail_strict: true` | **fail** (strict) | a pass means the marker is stale and you want to be told — the safe choice for a regression guard |
+## Interpret failures carefully
 
-If both are set, strict wins. Each verification picks the marker it
-needs. A common pattern: `xfail_strict: true` on a teaching demo or a
-not-yet-fixed bug, so the regression turns red (via `XPASS`) the moment
-the run starts passing and the marker should be removed.
+The marker remaps any `FAIL`; it does not distinguish the expected design failure from a compile, tool, or environment failure. Confirm the failure reason before accepting `XFAIL`.
 
-## Caveat
-
-Like pytest `xfail` without `raises=`, this does not distinguish a
-genuine disproof from an infrastructure error that also surfaces as a
-FAIL. Reserve the marker for runs whose failure mode is understood.
-
-## Where it shows up
-
-The marker is a per-verification field in each command's yaml; the
-exact schema entries live in [YAML Formats](../reference/yaml.md).
-Common contexts:
-
-- **`fpv.yaml`** — a teaching property that is true but not inductive
-  under `mode: prove` (see [Writing properties that prove](fpv.md#writing-properties-that-prove-bmc-vs-induction)).
-- **`tests.yaml`** — a test that guards a known unfixed bug or an
-  environment limitation.
-- **`synth.yaml` / `pnr.yaml` / `power.yaml`** — a configuration whose
-  current failure is documented and tracked.
+See [YAML Formats](../reference/yaml.md) for the field on each configuration type.

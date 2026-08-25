@@ -292,9 +292,8 @@ def cmd_install(
     over user-level when both exist. Use `--dir PATH` to write the family as
     sibling directories under PATH, bypassing the `.claude`/`.agents` layout.
 
-    Installs made before the directory was renamed to `rtl-buddy` are
-    migrated: a sibling `rtl_buddy/` carrying our version marker is removed
-    so no stale second copy is left behind.
+    A marked sibling `rtl_buddy/` directory is removed to prevent a stale
+    duplicate of the primary skill.
     """
     if directory is not None:
         if project or root is not None:
@@ -401,8 +400,8 @@ def cmd_uninstall(
 ):
     """Remove installed rtl_buddy skill-family files from the selected scope.
 
-    Both the current `rtl-buddy` directory and the legacy `rtl_buddy` one are
-    cleaned, so an install predating the rename is fully removed.
+    Removes both the `rtl-buddy` directory and a marked sibling `rtl_buddy`
+    directory.
     """
     scope, base = _resolve_root(project, root)
     targets = _targets(

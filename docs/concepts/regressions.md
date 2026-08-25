@@ -1,111 +1,72 @@
 ---
-description: How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.
+description: Run multiple simulation suites from regression.yaml, filter by regression level, and choose local or parallel dispatch.
 ---
 
 # Regressions
 
-A regression runs multiple test suites in sequence, filtering tests by regression level. It is the standard way to validate a full design before a release or merge.
+A regression runs the test suites listed in one manifest and combines their results.
 
-## Regression config: `regressions.yaml`
+## Configure a regression
 
 ```yaml
 rtl-buddy-filetype: reg_config
 
 test-configs:
-  - "design/example_block_a/verif/tests.yaml"
-  - "design/example_block_b/verif/tests.yaml"
+  - design/block_a/verif/tests.yaml
+  - design/block_b/verif/tests.yaml
 ```
 
-Each entry in `test-configs` is a path to a suite's `tests.yaml`, resolved relative to the directory where `rtl-buddy regression` is invoked (usually the repo root).
+Paths resolve from the directory containing `regression.yaml`. Each suite keeps its own artefacts and detailed log; the manifest directory receives the regression log and merged outputs.
 
-The default path to `regressions.yaml` is set in `root_config.yaml` under `cfg-rtl-reg.reg-cfg-path`. Override it per run with `--reg-config`.
+See [YAML Formats: regression.yaml](../reference/yaml.md#regressionyaml) for the schema.
 
-## Running a regression
+## Resolve the manifest
 
-Use the default config:
+An explicit config wins:
 
 ```bash
-rtl-buddy regression
+rb regression --reg-config path/to/regression.yaml
 ```
 
-Specify a config file explicitly:
+Without it, RTL Buddy checks:
+
+1. `./regression.yaml` in the invocation directory
+2. `cfg-rtl-reg.reg-cfg-path` in `root_config.yaml`
+
+Other flow regressions use the same order: explicit `-c`, `./<flow>_regression.yaml`, then the matching `cfg-rtl-reg.<flow>-reg-cfg-path`. Declare non-root flow manifests in `cfg-rtl-reg` so graph discovery can find them.
+
+## Filter by regression level
+
+Tests with `reglvl` in the selected inclusive range run; others report `SKIP`:
 
 ```bash
-rtl-buddy regression --reg-config path/to/regressions.yaml
+rb regression --reg-level 2000
+rb regression --start-level 1000 --reg-level 3000
 ```
 
-When many tests in a suite share one testbench and compile configuration,
-add `--share-build` to compile once per unique set of compile inputs instead
-of once per test (Verilator, VCS, and Icarus builders). See
-[Sharing compiled builds across tests](tests.md#sharing-compiled-builds-across-tests).
+The default upper level is 0, so an unqualified regression runs must-run tests with `reglvl: 0`. A test may define one level or builder-specific levels. See [Tests](tests.md#filter-by-regression-level).
 
-### Config resolution order
+## Reuse compilation
 
-When `--reg-config` is not given, `rtl_buddy` resolves the regression config in this order:
-
-1. `./regression.yaml` in the current working directory, if it exists
-2. The path set in `root_config.yaml` under `cfg-rtl-reg.reg-cfg-path`
-
-This means you can drop a `regression.yaml` at the repo root and run `rtl-buddy regression` without any flags, even if `root_config.yaml` points elsewhere.
-
-The flow regressions (`rb synth-regression`, `rb power-regression`, `rb fpga-regression`, `rb cdc-regression`, `rb fpv-regression`) resolve their manifests with the same precedence: `-c`, then `./<flow>_regression.yaml` in the current working directory, then the matching `cfg-rtl-reg.<flow>-reg-cfg-path` key in `root_config.yaml` (see [root_config.yaml](../reference/yaml.md#root_configyaml)). Declaring a flow's manifest there is what keeps a non-root location (e.g. `lint/cdc/cdc_regression.yaml`) visible to [`rb graph build`'s flow discovery](graph.md#flow-provenance) as well.
-
-Each suite's outputs land under that suite's own `tests.yaml` directory; the orchestration log and any merged coverage artifacts land under `dirname(regression.yaml)`. See [Execution Context](execution-context.md) for how the per-suite re-anchoring works.
-
-### Regression levels
-
-`rtl_buddy` filters tests by the `reglvl` value set in each `tests.yaml`. Use `--reg-level` and `--start-level` to select a range:
+When tests share compile inputs, reuse a compiled build:
 
 ```bash
-# Run all tests with reglvl <= 2000
-rtl-buddy regression --reg-level 2000
-
-# Run tests with reglvl in [1000, 3000]
-rtl-buddy regression --start-level 1000 --reg-level 3000
+rb regression --share-build
 ```
 
-The default is `--reg-level 0`, which runs only tests with `reglvl: 0` (must-run sanity tests).
+Verilator, VCS, and Icarus support cross-test sharing. See [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and backend limitations.
 
-The `test` subcommand accepts the same `--reg-level`/`--start-level` options (long-form only) for filtering a single suite's `tests.yaml` without a `regressions.yaml`. See [Regression levels](tests.md#regression-levels).
+## Run in parallel
 
-## Working directory behavior
-
-Unlike `test`, the `regression` subcommand **changes directory** into each suite directory before running its tests. This means relative paths in `tests.yaml` (such as `model_path`) are resolved correctly without any extra setup.
-
-Run `regression` from the repo root so that the paths in `regressions.yaml` resolve correctly.
-
-## Parallel dispatch
-
-By default a regression runs every test in-process, one at a time
-(`--dispatch local`). To run tests in parallel after the shared build,
-dispatch them — to a [Slurm](https://slurm.schedmd.com/) cluster, or to a
-pool of subprocesses on the machine you are sitting at:
+The default `--dispatch local` runs tests sequentially in the current process. For parallel execution:
 
 ```bash
-rtl-buddy regression --dispatch slurm
-rtl-buddy regression --dispatch local-parallel -j 4
+rb regression --dispatch local-parallel -j 4
+rb regression --dispatch slurm
 ```
 
-What happens: **nothing heavy runs on the submit host** (usually an
-interactive login node). The head expands the suite once, then submits one
-**build job** per suite that compiles a shared `simv` per unique compile
-key on a compute node (dispatch implies `--share-build`); it then submits
-one sim job per test, each gated on that build with `--dependency=afterok`,
-so a sim starts only once its shared build succeeded and re-enters at
-simulation. The head waits for the queue to drain and collects each job's
-result into the normal summary and exit code.
+Dispatch implies shared builds. RTL Buddy expands each suite, creates one build job per unique compile key, then runs dependent simulation jobs and combines their normal results.
 
-`--dispatch local-parallel` is the same pipeline without a scheduler: the
-build and the sims are plain subprocesses on this host, capped by
-`-j/--jobs` (default `min(4, cpu count)`) — nothing to install, and it
-works on macOS, where Slurm does not run. It cannot enforce `resources:`
-reservations or report usage, so right-size against a cluster run.
+`local-parallel` uses subprocesses on the current host and needs no scheduler. It cannot enforce `resources:` reservations or collect usage telemetry.
 
-See **[Parallel dispatch](dispatch.md)** for the full treatment:
-`cfg-dispatch` configuration, per-test `resources:` layering, reservation
-right-sizing advice, requirements, the single-machine backend, and the
-agent loop.
-
-## Full schema
-
-See [YAML Formats: regressions.yaml](../reference/yaml.md#regressionyaml) for the complete field reference.
+Slurm dispatch requires a Linux submit host, Slurm client commands, and a filesystem shared with compute nodes. See [Parallel Dispatch](dispatch.md) for cluster configuration, resources, failure recovery, and job accounting.

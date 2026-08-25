@@ -1,47 +1,28 @@
 ---
-description: How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.
+description: Configure sweep and preprocessing hooks in tests.yaml, including their inputs, paths, output ownership, and failure behavior.
 ---
 
-# Plugins
+# Test plugins
 
-`rtl_buddy` supports three Python plugin hooks that let you extend test behavior without modifying the tool itself. All hooks are specified per-test in `tests.yaml` and are executed by the tool at the appropriate point in the test flow.
+<a id="hooks"></a>
 
-Hook scripts receive their input through named variables injected into the script's namespace. They do not use `import` or function arguments — instead they read from and write to these predefined variables.
+Tests can run Python hooks without changing `rtl_buddy`. Configure hooks per test in `tests.yaml`; hook scripts execute at module scope and receive predefined variables rather than function arguments.
 
-## Sweep: expanding one test into many
+## Expand tests with `sweep`
 
-The sweep hook runs before the test flow and expands a single test entry into multiple `TestConfig` objects, each with different parameters. Use it to cover a combinatorial space of plusargs, seeds, or configurations without manually listing every variant.
-
-**`tests.yaml` entry:**
+A sweep runs before the test flow and replaces one test with a list of variants. Assign the variants to `out_test_cfgs`:
 
 ```yaml
-- name: "sweep_case"
+- name: sweep_case
   sweep:
-    path: "example_sweep.py"
-  model: "my_design"
-  model_path: "../src/models.yaml"
-  testbench: "tb_top"
+    path: example_sweep.py
+  model: my_design
+  model_path: ../src/models.yaml
+  testbench: tb_top
   reglvl: 2000
 ```
 
-**Available variables in the script:**
-
-| Variable | Type | Description |
-|----------|------|-------------|
-| `logger` | Logger | Use this for all logging so output goes through `rtl_buddy`'s log system |
-| `test_cfg` | TestConfig (immutable) | The original test entry from `tests.yaml` |
-| `root_cfg` | RootConfig (mutable) | The loaded root config |
-| `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
-| `artifact_dir` | string | Artifact root for the incoming test name under `suite_dir/artefacts/` |
-| `out_test_cfgs` | list | **Assign** the expanded list of `TestConfig` objects here |
-| `__file__` | string | Absolute path to the current sweep script |
-
-Everything in `TestConfig` except `reglvl` can be mutated in the generated tests (e.g. change `name`, `plusargs`, `plusdefines`).
-
-**Example:**
-
 ```python
-# example_sweep.py
 out_test_cfgs = []
 for i in range(4):
     cfg = test_cfg.copy()
@@ -50,115 +31,89 @@ for i in range(4):
     out_test_cfgs.append(cfg)
 ```
 
-If the sweep script raises an exception, `rtl_buddy` records that test as a setup failure and continues with the remaining tests.
+| Variable | Value |
+|---|---|
+| `test_cfg` | Original immutable `TestConfig`; copied variants may change any field except `reglvl` |
+| `root_cfg` | Mutable `RootConfig` |
+| `suite_dir` | Absolute directory containing `tests.yaml` |
+| `artifact_dir` | Artefact root for the incoming test name |
+| `out_test_cfgs` | Output list the script must assign |
+| `logger` | rtl_buddy logger |
+| `__file__` | Absolute hook path |
 
-See the template repo for a working example.
+A script exception marks the source test as a setup failure; remaining tests continue.
 
-## Pre-processing: mutate test params before compile
+## Modify a test with `preproc`
 
-The pre-processing hook runs after sweep expansion but before the compilation step. Use it to dynamically adjust plusargs, plusdefines, or other test parameters based on runtime state.
-
-**`tests.yaml` entry:**
+Preprocessing runs after sweep expansion and before compile. Modify `test_cfg` directly:
 
 ```yaml
-- name: "basic"
+- name: basic
   preproc:
-    path: "my_preproc.py"
-  model: "my_design"
-  model_path: "../src/models.yaml"
-  testbench: "tb_top"
+    path: my_preproc.py
+  model: my_design
+  model_path: ../src/models.yaml
+  testbench: tb_top
 ```
 
-**Available variables:**
-
-| Variable | Type | Description |
-|----------|------|-------------|
-| `logger` | Logger | Use for all logging |
-| `test_cfg` | TestConfig (mutable) | Modify this to change compile/sim parameters |
-| `root_cfg` | RootConfig (mutable) | The loaded root config |
-| `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
-| `artifact_dir` | string | Artifact root for this test under `suite_dir/artefacts/` — **test-keyed**, so every run of the test shares it |
-| `run_id` | int or None | The run index this hook is preparing — a dispatched array element, or a single `test` — and `None` when one execution of the hook serves several runs, which is what a local `randtest` does (it runs `preproc` and the compile once, then loops the simulation) |
-| `run_artifact_dir` | string | Artifact root for *this run*: `artifact_dir/run-NNNN` when `run_id` is set, otherwise `artifact_dir` itself. Also the simulation's working directory |
-| `__file__` | string | Absolute path to the current pre-processing script |
-
-Both directories exist by the time the hook runs.
-
-Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against `suite_dir` in preproc. Output filenames that should land in the per-test artefact tree can remain relative to `artifact_dir`.
-
-**Example:**
-
 ```python
-# my_preproc.py
 import os
 from pathlib import Path
 
 test_cfg.plusargs["BUILD_ID"] = os.environ.get("CI_BUILD_ID", "local")
-test_cfg.plusargs["stimulus"] = str(Path(suite_dir) / "vectors" / "streaming_contract.txt")
+test_cfg.plusargs["stimulus"] = str(
+    Path(suite_dir) / "vectors" / "streaming_contract.txt"
+)
 ```
 
-If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.
+The script receives `test_cfg`, `root_cfg`, `suite_dir`, `artifact_dir`, `logger`, and `__file__`, plus:
 
-See the template repo for a working example.
+| Variable | Value |
+|---|---|
+| `run_id` | Run index for a dispatched element or single test; `None` when one hook invocation serves several local `randtest` runs |
+| `run_artifact_dir` | `artifact_dir/run-NNNN` when `run_id` is set; otherwise `artifact_dir`. This is also the simulation working directory |
 
-## Where a generator should write
+Both artefact directories exist before the hook runs. A script exception marks the affected test as a setup failure; remaining tests continue.
 
-`artifact_dir` is keyed on the test name only, so under `randtest` or `--dispatch` every seed of a test resolves to the same path — and dispatched seeds run **concurrently**. Which directory a `preproc` generator should use follows from what its output depends on:
+## Write generated files safely
 
-- **Output depends only on the test** (the common case): write to `artifact_dir`, and write **atomically** — a temp file plus `os.replace`, never `open(path, "w")`. Truncate-in-place is not atomic, so a sibling element reading the file mid-write gets a short one, and the mismatch surfaces as a design failure rather than a harness failure.
-- **Output depends on the run or the seed**: write to `run_artifact_dir`. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative. This only separates runs where the hook itself runs per run: under `--dispatch` it does, and `run_id` is set. A **local** `randtest` runs the hook once for all its seeds, so `run_id` is `None` and `run_artifact_dir` is the test directory — a generator that must vary per seed needs the dispatch path (or a `sweep` that expands the seeds into separate tests).
+Choose the output directory from the data's lifetime:
+
+- Write test-invariant output to `artifact_dir`. Concurrent dispatched runs share this directory, so publish files atomically with a temporary file and `os.replace()`.
+- Write run- or seed-specific output to `run_artifact_dir`. It is unique only when `run_id` is set. Local `randtest` invokes preproc once for all seeds, so use dispatch or sweep when generation must vary per seed.
 
 ```python
 import os
 from pathlib import Path
 
-# Seed-dependent stimulus: per-run directory, no race to worry about.
-out = Path(run_artifact_dir) / "stimulus.hex"
-out.write_text(generate(run_id))
-
-# Test-dependent stimulus: shared path, so publish it atomically.
-out = Path(artifact_dir) / "stimulus.hex"
-tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")
-tmp.write_text(generate())
-os.replace(tmp, out)
+if run_id is not None:
+    (Path(run_artifact_dir) / "stimulus.hex").write_text(generate(run_id))
+else:
+    out = Path(artifact_dir) / "stimulus.hex"
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")
+    tmp.write_text(generate())
+    os.replace(tmp, out)
 ```
 
-## Hook working directory
+Resolve suite inputs from `suite_dir`; do not use `os.getcwd()`. Plusargs are passed verbatim, so make suite-local input paths explicit. Relative output paths may target `run_artifact_dir` because simulation runs there.
 
-`sweep` and `preproc` hooks execute via `exec()` inside the `rb` process and share its working directory, which stays at `invocation_cwd` — the directory you ran `rb` from. It is **not** the suite directory. Always build paths from the injected `suite_dir` and `artifact_dir` variables; never call `os.getcwd()` to locate the suite.
+## Handle hook execution context
 
-Because hooks run via `exec()` rather than `import`, `__name__` is set to the sentinel `"__rtl_buddy_hook__"` — never `"__main__"`. Put hook logic at module top level. If you also want the script runnable standalone (e.g. for local testing outside `rb`), keep only the standalone entry point under `if __name__ == "__main__":` and put the `rb`-invoked logic at module level or in the accompanying `else:` branch; the `__main__` branch is always skipped when `rb` runs the hook.
+Hooks run through `exec()` in the invocation working directory, not the suite directory. `__name__` is `"__rtl_buddy_hook__"`, so place hook logic at module scope; an `if __name__ == "__main__":` branch is skipped.
 
-A hook may `print()` freely: hook stdout is captured and re-emitted through `rtl_buddy`'s log system as a `hook.stdout` event, so the text appears on the console (stderr) and in `rtl_buddy.log` but never on stdout, which under `--machine` is reserved for the JSON envelope. Prefer the injected `logger` for anything that deserves a level.
+Hook `print()` output is captured as `hook.stdout`, appears on stderr and in `rtl_buddy.log`, and cannot corrupt `--machine` JSON on stdout. Prefer `logger` when a message needs a level.
 
-The capture rebinds `sys.stdout`, so it covers what the hook itself prints — not what a **child process** writes. A hook that delegates to a third-party generator gives that child `rtl_buddy`'s own stdout, and under `--machine` the generator's chatter lands ahead of the envelope. Redirect the child, and route anything worth keeping back through `print()`:
+Child-process output is not captured automatically. Capture it and print it through the hook:
 
 ```python
 res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-print(res.stdout, end="")          # captured as hook.stdout
+print(res.stdout, end="")
 ```
 
-For the same reason `sys.stdout` here is a text sink rather than a real file: `sys.stdout.fileno()` and `sys.stdout.buffer` raise instead of reaching fd 1.
+The captured `sys.stdout` has no usable `fileno()` or `.buffer`. If a third-party generator can only write relative to its working directory, change to `suite_dir` temporarily and restore the prior directory in `finally`.
 
-```python
-import os
-out = os.path.join(artifact_dir, "gen.sv")   # correct
-out = os.path.join(os.getcwd(), "gen.sv")     # wrong — invocation cwd
-```
-
-If a hook delegates to a third-party generator that writes relative to `os.getcwd()` and exposes no output-directory argument, wrap the call in a `chdir` to the suite and restore it afterwards:
-
-```python
-prev = os.getcwd()
-os.chdir(suite_dir)
-try:
-    gen_dir = third_party_generate(...)   # writes relative to cwd
-finally:
-    os.chdir(prev)
-```
-
-This anchoring behavior changed in v5; see [Migrations: v4 to v5](../migrations.md#v4-to-v5) and the [execution context](execution-context.md) reference.
+See [Execution Context](execution-context.md) for path ownership rules.
 
 ## Post-processing
 
-The `postproc` hook is parsed from config but the runtime flow currently relies on built-in post-processing. Custom post-processing support is planned for a future release.
+`postproc` is accepted by the configuration loader, but custom post-processing hooks are not executed. Use the built-in post-processing flow.
