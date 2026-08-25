@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Authoring and review guidelines for rtl_buddy documentation, including page types, structure, generated files, completeness, and validation.">
+        <meta name="description" content="Rules for concise, operational rtl_buddy documentation, including page types, content ownership, structure, review, and validation.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1382,32 +1382,43 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#write-operational-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write Operational Documentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-each-fact-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State Each Fact Once
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#structure-for-retrieval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Structure for Retrieval
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#frontmatter" class="md-nav__link">
     <span class="md-ellipsis">
       
         Frontmatter
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#writing-style" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Writing Style
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#page-structure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Page Structure
       
     </span>
   </a>
@@ -1666,32 +1677,43 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#write-operational-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write Operational Documentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-each-fact-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State Each Fact Once
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#structure-for-retrieval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Structure for Retrieval
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#frontmatter" class="md-nav__link">
     <span class="md-ellipsis">
       
         Frontmatter
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#writing-style" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Writing Style
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#page-structure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Page Structure
       
     </span>
   </a>
@@ -1763,51 +1785,48 @@
 
 
 <h1 id="documentation-guidelines">Documentation Guidelines</h1>
-<p>These rules apply to files under <code>docs/</code>.
-The docs are both the human-facing site and the local reference surface exposed by <code>rb docs list</code> and <code>rb docs show</code>.</p>
+<p>These rules apply to <code>docs/</code>, the website and the local reference exposed by <code>rb docs list</code> and <code>rb docs show</code>.</p>
+<h2 id="write-operational-documentation">Write Operational Documentation</h2>
+<p>Help readers complete a task or make a decision with the current release.</p>
+<ul>
+<li>Lead with what the feature does, when to use it, or the command to run.</li>
+<li>Put prerequisites before the procedure and expected results after it.</li>
+<li>Keep commands and their required context together.</li>
+<li>Preserve constraints, defaults, failure behavior, and recovery steps.</li>
+<li>Use present tense and describe current behavior only.</li>
+<li>Remove origin stories, implementation chronology, release-by-release narration, and roadmap discussion. Put required upgrade history in <code>migrations.md</code>.</li>
+<li>Delete commentary that does not change what a reader should do.</li>
+</ul>
+<p>Prefer a short, complete page. Keep information required to use the feature safely.</p>
+<h2 id="state-each-fact-once">State Each Fact Once</h2>
+<p>Give each rule, schema, or workflow one canonical home and link to it elsewhere.</p>
+<ul>
+<li>Do not repeat CLI option reference already generated in <code>reference/cli.md</code>.</li>
+<li>Do not copy YAML field definitions across concept pages; link to <code>reference/yaml.md</code>.</li>
+<li>Fold new behavior into the section that owns it. Do not append a release note or correction to otherwise stale prose.</li>
+<li>Merge overlapping sections. Delete superseded text instead of preserving both versions.</li>
+<li>Keep page boundaries task-based. A page should answer one recognizable user need.</li>
+</ul>
+<h2 id="structure-for-retrieval">Structure for Retrieval</h2>
+<p>Agents may fetch one section with <code>rb docs show slug#anchor</code>, so every H2 must make sense on its own.</p>
+<ul>
+<li>Use descriptive headings based on tasks or decisions.</li>
+<li>Keep one topic per H2.</li>
+<li>Start each section with its answer, then add commands, constraints, or examples.</li>
+<li>Prefer short prose. Use lists for choices, procedures, and checklists; use tables only for comparison.</li>
+<li>Avoid H3 headings when separate H2 sections or tighter prose are clearer.</li>
+<li>Keep examples minimal and runnable. Show only the fields or output relevant to the point.</li>
+</ul>
 <h2 id="frontmatter">Frontmatter</h2>
-<p>Every docs page must start with a YAML frontmatter block containing a <code>description:</code> field:</p>
+<p>Every page except generated <code>reference/cli.md</code> starts with an accurate one- or two-sentence <code>description</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>---
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gu">description: One or two sentences describing what this page covers.</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gu">---</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gh"># Page Title</span>
 </code></pre></div>
-<p>The <code>description:</code> value is used as the page summary in <code>rb docs list</code> and <code>rb docs show --machine</code>.
-Agents read it to decide which page to fetch; make it accurate and specific.</p>
-<p>Rules:</p>
-<ul>
-<li>Required on every page except <code>reference/cli.md</code>, which is auto-generated.</li>
-<li>One or two sentences; focus on what the page covers, not that it "explains" or "describes" something.</li>
-<li>CI enforces this via <code>scripts/check_docs_frontmatter.py --check</code>.</li>
-</ul>
-<h2 id="writing-style">Writing Style</h2>
-<p>Write for both humans and agents:</p>
-<ul>
-<li>Be concise. Agents parse these pages programmatically. Long preambles add noise.</li>
-<li>Be complete. Every H2 section should stand alone. Agents may fetch a single section via <code>rb docs show slug#anchor</code>.</li>
-<li>Keep one topic per H2. If a section covers two things, split it.</li>
-<li>Prefer prose for explanations. Bullets are fine for option lists, checklists, and step sequences.</li>
-</ul>
-<h2 id="page-structure">Page Structure</h2>
-<p>Use this shape for hand-written pages:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>---
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gu">description: ...</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="gu">---</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="gh"># Title</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>Opening sentence or short paragraph that orients the reader.
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="gu">## Section One</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>Content.
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="gu">## Section Two</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>Content.
-</code></pre></div>
-<p>Avoid deeply nested subsections (<code>###</code> and below) when the content can be reorganized into top-level H2 sections.</p>
+<p>The description is the page summary in <code>rb docs list</code> and <code>rb docs show --machine</code>; agents use it to decide what to fetch. State what the page covers, not that it "explains" something. CI checks it with <code>scripts/check_docs_frontmatter.py --check</code>.</p>
+<p>Start content with one H1 and a sentence stating what the page helps the reader do. Use only necessary sections; do not add generic Overview, Background, or Conclusion sections.</p>
 <h2 id="page-types">Page Types</h2>
 <p>Concept and guide pages under <code>concepts/</code>, plus <code>quickstart.md</code>, <code>install.md</code>,
 <code>agents.md</code>, and <code>migrations.md</code>, teach a reader how and why to use a feature.
@@ -1823,11 +1842,7 @@ They must:</p>
 <code>reference/yaml.md</code> for accuracy and completeness rather than narrative flow.
 Field tables, flag descriptions, and schema examples are appropriate there.</p>
 <h2 id="generated-pages">Generated Pages</h2>
-<p><code>docs/reference/cli.md</code> is generated from <code>rtl-buddy --help</code> output by <code>scripts/gen_cli_reference.py</code>.
-Do not edit it by hand; changes will be overwritten.
-Edit CLI help strings in <code>src/rtl_buddy/rtl_buddy.py</code> instead.</p>
-<p>CI auto-commits regenerated <code>cli.md</code> if it drifts.
-Its <code>description:</code> frontmatter is part of the generated output and is maintained by the generator, not by hand.</p>
+<p><code>docs/reference/cli.md</code> is generated from CLI help by <code>scripts/gen_cli_reference.py</code>. Edit help strings in <code>src/rtl_buddy/rtl_buddy.py</code>, then regenerate; do not edit the page by hand. The generator owns its frontmatter, and CI auto-commits drift.</p>
 <h2 id="review-documentation">Review Documentation</h2>
 <p>For a repository-wide review:</p>
 <ol>
@@ -1846,11 +1861,11 @@ targeted review, list each gap with one recommended action. Treat missing
 pull request scope and feedback rules.</p>
 <h2 id="local-checks">Local Checks</h2>
 <p>Run the docs checks before opening a PR that touches docs:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/check_docs_frontmatter.py<span class="w"> </span>--check
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>mkdocs<span class="w"> </span>build<span class="w"> </span>--strict
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/check_docs_frontmatter.py<span class="w"> </span>--check
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>mkdocs<span class="w"> </span>build<span class="w"> </span>--strict
 </code></pre></div>
 <p>For CLI help changes, regenerate the CLI reference first:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/gen_cli_reference.py
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/gen_cli_reference.py
 </code></pre></div>
 
 

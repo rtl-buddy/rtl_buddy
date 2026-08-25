@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Authoring and review guidelines for keeping rtl-buddy-project-template aligned with user-visible rtl_buddy behavior.">
+        <meta name="description" content="Rules for keeping rtl-buddy-project-template aligned with user-visible rtl_buddy behavior through focused, runnable examples.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1421,10 +1421,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#author-examples" class="md-nav__link">
+  <a href="#make-the-example-usable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Author Examples
+        Make The Example Usable
       
     </span>
   </a>
@@ -1432,21 +1432,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#keep-the-template-current" class="md-nav__link">
+  <a href="#determine-required-coverage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Keep The Template Current
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#review-template-coverage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Review Template Coverage
+        Determine Required Coverage
       
     </span>
   </a>
@@ -1644,10 +1633,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#author-examples" class="md-nav__link">
+  <a href="#make-the-example-usable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Author Examples
+        Make The Example Usable
       
     </span>
   </a>
@@ -1655,21 +1644,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#keep-the-template-current" class="md-nav__link">
+  <a href="#determine-required-coverage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Keep The Template Current
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#review-template-coverage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Review Template Coverage
+        Determine Required Coverage
       
     </span>
   </a>
@@ -1697,86 +1675,52 @@
 
 
 <h1 id="project-template-guidelines">Project Template Guidelines</h1>
-<p>These guidelines apply when adding examples to
-<a href="https://github.com/rtl-buddy/rtl-buddy-project-template"><code>rtl-buddy-project-template</code></a>
-and when checking whether it keeps pace with <code>rtl_buddy</code>. The template should
-make user-visible behavior understandable, runnable, and easy to adapt.</p>
+<p>Use these rules when adding examples to <a href="https://github.com/rtl-buddy/rtl-buddy-project-template"><code>rtl-buddy-project-template</code></a> or checking it against <code>rtl_buddy</code>.</p>
 <h2 id="choose-the-example-role">Choose The Example Role</h2>
-<p>Classify an example before deciding where and how to add it:</p>
-<ul>
-<li>A <strong>sandbox flow</strong> belongs to the integrated reference design. It should join
-  the same DUT, spec, model, test, and regression story rather than form a
-  disconnected side demo.</li>
-<li>A <strong>template demo</strong> is a small, isolated example of one capability. It may be
-  separate from the sandbox, but it should remain focused and readable.</li>
-</ul>
-<p>Do not place a disconnected template demo in the sandbox or let a template
-demo grow too large and entangled to work as a reference.</p>
-<h2 id="author-examples">Author Examples</h2>
-<p>Every example should be:</p>
-<ul>
-<li><strong>Isolated:</strong> easy to locate and understand without unrelated material.</li>
-<li><strong>Integrated or minimal:</strong> connected to the sandbox flow, or deliberately
-  small as a template demo.</li>
-<li><strong>Explained:</strong> accompanied by a comment or documentation that says what it
-  does and when to use it.</li>
-<li><strong>Runnable:</strong> includes a concrete <code>uv run rb ...</code> command.</li>
-</ul>
-<p>The quality bar is that an RTL engineer new to <code>rtl_buddy</code> can find the example
-and immediately understand how to run and adapt it.</p>
-<h2 id="keep-the-template-current">Keep The Template Current</h2>
-<p>Treat template maintenance as a delta from <code>rtl_buddy</code>, not a static checklist.
-Compare from the last <code>rtl_buddy</code> dependency bump in the template through the
-current change. For targeted work, use the specified change range and the
-latest template <code>main</code> as the downstream baseline.</p>
-<p>Inspect user-visible changes to:</p>
-<ul>
-<li>CLI commands, flags, or options in <code>src/rtl_buddy/rtl_buddy.py</code> and
-  <code>docs/reference/cli.md</code>.</li>
-<li>YAML fields or config sections in <code>src/rtl_buddy/config/</code> and
-  <code>docs/reference/yaml.md</code>.</li>
-<li>User workflows in <code>docs/concepts/</code>.</li>
-<li>Plugin behavior in <code>docs/concepts/plugins.md</code>.</li>
-<li>Pass/fail behavior in <code>src/rtl_buddy/tools/</code>.</li>
-</ul>
-<p>Internal refactors that do not change behavior or configuration need no
-template update.</p>
-<h2 id="review-template-coverage">Review Template Coverage</h2>
-<p>Search the template configuration, RTL, plugins, and explanatory material for
-each relevant behavior. Verify the example role and every authoring rule above.
-An absent user-visible feature is a gap.</p>
-<p>For a full review, use this table:</p>
 <table>
 <thead>
 <tr>
-<th>Feature / change</th>
-<th><code>rtl_buddy</code> commit</th>
-<th>Intended role</th>
-<th>Template location</th>
-<th>Isolated</th>
-<th>Integrated/minimal</th>
-<th>Explained</th>
-<th>Runnable</th>
-<th>Action needed</th>
+<th>Role</th>
+<th>Use it for</th>
+<th>Boundary</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
+<td>Sandbox flow</td>
+<td>Behavior that belongs in the integrated reference design</td>
+<td>Extend its DUT, spec, model, test, and regression story.</td>
+</tr>
+<tr>
+<td>Template demo</td>
+<td>One capability best shown in isolation</td>
+<td>Keep it small, separate, and easy to copy.</td>
 </tr>
 </tbody>
 </table>
-<p>Mark evaluation cells with ✅, ❌, or ⚠️. Follow the table with a <strong>Gap
-Summary</strong> containing one recommended action for each ❌ or ⚠️ row. Follow
-<a href="../reviews/">Code Reviews</a> for pull request scope and feedback rules.</p>
+<p>Do not add a disconnected demo to the sandbox or let a template demo become an alternate integrated project.</p>
+<h2 id="make-the-example-usable">Make The Example Usable</h2>
+<p>Every example must be:</p>
+<ul>
+<li>Easy to locate and understand without unrelated material.</li>
+<li>Integrated with the sandbox or deliberately minimal.</li>
+<li>Accompanied by a short explanation of when to use it.</li>
+<li>Runnable with a concrete <code>uv run rb ...</code> command.</li>
+</ul>
+<p>An RTL engineer new to <code>rtl_buddy</code> should be able to run and adapt it without reconstructing missing context.</p>
+<h2 id="determine-required-coverage">Determine Required Coverage</h2>
+<p>Compare user-visible changes since the template's last <code>rtl_buddy</code> dependency bump, or use the requested change range for a targeted review. Check:</p>
+<ul>
+<li>CLI commands and options in <code>src/rtl_buddy/rtl_buddy.py</code> and <code>docs/reference/cli.md</code>.</li>
+<li>Configuration in <code>src/rtl_buddy/config/</code> and <code>docs/reference/yaml.md</code>.</li>
+<li>Workflows and plugin behavior in <code>docs/concepts/</code>.</li>
+<li>Pass/fail behavior in <code>src/rtl_buddy/tools/</code>.</li>
+</ul>
+<p>Internal refactors with no behavior or configuration change need no template update. For each relevant behavior, locate its configuration, RTL, plugin, and explanatory material in the template, then verify the role and usability rules above.</p>
+<p>For a full audit, report:</p>
+<p>| Feature / change | <code>rtl_buddy</code> commit | Role | Template location | Isolated | Integrated/minimal | Explained | Runnable | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |</p>
+<p>Use pass, fail, or warning values and follow the table with one action for every non-pass row. Apply <a href="../reviews/">Code Reviews</a> to pull request scope and feedback. If the template is unavailable, report the required downstream check instead of marking it complete.</p>
 
 
 

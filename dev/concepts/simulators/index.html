@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Verilator vs Icarus Verilog as rtl_buddy simulation backends — the capability split, when to use each, and the coverage limitation.">
+        <meta name="description" content="Choose between Verilator and Icarus Verilog simulation backends and understand their coverage and waveform differences.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#simulators-verilator-vs-icarus" class="md-skip">
+        <a href="#simulation-backends" class="md-skip">
           Skip to content
         </a>
       
@@ -509,10 +509,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#choosing-a-backend" class="md-nav__link">
+  <a href="#choose-a-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Choosing a backend
+        Choose a backend
       
     </span>
   </a>
@@ -520,10 +520,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#capability-split" class="md-nav__link">
+  <a href="#select-a-builder" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Capability split
+        Select a builder
       
     </span>
   </a>
@@ -531,10 +531,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-the-backend-is-selected" class="md-nav__link">
+  <a href="#open-waveforms" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How the backend is selected
+        Open waveforms
       
     </span>
   </a>
@@ -542,32 +542,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#compile-and-run-flow" class="md-nav__link">
+  <a href="#collect-coverage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Compile and run flow
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#waveforms" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Waveforms
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#coverage-limitation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage limitation
+        Collect coverage
       
     </span>
   </a>
@@ -1655,10 +1633,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#choosing-a-backend" class="md-nav__link">
+  <a href="#choose-a-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Choosing a backend
+        Choose a backend
       
     </span>
   </a>
@@ -1666,10 +1644,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#capability-split" class="md-nav__link">
+  <a href="#select-a-builder" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Capability split
+        Select a builder
       
     </span>
   </a>
@@ -1677,10 +1655,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-the-backend-is-selected" class="md-nav__link">
+  <a href="#open-waveforms" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How the backend is selected
+        Open waveforms
       
     </span>
   </a>
@@ -1688,32 +1666,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#compile-and-run-flow" class="md-nav__link">
+  <a href="#collect-coverage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Compile and run flow
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#waveforms" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Waveforms
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#coverage-limitation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage limitation
+        Collect coverage
       
     </span>
   </a>
@@ -1740,12 +1696,9 @@
   
 
 
-<h1 id="simulators-verilator-vs-icarus">Simulators (Verilator vs Icarus)</h1>
-<p><code>rtl_buddy</code> drives a Verilog/SystemVerilog simulation through a named builder in <code>root_config.yaml</code>'s <code>cfg-rtl-builder</code>. Two open-source backends are supported today: <a href="https://www.veripool.org/verilator/">Verilator</a> (the default) and <a href="https://steveicarus.github.io/iverilog/">Icarus Verilog</a>. They differ in language support, speed, and waveform format, so the right choice depends on the test. This page covers the split and how a builder is selected; the YAML mechanics live in <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a>.</p>
-<h2 id="choosing-a-backend">Choosing a backend</h2>
-<p>Use <strong>Verilator</strong> as the default. It is a cycle-accurate compiled simulator: fast, with broad SystemVerilog-2017 support including SVA <code>assert</code>/<code>cover property</code>, functional coverage hooks, and the line/toggle coverage that feeds <code>rb test --coverage</code>. It is the backend the regression tiers and CI run on.</p>
-<p>Reach for <strong>Icarus</strong> when you want a lightweight, quick-to-install event-driven simulator (<code>brew install icarus-verilog</code> / <code>apt install iverilog</code>) — useful for small smoke tests, portable demos, and environments where building Verilator is inconvenient. Icarus 12 supports SystemVerilog-2012 procedural code well but <strong>does not</strong> support <code>cover property</code> SVA, <code>interface class</code>-based frameworks, or coverage collection through rtl_buddy's pipeline. Designs and testbenches that rely on those constructs must gate them out for Icarus (see <a href="../expected-failures/">Expected failures</a> and the <code>SIM_ICARUS</code> gating pattern in the project template's <code>demo_tiny_alu</code>).</p>
-<h2 id="capability-split">Capability split</h2>
+<h1 id="simulation-backends">Simulation Backends</h1>
+<p>Use Verilator by default. Use Icarus Verilog for lightweight smoke tests or environments where installing Verilator is impractical.</p>
+<h2 id="choose-a-backend">Choose a backend</h2>
 <table>
 <thead>
 <tr>
@@ -1756,12 +1709,12 @@
 </thead>
 <tbody>
 <tr>
-<td>SV-2012 procedural code</td>
+<td>SystemVerilog procedural code</td>
 <td>Yes</td>
 <td>Yes</td>
 </tr>
 <tr>
-<td><code>cover property</code> / concurrent SVA</td>
+<td>Concurrent SVA and <code>cover property</code></td>
 <td>Yes</td>
 <td>No</td>
 </tr>
@@ -1771,35 +1724,32 @@
 <td>No</td>
 </tr>
 <tr>
-<td>Line/toggle coverage (<code>rb test --coverage</code>)</td>
+<td>RTL Buddy line/toggle coverage</td>
 <td>Yes</td>
 <td>No</td>
 </tr>
 <tr>
-<td>cocotb (Python TB via VPI)</td>
+<td>cocotb through VPI</td>
 <td>Yes</td>
 <td>Yes</td>
 </tr>
 <tr>
-<td>Default waveform dump</td>
-<td>FST (<code>dump.fst</code>)</td>
-<td>VCD (<code>dump.vcd</code>)</td>
-</tr>
-<tr>
-<td>Simulation model</td>
-<td>Compiled, cycle-based</td>
-<td>Interpreted, event-driven</td>
+<td>Default waveform</td>
+<td>FST</td>
+<td>VCD</td>
 </tr>
 </tbody>
 </table>
-<h2 id="how-the-backend-is-selected">How the backend is selected</h2>
-<p>A builder is resolved with this precedence (highest first): the <code>--builder &lt;name&gt;</code> CLI override, a per-test <code>builder:</code>, a suite-wide <code>builder:</code>, then the platform default from <code>cfg-platforms</code>. The chosen builder's <code>simulator-family</code> — explicit in <code>cfg-rtl-builder</code> or inferred from the executable name (<code>iverilog</code>→<code>icarus</code>, <code>verilator</code>→<code>verilator</code>) — is what drives every backend-specific decision: the two-phase <code>iverilog</code>→<code>vvp</code> compile/run flow, assertion flags, and coverage handling. See <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a> for the full YAML.</p>
-<h2 id="compile-and-run-flow">Compile and run flow</h2>
-<p>Verilator compiles the design to a single <code>simv</code> binary (<code>verilator --binary</code>) that rtl_buddy runs directly. Icarus is two-phase: <code>iverilog -o &lt;snapshot&gt;.vvp</code> compiles to a <code>.vvp</code> snapshot, then <code>vvp &lt;snapshot&gt;</code> interprets it. rtl_buddy hides this by writing a small <code>simv</code> shell wrapper that execs <code>vvp</code> on the snapshot, so the runner invokes one executable regardless of backend. For cocotb on Icarus the wrapper additionally loads the cocotb VPI module (<code>vvp -M &lt;cocotb-libs&gt; -m libcocotbvpi_icarus</code>), since Icarus binds VPI at run time rather than at compile.</p>
-<h2 id="waveforms">Waveforms</h2>
-<p>Verilator dumps FST (<code>dump.fst</code>); Icarus dumps plain VCD (<code>dump.vcd</code>). <code>rb wave</code> discovers whichever dump is newest under <code>artefacts/&lt;test&gt;/</code> — so the Icarus VCD opens in Surfer without conversion, as Surfer reads VCD natively. To force an FST instead (for tooling that needs it), set <code>wave-format: fst-postproc</code> on the Icarus builder; rtl_buddy then runs <code>vcd2fst</code> (GTKWave) after the sim, falling back to the VCD if <code>vcd2fst</code> is not installed.</p>
-<h2 id="coverage-limitation">Coverage limitation</h2>
-<p>Coverage collection and reporting key off the <strong>platform-selected</strong> builder, not a per-test/suite <code>builder:</code>. Because only Verilator emits line/toggle coverage today, running an Icarus test for coverage through a Verilator-default platform can mislabel or miss results. Run the suite with <code>--builder</code> (or make the builder the platform default) to keep simulation and coverage on the same backend. See <a href="../../known-issues/#coverage-follows-the-platform-builder-not-a-per-testsuite-builder">Coverage follows the platform builder</a> for the full rationale.</p>
+<p>Verilator compiles a cycle-based <code>simv</code> binary and provides RTL Buddy's coverage path. Icarus compiles a <code>.vvp</code> snapshot and runs it through <code>vvp</code>; RTL Buddy generates a <code>simv</code> wrapper so the surrounding flow stays the same.</p>
+<p>Gate unsupported constructs when a suite must run on Icarus. Use <a href="../expected-failures/">expected failures</a> only when the failure mode is understood.</p>
+<h2 id="select-a-builder">Select a builder</h2>
+<p>Builder precedence is <code>--builder &lt;name&gt;</code>, per-test <code>builder:</code>, suite-level <code>builder:</code>, then the platform default.</p>
+<p>The selected <code>cfg-rtl-builder</code> entry should set <code>simulator-family</code>, or use an executable name from which RTL Buddy can infer it. See <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a>.</p>
+<h2 id="open-waveforms">Open waveforms</h2>
+<p>Verilator normally writes <code>dump.fst</code>; Icarus writes <code>dump.vcd</code>. <code>rb wave</code> opens the newest supported dump under <code>artefacts/&lt;test&gt;/</code>.</p>
+<p>Set <code>wave-format: fst-postproc</code> on an Icarus builder to run <code>vcd2fst</code> after simulation. If <code>vcd2fst</code> is unavailable, the VCD remains usable.</p>
+<h2 id="collect-coverage">Collect coverage</h2>
+<p>RTL Buddy coverage is currently Verilator-only and follows the platform-selected builder. Use <code>--builder verilator</code>, or make Verilator the platform default, instead of relying only on a suite- or test-level override. See <a href="../../known-issues/#coverage-uses-the-platform-builder">Coverage uses the platform builder</a>.</p>
 
 
 

@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Authoritative rtl_buddy code-review scope, guideline routing, evidence standards, and feedback rules.">
+        <meta name="description" content="Rules for rtl_buddy review scope, guideline selection, evidence, and feedback.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1466,10 +1466,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#review-scope" class="md-nav__link">
+  <a href="#set-review-scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Review Scope
+        Set Review Scope
       
     </span>
   </a>
@@ -1477,10 +1477,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#select-guidelines" class="md-nav__link">
+  <a href="#select-additional-guidelines" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Select Guidelines
+        Select Additional Guidelines
       
     </span>
   </a>
@@ -1622,10 +1622,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#review-scope" class="md-nav__link">
+  <a href="#set-review-scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Review Scope
+        Set Review Scope
       
     </span>
   </a>
@@ -1633,10 +1633,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#select-guidelines" class="md-nav__link">
+  <a href="#select-additional-guidelines" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Select Guidelines
+        Select Additional Guidelines
       
     </span>
   </a>
@@ -1675,18 +1675,12 @@
 
 
 <h1 id="code-reviews">Code Reviews</h1>
-<p>This page is the single source of truth for reviewing <code>rtl_buddy</code> changes. It
-routes each change to the applicable domain guidelines while keeping shared
-review behavior in one place.</p>
-<h2 id="review-scope">Review Scope</h2>
-<p>Review only changes introduced by the pull request and the behavior they
-affect. When the pull request edits a guideline or review page, use the
-base-branch version as the rule for reviewing that change.</p>
-<p>Check every change against <a href="../guidelines/">Engineering Guidelines</a>. Report a
-guideline violation only when the changed code conflicts with a rule you can
-cite; do not promote generic preferences into defects.</p>
-<h2 id="select-guidelines">Select Guidelines</h2>
-<p>Apply every row whose scope matches the change:</p>
+<p>Use this page to select the rules for a change and report actionable findings once.</p>
+<h2 id="set-review-scope">Set Review Scope</h2>
+<p>Review changes introduced by the pull request and the behavior they affect. If the pull request edits a guideline, use the base-branch version of that guideline to review the edit.</p>
+<p>Apply <a href="../guidelines/">Engineering Guidelines</a> to every change. Report a violation only when changed code conflicts with a rule or contract you can cite; preferences are not defects.</p>
+<h2 id="select-additional-guidelines">Select Additional Guidelines</h2>
+<p>Apply every matching row:</p>
 <table>
 <thead>
 <tr>
@@ -1697,30 +1691,22 @@ cite; do not promote generic preferences into defects.</p>
 <tbody>
 <tr>
 <td><a href="../docs/">Documentation</a></td>
-<td>Documentation, CLI help, configuration fields, or other user-visible behavior.</td>
+<td>Docs, CLI help, configuration, or user-visible behavior</td>
 </tr>
 <tr>
 <td><a href="../bundled-skills/">Bundled skills</a></td>
-<td>A file under <code>src/rtl_buddy/skill/</code> or the skill installer.</td>
+<td><code>src/rtl_buddy/skill/</code> or the skill installer</td>
 </tr>
 <tr>
 <td><a href="../project-template/">Project template</a></td>
-<td>Public CLI, configuration, workflow, plugin, or pass/fail behavior.</td>
+<td>Public CLI, configuration, workflow, plugin, or verdict behavior</td>
 </tr>
 </tbody>
 </table>
-<p>If the project template is unavailable, identify the expected downstream check
-as a follow-up instead of claiming that the downstream review passed.</p>
+<p>If the project template is unavailable, report the required downstream check instead of claiming it passed.</p>
 <h2 id="report-findings">Report Findings</h2>
-<p>Keep normal pull request findings consequential, actionable, and limited to
-defects or gaps introduced by the change. Cite the exact rule or contract that
-the change violates.</p>
-<p>Put a line-specific finding inline when the review channel supports it. Keep
-summary feedback at the top level and do not duplicate a finding across both
-locations.</p>
-<p>For an explicitly requested full review, use the report format defined by the
-matching guideline page. A full review may report pre-existing gaps; a normal
-pull request review may not.</p>
+<p>Normal pull request findings must be consequential, actionable, introduced by the change, and tied to an exact rule or contract. Put line-specific findings inline when possible. Keep summary feedback at the top level and do not repeat the same finding in both places.</p>
+<p>For an explicitly requested full audit, use the report format in the applicable guideline. A full audit may include pre-existing gaps; a normal pull request review may not.</p>
 
 
 

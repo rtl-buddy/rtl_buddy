@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Authoring and review guidelines for the bundled rtl_buddy skill family, including content boundaries, routing, and installer coverage.">
+        <meta name="description" content="Authoring and review rules for the bundled rtl_buddy skill family, including content boundaries, packaging, and installer coverage.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1438,10 +1438,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#family-rules" class="md-nav__link">
+  <a href="#set-content-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Family Rules
+        Set Content Boundaries
       
     </span>
   </a>
@@ -1449,10 +1449,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#primary-skill" class="md-nav__link">
+  <a href="#preserve-packaging-and-installation-contracts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Primary Skill
+        Preserve Packaging And Installation Contracts
       
     </span>
   </a>
@@ -1460,43 +1460,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#specialist-skills" class="md-nav__link">
+  <a href="#review-a-skill-change" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Specialist Skills
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#source-and-packaging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Source And Packaging
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#installation-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Installation Contract
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#review-the-skill-family" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Review The Skill Family
+        Review A Skill Change
       
     </span>
   </a>
@@ -1655,10 +1622,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#family-rules" class="md-nav__link">
+  <a href="#set-content-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Family Rules
+        Set Content Boundaries
       
     </span>
   </a>
@@ -1666,10 +1633,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#primary-skill" class="md-nav__link">
+  <a href="#preserve-packaging-and-installation-contracts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Primary Skill
+        Preserve Packaging And Installation Contracts
       
     </span>
   </a>
@@ -1677,43 +1644,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#specialist-skills" class="md-nav__link">
+  <a href="#review-a-skill-change" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Specialist Skills
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#source-and-packaging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Source And Packaging
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#installation-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Installation Contract
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#review-the-skill-family" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Review The Skill Family
+        Review A Skill Change
       
     </span>
   </a>
@@ -1741,80 +1675,40 @@
 
 
 <h1 id="bundled-skill-guidelines">Bundled Skill Guidelines</h1>
-<p>These guidelines apply to the primary <code>src/rtl_buddy/skill/SKILL.md</code>, specialist
-<code>src/rtl_buddy/skill/&lt;name&gt;/SKILL.md</code> files, and the installer that distributes
-them. The family is operational guidance, not a second documentation site.</p>
-<h2 id="family-rules">Family Rules</h2>
-<p>Every bundled skill must:</p>
+<p>Use these rules for <code>src/rtl_buddy/skill/SKILL.md</code>, specialist skill files, and the installer that distributes them. Skills provide agent-specific operating guidance; the docs remain the detailed reference.</p>
+<h2 id="set-content-boundaries">Set Content Boundaries</h2>
+<p>Every skill must:</p>
 <ul>
 <li>Stay under 8 KiB.</li>
 <li>Match its directory name in frontmatter.</li>
-<li>Have a unique description that discriminates it from other family members
-  during automatic selection.</li>
-<li>Require <code>rb --version</code> at the top of every run summary.</li>
-<li>Route option lists, schemas, and how-tos to local <code>rb docs show &lt;page&gt;</code>
-  references.</li>
+<li>Have a description that distinguishes it from every other family member.</li>
+<li>Require <code>rb --version</code> at the top of each run summary.</li>
+<li>Link option lists, schemas, and procedures through <code>rb docs show &lt;page&gt;</code> instead of copying them.</li>
 </ul>
-<p>Do not restate schemas, field references, option lists, or worked how-tos from
-<code>docs/reference/</code>. Brief operational orientation is appropriate only when an
-agent needs it to act correctly before opening the docs.</p>
-<h2 id="primary-skill">Primary Skill</h2>
-<p>The primary should explain the purpose, use case, and basic valid command for
-each major feature. It should cover <code>--machine</code>, result interpretation, YAML
-orientation, working-directory and output anchoring, and specialist routing.
-An agent should be able to start ordinary work correctly without loading a
-specialist.</p>
-<h2 id="specialist-skills">Specialist Skills</h2>
-<p>Each specialist should be self-contained when selected without the primary,
-contain only non-obvious decisions and gotchas for its topic, and avoid
-repeating the primary's general YAML, working-directory, and result guidance.</p>
-<p>Do not add a specialist merely because <code>rtl_buddy</code> gained a command. Add one
-only when distinct agent behavior would otherwise be wrong.</p>
-<h2 id="source-and-packaging">Source And Packaging</h2>
-<p><code>src/rtl_buddy/skill/SKILL.md</code> is the primary overview. Specialist sources live
-at <code>src/rtl_buddy/skill/&lt;skill-name&gt;/SKILL.md</code>; installation places every family
-member as a sibling under the target platform's <code>skills/</code> directory. There is
-no separate source-of-truth skill repository.</p>
-<p>Files under <code>src/rtl_buddy/skill/</code> are included in the wheel automatically by
-hatchling. The docs ship through the <code>src/rtl_buddy/docs</code> symlink and the
-<code>force-include</code> configuration in <code>pyproject.toml</code>, so local <code>rb docs ...</code>
-references match the installed version. Keep the docs excluded from package
-discovery to avoid double inclusion.</p>
-<p><code>src/rtl_buddy/skill/gitignore_snippet.txt</code> is the source printed by
-project-level installs and <code>rtl-buddy skill print-gitignore</code>.</p>
-<h2 id="installation-contract">Installation Contract</h2>
-<p>Skill changes reach an existing installation only after the user reruns
-<code>rtl-buddy skill install</code>. <code>rtl-buddy skill status</code> reports every family member
-and detects stale content through its <code>.rtl_buddy_skill_version</code> marker.</p>
-<p>Every installed directory name must equal its <code>name:</code> frontmatter.
-<code>SKILL_DIRNAME = "rtl-buddy"</code> remains the backward-compatible primary, while
-<code>LEGACY_SKILL_DIRNAME</code> (<code>rtl_buddy</code>) is removed on install, reported by status,
-and cleaned by uninstall.</p>
-<p>User-level installation is the default at
-<code>~/.claude/skills/&lt;family-member&gt;/</code> and
-<code>~/.codex/skills/&lt;family-member&gt;/</code>. <code>--project</code> or <code>--root PATH</code> opts into
-project-level siblings under <code>.claude/skills/</code> and <code>.agents/skills/</code>; those
-copies override user-level members for projects pinned to a divergent major.
-Do not change the default scope without deliberately revisiting this policy.</p>
-<p>Keep <code>SKILL_DIRNAMES</code>, packaged files, install, status, uninstall, version
-markers, gitignore output, and legacy migration consistent across the family.
-When family membership changes, update the install, status, and uninstall tests
-that guard those contracts.</p>
-<h2 id="review-the-skill-family">Review The Skill Family</h2>
+<p>The primary skill covers the minimum needed for ordinary work: feature selection, basic commands, <code>--machine</code>, result interpretation, YAML orientation, path anchoring, and specialist routing.</p>
+<p>A specialist must work when selected alone and contain only non-obvious decisions and failure modes for its topic. Do not repeat general guidance from the primary or create a specialist solely because a command exists.</p>
+<h2 id="preserve-packaging-and-installation-contracts">Preserve Packaging And Installation Contracts</h2>
+<p>The primary source is <code>src/rtl_buddy/skill/SKILL.md</code>; specialists live at <code>src/rtl_buddy/skill/&lt;skill-name&gt;/SKILL.md</code>. Hatchling includes that tree in the wheel. Installed family members are sibling directories under the selected platform's <code>skills/</code> directory.</p>
+<p>The wheel also includes the docs through <code>src/rtl_buddy/docs</code> and <code>pyproject.toml</code> <code>force-include</code>, so <code>rb docs</code> matches the installed version. Keep docs excluded from package discovery to avoid packaging them twice.</p>
+<p>Installation uses these contracts:</p>
+<ul>
+<li><code>SKILL_DIRNAMES</code> lists every family member.</li>
+<li>Each installed directory matches its skill <code>name:</code>.</li>
+<li><code>rtl-buddy skill install</code> refreshes the family; <code>status</code> compares <code>.rtl_buddy_skill_version</code>; <code>uninstall</code> removes managed copies.</li>
+<li><code>src/rtl_buddy/skill/gitignore_snippet.txt</code> supplies project-install and <code>print-gitignore</code> output.</li>
+<li>User scope is the default. <code>--project</code> and <code>--root PATH</code> create project copies that override user copies.</li>
+<li>Install, status, uninstall, version markers, gitignore handling, and managed obsolete-directory cleanup cover the same family membership.</li>
+</ul>
+<p>Do not change the default scope without an explicit policy decision. When membership changes, update the lifecycle tests with the source files and constants.</p>
+<h2 id="review-a-skill-change">Review A Skill Change</h2>
 <ol>
-<li>Enumerate every bundled skill from <code>SKILL_DIRNAMES</code> and check the 8-KiB
-   limit plus directory/frontmatter name equality.</li>
-<li>Check that descriptions are unique and discriminating enough for automatic
-   selection.</li>
-<li>Verify every section against the family, primary, and specialist rules
-   above.</li>
-<li>Compare described commands with <code>uv run rb --help</code> and relevant command
-   help.</li>
-<li>Verify installer lifecycle tests whenever family membership changes.</li>
+<li>Enumerate the family from <code>SKILL_DIRNAMES</code>.</li>
+<li>Check size, directory/frontmatter names, and description uniqueness.</li>
+<li>Apply the primary or specialist content boundary above.</li>
+<li>Verify commands against <code>uv run rb --help</code> and relevant subcommand help.</li>
+<li>Verify packaging and installer lifecycle tests when files or membership change.</li>
 </ol>
-<p>For a full review, list findings under <strong>Trim</strong> and <strong>Missing</strong>. Each item should
-give a one-line reason and a recommended fix. Follow
-<a href="../reviews/">Code Reviews</a> for pull request scope and feedback rules.</p>
+<p>For a full audit, report findings under <strong>Trim</strong> and <strong>Missing</strong>, with one reason and one action per item. Apply <a href="../reviews/">Code Reviews</a> to pull request scope and feedback.</p>
 
 
 

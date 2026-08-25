@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.">
+        <meta name="description" content="Open simulation and formal waveforms in Surfer, configure editor navigation, and use live signal annotation safely.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#waveform-viewer-rb-wave" class="md-skip">
+        <a href="#waveform-viewer" class="md-skip">
           Skip to content
         </a>
       
@@ -761,10 +761,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#basic-usage" class="md-nav__link">
+  <a href="#install-surfer" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Basic usage
+        Install Surfer
       
     </span>
   </a>
@@ -772,10 +772,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#open-a-test-waveform" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Open a test waveform
       
     </span>
   </a>
@@ -783,93 +783,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#signal-value-annotation" class="md-nav__link">
+  <a href="#configure-surfer-and-the-editor" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Signal value annotation
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Signal value annotation">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it works
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#active-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Active scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#nvim-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        nvim setup
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adding signals to Surfer from nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-signal-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-signal mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#editor-socket-reuse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Editor socket reuse
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#opening-fpv-counterexamples-rb-wave-fpv" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Opening FPV counterexamples (rb wave-fpv)
+        Configure Surfer and the editor
       
     </span>
   </a>
@@ -877,10 +794,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hub-integration" class="md-nav__link">
+  <a href="#install-the-nvim-integration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hub integration
+        Install the nvim integration
       
     </span>
   </a>
@@ -888,10 +805,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#time-units" class="md-nav__link">
+  <a href="#navigate-and-annotate-signals" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Time units
+        Navigate and annotate signals
       
     </span>
   </a>
@@ -899,10 +816,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#surfer-build" class="md-nav__link">
+  <a href="#open-a-formal-counterexample" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Surfer build
+        Open a formal counterexample
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-correct-time-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use correct time units
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-the-coordination-hub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use the coordination hub
       
     </span>
   </a>
@@ -1738,10 +1677,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#basic-usage" class="md-nav__link">
+  <a href="#install-surfer" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Basic usage
+        Install Surfer
       
     </span>
   </a>
@@ -1749,10 +1688,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#open-a-test-waveform" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Open a test waveform
       
     </span>
   </a>
@@ -1760,93 +1699,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#signal-value-annotation" class="md-nav__link">
+  <a href="#configure-surfer-and-the-editor" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Signal value annotation
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Signal value annotation">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it works
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#active-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Active scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#nvim-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        nvim setup
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adding signals to Surfer from nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-signal-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-signal mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#editor-socket-reuse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Editor socket reuse
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#opening-fpv-counterexamples-rb-wave-fpv" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Opening FPV counterexamples (rb wave-fpv)
+        Configure Surfer and the editor
       
     </span>
   </a>
@@ -1854,10 +1710,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hub-integration" class="md-nav__link">
+  <a href="#install-the-nvim-integration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hub integration
+        Install the nvim integration
       
     </span>
   </a>
@@ -1865,10 +1721,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#time-units" class="md-nav__link">
+  <a href="#navigate-and-annotate-signals" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Time units
+        Navigate and annotate signals
       
     </span>
   </a>
@@ -1876,10 +1732,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#surfer-build" class="md-nav__link">
+  <a href="#open-a-formal-counterexample" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Surfer build
+        Open a formal counterexample
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-correct-time-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use correct time units
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-the-coordination-hub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use the coordination hub
       
     </span>
   </a>
@@ -1906,101 +1784,68 @@
   
 
 
-<h1 id="waveform-viewer-rb-wave">Waveform Viewer (<code>rb wave</code>)</h1>
-<blockquote>
-<p><strong>Integration type:</strong> Integrated tool. <code>rb wave</code> is built around Surfer today; Vaporview / VS Code support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/84">issue #84</a>.</p>
-<p><strong>External binary required:</strong> Surfer, built from the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork on the <code>rtl-buddy</code> branch. Mainline Surfer works for basic FST viewing but not for WCP signal-value annotation. See <a href="#surfer-build">Surfer build</a>.</p>
-<p><strong>Editor integration:</strong> nvim for the full annotation round-trip (declaration jump + live signal values + add-from-editor). Any editor can be configured via <code>editor-cmd</code> for one-way "open at line".</p>
-<p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
-</blockquote>
-<p><code>rb wave</code> opens the <a href="https://surfer-project.org/">Surfer</a> waveform viewer for a test and connects it to your editor via the <strong>WCP</strong> (Waveform Client Protocol). When you right-click a signal in Surfer and choose <strong>Go to declaration</strong>, rtl-buddy:</p>
-<ol>
-<li>Resolves the signal to its source file and line number</li>
-<li>Opens (or reuses) your editor at that location</li>
-<li>Annotates the signal's waveform value at the current cursor position as inline virtual text</li>
-</ol>
-<h2 id="basic-usage">Basic usage</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>verif/sandbox
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w">          </span><span class="c1"># runs debug sim if no FST exists, then opens Surfer</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--resim<span class="w">  </span><span class="c1"># force re-run of debug sim</span>
+<h1 id="waveform-viewer">Waveform Viewer</h1>
+<p><code>rb wave</code> opens a test waveform in Surfer. With the RTL Buddy Surfer fork and nvim plugin, it also supports source navigation, live value annotations, and adding signals from the editor.</p>
+<h2 id="install-surfer">Install Surfer</h2>
+<p>Basic FST and VCD viewing works with mainline Surfer. Live editor annotation requires the <code>rtl-buddy</code> branch of the <a href="https://github.com/rtl-buddy/surfer/tree/rtl-buddy">RTL Buddy Surfer fork</a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>../surfer
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>git<span class="w"> </span>checkout<span class="w"> </span>rtl-buddy
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release
 </code></pre></div>
-<p>Signal layout files are loaded automatically: if <code>basic.surfer</code> exists next to <code>tests.yaml</code>, Surfer opens with those signals pre-loaded.</p>
-<h2 id="configuration">Configuration</h2>
-<p>Add a <code>cfg-surfer</code> section to <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-default&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../surfer/target/release/surfer&quot;</span><span class="w">  </span><span class="c1"># or bare name on PATH</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">wcp-port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">                              </span><span class="c1"># 0 = OS assigns a free port</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nvim</span><span class="nv"> </span><span class="s">+%l</span><span class="nv"> </span><span class="s">%f&quot;</span><span class="w">               </span><span class="c1"># %f = file, %l = line (schema default is &quot;vim +%l %f&quot;)</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">editor-terminal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tmux&quot;</span><span class="w">                  </span><span class="c1"># tmux | iterm2 | terminal | &quot;&quot;</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">editor-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-nvim.sock&quot;</span><span class="w">  </span><span class="c1"># enables nvim reuse</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">ctrl-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-ctrl.sock&quot;</span><span class="w">    </span><span class="c1"># enables nvim → Surfer</span>
+<p>Put the binary on <code>PATH</code> or configure its path in <code>cfg-surfer</code>.</p>
+<h2 id="open-a-test-waveform">Open a test waveform</h2>
+<p>From a suite containing <code>tests.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--resim
 </code></pre></div>
-<p>See <a href="../../reference/yaml/">YAML Formats</a> for all fields.</p>
-<h2 id="signal-value-annotation">Signal value annotation</h2>
-<h3 id="how-it-works">How it works</h3>
-<p>When a <code>goto_declaration</code> event arrives from Surfer, rtl-buddy:</p>
-<ol>
-<li>Reads the signal value at the cursor timestamp from the FST via <strong>pywellen</strong></li>
-<li>Enumerates all other signals in the same module scope using the FST hierarchy</li>
-<li>Runs a <strong>single bulk grep</strong> across the SV source files to map every signal to its declaration line (result cached for the session)</li>
-<li>Pushes all values to the editor as EOL virtual text</li>
-</ol>
-<p>Moving the Surfer time cursor fires a <code>cursor_moved</code> WCP event, which re-reads all scope signal values and updates the annotations live — no interaction required.</p>
-<p>Two signals declared on the same source line are combined into one annotation:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kt">logic</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">;</span><span class="w">    </span><span class="err">▶</span><span class="w"> </span><span class="n">a</span><span class="o">=</span><span class="mh">8&#39;h0a</span><span class="w">  </span><span class="n">b</span><span class="o">=</span><span class="mh">8&#39;h05</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kt">logic</span><span class="w"> </span><span class="n">clk</span><span class="p">;</span><span class="w">     </span><span class="err">▶</span><span class="w"> </span><span class="mb">1&#39;b0</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
+<p>If no waveform exists, the first command runs the test in debug mode. <code>--resim</code> always reruns it. RTL Buddy opens the newest supported FST or VCD under the test artefacts.</p>
+<p>If <code>basic.surfer</code> exists beside <code>tests.yaml</code>, RTL Buddy passes it to Surfer as the initial signal layout.</p>
+<h2 id="configure-surfer-and-the-editor">Configure Surfer and the editor</h2>
+<p>Add a named entry to <code>root_config.yaml</code> and route it from the active platform:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">cfg-platforms</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">os</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">osx</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">unames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">Darwin</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">verilator</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">surfer</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">surfer-default</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">surfer-default</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../surfer/target/release/surfer</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">wcp-port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvim +%l %f</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">editor-terminal</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tmux</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">editor-sock</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.local/share/rtl-buddy/wave-nvim.sock</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">ctrl-sock</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.local/share/rtl-buddy/wave-ctrl.sock</span>
 </code></pre></div>
-<h3 id="active-scope">Active scope</h3>
-<p>Clicking any signal in Surfer's signal list sets the <strong>active scope</strong> — the module instance used to resolve signal names. rtl-buddy updates the scope cache automatically via the <code>scope_changed</code> WCP event, so annotation context is always current without requiring a "Go to declaration".</p>
-<h3 id="nvim-setup">nvim setup</h3>
-<p>The annotation feature lives in the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a> plugin — the same plugin that connects your editor to the <a href="../hub/">hub</a>. Install it once with the unified command:</p>
+<p><code>%f</code> and <code>%l</code> expand to the source file and line. <code>wcp-port: 0</code> lets the OS select a free port. <code>editor-sock</code> enables nvim reuse and annotations; <code>ctrl-sock</code> enables editor-to-Surfer actions. Omit the sockets when using another editor for one-way source navigation.</p>
+<p>See <a href="../../reference/yaml/#root_configyaml">YAML Formats</a> for all fields.</p>
+<h2 id="install-the-nvim-integration">Install the nvim integration</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>nvim-install
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--update
 </code></pre></div>
-<p>This clones the plugin (pinned to a revision compatible with this rtl-buddy's hub protocol) into <code>~/.local/share/nvim/site/pack/rtlbuddy/start/rtl-buddy-nvim</code> and writes a managed <code>~/.local/share/nvim/site/plugin/rtl_buddy_setup.lua</code> that nvim auto-sources at startup — no <code>init.lua</code> changes are needed. The managed setup also auto-connects to the hub and, when <code>verible-verilog-ls</code> is on <code>PATH</code>, starts it for symbol resolution.</p>
-<p>Keep it current after an rtl-buddy upgrade:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--update<span class="w">   </span><span class="c1"># sync to the revision pinned by your rtl-buddy</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--force<span class="w">    </span><span class="c1"># remove and re-install</span>
+<p>The command installs a compatible revision of <code>rtl-buddy-nvim</code> and writes an auto-loaded setup file; no <code>init.lua</code> change is required. It needs Git and network access. For an offline checkout:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--source<span class="w"> </span>/path/to/rtl-buddy-nvim<span class="w"> </span>--ref<span class="w"> </span>&lt;branch&gt;
 </code></pre></div>
-<p><code>git</code> is required (the plugin is fetched via <code>git clone</code>). For an offline or sibling-checkout install, point at a local path: <code>rb nvim-install --source /path/to/rtl-buddy-nvim --ref &lt;branch&gt;</code>.</p>
-<p>If the plugin is missing when <code>rb wave</code> starts with <code>editor-sock</code> configured, a warning is shown:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING  nvim plugin not installed — run &quot;rb nvim-install&quot; to enable the hub connection and wave annotations
+<p>Use <code>--force</code> to replace a broken install. Run <code>:checkhealth rtlbuddy</code> in nvim to verify hub, language-server, and wave integration.</p>
+<h2 id="navigate-and-annotate-signals">Navigate and annotate signals</h2>
+<p>In Surfer, select a signal to establish the active instance scope, then choose <strong>Go to declaration</strong>. RTL Buddy opens the declaration and annotates signals in that scope with their values at the current waveform cursor. Moving the cursor refreshes the annotations.</p>
+<p>To annotate only the selected signal:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--focused-signal
 </code></pre></div>
-<p>Verify the install with <code>:checkhealth rtlbuddy</code> in nvim — it reports hub state, LSP attach, and whether wave annotation is enabled.</p>
-<h3 id="adding-signals-to-surfer-from-nvim">Adding signals to Surfer from nvim</h3>
-<p>With <code>ctrl-sock</code> configured, place the cursor on any signal name in nvim and press <strong><code>&lt;Space&gt;wa</code></strong> (<code>&lt;leader&gt;wa</code>) to add it to Surfer's waveform view.</p>
-<p>The signal is resolved using the active scope — click a signal in Surfer first to establish the instance context (e.g. clicking <code>tb_top.i_dut.clk</code> sets scope <code>tb_top.i_dut</code>), then add signals freely from nvim.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>nvim: cursor on &quot;rst&quot;  →  &lt;Space&gt;wa  →  Surfer adds tb_top.i_dut.rst to waveform
+<p>With <code>ctrl-sock</code> configured, place the nvim cursor on a signal and press <code>&lt;leader&gt;wa</code> to add it to Surfer. Select a Surfer signal first so the active scope is unambiguous.</p>
+<p>If an nvim socket is stale, the next navigation request starts a new editor instance. If the plugin is missing, <code>rb wave</code> warns and continues without annotations.</p>
+<h2 id="open-a-formal-counterexample">Open a formal counterexample</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
 </code></pre></div>
-<p>The keymap requires <code>ctrl-sock</code> to be set in <code>cfg-surfer</code> and <code>rb wave</code> to be running. A warning is shown if the socket is unreachable.</p>
-<h3 id="single-signal-mode">Single-signal mode</h3>
-<p>To annotate only the signal you right-clicked (not the whole scope):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--focused-signal
-</code></pre></div>
-<h3 id="editor-socket-reuse">Editor socket reuse</h3>
-<p>When <code>editor-sock</code> is set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use. Subsequent <code>goto_declaration</code> and <code>cursor_moved</code> events reuse the running instance via <code>--remote-expr nvim_exec2(...)</code> — no new windows, no command-line flicker.</p>
-<p>The socket is probed with a 300 ms timeout. If the socket is stale (nvim has been closed), the next <code>goto_declaration</code> opens a fresh nvim window.</p>
-<h2 id="opening-fpv-counterexamples-rb-wave-fpv">Opening FPV counterexamples (<code>rb wave-fpv</code>)</h2>
-<p><code>rb wave-fpv &lt;verif_name&gt;</code> opens the SymbiYosys counterexample VCD for a failed <a href="../fpv/">formal verification</a> in Surfer:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
-</code></pre></div>
-<p>It reads the same <code>fpv.yaml</code> (<code>-c</code>/<code>--fpv-config</code>, default <code>fpv.yaml</code>) to resolve the verification name, then opens the trace at <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine in sorted order). It opens the VCD in the <code>cfg-surfer</code> entry the active platform routes via <a href="../root-config/#cfg-platforms"><code>cfg-platforms[].surfer</code></a> — falling back to <code>surfer-default</code> when nothing is routed — unless you pass <code>--surfer &lt;name&gt;</code>, which wins over both. Unlike <code>rb wave</code>, it just opens the VCD — there is no WCP annotation round-trip — so mainline Surfer suffices. It raises a clear error if the verification has not been run, the proof passed (no counterexample), or no engine produced a trace.</p>
-<h2 id="hub-integration">Hub integration</h2>
-<p>When a project <a href="../hub/">coordination hub</a> is running, <code>rb wave</code> opportunistically connects to it as the <code>wave</code>-origin peer (the bridge in <code>tools/wave_hub_bridge.py</code>; the hub is discovered via <code>$RTL_BUDDY_HUB</code> or by walking up to <code>.rtl-buddy/hub.json</code>). The bridge forwards Surfer events to the hub (cursor moves → <code>cursor_time_changed</code>, plus <code>scope_changed</code>, <code>signal_selected</code>, and a <code>wave_values_changed</code> snapshot on cursor move) and serves hub requests back to Surfer. Navigation requests are <code>wave_set_cursor</code>, <code>wave_set_scope</code>, <code>wave_set_viewport</code>, <code>wave_zoom_to_range</code>, <code>wave_zoom_to_fit</code>; item-management requests are <code>wave_add_variables</code>, <code>wave_get_items</code>, <code>wave_remove_items</code>, <code>wave_move_items</code>, and <code>wave_add_comments</code>. The item-management requests let an agent (over <code>rb hub send</code>) inspect and curate the displayed signal/comment list, with genuine success/error reporting — the bridge waits for Surfer's WCP <code>ack</code>/response and translates a Surfer <code>error</code> frame into a hub <code>error</code> instead of replying optimistically. (<code>wave_move_items</code> and <code>wave_add_comments</code> require the surfer fork's <code>move_items</code> / <code>add_dividers</code> WCP commands.) Time is exchanged in femtoseconds (<code>time_unit=fs</code>). If no hub is reachable the bridge stays silent and <code>rb wave</code> runs fully standalone — the hub is never required.</p>
-<h2 id="time-units">Time units</h2>
-<p>The wave stack uses <strong>two different time units</strong> — mixing them silently mis-places the cursor by orders of magnitude:</p>
-<ul>
-<li><strong>pywellen / FST analysis — timescale <em>ticks</em>.</strong> Signal-value reads go through pywellen, whose <code>Signal.all_changes()</code> and <code>Waveform.time_table</code> return integer <strong>timesteps in the FST's timescale resolution</strong>, not picoseconds. With Verilator's default <code>1ns/10ps</code> timescale one tick = 10 ps, so a 10 ns clock period is 1000 ticks and a cursor at 95 ns is tick 9500. Convert ticks to real time with the timescale object from <code>Waveform.hierarchy.timescale()</code> (a method — it returns <code>.factor</code> / <code>.unit</code>, e.g. <code>10</code> / <code>ps</code>), not a bare multiplier.</li>
-<li><strong>Hub / WCP — femtoseconds.</strong> The bridge and <code>rb hub send wave-cursor &lt;T_FS&gt;</code> / <code>wave-zoom &lt;START_FS&gt; &lt;END_FS&gt;</code> exchange time in <strong>femtoseconds</strong> (<code>time_unit=fs</code>); the bridge forwards the fs value to Surfer verbatim with <code>time_unit=fs</code> and Surfer converts to its own timestep. At a 10 ps timescale 1 tick = 10 000 fs, so 95 ns = 95 000 000 fs = tick 9500. Pass fs to the <code>wave-*</code> verbs — a ps or tick value lands 10³–10⁶× off.</li>
-<li><strong>Surfer command files (the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork) — timescale ticks.</strong> <code>cursor_set</code> / <code>zoom_range</code> in a <code>-c</code> command file use the same tick unit as pywellen, <em>not</em> fs. (This is surfer-side behavior, documented here for the round-trip.)</li>
-</ul>
-<h2 id="surfer-build">Surfer build</h2>
-<p>The annotation features require Surfer built from the <code>rtl-buddy</code> branch:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="nb">cd</span><span class="w"> </span>../surfer<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>rtl-buddy
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release
-</code></pre></div>
-<p>Point <code>cfg-surfer.path</code> at <code>../surfer/target/release/surfer</code> (relative to <code>root_config.yaml</code>) or install the binary on <code>PATH</code>.</p>
+<p><code>rb wave-fpv</code> reads <code>fpv.yaml</code>, finds the first counterexample trace under the verification's artefacts, and opens it in the configured Surfer entry. Use <code>-c</code> for another config or <code>--surfer &lt;name&gt;</code> to override routing.</p>
+<p>This command does not enable the editor annotation round trip, so mainline Surfer is sufficient. It fails with a clear message when the verification has not run, passed without a counterexample, or produced no trace.</p>
+<h2 id="use-correct-time-units">Use correct time units</h2>
+<p>Signal reads through pywellen use waveform timescale ticks. Convert them with <code>Waveform.hierarchy.timescale()</code>.</p>
+<p>Hub and WCP navigation commands use femtoseconds. For example, with a 10 ps waveform tick, 95 ns is 9,500 ticks but 95,000,000 fs. Pass femtoseconds to <code>rb hub send wave-cursor</code> and <code>wave-zoom</code>.</p>
+<p>Surfer command files use waveform ticks, not femtoseconds. Do not pass values between these interfaces without conversion.</p>
+<h2 id="use-the-coordination-hub">Use the coordination hub</h2>
+<p>When <a href="../hub/">the hub</a> is running, <code>rb wave</code> connects automatically and shares cursor, scope, selection, and waveform values with other peers. It also accepts hub requests to navigate and curate displayed signals. Without a reachable hub, waveform viewing and editor annotation continue standalone.</p>
 
 
 

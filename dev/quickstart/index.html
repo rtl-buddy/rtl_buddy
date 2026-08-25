@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Run your first rtl_buddy test, regression, synthesis, and supporting commands in an already-installed project.">
+        <meta name="description" content="Run tests, regressions, synthesis, and randomized simulation in an existing RTL Buddy project.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -344,10 +344,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#run-a-test" class="md-nav__link">
+  <a href="#run-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Run a test
+        Run tests
       
     </span>
   </a>
@@ -366,6 +366,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#run-randomized-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run randomized tests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#run-synthesis" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -377,10 +388,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#run-with-randomization" class="md-nav__link">
+  <a href="#inspect-results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Run with randomization
+        Inspect results
       
     </span>
   </a>
@@ -388,21 +399,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#check-logs" class="md-nav__link">
+  <a href="#configure-a-project" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Check logs
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next steps
+        Configure a project
       
     </span>
   </a>
@@ -1653,10 +1653,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#run-a-test" class="md-nav__link">
+  <a href="#run-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Run a test
+        Run tests
       
     </span>
   </a>
@@ -1675,6 +1675,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#run-randomized-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run randomized tests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#run-synthesis" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1686,10 +1697,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#run-with-randomization" class="md-nav__link">
+  <a href="#inspect-results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Run with randomization
+        Inspect results
       
     </span>
   </a>
@@ -1697,21 +1708,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#check-logs" class="md-nav__link">
+  <a href="#configure-a-project" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Check logs
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next steps
+        Configure a project
       
     </span>
   </a>
@@ -1739,57 +1739,46 @@
 
 
 <h1 id="quick-start">Quick Start</h1>
-<p>Use this guide to run your first <code>rtl_buddy</code> test, regression, synthesis, and supporting commands in an already-installed project.</p>
-<h2 id="run-a-test">Run a test</h2>
-<p>Run the test named <code>basic</code> using <code>tests.yaml</code> in the current directory:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
+<p>Run these commands from an installed project. See <a href="../install/">Installation</a> if <code>uv run rb --version</code> fails.</p>
+<h2 id="run-tests">Run tests</h2>
+<p>From a suite directory containing <code>tests.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span>
 </code></pre></div>
-<p>Specify a different test config file:</p>
+<p>The first command lists tests, the second runs <code>basic</code>, and the third runs every test. From another directory, identify the suite explicitly:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic<span class="w"> </span>--test-config<span class="w"> </span>path/to/tests.yaml
 </code></pre></div>
-<p>Run all tests in a config:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span>
-</code></pre></div>
-<p>List available tests without running them:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
-</code></pre></div>
+<p>Outputs land beside <code>tests.yaml</code>, not in the directory where you invoked the command. See <a href="../concepts/execution-context/">Execution Context</a>.</p>
 <h2 id="run-a-regression">Run a regression</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>regression
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>regression
 </code></pre></div>
-<p>This uses the regression config path from <code>root_config.yaml</code>. To specify a different file:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>regression<span class="w"> </span>--reg-config<span class="w"> </span>path/to/regression.yaml
+<p>This uses <code>./regression.yaml</code> when present, then the path configured in <code>root_config.yaml</code>. To choose another manifest:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>regression<span class="w"> </span>--reg-config<span class="w"> </span>path/to/regression.yaml
 </code></pre></div>
+<p>See <a href="../concepts/regressions/">Regressions</a> for level filtering and parallel dispatch.</p>
+<h2 id="run-randomized-tests">Run randomized tests</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic<span class="w"> </span>--rnd-new
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>randtest<span class="w"> </span>basic<span class="w"> </span><span class="m">5</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>randtest<span class="w"> </span>basic<span class="w"> </span><span class="m">5</span><span class="w"> </span>--rnd-rpt<span class="w"> </span><span class="m">3</span>
+</code></pre></div>
+<p>These commands run once with a new seed, run five distinct iterations, and replay iteration 3 respectively. Seeds are recorded with the test artefacts.</p>
 <h2 id="run-synthesis">Run synthesis</h2>
-<p>List synthesis entries in a config:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>synth<span class="w"> </span>--list<span class="w"> </span>--synth-config<span class="w"> </span>path/to/synth.yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>synth<span class="w"> </span>--list<span class="w"> </span>--synth-config<span class="w"> </span>path/to/synth.yaml
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>synth<span class="w"> </span>smoke_synth<span class="w"> </span>--synth-config<span class="w"> </span>path/to/synth.yaml
 </code></pre></div>
-<p>Run a synthesis entry:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>synth<span class="w"> </span>smoke_synth<span class="w"> </span>--synth-config<span class="w"> </span>path/to/synth.yaml
+<p>The required backend and library configuration is covered in <a href="../concepts/synthesis/">Synthesis</a>.</p>
+<h2 id="inspect-results">Inspect results</h2>
+<p>Each suite writes orchestration output to <code>rtl_buddy.log</code> and per-test output under <code>artefacts/&lt;test&gt;/</code>. A <code>randtest</code> iteration uses <code>artefacts/&lt;test&gt;/run-NNNN/</code>; latest-run symlinks remain at the test artefact root.</p>
+<p>For programmatic output:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
 </code></pre></div>
-<p>See <a href="../concepts/synthesis/">Synthesis</a> for <code>synth.yaml</code>, tool, and library configuration.</p>
-<h2 id="run-with-randomization">Run with randomization</h2>
-<p>Run a test once with a new random seed:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic<span class="w"> </span>--rnd-new
-</code></pre></div>
-<p>Run the same test 5 times with different seeds:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>randtest<span class="w"> </span>basic<span class="w"> </span><span class="m">5</span>
-</code></pre></div>
-<p>Repeat a specific iteration from a previous <code>randtest</code> run:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>randtest<span class="w"> </span>basic<span class="w"> </span><span class="m">5</span><span class="w"> </span>--rnd-rpt<span class="w"> </span><span class="m">3</span>
-</code></pre></div>
-<h2 id="check-logs">Check logs</h2>
-<p><code>rtl_buddy</code> writes orchestration logs to <code>rtl_buddy.log</code> in the directory where it is run.</p>
-<p>Simulation output for each test goes to <code>artefacts/{test_name}/</code>. A single run writes <code>test.log</code>, <code>test.err</code>, <code>test.randseed</code>, and (if coverage is enabled) <code>coverage.dat</code> directly there. Repeated runs (via <code>randtest</code>) write each iteration into a numbered subdirectory: <code>artefacts/{test_name}/run-0001/</code>, <code>run-0002/</code>, and so on. For convenience, the symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> in the suite root always point to the latest run.</p>
-<p>For machine-readable output (useful with CI or AI agents):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
-</code></pre></div>
-<p>In machine mode, <code>rtl_buddy.log</code> is written as JSON Lines and console output is plain text. See <a href="../agents/">For Agents</a> for more on machine mode.</p>
-<h2 id="next-steps">Next steps</h2>
+<p>See <a href="../agents/#machine-mode">Agent Use</a> for the JSON contract and <a href="../concepts/tests/#interpret-results">Tests</a> for verdicts and exit codes.</p>
+<h2 id="configure-a-project">Configure a project</h2>
 <ul>
-<li><a href="../concepts/tests/">Concepts: Tests</a> — understand the test config model</li>
-<li><a href="../concepts/regressions/">Concepts: Regressions</a> — run multi-suite regressions</li>
-<li><a href="../concepts/synthesis/">Concepts: Synthesis</a> — run Yosys synthesis flows</li>
-<li><a href="../reference/yaml/">YAML Formats</a> — full config file reference</li>
+<li><a href="../concepts/root-config/">Root Config</a> — platforms, builders, and tool paths</li>
+<li><a href="../concepts/tests/">Tests</a> — <code>tests.yaml</code></li>
+<li><a href="../reference/yaml/">YAML Formats</a> — complete schemas</li>
 </ul>
 
 

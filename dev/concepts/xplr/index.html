@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="The rb xplr experiment ledger for design-space exploration — experiment lifecycle, record schema, the machine-mode JSON contract agents rely on, rationale conventions, the mockflow benchmark harness, and a worked agent loop.">
+        <meta name="description" content="Record, compare, reproduce, and prune design-space experiments with the `rb xplr` ledger.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1041,10 +1041,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#experiment-lifecycle" class="md-nav__link">
+  <a href="#run-the-experiment-lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Experiment lifecycle
+        Run the experiment lifecycle
       
     </span>
   </a>
@@ -1052,10 +1052,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-record-schema" class="md-nav__link">
+  <a href="#declare-an-experiment" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The record schema
+        Declare an experiment
       
     </span>
   </a>
@@ -1063,10 +1063,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#machine-mode-contract" class="md-nav__link">
+  <a href="#pin-the-source-revision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Machine-mode contract
+        Pin the source revision
       
     </span>
   </a>
@@ -1074,38 +1074,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#declaring-a-knob-manifest-register-input" class="md-nav__link">
+  <a href="#attach-an-outcome" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Declaring a knob manifest (register input)
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Declaring a knob manifest (register input)">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#source-pinning" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Source pinning
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#declaring-an-outcome-attach-outcome-input" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Declaring an outcome (attach-outcome input)
+        Attach an outcome
       
     </span>
   </a>
@@ -1113,10 +1085,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reading-the-ledger-frontier-diff-knob-effect" class="md-nav__link">
+  <a href="#read-the-ledger-frontier-diff-knob-effect" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reading the ledger: frontier, diff, knob-effect
+        Read the ledger: frontier, diff, knob-effect
       
     </span>
   </a>
@@ -1124,10 +1096,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hypothesis-and-rationale-conventions" class="md-nav__link">
+  <a href="#use-the-exploration-loop" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hypothesis and rationale conventions
+        Use the exploration loop
       
     </span>
   </a>
@@ -1135,21 +1107,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-agent-loop" class="md-nav__link">
+  <a href="#materialize-revisions-and-reclaim-disk" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The agent loop
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#worked-example-an-agent-converging-on-mockflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Worked example: an agent converging on mockflow
+        Materialize revisions and reclaim disk
       
     </span>
   </a>
@@ -1160,7 +1121,7 @@
   <a href="#mockflow-a-synthetic-benchmark-with-known-answers" class="md-nav__link">
     <span class="md-ellipsis">
       
-        mockflow: a synthetic benchmark with known answers
+        Mockflow: a synthetic benchmark with known answers
       
     </span>
   </a>
@@ -1168,10 +1129,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#worktrees-and-disk-materialize-release-gc" class="md-nav__link">
+  <a href="#configure-xplr" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Worktrees and disk: materialize, release, gc
+        Configure xplr
       
     </span>
   </a>
@@ -1179,10 +1140,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration-cfg-xplr" class="md-nav__link">
+  <a href="#record-and-machine-contracts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration: cfg-xplr
+        Record and machine contracts
       
     </span>
   </a>
@@ -1738,10 +1699,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#experiment-lifecycle" class="md-nav__link">
+  <a href="#run-the-experiment-lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Experiment lifecycle
+        Run the experiment lifecycle
       
     </span>
   </a>
@@ -1749,10 +1710,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-record-schema" class="md-nav__link">
+  <a href="#declare-an-experiment" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The record schema
+        Declare an experiment
       
     </span>
   </a>
@@ -1760,10 +1721,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#machine-mode-contract" class="md-nav__link">
+  <a href="#pin-the-source-revision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Machine-mode contract
+        Pin the source revision
       
     </span>
   </a>
@@ -1771,38 +1732,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#declaring-a-knob-manifest-register-input" class="md-nav__link">
+  <a href="#attach-an-outcome" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Declaring a knob manifest (register input)
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Declaring a knob manifest (register input)">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#source-pinning" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Source pinning
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#declaring-an-outcome-attach-outcome-input" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Declaring an outcome (attach-outcome input)
+        Attach an outcome
       
     </span>
   </a>
@@ -1810,10 +1743,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reading-the-ledger-frontier-diff-knob-effect" class="md-nav__link">
+  <a href="#read-the-ledger-frontier-diff-knob-effect" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reading the ledger: frontier, diff, knob-effect
+        Read the ledger: frontier, diff, knob-effect
       
     </span>
   </a>
@@ -1821,10 +1754,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hypothesis-and-rationale-conventions" class="md-nav__link">
+  <a href="#use-the-exploration-loop" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hypothesis and rationale conventions
+        Use the exploration loop
       
     </span>
   </a>
@@ -1832,21 +1765,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-agent-loop" class="md-nav__link">
+  <a href="#materialize-revisions-and-reclaim-disk" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The agent loop
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#worked-example-an-agent-converging-on-mockflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Worked example: an agent converging on mockflow
+        Materialize revisions and reclaim disk
       
     </span>
   </a>
@@ -1857,7 +1779,7 @@
   <a href="#mockflow-a-synthetic-benchmark-with-known-answers" class="md-nav__link">
     <span class="md-ellipsis">
       
-        mockflow: a synthetic benchmark with known answers
+        Mockflow: a synthetic benchmark with known answers
       
     </span>
   </a>
@@ -1865,10 +1787,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#worktrees-and-disk-materialize-release-gc" class="md-nav__link">
+  <a href="#configure-xplr" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Worktrees and disk: materialize, release, gc
+        Configure xplr
       
     </span>
   </a>
@@ -1876,10 +1798,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration-cfg-xplr" class="md-nav__link">
+  <a href="#record-and-machine-contracts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration: cfg-xplr
+        Record and machine contracts
       
     </span>
   </a>
@@ -1906,360 +1828,133 @@
   
 
 
-<h1 id="design-space-exploration-rb-xplr">Design-Space Exploration (rb xplr)</h1>
-<p><code>rb xplr</code> is an LLM-native, tool-agnostic <strong>experiment ledger</strong> for design-space exploration. The agent (or human) drives the knobs — RTL parameters, partition assignments, tool directives — and <em>declares</em> what it changed; <code>rb xplr</code> records the declaration, pins the exact source revision, captures the flow's outcome metrics, and curates the Pareto frontier across experiments.</p>
-<p><code>rb xplr</code> is a bookkeeper, <strong>not</strong> an optimizer: it never proposes the next experiment, never runs a flow (the synthetic <a href="#mockflow-a-synthetic-benchmark-with-known-answers">mockflow</a> dev harness is the only exception), and never owns a knob taxonomy. The experiment unit is:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>(git-pinned source + agent-declared knob manifest) -&gt; outcome
+<h1 id="design-space-exploration-rb-xplr">Design-Space Exploration (<code>rb xplr</code>)</h1>
+<p><code>rb xplr</code> records design-space experiments as a source revision, declared knob changes, rationale, and outcome. It does not choose changes or run real flows; use it to preserve the evidence an agent or engineer needs to continue a search.</p>
+<h2 id="run-the-experiment-lifecycle">Run the experiment lifecycle</h2>
+<p>Each experiment has one registration and one terminal outcome:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>register<span class="w"> </span>--json<span class="w"> </span>manifest.json
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># Run rb synth, rb fpga, a vendor flow, or another evaluator.</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>attach-outcome<span class="w"> </span>exp-0001<span class="w"> </span>--json<span class="w"> </span>outcome.json
 </code></pre></div>
-<p>That division of labor is deliberate. The agent owns the reasoning — what to try and why. The ledger owns the memory — what was tried, on exactly which source, and what happened — so the search history survives context windows, crashes, and handoffs between agents.</p>
-<h2 id="experiment-lifecycle">Experiment lifecycle</h2>
-<p>An experiment moves through exactly one write pair:</p>
-<ol>
-<li><strong><code>rb xplr register --json manifest.json</code></strong> opens the experiment: allocates the next id, pins the source revision under the configured commit policy (see <a href="#source-pinning">Source pinning</a>), records the knob manifest, and writes the record with <code>outcome.status: "pending"</code>.</li>
-<li>The flow runs <strong>outside rb xplr</strong> — <code>rb synth</code>, <code>rb pnr</code>, a vendor tool, anything.</li>
-<li><strong><code>rb xplr attach-outcome &lt;id&gt; --json outcome.json</code></strong> declares the terminal result: <code>status</code> must be <code>success</code> or <code>failed</code>, plus metrics. Re-attaching to an already-terminal experiment requires <code>--force</code>.</li>
-</ol>
-<p>Everything else is read-only curation: <code>list</code>, <code>show</code>, <code>frontier</code>, <code>diff</code>, <code>knob-effect</code>, <code>mock score</code>.</p>
-<p>Experiment ids auto-increment: <code>exp-0001</code>, <code>exp-0002</code>, ... (id pattern <code>^[A-Za-z0-9._-]+$</code>). The ledger is one directory per experiment at the <strong>project root</strong> — <code>artefacts/xplr/&lt;exp-id&gt;/record.json</code> — no matter which suite directory you invoked <code>rb</code> from, so a project has exactly one ledger. Write commands take a lock on the ledger root only; they never contend with a running flow's suite artefact lock.</p>
-<p>A note on <code>status</code> semantics: <code>failed</code> means <strong>the flow itself broke</strong> (crash, license, elaboration error). A run that completed but produced an infeasible design point — it did not route, it failed timing closure hopelessly — is <code>success</code> with a boolean metric <code>routed: false</code>; the analysis layer treats that as the infeasibility marker and keeps it off the frontier.</p>
-<h2 id="the-record-schema">The record schema</h2>
-<p>Every record is validated against a strict (<code>additionalProperties: false</code>) JSON Schema, draft 2020-12, version <code>1.0</code>. The schema ships inside the wheel at <code>rtl_buddy/xplr/xplr-experiment-1.0.json</code>; malformed input fails loudly with exit code 2 naming exactly what was wrong. The blocks:</p>
-<table>
-<thead>
-<tr>
-<th>Block</th>
-<th>Required</th>
-<th>Content</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>schema_version</code></td>
-<td>yes</td>
-<td><code>"1.0"</code></td>
-</tr>
-<tr>
-<td><code>id</code></td>
-<td>yes</td>
-<td>ledger-allocated <code>exp-NNNN</code></td>
-</tr>
-<tr>
-<td><code>parent</code></td>
-<td>no</td>
-<td>id of the experiment this one was derived from — powers <code>knob-effect</code> deltas</td>
-</tr>
-<tr>
-<td><code>hypothesis</code></td>
-<td>no</td>
-<td>one sentence: what this experiment is expected to show</td>
-</tr>
-<tr>
-<td><code>source</code></td>
-<td>yes</td>
-<td><code>git_sha</code> (required, 7-40 hex), <code>branch</code>, <code>diff_from</code>, <code>dirty</code></td>
-</tr>
-<tr>
-<td><code>knobs</code></td>
-<td>yes</td>
-<td>array of <code>{name, from, to, rationale?, layer?}</code> — the agent-declared <strong>delta vs the parent</strong>, values untyped</td>
-</tr>
-<tr>
-<td><code>config_snapshot</code></td>
-<td>no</td>
-<td>opaque object: the full <strong>absolute</strong> resolved knob state for re-run; rb xplr never interprets it</td>
-</tr>
-<tr>
-<td><code>outcome</code></td>
-<td>yes</td>
-<td><code>status</code> (<code>pending</code>/<code>running</code>/<code>success</code>/<code>failed</code>), <code>metrics</code> (numbers/booleans), <code>metric_meta</code> (<code>{direction?: min\|max, unit?}</code> per metric), <code>artifacts</code> (paths)</td>
-</tr>
-<tr>
-<td><code>provenance</code></td>
-<td>yes</td>
-<td><code>created</code> (required), <code>tools</code> (<code>[{name, version}]</code>), <code>reused_state</code>, <code>agent</code></td>
-</tr>
-</tbody>
-</table>
-<p><code>knobs[].layer</code> is the only taxonomy rb xplr imposes, and it is coarse on purpose: <code>source</code> (RTL edit), <code>flow</code> (architecture/flow-level choice), <code>impl</code> (tool directive). A complete realistic record:</p>
+<p><code>register</code> allocates an <code>exp-NNNN</code> id, pins the source, records the declared changes, and writes <code>outcome.status: pending</code>. <code>attach-outcome</code> accepts <code>success</code> or <code>failed</code>; replacing a terminal outcome requires <code>--force</code>.</p>
+<p>Use <code>failed</code> only when the flow did not complete. A completed but infeasible design point is <code>success</code> with <code>routed: false</code>, which keeps it out of the Pareto frontier without losing its measurements.</p>
+<p>Records live at <code>&lt;project root&gt;/artefacts/xplr/&lt;id&gt;/record.json</code> regardless of the invocation directory. Ledger writes use their own lock and do not contend with suite artefact locks.</p>
+<h2 id="declare-an-experiment">Declare an experiment</h2>
+<p>A useful manifest records both the delta from its parent and the complete resolved state:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1.0&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0007&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">&quot;parent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0003&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">&quot;hypothesis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Moving blk_c off FB3 onto FB2 (SLR1) should relieve the FB2-FB3 SLL wall; expect SLL util down, watch for a Fmax hit on FB2.&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">&quot;git_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;9f3a1c4&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp/blk-c-to-fb2&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">&quot;diff_from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1b0e7a2&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">&quot;dirty&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p">},</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="nt">&quot;knobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="p">{</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;partition.blk_c.fpga&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">      </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FB3&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">      </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FB2&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">      </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;relieve FB2-FB3 SLL crossing that was the binding constraint in exp-0003&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">      </span><span class="nt">&quot;layer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;flow&quot;</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="p">},</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="p">{</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;vivado.place.directive&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">      </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Default&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">      </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Explore&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">      </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FB2 now denser; give the placer more freedom&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">      </span><span class="nt">&quot;layer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;impl&quot;</span>
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">  </span><span class="p">],</span>
-<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">  </span><span class="nt">&quot;config_snapshot&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">    </span><span class="nt">&quot;partition&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;blk_a&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FB1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;blk_b&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FB2&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;blk_c&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FB2&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;blk_d&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FB4&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">    </span><span class="nt">&quot;vivado&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;place_directive&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Explore&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;route_directive&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Default&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;seed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="w">  </span><span class="p">},</span>
-<a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="w">  </span><span class="nt">&quot;outcome&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a><span class="w">    </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a><span class="w">    </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a><span class="w">      </span><span class="nt">&quot;routed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a><span class="w">      </span><span class="nt">&quot;sll_util_fb2_fb3&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.58</span><span class="p">,</span>
-<a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a><span class="w">      </span><span class="nt">&quot;wns_ns_fb2&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.142</span><span class="p">,</span>
-<a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a><span class="w">      </span><span class="nt">&quot;lut_pct_fb2&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">71.4</span><span class="p">,</span>
-<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a><span class="w">      </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1290</span>
-<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a><span class="w">    </span><span class="p">},</span>
-<a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a><span class="w">    </span><span class="nt">&quot;metric_meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a><span class="w">      </span><span class="nt">&quot;sll_util_fb2_fb3&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;fraction&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a><span class="w">      </span><span class="nt">&quot;wns_ns_fb2&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;max&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ns&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a><span class="w">      </span><span class="nt">&quot;lut_pct_fb2&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;percent&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a><span class="w">    </span><span class="p">},</span>
-<a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a><span class="w">    </span><span class="nt">&quot;artifacts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;FB2/post_route.dcp&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;FB2/timing_summary.rpt&quot;</span><span class="p">]</span>
-<a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a><span class="w">  </span><span class="p">},</span>
-<a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a><span class="w">  </span><span class="nt">&quot;provenance&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a><span class="w">    </span><span class="nt">&quot;created&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-06-11T15:11:03+08:00&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a><span class="w">    </span><span class="nt">&quot;tools&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-1-51" name="__codelineno-1-51" href="#__codelineno-1-51"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;protocompiler&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;V-2023.12-1&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-1-52" name="__codelineno-1-52" href="#__codelineno-1-52"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;vivado&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2022.1&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-1-53" name="__codelineno-1-53" href="#__codelineno-1-53"></a><span class="w">    </span><span class="p">],</span>
-<a id="__codelineno-1-54" name="__codelineno-1-54" href="#__codelineno-1-54"></a><span class="w">    </span><span class="nt">&quot;reused_state&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sg0&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-55" name="__codelineno-1-55" href="#__codelineno-1-55"></a><span class="w">    </span><span class="nt">&quot;agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-opus-4-8&quot;</span>
-<a id="__codelineno-1-56" name="__codelineno-1-56" href="#__codelineno-1-56"></a><span class="w">  </span><span class="p">}</span>
-<a id="__codelineno-1-57" name="__codelineno-1-57" href="#__codelineno-1-57"></a><span class="p">}</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;parent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0002&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;hypothesis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Reducing FIFO depth should improve delay without increasing LUT use.&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">&quot;knobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="p">{</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;fifo_depth&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">      </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="nt">&quot;layer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;flow&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">      </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;The previous unroll change exhausted the source-level delay improvement.&quot;</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">  </span><span class="nt">&quot;config_snapshot&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nt">&quot;fifo_depth&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="nt">&quot;unroll_factor&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="nt">&quot;place.directive&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;default&quot;</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="nt">&quot;provenance&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="nt">&quot;tools&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;vivado&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2022.1&quot;</span><span class="p">}],</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="nt">&quot;agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;timing-search&quot;</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="p">}</span>
 </code></pre></div>
-<h2 id="machine-mode-contract">Machine-mode contract</h2>
-<p>Every <code>rb xplr</code> command works with the global <code>--machine</code> flag and prints a <strong>single JSON envelope on stdout</strong>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;xplr frontier&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;exit_code&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;rtl_buddy_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;argv&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;cwd&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;git&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">}},</span><span class="w"> </span><span class="nt">&quot;payload&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">}}</span>
-</code></pre></div>
-<p>The shapes documented on this page are the <code>payload</code> member. Exit codes: <strong>0</strong> success; <strong>2</strong> fatal user error (<code>FatalRtlBuddyError</code> — malformed JSON input, unknown keys, schema violation, unknown experiment id), in which case the envelope's payload is <code>{"error": "&lt;message&gt;"}</code>. Error messages name the offending key and the allowed alternatives, so an agent can self-correct without docs access.</p>
-<p>JSON <strong>input</strong> goes through <code>--json &lt;file|-&gt;</code> options (<code>-</code> reads stdin). Inputs are checked strictly: unknown keys fail with the allowed-key list, and the assembled record is schema-validated before anything touches disk.</p>
-<p>Payload stability: the keys shown on this page are the contract. New optional keys may appear in a minor release; existing keys are only removed or retyped with a record <code>schema_version</code> bump.</p>
-<h2 id="declaring-a-knob-manifest-register-input">Declaring a knob manifest (register input)</h2>
-<p>The <code>--json</code> document for <code>rb xplr register</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;hypothesis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;one sentence: what you expect and why&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">&quot;parent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0002&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">&quot;knobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="p">{</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;fifo_depth&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">      </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">      </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">      </span><span class="nt">&quot;layer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;flow&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">      </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;after exp-0002 the unroll lever is exhausted; depth-6 FIFOs are the only non-minimal numeric knob left&quot;</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span><span class="p">],</span>
-<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">  </span><span class="nt">&quot;config_snapshot&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;your&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;full resolved knob state&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">  </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;git_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;optional agent-owned pin&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">  </span><span class="nt">&quot;provenance&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;tools&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mockflow&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1.0&quot;</span><span class="w"> </span><span class="p">}],</span><span class="w"> </span><span class="nt">&quot;agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-agent-id&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="p">}</span>
-</code></pre></div>
-<p>All keys are optional; unknown keys are rejected. <code>knobs[].from</code>/<code>to</code> are untyped JSON scalars — <code>rb xplr</code> records them verbatim. The success payload is <code>{id, record_path, record}</code> with the full validated record (<code>outcome.status</code> is <code>"pending"</code>).</p>
-<p><code>knobs</code> is the <strong>delta vs the parent</strong>; <code>config_snapshot</code> is the <strong>absolute state</strong>. Declare both: the delta (with rationale) is what makes <code>diff</code> and <code>knob-effect</code> meaningful, and the snapshot is what lets anyone — including a later agent reading the ledger cold — re-run or branch from this exact point without replaying the whole knob history.</p>
-<h3 id="source-pinning">Source pinning</h3>
-<p>If the manifest declares <code>source.git_sha</code> it is taken verbatim — the agent owns that pin. Otherwise the <code>cfg-xplr</code> commit policy applies: in the default <code>auto</code> mode a dirty source scope is snapshotted to an <code>exp/&lt;id&gt;</code> branch without disturbing your working tree (a clean scope just records <code>HEAD</code>); in <code>self-managed</code> mode an uncommitted scope is an error. Either way the recorded sha is exact and re-materializable. <code>source.diff_from</code> records the RTL-diff baseline; it defaults to the parent experiment's pinned sha, and <code>--baseline &lt;ref&gt;</code> overrides it.</p>
-<p>rb's own bookkeeping never counts as source, even with the default <code>source-scope: ["."]</code>: the xplr ledger dir (<code>artefacts/xplr/</code>), the worktree root, and <code>rtl_buddy.log</code> are always excluded from both the dirtiness check and the snapshot — registering twice with identical RTL pins the same sha, and <code>xplr diff</code> then reports "both experiments pin the same source revision" instead of ledger noise. Still gitignore <code>artefacts/</code> and <code>rtl_buddy.log</code> (and any scratch files your agent writes, e.g. <code>manifest.json</code>): non-ignored bookkeeping clutters <code>git status</code>, ends up in your own commits, and agent scratch files <em>do</em> get snapshotted. <code>register</code> warns (<code>xplr.ledger_not_ignored</code>) when the ledger dir or log file is inside the repo and not gitignored.</p>
-<h2 id="declaring-an-outcome-attach-outcome-input">Declaring an outcome (attach-outcome input)</h2>
-<p>The <code>--json</code> document for <code>rb xplr attach-outcome &lt;id&gt;</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;routed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.21</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">71.4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">900</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">&quot;metric_meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">&quot;wns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;max&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ns&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;%&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="p">},</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">&quot;artifacts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;post_route.dcp&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;timing_summary.rpt&quot;</span><span class="p">],</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="nt">&quot;provenance&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;tools&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;vivado&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2022.1&quot;</span><span class="w"> </span><span class="p">}],</span><span class="w"> </span><span class="nt">&quot;reused_state&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sg0&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="p">}</span>
-</code></pre></div>
-<p><code>status</code> must be terminal (<code>success</code>/<code>failed</code>). Metric names are yours; values are numbers or booleans. Declare a <code>direction</code> in <code>metric_meta</code> for every metric that should participate in Pareto dominance — undirected metrics (like <code>wall_clock_s</code> above) are recorded and reported but never join dominance. The boolean <code>routed: false</code> convention marks a successful run whose design point is infeasible. The success payload is <code>{id, record_path, record}</code> with the merged record.</p>
-<h2 id="reading-the-ledger-frontier-diff-knob-effect">Reading the ledger: frontier, diff, knob-effect</h2>
-<p>These are the views an agent reasons over. All payloads below are real outputs from the <a href="#worked-example-an-agent-converging-on-mockflow">worked example</a> ledger.</p>
-<p><strong><code>rb --machine xplr frontier</code></strong> curates the non-dominated set over every successful, feasible experiment. Dominance runs over metrics that are numeric and have a declared direction (<code>metric_meta</code>, overridable with <code>--metrics name:min,name2:max</code>); <code>--prefer '0.7*lut_pct+0.3*delay_ns'</code> sorts the frontier by a weighted preference without dropping non-dominated points:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;delay_ns&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ns&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;lut_pct&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;%&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="p">],</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span><span class="nt">&quot;frontier&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0003&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;routed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">900.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.9289321881345245</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0004&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;routed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1140.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">6.83772233983162</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">  </span><span class="p">],</span>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">  </span><span class="nt">&quot;dominated&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0001&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;dominated_by&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;exp-0002&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;exp-0003&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;exp-0004&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0002&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;dominated_by&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;exp-0003&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;exp-0004&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">  </span><span class="p">],</span>
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">  </span><span class="nt">&quot;infeasible&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
-<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">  </span><span class="nt">&quot;excluded&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
-<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="p">}</span>
-</code></pre></div>
-<p><code>infeasible</code> lists <code>routed: false</code> ids; <code>excluded</code> lists <code>{id, reason}</code> for non-success or missing-metric experiments. An empty <code>frontier</code> plus populated <code>excluded</code> tells the agent its outcomes are missing directions, not that nothing works.</p>
-<p><strong><code>rb --machine xplr diff exp-0001 exp-0002</code></strong> answers "what exactly is different, and did it help?" — knob delta, direction-aware outcome delta, and the git diff between the pinned sources (<code>--patch</code> adds the full patch; unknown shas degrade to a <code>note</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">&quot;a&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0001&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">&quot;b&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0002&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">&quot;knob_delta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="nt">&quot;added&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;unroll_factor&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0001 delay_ns=19.75 looks dominated by replicated logic depth; minimum unroll should shrink it&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;layer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;source&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="p">],</span>
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">    </span><span class="nt">&quot;changed&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="w">    </span><span class="nt">&quot;reverted&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
-<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="w">    </span><span class="nt">&quot;unchanged&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
-<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">    </span><span class="nt">&quot;manifest_a&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
-<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span><span class="nt">&quot;manifest_b&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;unroll_factor&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;layer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;source&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">]</span>
-<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="w">  </span><span class="p">},</span>
-<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="w">  </span><span class="nt">&quot;outcome_delta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="w">    </span><span class="nt">&quot;status_a&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="w">    </span><span class="nt">&quot;status_b&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">    </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;delay_ns&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;a&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">19.752451216018038</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.942235935955848</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delta&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-8.81021528006219</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;assessment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;better&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;lut_pct&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;a&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delta&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;assessment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;equal&quot;</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;wall_clock_s&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;a&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">60.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;b&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">660.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delta&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">600.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;assessment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;unknown&quot;</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a><span class="w">    </span><span class="p">],</span>
-<a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a><span class="w">    </span><span class="nt">&quot;only_a&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
-<a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a><span class="w">    </span><span class="nt">&quot;only_b&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span>
-<a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a><span class="w">  </span><span class="p">},</span>
-<a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a><span class="w">  </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a><span class="w">    </span><span class="nt">&quot;a&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;git_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;92c706828b0883950ccbd8fb829a5a3f910887ea&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;main&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;diff_from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;92c706828b0883950ccbd8fb829a5a3f910887ea&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;dirty&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a><span class="w">    </span><span class="nt">&quot;b&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;git_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;92c706828b0883950ccbd8fb829a5a3f910887ea&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;main&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;diff_from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;92c706828b0883950ccbd8fb829a5a3f910887ea&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;dirty&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-6-28" name="__codelineno-6-28" href="#__codelineno-6-28"></a><span class="w">    </span><span class="nt">&quot;stat&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-29" name="__codelineno-6-29" href="#__codelineno-6-29"></a><span class="w">    </span><span class="nt">&quot;note&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;both experiments pin the same source revision&quot;</span>
-<a id="__codelineno-6-30" name="__codelineno-6-30" href="#__codelineno-6-30"></a><span class="w">  </span><span class="p">}</span>
-<a id="__codelineno-6-31" name="__codelineno-6-31" href="#__codelineno-6-31"></a><span class="p">}</span>
-</code></pre></div>
-<p><strong><code>rb --machine xplr knob-effect unroll_factor</code></strong> is the per-knob history — every experiment that declared the knob, with the recorded rationale and the metric delta vs its parent. Consult it <strong>before re-trying a knob</strong>: the trail tells you what was already learned, by whom, and why:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;knob&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;unroll_factor&quot;</span><span class="p">,</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;effects&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="p">{</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">      </span><span class="nt">&quot;exp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0002&quot;</span><span class="p">,</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">      </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span><span class="p">,</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">      </span><span class="nt">&quot;from&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">      </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">      </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0001 delay_ns=19.75 looks dominated by replicated logic depth; minimum unroll should shrink it&quot;</span><span class="p">,</span>
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">      </span><span class="nt">&quot;metrics_after&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;routed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">660.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.942235935955848</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">      </span><span class="nt">&quot;parent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0001&quot;</span><span class="p">,</span>
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">      </span><span class="nt">&quot;metrics_parent_delta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-8.81021528006219</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">600.0</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">  </span><span class="p">]</span>
-<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="p">}</span>
-</code></pre></div>
-<p>A knob name that appears in <strong>no</strong> experiment's manifest still exits 0 with <code>effects: []</code> — an empty history is an answer, not an error — but the payload then also carries <code>known_knobs</code> (every distinct knob name declared anywhere in the ledger, sorted) and <code>suggestions</code> (close matches to the requested name), so a typo self-corrects in one round trip. When the knob was tried at least once, those keys are absent.</p>
-<p><code>rb --machine xplr list</code> returns <code>{experiments: [{id, status, git_sha, n_knobs, created, hypothesis?}]}</code> summaries; <code>rb --machine xplr show &lt;id&gt;</code> returns <code>{id, record_path, record}</code> with the full record — including <code>config_snapshot</code>, which is how an agent recovers the absolute knob state of a frontier point.</p>
-<h2 id="hypothesis-and-rationale-conventions">Hypothesis and rationale conventions</h2>
-<p>The ledger is a <strong>reasoning trail</strong>, not just a value log. Two conventions make the difference between a pile of runs and a search history a future agent can continue:</p>
+<p><code>knobs</code> is the change from <code>parent</code>; <code>config_snapshot</code> is the absolute state needed to reproduce or branch from the experiment. Knob values are arbitrary JSON scalars. The optional layer is <code>source</code>, <code>flow</code>, or <code>impl</code>.</p>
+<p>Write one falsifiable sentence in <code>hypothesis</code>: what should move, in which direction, and why. Give every changed knob a rationale tied to an earlier experiment, report, or observation. Set <code>parent</code> to the experiment actually used as the starting point.</p>
+<p>Input keys are strict. Unknown fields or schema violations exit 2 and name the invalid key and allowed alternatives.</p>
+<h2 id="pin-the-source-revision">Pin the source revision</h2>
+<p>If <code>source.git_sha</code> is supplied in the manifest, xplr records it verbatim. Otherwise <code>cfg-xplr.commit-mode</code> controls pinning:</p>
 <ul>
-<li><strong>Every experiment carries a <code>hypothesis</code></strong> — one falsifiable sentence: <em>what you expect to move, in which direction, and why</em>. Good: "Moving blk_c off FB3 should relieve the SLL wall; expect SLL util down, watch for a Fmax hit on FB2." Bad: "try another placement".</li>
-<li><strong>Every knob entry carries a <code>rationale</code></strong> — why <em>this</em> knob, <em>this</em> value, usually citing the evidence: a prior experiment id, a <code>knob-effect</code> observation, a report artifact. The rationale is surfaced verbatim by <code>diff</code> and <code>knob-effect</code>, which is exactly where the next decision gets made.</li>
+<li><code>auto</code> records <code>HEAD</code> when the configured source scope is clean. If dirty, it snapshots the scope onto an <code>exp/&lt;id&gt;</code> branch without changing the working tree.</li>
+<li><code>self-managed</code> rejects an uncommitted source scope.</li>
 </ul>
-<p>Set <code>provenance.agent</code> to a stable identifier for who/what made the decision, and <code>parent</code> to the experiment you branched from — <code>parent</code> is what turns isolated runs into lineages, and it is what <code>knob-effect</code> uses to compute deltas and what <code>gc</code> uses to protect frontier ancestry.</p>
-<h2 id="the-agent-loop">The agent loop</h2>
-<p>The exploration loop an agent runs, end to end — see also the <code>rb xplr</code> section of the bundled skill:</p>
+<p><code>source.diff_from</code> defaults to the parent's pinned revision. Override it with <code>--baseline &lt;ref&gt;</code>.</p>
+<p>The ledger directory, xplr worktree root, and <code>rtl_buddy.log</code> are excluded from source dirtiness and automatic snapshots. Agent scratch files are not; keep <code>artefacts/</code>, logs, worktrees, and temporary manifests gitignored. <code>register</code> warns when the ledger or log is inside a repository but not ignored.</p>
+<h2 id="attach-an-outcome">Attach an outcome</h2>
+<p>Declare terminal status, metrics, directions, units, and artefact paths:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">&quot;routed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">&quot;wns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.21</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">71.4</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">900</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span><span class="nt">&quot;metric_meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">&quot;wns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;max&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ns&quot;</span><span class="p">},</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;min&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;%&quot;</span><span class="p">}</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span><span class="nt">&quot;artifacts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;post_route.dcp&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;timing_summary.rpt&quot;</span><span class="p">]</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="p">}</span>
+</code></pre></div>
+<p>Metrics are numbers or booleans. Only numeric metrics with a <code>min</code> or <code>max</code> direction participate in Pareto dominance. Undirected measurements remain available for reporting and comparison.</p>
+<h2 id="read-the-ledger-frontier-diff-knob-effect">Read the ledger: frontier, diff, knob-effect</h2>
+<p>Use machine mode so the result is a single stable JSON envelope:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>list
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>show<span class="w"> </span>exp-0003
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>frontier
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>diff<span class="w"> </span>exp-0002<span class="w"> </span>exp-0003
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>knob-effect<span class="w"> </span>fifo_depth
+</code></pre></div>
+<ul>
+<li><code>list</code> returns compact experiment summaries.</li>
+<li><code>show</code> returns the complete record, including the reproducible <code>config_snapshot</code>.</li>
+<li><code>frontier</code> separates non-dominated, dominated, infeasible, and excluded experiments. Use <code>--metrics name:min,...</code> to override directions and <code>--prefer</code> to sort the frontier without dropping points.</li>
+<li><code>diff</code> compares knob manifests, direction-aware outcome deltas, and pinned Git revisions. Add <code>--patch</code> for the source diff.</li>
+<li><code>knob-effect</code> reports each declared change to one knob and its metric delta from the parent. An unknown knob returns an empty effect list plus known names and suggestions.</li>
+</ul>
+<p>An empty frontier with populated <code>excluded</code> usually means successful experiments lack directed metrics. Fix <code>metric_meta</code> before drawing optimization conclusions.</p>
+<h2 id="use-the-exploration-loop">Use the exploration loop</h2>
+<p>Repeat this decision cycle:</p>
 <ol>
-<li><strong>Read the state</strong>: <code>rb --machine xplr frontier</code> (plus <code>xplr show &lt;id&gt;</code> for a frontier member's <code>config_snapshot</code>). On a fresh ledger, register a baseline first.</li>
-<li><strong>Reason</strong>: pick the frontier point to improve and the knob to move. Check <code>rb --machine xplr knob-effect &lt;knob&gt;</code> before re-trying a knob; use <code>rb --machine xplr diff &lt;a&gt; &lt;b&gt;</code> to compare a candidate against its frontier neighbor.</li>
-<li><strong>Apply the change</strong> — edit RTL, a config, a tool directive. This happens outside rb xplr.</li>
-<li><strong>Declare it</strong>: <code>rb --machine xplr register --json manifest.json</code> with <code>hypothesis</code>, <code>parent</code>, per-knob <code>rationale</code>, and <code>config_snapshot</code>. Note the returned <code>id</code>.</li>
-<li><strong>Run the flow</strong> (your real flow, or <code>rb xplr mock run</code> when dry-running the loop).</li>
-<li><strong>Declare the result</strong>: <code>rb --machine xplr attach-outcome &lt;id&gt; --json outcome.json</code> with directed <code>metric_meta</code>.</li>
-<li><strong>Repeat</strong> from 1. The frontier read in the next iteration reflects this experiment — improvements stick, regressions are recorded with their rationale so nobody retries them blind.</li>
+<li>Read <code>frontier</code>; use <code>show</code> to recover a candidate's absolute configuration.</li>
+<li>Check <code>knob-effect</code> before retrying a knob and <code>diff</code> when comparing neighbours.</li>
+<li>Form one hypothesis and apply one interpretable change outside xplr.</li>
+<li>Register the experiment with its parent, delta, rationale, and snapshot.</li>
+<li>Run the real flow and attach the terminal outcome with directed metrics.</li>
+<li>Read the updated frontier and continue.</li>
 </ol>
-<p>Nothing in the loop requires the same agent, the same session, or even the same machine: the ledger is the only shared state.</p>
-<h2 id="worked-example-an-agent-converging-on-mockflow">Worked example: an agent converging on mockflow</h2>
-<p>A four-iteration loop against the <code>zdt1</code> scenario (two competing objectives: <code>lut_pct</code> min vs <code>delay_ns</code> min). Every payload below is a real command output, generated with deterministic settings (<code>--noise 0</code>, the default). First, discover the knob domains:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="gp">$ </span>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>mock<span class="w"> </span>info<span class="w"> </span>--scenario<span class="w"> </span>zdt1
+<p>The ledger is the shared state, so another agent or machine can continue from the same records.</p>
+<h2 id="materialize-revisions-and-reclaim-disk">Materialize revisions and reclaim disk</h2>
+<p>Every pinned experiment can be recreated as a detached worktree:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>xplr<span class="w"> </span>materialize<span class="w"> </span>exp-0003
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>xplr<span class="w"> </span>release<span class="w"> </span>exp-0003
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>rb<span class="w"> </span>xplr<span class="w"> </span>gc<span class="w"> </span>--dry-run
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>rb<span class="w"> </span>xplr<span class="w"> </span>gc<span class="w"> </span>--policy<span class="w"> </span>keep-frontier<span class="w"> </span>--target-gb<span class="w"> </span><span class="m">40</span>
 </code></pre></div>
-<p>The payload declares five knobs — <code>partition.cut</code> (float 0..1, flow), <code>unroll_factor</code> (int 1..9, source), <code>fifo_depth</code> (int 2..18, flow), and two choice knobs — plus the cost model and one infeasible combination. (It also contains <code>ground_truth</code>; a self-respecting agent does not read it — that is the answer key <code>mock score</code> grades against.)</p>
-<p><strong>Iteration 1 — baseline.</strong> Register-and-run the tool defaults in one step:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="gp">$ </span>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>mock<span class="w"> </span>run<span class="w"> </span>--scenario<span class="w"> </span>zdt1<span class="w"> </span>--register
+<p><code>materialize</code> is idempotent and defaults to <code>artefacts/xplr/worktrees/&lt;id&gt;</code>. <code>release</code> removes that worktree but keeps the source branch and experiment record.</p>
+<p>Garbage collection always preserves <code>record.json</code>. The default <code>keep-frontier</code> policy also protects frontier members, their direct lineage, and non-terminal experiments; eligible worktrees and listed outcome artefacts are removed oldest-first until usage is below the target. <code>register</code> automatically invokes the configured policy above the high watermark and blocks only when a hard-cap overrun cannot be reclaimed.</p>
+<h2 id="mockflow-a-synthetic-benchmark-with-known-answers">Mockflow: a synthetic benchmark with known answers</h2>
+<p>Use <code>rb xplr mock</code> to test an exploration policy without EDA runtime:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>mock<span class="w"> </span>info<span class="w"> </span>--scenario<span class="w"> </span>zdt1
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>mock<span class="w"> </span>run<span class="w"> </span>--scenario<span class="w"> </span>zdt1<span class="w"> </span>--register
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>mock<span class="w"> </span>score<span class="w"> </span>--scenario<span class="w"> </span>zdt1
 </code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0001&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;routed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wall_clock_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">60.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">19.752451216018038</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<p><code>mock info</code> returns knob domains, costs, infeasible combinations, and analytic ground truth. <code>mock run</code> deterministically evaluates a knob vector; <code>--noise</code> adds seeded objective noise and <code>--register</code> records the experiment and outcome together. Without <code>--register</code>, the payload's <code>outcome</code> can be passed directly to <code>attach-outcome</code>.</p>
+<p>Available scenarios are <code>rastrigin</code> for single-objective WNS maximization and <code>zdt1</code> for LUT/delay minimization. <code>mock score</code> reports regret for a single objective or hypervolume and distance-to-front for multiple objectives.</p>
+<p>When registering mock results outside a Git repository, provide <code>--source-sha</code> and optionally <code>--source-branch</code>.</p>
+<h2 id="configure-xplr">Configure xplr</h2>
+<p>All <code>cfg-xplr</code> keys are optional:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">cfg-xplr</span><span class="p">:</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">commit-mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">auto</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">source-scope</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;.&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">disk-high-watermark-gb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span><span class="nt">disk-hard-cap-gb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">80</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span><span class="nt">eviction-policy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">keep-frontier</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span><span class="nt">worktree-root</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">artefacts/xplr/worktrees</span>
 </code></pre></div>
-<p>(abridged: the full payload carries the resolved knobs and the registered record). The frontier is now that single point.</p>
-<p><strong>Iteration 2 — attack delay.</strong> Hypothesis: unroll inflates logic without helping the cut. Register the delta with its reasoning, run the flow, attach the outcome:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="gp">$ </span>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>register<span class="w"> </span>--json<span class="w"> </span>-<span class="w"> </span>&lt;&lt;<span class="s1">&#39;EOF&#39;</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="go">{</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="go">  &quot;hypothesis&quot;: &quot;unroll_factor inflates logic without helping the partition cut; expect delay_ns down at unchanged lut_pct&quot;,</span>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="go">  &quot;parent&quot;: &quot;exp-0001&quot;,</span>
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="go">  &quot;knobs&quot;: [</span>
-<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="go">    { &quot;name&quot;: &quot;unroll_factor&quot;, &quot;from&quot;: 3, &quot;to&quot;: 1, &quot;layer&quot;: &quot;source&quot;,</span>
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="go">      &quot;rationale&quot;: &quot;exp-0001 delay_ns=19.75 looks dominated by replicated logic depth; minimum unroll should shrink it&quot; }</span>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="go">  ],</span>
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="go">  &quot;config_snapshot&quot;: { &quot;scenario&quot;: &quot;zdt1&quot;, &quot;knobs&quot;: { &quot;partition.cut&quot;: 0.5, &quot;unroll_factor&quot;: 1, &quot;fifo_depth&quot;: 6, &quot;place.directive&quot;: &quot;default&quot;, &quot;route.strategy&quot;: &quot;timing&quot; } },</span>
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="go">  &quot;provenance&quot;: { &quot;tools&quot;: [{ &quot;name&quot;: &quot;mockflow&quot;, &quot;version&quot;: &quot;1.0&quot; }], &quot;agent&quot;: &quot;doc-walkthrough&quot; }</span>
-<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="go">}</span>
-<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="go">EOF</span>
+<p><code>rb xplr</code> needs only a <code>root_config.yaml</code> or Git root; it does not load builder or platform configuration. When invoking it from elsewhere, anchor project discovery explicitly:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rb<span class="w"> </span>xplr<span class="w"> </span>--root<span class="w"> </span>/path/to/project<span class="w"> </span>frontier
 </code></pre></div>
-<p>Returns <code>{"id": "exp-0002", ...}</code> with <code>outcome.status: "pending"</code>. Run and attach — the <code>mock run</code> payload carries an <code>outcome</code> member shaped exactly as a valid <code>attach-outcome --json</code> input (<code>{status, metrics, metric_meta}</code>), so <code>outcome.json</code> is one extraction away:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="gp">$ </span><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;{&quot;unroll_factor&quot;: 1}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>mock<span class="w"> </span>run<span class="w"> </span>--scenario<span class="w"> </span>zdt1<span class="w"> </span>--json<span class="w"> </span>-<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">    </span><span class="p">|</span><span class="w"> </span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;import json,sys; print(json.dumps(json.load(sys.stdin)[&quot;payload&quot;][&quot;outcome&quot;]))&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span>&gt;<span class="w"> </span>outcome.json<span class="w">   </span><span class="c1"># or: jq .payload.outcome</span>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="gp">$ </span>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>attach-outcome<span class="w"> </span>exp-0002<span class="w"> </span>--json<span class="w"> </span>outcome.json
-</code></pre></div>
-<p><code>outcome.status</code> is always <code>"success"</code> — the synthetic flow ran to completion (an unroutable point is <code>routed: false</code>, not a failure). The agent may override <code>status</code> with its own judgment before attaching.</p>
-<p><code>delay_ns</code> drops 19.75 → 10.94 at unchanged <code>lut_pct</code> — the <code>diff exp-0001 exp-0002</code> payload shown in <a href="#reading-the-ledger-frontier-diff-knob-effect">Reading the ledger</a> assesses exactly that (<code>"assessment": "better"</code>), and the hypothesis is confirmed.</p>
-<p><strong>Iteration 3 — the same move on the next knob.</strong> Hypothesis: the remaining gap is buffering; <code>fifo_depth</code> 6 → 2 (parent <code>exp-0002</code>, rationale "after exp-0002 the unroll lever is exhausted; depth-6 FIFOs are the only non-minimal numeric knob left"). Result: <code>delay_ns</code> 10.94 → <strong>2.93</strong> at <code>lut_pct</code> 50 — <code>exp-0003</code> now dominates everything so far.</p>
-<p><strong>Iteration 4 — spread the front.</strong> <code>knob-effect</code> shows <code>unroll_factor</code> and <code>fifo_depth</code> moved only <code>delay_ns</code>; the lever that trades the two objectives is <code>partition.cut</code>. Probe the low-area end: <code>partition.cut</code> 0.5 → 0.1 from <code>exp-0003</code>. Result: <code>lut_pct</code> 10, <code>delay_ns</code> 6.84 — not better than <code>exp-0003</code>, but not worse either: a second non-dominated point. The frontier payload after iteration 4 (shown in full above) has <code>exp-0003</code> and <code>exp-0004</code> on the front, with both earlier runs in <code>dominated</code> — the frontier moved outward twice and then grew sideways.</p>
-<p><strong>Score it.</strong> Because mockflow's Pareto front is analytic, the loop gets a grade:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="gp">$ </span>rb<span class="w"> </span>--machine<span class="w"> </span>xplr<span class="w"> </span>mock<span class="w"> </span>score<span class="w"> </span>--scenario<span class="w"> </span>zdt1
-</code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="p">{</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="nt">&quot;scenario&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;zdt1&quot;</span><span class="p">,</span>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span><span class="nt">&quot;objective&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;multi&quot;</span><span class="p">,</span>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;lut_pct&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;delay_ns&quot;</span><span class="p">],</span>
-<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span><span class="nt">&quot;n_experiments&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span><span class="nt">&quot;n_feasible&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span><span class="nt">&quot;reference_point&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">110.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">110.0</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">  </span><span class="nt">&quot;nondominated&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0003&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.9289321881345245</span><span class="w"> </span><span class="p">},</span>
-<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exp-0004&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lut_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">6.83772233983162</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">  </span><span class="p">],</span>
-<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="w">  </span><span class="nt">&quot;hypervolume&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10550.755175118664</span><span class="p">,</span>
-<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="w">  </span><span class="nt">&quot;front_hypervolume&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">11766.160134393658</span><span class="p">,</span>
-<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a><span class="w">  </span><span class="nt">&quot;hypervolume_ratio&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8967033471079282</span><span class="p">,</span>
-<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="w">  </span><span class="nt">&quot;distance_to_front&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0</span>
-<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a><span class="p">}</span>
-</code></pre></div>
-<p>Four experiments, 89.7% of the analytic front's hypervolume, and both frontier points sit exactly on the true front (<code>distance_to_front: 0.0</code>). The same loop, scripted as a dumb coordinate-descent heuristic, is CI-tested in <code>tests/test_xplr_loop.py</code>: regret must fall on the single-objective scenario and hypervolume must grow here — the eval harness for anything that claims to explore.</p>
-<h2 id="mockflow-a-synthetic-benchmark-with-known-answers">mockflow: a synthetic benchmark with known answers</h2>
-<p><code>rb xplr mock</code> is the only flow rb xplr ships, and it is deliberately fake: EDA-flavored knobs in, EDA-flavored metrics out, instant and deterministic, backed by benchmark functions whose optimum is known analytically. Use it to dry-run the agent loop, develop analysis tooling, or benchmark an optimizer — without EDA turnaround.</p>
-<ul>
-<li><strong><code>rb xplr mock info [--scenario s]</code></strong> — knob specs, cost model, infeasible combinations, and the analytic <code>ground_truth</code>.</li>
-<li><strong><code>rb xplr mock run --scenario s [--json knobs] [--seed N] [--noise sigma] [--register]</code></strong> — evaluate one knob vector. <code>--register</code> writes the ledger experiment and attaches the outcome in one step; without it the evaluation is stateless (use register/attach yourself, as a real flow would — the payload's <code>outcome</code> member is a ready-made <code>attach-outcome --json</code> input, see the worked example). Metrics are a pure function of <code>(scenario, knobs, seed)</code>; <code>--noise</code> adds seeded Gaussian variance to the objective metrics only. With <code>--register</code> in a sandbox whose project root is <strong>not a git repo</strong>, pass <code>--source-sha &lt;sha&gt;</code> (and optionally <code>--source-branch &lt;label&gt;</code>): it follows the agent-declared-pin path — recorded verbatim, no dirty bit — exactly like a register manifest declaring <code>source.git_sha</code>.</li>
-<li><strong><code>rb xplr mock score [--scenario s]</code></strong> — grade the ledger against the ground truth: <strong>regret</strong> (<code>|best_found - optimum|</code>) for single-objective scenarios, <strong>hypervolume</strong> vs the documented reference point plus <strong>distance-to-front</strong> for multi-objective ones.</li>
-</ul>
-<p>Two scenarios ship: <code>rastrigin</code> (single-objective, <code>wns_ns</code> max — a lattice of local optima around one global optimum at the numeric-knob midpoints) and <code>zdt1</code> (multi-objective, <code>lut_pct</code>/<code>delay_ns</code> min/min with an analytic Pareto front). Both have one infeasible categorical combination (<code>routed: false</code>) and a layer-based cost model: every knob moved off its default adds its layer cost to <code>wall_clock_s</code> (source 600s, flow 240s, impl 60s) — touching RTL is 10x the cost of a tool directive, so a cost-aware agent should prefer impl-layer probes when exploring.</p>
-<h2 id="worktrees-and-disk-materialize-release-gc">Worktrees and disk: materialize, release, gc</h2>
-<p>Because every experiment pins an exact sha (auto-snapshotted to an <code>exp/&lt;id&gt;</code> branch when the tree was dirty), any experiment can be rebuilt later:</p>
-<ul>
-<li><strong><code>rb xplr materialize &lt;id&gt; [--path P]</code></strong> — create (or reuse, idempotently) a detached git worktree at the experiment's pinned sha, by default under <code>artefacts/xplr/worktrees/&lt;id&gt;</code>. Payload: <code>{id, git_sha, path, created, reused}</code>.</li>
-<li><strong><code>rb xplr release &lt;id&gt;</code></strong> — remove the worktree; the branch and record are kept. Payload: <code>{id, path, removed}</code>.</li>
-<li><strong><code>rb xplr gc [--dry-run] [--policy p] [--target-gb N]</code></strong> — reclaim disk, non-interactively. The default <code>keep-frontier</code> policy never evicts frontier members, their direct lineage, or non-terminal experiments; everything else goes oldest-first until usage is under the target (default: the configured high watermark). Eviction removes worktrees and <code>outcome.artifacts</code> files but <strong>always keeps <code>record.json</code></strong> — an evicted experiment can be re-materialized and replayed. Payload: <code>{policy, usage_bytes_before, target_bytes, evicted: [{id, bytes_freed}], bytes_freed_total, protected, notes}</code>. <code>register</code> runs the same backstop automatically: over the high watermark it triggers gc by policy, and only an unfreeable hard-cap overrun blocks a new experiment.</li>
-</ul>
-<h2 id="configuration-cfg-xplr">Configuration: cfg-xplr</h2>
-<p>One optional block in <code>root_config.yaml</code>; every key has a default:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">cfg-xplr</span><span class="p">:</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="nt">commit-mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;auto&quot;</span><span class="w">                </span><span class="c1"># auto | self-managed</span>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">  </span><span class="nt">source-scope</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;.&quot;</span><span class="p p-Indicator">]</span><span class="w">                </span><span class="c1"># what auto-commit snapshots / dirt-checks</span>
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">                                     </span><span class="c1"># (rb bookkeeping — the xplr ledger dir,</span>
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">                                     </span><span class="c1"># worktrees, rtl_buddy.log — is always excluded)</span>
-<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">  </span><span class="nt">disk-high-watermark-gb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span><span class="w">         </span><span class="c1"># gc trigger</span>
-<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">  </span><span class="nt">disk-hard-cap-gb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">80</span><span class="w">               </span><span class="c1"># backstop that blocks new registers</span>
-<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span><span class="nt">eviction-policy</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;keep-frontier&quot;</span><span class="w">   </span><span class="c1"># keep-frontier | oldest-first | manual</span>
-<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span><span class="nt">worktree-root</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;artefacts/xplr/worktrees&quot;</span><span class="w">   </span><span class="c1"># keep it gitignored</span>
-</code></pre></div>
-<p><code>rb xplr</code> reads this block without loading the rest of the root config, so it works in any project with a <code>root_config.yaml</code> or a git root — no builder or platform setup required. To drive a ledger from outside its project checkout, anchor the discovery explicitly with the group-level <code>--root</code> option: <code>rb xplr --root &lt;project&gt; &lt;subcommand&gt; ...</code>.</p>
+<p>See the <a href="../../reference/cli/">CLI reference</a> for the full command surface.</p>
+<h2 id="record-and-machine-contracts">Record and machine contracts</h2>
+<p>Each <code>record.json</code> validates against the bundled draft-2020-12 schema <code>rtl_buddy/xplr/xplr-experiment-1.0.json</code>. The main blocks are <code>source</code>, <code>knobs</code>, optional <code>config_snapshot</code>, <code>outcome</code>, and <code>provenance</code>; the record also carries <code>schema_version</code>, id, optional parent, and hypothesis.</p>
+<p>Every <code>rb --machine xplr ...</code> command prints one <a href="../../agents/#machine-mode">machine envelope</a>. Exit 0 means success. Exit 2 reports user or schema errors as <code>payload.error</code>. Optional payload keys may be added in minor releases; removing or changing record fields requires a schema-version change.</p>
 
 
 

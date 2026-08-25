@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to set up a local rtl_buddy development environment — clone, dependencies, lint, tests, docs, and build verification.">
+        <meta name="description" content="Set up rtl_buddy for local development and run its lint, test, docs, and package checks.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1414,10 +1414,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-to-go-next" class="md-nav__link">
+  <a href="#authoring-rules" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where To Go Next
+        Authoring Rules
       
     </span>
   </a>
@@ -1776,10 +1776,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-to-go-next" class="md-nav__link">
+  <a href="#authoring-rules" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where To Go Next
+        Authoring Rules
       
     </span>
   </a>
@@ -1807,84 +1807,68 @@
 
 
 <h1 id="development-environment-setup">Development Environment Setup</h1>
-<p>This page covers the local environment for maintainers and contributors working <strong>on</strong> <code>rtl_buddy</code>. End-user install of the published wheel is documented in <a href="../../install/">Installation</a>.</p>
+<p>This page is for contributors working on <code>rtl_buddy</code>. For the published package, see <a href="../../install/">Installation</a>.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li>Python 3.11 or later (matches the floor in <code>pyproject.toml</code>).</li>
-<li><code>uv</code> — see <a href="https://docs.astral.sh/uv/">https://docs.astral.sh/uv/</a> for install instructions.</li>
+<li>Python 3.11 or later.</li>
+<li><a href="https://docs.astral.sh/uv/"><code>uv</code></a>.</li>
 <li><code>git</code>.</li>
 </ul>
-<p><code>uv</code> owns the project environment. The repo uses <code>pyproject.toml</code> plus a committed <code>uv.lock</code>; do not maintain a hand-rolled <code>requirements.txt</code>.</p>
-<p>External EDA tools (Verilator, Yosys, Verible, OpenROAD, etc.) are only required when running the matching <code>rb</code> subcommand. Day-to-day Python and docs work needs none of them. See <a href="../../install/#external-tools-by-feature">Installation</a> for the full feature-to-dependency matrix.</p>
+<p><code>uv</code> manages the environment from <code>pyproject.toml</code> and <code>uv.lock</code>. External EDA tools are required only for their matching commands; see <a href="../../install/#external-tools-by-feature">Installation</a>.</p>
 <h2 id="clone-and-sync">Clone And Sync</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/rtl_buddy.git
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>rtl_buddy
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>sync<span class="w"> </span>--group<span class="w"> </span>dev
 </code></pre></div>
-<p><code>uv sync --group dev</code> installs the package plus the composite <code>dev</code> dependency group (lint, test, docs). The resulting environment lives in <code>.venv/</code>; <code>uv run &lt;cmd&gt;</code> and <code>./venv/bin/python -m rtl_buddy …</code> both reach it.</p>
-<p>Extras are not installed by <code>uv sync --group dev</code>: <code>uv sync --extra graph-extract</code> additionally installs the <a href="https://github.com/rtl-buddy/rtl-buddy-graph-extract">rtl-buddy-graph-extract</a> binding-tier extractor (the published <code>graph-extract</code> extra), which un-skips the two real-binary graph tests (<code>test_resolve_extractor_against_the_real_binary</code>, <code>test_bundled_extractor_end_to_end</code>). It is an optional subprocess tool, not part of the baseline dev environment — CI installs it, a contributor only needs it when touching <code>rb graph build</code>'s binding tier.</p>
+<p>This installs the package and the lint, test, and docs groups. Add <code>--extra graph-extract</code> only when working on the optional graph binding tier.</p>
 <p>Verify the install:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>--version
 </code></pre></div>
 <h2 id="pre-commit-hook">Pre-Commit Hook</h2>
-<p>Install the <code>pre-commit</code> hook once so Ruff runs automatically on every commit:</p>
+<p>Install the Ruff pre-commit hook once:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>pre-commit
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>pre-commit<span class="w"> </span>install
 </code></pre></div>
-<p>To refresh the pinned hook version:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pre-commit<span class="w"> </span>autoupdate
-</code></pre></div>
-<p>CI enforces both <code>ruff check</code> and <code>ruff format --check</code> via <code>.github/workflows/lint.yml</code>, so it pays to catch issues at commit time.</p>
 <h2 id="lint-and-format">Lint And Format</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>check<span class="w">          </span><span class="c1"># lint</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>format<span class="w">         </span><span class="c1"># format in place</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>format<span class="w"> </span>--check<span class="w"> </span><span class="c1"># check only (what CI runs)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>check
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>format<span class="w"> </span>--check
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>format<span class="w">          </span><span class="c1"># rewrite files</span>
 </code></pre></div>
 <h2 id="tests">Tests</h2>
-<p>The pytest suite under <code>tests/</code> is the primary correctness gate. CI runs it on every push and PR via <code>.github/workflows/test.yml</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w">                                    </span><span class="c1"># full suite</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/test_cli_with_fixture.py<span class="w">     </span><span class="c1"># one file</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>-k<span class="w"> </span><span class="s2">&quot;list&quot;</span><span class="w">                          </span><span class="c1"># by keyword</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>--cov<span class="w">                              </span><span class="c1"># with coverage summary</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>--cov<span class="w"> </span>--cov-report<span class="o">=</span>term-missing<span class="w">    </span><span class="c1"># show uncovered lines</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>--cov<span class="w"> </span>--cov-report<span class="o">=</span>html<span class="w">            </span><span class="c1"># write htmlcov/index.html</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w">                                </span><span class="c1"># full suite</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/test_cli_with_fixture.py<span class="w"> </span><span class="c1"># one file</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>-k<span class="w"> </span><span class="s2">&quot;list&quot;</span><span class="w">                      </span><span class="c1"># by keyword</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>--cov<span class="w"> </span>--cov-report<span class="o">=</span>term-missing
 </code></pre></div>
-<p>Coverage configuration lives in <code>[tool.coverage.*]</code> in <code>pyproject.toml</code> (source = <code>src/rtl_buddy</code>, excludes the bundled <code>skill/</code> and <code>docs/</code>). <code>pytest.ini</code> does not enable <code>--cov</code> by default so plain <code>pytest</code> stays fast; pass <code>--cov</code> explicitly when you want a coverage run.</p>
+<p>Coverage is opt-in; plain <code>pytest</code> stays fast.</p>
 <h2 id="docs">Docs</h2>
-<p>The docs site lives under <code>docs/</code> and is built with MkDocs Material. Two checks run in CI on every docs change:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/check_docs_frontmatter.py<span class="w"> </span>--check
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>mkdocs<span class="w"> </span>build<span class="w"> </span>--strict
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/check_docs_frontmatter.py<span class="w"> </span>--check
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>mkdocs<span class="w"> </span>build<span class="w"> </span>--strict
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>mkdocs<span class="w"> </span>serve
 </code></pre></div>
-<p>To preview the site locally:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>mkdocs<span class="w"> </span>serve
+<p><code>mkdocs serve</code> previews the site at <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>. For CLI help changes, regenerate the reference before building:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/gen_cli_reference.py
 </code></pre></div>
-<p>Then open <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>.</p>
-<p>If you change CLI help strings in <code>src/rtl_buddy/rtl_buddy.py</code>, regenerate the CLI reference page:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/gen_cli_reference.py
-</code></pre></div>
-<p><code>docs/reference/cli.md</code> is auto-generated and should not be edited by hand. The docs build also regenerates it via a hook in <code>mkdocs.yml</code>; CI auto-commits drift.</p>
+<p>Do not edit <code>docs/reference/cli.md</code> by hand. See <a href="../docs/">Documentation Guidelines</a>.</p>
 <h2 id="building-wheels-and-sdists">Building Wheels And Sdists</h2>
-<p><code>rtl_buddy</code> uses <code>hatchling</code> plus <code>hatch-vcs</code>, so the version is derived from the latest git tag. Local builds work with <code>uv build</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>uv<span class="w"> </span>build<span class="w">              </span><span class="c1"># both wheel and sdist</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>uv<span class="w"> </span>build<span class="w"> </span>--wheel
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>uv<span class="w"> </span>build<span class="w"> </span>--sdist
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>uv<span class="w"> </span>build
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>uv<span class="w"> </span>build<span class="w"> </span>--wheel
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>uv<span class="w"> </span>build<span class="w"> </span>--sdist
 </code></pre></div>
-<p>Artifacts land under <code>dist/</code>. The wheel ships <code>src/rtl_buddy/</code> plus the <code>docs/</code> tree (via <code>force-include</code>); the sdist ships the same source plus <code>README.md</code>, <code>LICENSE</code>, and <code>pyproject.toml</code>. Dev/CI files (<code>tests/</code>, <code>scripts/</code>, <code>.github/</code>, <code>mkdocs.yml</code>, <code>uv.lock</code>, agent guides, pre-commit config) are excluded — keep them that way when changing <code>[tool.hatch.build.targets.*]</code>.</p>
+<p>Artifacts land in <code>dist/</code>. Inspect wheel and sdist contents when changing <code>[tool.hatch.build.targets.*]</code>; both must include the package and docs, not tests or development configuration.</p>
 <h2 id="validating-against-the-project-template">Validating Against The Project Template</h2>
-<p>For changes that affect end-user behavior, validate against the <a href="https://github.com/rtl-buddy/rtl-buddy-project-template">rtl-buddy-project-template</a> before opening a PR. The template's <code>dev/local-rtl-buddy</code> branch swaps the PyPI pin for an editable path dependency on a sibling <code>rtl_buddy/</code> checkout, so you can iterate locally without publishing.</p>
-<p>Typical loop:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># In a sibling clone of rtl-buddy-project-template:</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/dev-local<span class="w"> </span>dev/local-rtl-buddy
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="nb">cd</span><span class="w"> </span>.worktrees/dev-local
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>uv<span class="w"> </span>sync<span class="w">                              </span><span class="c1"># picks up ../../../rtl_buddy editable</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>regression.yaml
+<p>For end-user behavior changes, use the template's local-development worktree. Point its editable <code>rtl_buddy</code> source at the exact feature worktree being tested.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># In a sibling clone of rtl-buddy-project-template:</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/dev-local<span class="w"> </span>dev/local-rtl-buddy
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nb">cd</span><span class="w"> </span>.worktrees/dev-local
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>uv<span class="w"> </span>sync
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>regression.yaml
 </code></pre></div>
-<p>The template's <code>AGENTS.md</code> documents the same standing-branch convention; do not push that branch back to <code>main</code>.</p>
-<h2 id="where-to-go-next">Where To Go Next</h2>
+<p>Follow the template's <code>AGENTS.md</code>. Keep <code>dev/local-rtl-buddy</code> local and do not merge it to <code>main</code>.</p>
+<h2 id="authoring-rules">Authoring Rules</h2>
 <ul>
-<li><a href="../guidelines/">Engineering Guidelines</a> — public contracts, execution contexts, path ownership, subprocesses, logging, errors, releases, and issue triage.</li>
-<li><a href="../docs/">Documentation Guidelines</a> — frontmatter, page structure, generated pages, and docs validation.</li>
-<li><a href="../../CONTRIBUTING/">Contributing</a> — the contributor entry point that links to both.</li>
+<li><a href="../guidelines/">Engineering Guidelines</a></li>
+<li><a href="../docs/">Documentation Guidelines</a></li>
 </ul>
 
 

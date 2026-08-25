@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Quirks, non-conventional behaviors, and known issues with rtl_buddy, including workarounds for simulator-specific behaviors.">
+        <meta name="description" content="Current rtl_buddy limitations, surprising behavior, and required workarounds by workflow.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1526,10 +1526,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#rb-synth-reports-macro-free-area-and-optimistic-wns-through-v6370" class="md-nav__link">
+  <a href="#xpm-cdc-macros-require-rtl-buddy-cdc-04-or-later" class="md-nav__link">
     <span class="md-ellipsis">
       
-        rb synth reports macro-free area and optimistic WNS through v6.37.0
+        XPM CDC macros require rtl-buddy-cdc 0.4 or later
       
     </span>
   </a>
@@ -1537,10 +1537,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#xpm-cdc-macros-flood-rb-cdc-with-cdc-bbx-errors-on-rtl-buddy-cdc-03x" class="md-nav__link">
+  <a href="#coverage-uses-the-platform-builder" class="md-nav__link">
     <span class="md-ellipsis">
       
-        XPM CDC macros flood rb cdc with CDC-BBX errors on rtl-buddy-cdc 0.3.x
+        Coverage uses the platform builder
       
     </span>
   </a>
@@ -1548,10 +1548,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#v6260s-rtl_buddygraph-extract-extra-fails-at-pipuv-resolution" class="md-nav__link">
+  <a href="#verilator-randomized-runs-may-not-reproduce" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v6.26.0's rtl_buddy[graph-extract] extra fails at pip/uv resolution
+        Verilator randomized runs may not reproduce
       
     </span>
   </a>
@@ -1559,10 +1559,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#coverage-follows-the-platform-builder-not-a-per-testsuite-builder" class="md-nav__link">
+  <a href="#tool-path-fallback-can-select-another-installation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Coverage follows the platform builder, not a per-test/suite builder:
+        Tool-path fallback can select another installation
       
     </span>
   </a>
@@ -1570,10 +1570,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#instance-prng-seeding-with-verilator" class="md-nav__link">
+  <a href="#hook-scripts-are-not-normal-standalone-scripts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Instance pRNG seeding with Verilator
+        Hook scripts are not normal standalone scripts
       
     </span>
   </a>
@@ -1581,10 +1581,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verible-resolves-from-path-when-cfg-veriblepath-lacks-the-binaries" class="md-nav__link">
+  <a href="#compilation-unit-bind-requires-the-slang-frontend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verible resolves from PATH when cfg-verible.path lacks the binaries
+        Compilation-unit bind requires the slang frontend
       
     </span>
   </a>
@@ -1592,10 +1592,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-broken-tool-pin-is-announced-once-per-process-so-a-daemon-never-repeats-it" class="md-nav__link">
+  <a href="#verify-that-anyconst-elaborates" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A broken tool pin is announced once per process, so a daemon never repeats it
+        Verify that anyconst elaborates
       
     </span>
   </a>
@@ -1603,10 +1603,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-skill-directory-rename-migrates-only-the-scope-you-install-at" class="md-nav__link">
+  <a href="#narrow-vcs-access-flags-suppress-cocotb-defaults" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The skill-directory rename migrates only the scope you install at
+        Narrow VCS access flags suppress cocotb defaults
       
     </span>
   </a>
@@ -1614,10 +1614,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-scripts-run-at-the-invocation-directory-not-the-suite" class="md-nav__link">
+  <a href="#vcs-license-waits-pause-the-simulation-timeout" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook scripts run at the invocation directory, not the suite
+        VCS license waits pause the simulation timeout
       
     </span>
   </a>
@@ -1625,65 +1625,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__" class="md-nav__link">
+  <a href="#axi-profiling-converts-vcs-vpd-traces" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook scripts see __name__ == "__rtl_buddy_hook__", never "__main__"
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#a-hooks-captured-stdout-is-python-level-sysstdoutbufferfileno-raise-and-a-child-process-is-not-covered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A hook's captured stdout is Python-level: sys.stdout.buffer/fileno() raise, and a child process is not covered
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Compilation-unit bind under frontend: verilog elaborates zero formal cells
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#anyconst-may-be-dropped-by-the-frontend-with-no-cell" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        (* anyconst *) may be dropped by the frontend, with no cell
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cocotb-on-vcs-skips-its-vpi-access-flags-when-you-already-configured-any-debug_accessacc" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cocotb on VCS skips its VPI-access flags when you already configured any -debug_access/+acc
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#vcs-license-queue-waits-pause-sim_timeout-so-a-sim-can-visibly-outlive-it" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VCS license-queue waits pause sim_timeout, so a sim can visibly outlive it
+        AXI profiling converts VCS VPD traces
       
     </span>
   </a>
@@ -1702,10 +1647,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#vcs-hierarchical-seed-file" class="md-nav__link">
+  <a href="#pywellen-must-remain-below-025" class="md-nav__link">
     <span class="md-ellipsis">
       
-        VCS hierarchical seed file
+        pywellen must remain below 0.25
       
     </span>
   </a>
@@ -1713,10 +1658,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#vcs-vpd-traces-convert-at-profile-time-with-two-fallbacks" class="md-nav__link">
+  <a href="#artifact-locking-is-per-tree-and-per-host" class="md-nav__link">
     <span class="md-ellipsis">
       
-        VCS VPD traces convert at profile time, with two fallbacks
+        Artifact locking is per tree and per host
       
     </span>
   </a>
@@ -1724,10 +1669,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pywellen-must-keep-the-random-access-waveform-api-025" class="md-nav__link">
+  <a href="#dispatch-changes-build-behavior" class="md-nav__link">
     <span class="md-ellipsis">
       
-        pywellen must keep the random-access Waveform API (&lt;0.25)
+        Dispatch changes build behavior
       
     </span>
   </a>
@@ -1735,10 +1680,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind" class="md-nav__link">
+  <a href="#local-parallel-enforces-only-the-job-count" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The artefact-tree lock is per tree, and its lock file stays behind
+        local-parallel enforces only the job count
       
     </span>
   </a>
@@ -1746,10 +1691,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-dispatch-silently-implies-share-build" class="md-nav__link">
+  <a href="#quote-dispatch-time-values" class="md-nav__link">
     <span class="md-ellipsis">
       
-        --dispatch silently implies --share-build
+        Quote dispatch time values
       
     </span>
   </a>
@@ -1757,10 +1702,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cfg-dispatchbackend-does-not-apply-to-rb-test" class="md-nav__link">
+  <a href="#dispatch-build-jobs-cover-the-whole-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        cfg-dispatch.backend does not apply to rb test
+        Dispatch build jobs cover the whole suite
       
     </span>
   </a>
@@ -1768,10 +1713,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-dispatch-local-parallel-ignores-resources-j-is-the-only-limit" class="md-nav__link">
+  <a href="#slurm-retry-reuses-artifact-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        --dispatch local-parallel ignores resources: — -j is the only limit
+        Slurm retry reuses artifact paths
       
     </span>
   </a>
@@ -1779,10 +1724,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-sigkilled-head-orphans-a-local-parallel-fleet" class="md-nav__link">
+  <a href="#slurm-memory-advice-depends-on-accounting-samples" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A SIGKILLed head orphans a local-parallel fleet
+        Slurm memory advice depends on accounting samples
       
     </span>
   </a>
@@ -1790,10 +1735,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal" class="md-nav__link">
+  <a href="#rb-nvim-install-requires-git-and-network-access" class="md-nav__link">
     <span class="md-ellipsis">
       
-        An unquoted time: in cfg-dispatch/resources: is YAML sexagesimal
+        rb nvim-install requires git and network access
       
     </span>
   </a>
@@ -1801,10 +1746,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation" class="md-nav__link">
+  <a href="#generated-runf-files-are-checkout-specific" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A suite's build job compiles every compile key serially, in one reservation
+        Generated run.f files are checkout-specific
       
     </span>
   </a>
@@ -1812,10 +1757,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#memory-right-sizing-depends-on-the-accounting-sampling-interval" class="md-nav__link">
+  <a href="#shared-build-dependency-tracking-varies-by-simulator" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Memory right-sizing depends on the accounting sampling interval
+        Shared-build dependency tracking varies by simulator
       
     </span>
   </a>
@@ -1823,10 +1768,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reservation-right-sizing-has-floors-that-can-silently-suppress-advice" class="md-nav__link">
+  <a href="#yosys-backed-flows-do-not-support-whitespace-in-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reservation right-sizing has floors that can silently suppress advice
+        Yosys-backed flows do not support whitespace in paths
       
     </span>
   </a>
@@ -1834,10 +1779,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#under-dispatch-preproc-runs-in-both-the-build-job-and-each-sim-job" class="md-nav__link">
+  <a href="#unknown-synthesis-overrides-are-ignored-after-a-warning" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Under --dispatch, preproc runs in both the build job and each sim job
+        Unknown synthesis overrides are ignored after a warning
       
     </span>
   </a>
@@ -1845,10 +1790,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling" class="md-nav__link">
+  <a href="#fpv-coi-analysis-is-best-effort" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A build job orders the fan-out; only the stamp keeps it from recompiling
+        FPV COI analysis is best-effort
       
     </span>
   </a>
@@ -1856,10 +1801,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-retry-truncates-the-sim-capture-that-justified-it" class="md-nav__link">
+  <a href="#fpga-bitstream-generation-relaxes-two-io-drcs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A retry truncates the sim capture that justified it
+        FPGA bitstream generation relaxes two I/O DRCs
       
     </span>
   </a>
@@ -1867,10 +1812,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#with-retry-enabled-max-wait-bounds-each-wait-not-their-sum" class="md-nav__link">
+  <a href="#fpga-timing-is-optional-unless-gated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        With retry enabled, max-wait bounds each wait, not their sum
+        FPGA timing is optional unless gated
       
     </span>
   </a>
@@ -1878,10 +1823,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-begin-in-sbatch-args-silently-disables-the-retry-backoff" class="md-nav__link">
+  <a href="#graph-coverage-source-changes-attribution" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A --begin in sbatch-args silently disables the retry backoff
+        Graph coverage source changes attribution
       
     </span>
   </a>
@@ -1889,10 +1834,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail" class="md-nav__link">
+  <a href="#the-viewer-distribution-and-executable-have-different-names" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A dispatched compile failure surfaces as CompileFail, not DispatchFail
+        The viewer distribution and executable have different names
       
     </span>
   </a>
@@ -1900,153 +1845,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand" class="md-nav__link">
+  <a href="#verible-lint-findings-are-on-stderr" class="md-nav__link">
     <span class="md-ellipsis">
       
-        rb nvim-install requires git + network, and pins the plugin by hand
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verilator searches a relative source name through +incdir+/-y before the cwd, so run.f pins sources absolute
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Shared-build reuse sees header edits only where the builder reports them
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#a-shared-build-predating-467-is-reused-across-a-simulator-swap" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A shared build predating #467 is reused across a simulator swap
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#whitespace-in-a-path-or-a-defineparameter-value-does-not-survive-a-yosys-script-line" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Whitespace in a path or a define/parameter value does not survive a yosys script line
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#an-unknown-synthyaml-tool_overrides-key-warns-but-does-not-stop-the-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        An unknown synth.yaml tool_overrides key warns but does not stop the run
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#a-wrong-fpv-plugin-path-degrades-coi-coverage-silently" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A wrong FPV plugin path degrades COI coverage silently
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-fpga-bitstream-downgrades-unconstrained-io-drcs-to-write-the-bitstream" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb fpga --bitstream downgrades unconstrained-I/O DRCs to write the bitstream
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb fpga PASSes a routed run that misses timing (unless require-timing-met)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-graph-results-coverage-mergedinfo-joins-design-heat-by-file-so-two-modules-in-one-file-share-numbers" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb graph results --coverage &lt;merged.info&gt; joins design heat by file, so two modules in one file share numbers
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-graph-results-coverage-takes-a-value-now-so-a-bare-coverage-no-longer-parses" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb graph results --coverage takes a value now, so a bare --coverage no longer parses
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-hier-block-diagram-needs-a-renderer-that-has-not-been-released-yet" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb hier --block-diagram needs a renderer that has not been released yet
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The viewer answers to four different names: dist rtl-buddy-sch, executable rtl-buddy-view
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verible-verilog-lint-writes-findings-to-stderr-not-stdout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        verible-verilog-lint writes findings to stderr, not stdout
+        Verible lint findings are on stderr
       
     </span>
   </a>
@@ -2115,10 +1917,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#rb-synth-reports-macro-free-area-and-optimistic-wns-through-v6370" class="md-nav__link">
+  <a href="#xpm-cdc-macros-require-rtl-buddy-cdc-04-or-later" class="md-nav__link">
     <span class="md-ellipsis">
       
-        rb synth reports macro-free area and optimistic WNS through v6.37.0
+        XPM CDC macros require rtl-buddy-cdc 0.4 or later
       
     </span>
   </a>
@@ -2126,10 +1928,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#xpm-cdc-macros-flood-rb-cdc-with-cdc-bbx-errors-on-rtl-buddy-cdc-03x" class="md-nav__link">
+  <a href="#coverage-uses-the-platform-builder" class="md-nav__link">
     <span class="md-ellipsis">
       
-        XPM CDC macros flood rb cdc with CDC-BBX errors on rtl-buddy-cdc 0.3.x
+        Coverage uses the platform builder
       
     </span>
   </a>
@@ -2137,10 +1939,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#v6260s-rtl_buddygraph-extract-extra-fails-at-pipuv-resolution" class="md-nav__link">
+  <a href="#verilator-randomized-runs-may-not-reproduce" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v6.26.0's rtl_buddy[graph-extract] extra fails at pip/uv resolution
+        Verilator randomized runs may not reproduce
       
     </span>
   </a>
@@ -2148,10 +1950,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#coverage-follows-the-platform-builder-not-a-per-testsuite-builder" class="md-nav__link">
+  <a href="#tool-path-fallback-can-select-another-installation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Coverage follows the platform builder, not a per-test/suite builder:
+        Tool-path fallback can select another installation
       
     </span>
   </a>
@@ -2159,10 +1961,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#instance-prng-seeding-with-verilator" class="md-nav__link">
+  <a href="#hook-scripts-are-not-normal-standalone-scripts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Instance pRNG seeding with Verilator
+        Hook scripts are not normal standalone scripts
       
     </span>
   </a>
@@ -2170,10 +1972,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verible-resolves-from-path-when-cfg-veriblepath-lacks-the-binaries" class="md-nav__link">
+  <a href="#compilation-unit-bind-requires-the-slang-frontend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verible resolves from PATH when cfg-verible.path lacks the binaries
+        Compilation-unit bind requires the slang frontend
       
     </span>
   </a>
@@ -2181,10 +1983,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-broken-tool-pin-is-announced-once-per-process-so-a-daemon-never-repeats-it" class="md-nav__link">
+  <a href="#verify-that-anyconst-elaborates" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A broken tool pin is announced once per process, so a daemon never repeats it
+        Verify that anyconst elaborates
       
     </span>
   </a>
@@ -2192,10 +1994,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-skill-directory-rename-migrates-only-the-scope-you-install-at" class="md-nav__link">
+  <a href="#narrow-vcs-access-flags-suppress-cocotb-defaults" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The skill-directory rename migrates only the scope you install at
+        Narrow VCS access flags suppress cocotb defaults
       
     </span>
   </a>
@@ -2203,10 +2005,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-scripts-run-at-the-invocation-directory-not-the-suite" class="md-nav__link">
+  <a href="#vcs-license-waits-pause-the-simulation-timeout" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook scripts run at the invocation directory, not the suite
+        VCS license waits pause the simulation timeout
       
     </span>
   </a>
@@ -2214,65 +2016,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__" class="md-nav__link">
+  <a href="#axi-profiling-converts-vcs-vpd-traces" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook scripts see __name__ == "__rtl_buddy_hook__", never "__main__"
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#a-hooks-captured-stdout-is-python-level-sysstdoutbufferfileno-raise-and-a-child-process-is-not-covered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A hook's captured stdout is Python-level: sys.stdout.buffer/fileno() raise, and a child process is not covered
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Compilation-unit bind under frontend: verilog elaborates zero formal cells
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#anyconst-may-be-dropped-by-the-frontend-with-no-cell" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        (* anyconst *) may be dropped by the frontend, with no cell
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cocotb-on-vcs-skips-its-vpi-access-flags-when-you-already-configured-any-debug_accessacc" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cocotb on VCS skips its VPI-access flags when you already configured any -debug_access/+acc
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#vcs-license-queue-waits-pause-sim_timeout-so-a-sim-can-visibly-outlive-it" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VCS license-queue waits pause sim_timeout, so a sim can visibly outlive it
+        AXI profiling converts VCS VPD traces
       
     </span>
   </a>
@@ -2291,10 +2038,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#vcs-hierarchical-seed-file" class="md-nav__link">
+  <a href="#pywellen-must-remain-below-025" class="md-nav__link">
     <span class="md-ellipsis">
       
-        VCS hierarchical seed file
+        pywellen must remain below 0.25
       
     </span>
   </a>
@@ -2302,10 +2049,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#vcs-vpd-traces-convert-at-profile-time-with-two-fallbacks" class="md-nav__link">
+  <a href="#artifact-locking-is-per-tree-and-per-host" class="md-nav__link">
     <span class="md-ellipsis">
       
-        VCS VPD traces convert at profile time, with two fallbacks
+        Artifact locking is per tree and per host
       
     </span>
   </a>
@@ -2313,10 +2060,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pywellen-must-keep-the-random-access-waveform-api-025" class="md-nav__link">
+  <a href="#dispatch-changes-build-behavior" class="md-nav__link">
     <span class="md-ellipsis">
       
-        pywellen must keep the random-access Waveform API (&lt;0.25)
+        Dispatch changes build behavior
       
     </span>
   </a>
@@ -2324,10 +2071,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind" class="md-nav__link">
+  <a href="#local-parallel-enforces-only-the-job-count" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The artefact-tree lock is per tree, and its lock file stays behind
+        local-parallel enforces only the job count
       
     </span>
   </a>
@@ -2335,10 +2082,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-dispatch-silently-implies-share-build" class="md-nav__link">
+  <a href="#quote-dispatch-time-values" class="md-nav__link">
     <span class="md-ellipsis">
       
-        --dispatch silently implies --share-build
+        Quote dispatch time values
       
     </span>
   </a>
@@ -2346,10 +2093,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cfg-dispatchbackend-does-not-apply-to-rb-test" class="md-nav__link">
+  <a href="#dispatch-build-jobs-cover-the-whole-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        cfg-dispatch.backend does not apply to rb test
+        Dispatch build jobs cover the whole suite
       
     </span>
   </a>
@@ -2357,10 +2104,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-dispatch-local-parallel-ignores-resources-j-is-the-only-limit" class="md-nav__link">
+  <a href="#slurm-retry-reuses-artifact-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        --dispatch local-parallel ignores resources: — -j is the only limit
+        Slurm retry reuses artifact paths
       
     </span>
   </a>
@@ -2368,10 +2115,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-sigkilled-head-orphans-a-local-parallel-fleet" class="md-nav__link">
+  <a href="#slurm-memory-advice-depends-on-accounting-samples" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A SIGKILLed head orphans a local-parallel fleet
+        Slurm memory advice depends on accounting samples
       
     </span>
   </a>
@@ -2379,10 +2126,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal" class="md-nav__link">
+  <a href="#rb-nvim-install-requires-git-and-network-access" class="md-nav__link">
     <span class="md-ellipsis">
       
-        An unquoted time: in cfg-dispatch/resources: is YAML sexagesimal
+        rb nvim-install requires git and network access
       
     </span>
   </a>
@@ -2390,10 +2137,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation" class="md-nav__link">
+  <a href="#generated-runf-files-are-checkout-specific" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A suite's build job compiles every compile key serially, in one reservation
+        Generated run.f files are checkout-specific
       
     </span>
   </a>
@@ -2401,10 +2148,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#memory-right-sizing-depends-on-the-accounting-sampling-interval" class="md-nav__link">
+  <a href="#shared-build-dependency-tracking-varies-by-simulator" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Memory right-sizing depends on the accounting sampling interval
+        Shared-build dependency tracking varies by simulator
       
     </span>
   </a>
@@ -2412,10 +2159,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reservation-right-sizing-has-floors-that-can-silently-suppress-advice" class="md-nav__link">
+  <a href="#yosys-backed-flows-do-not-support-whitespace-in-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reservation right-sizing has floors that can silently suppress advice
+        Yosys-backed flows do not support whitespace in paths
       
     </span>
   </a>
@@ -2423,10 +2170,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#under-dispatch-preproc-runs-in-both-the-build-job-and-each-sim-job" class="md-nav__link">
+  <a href="#unknown-synthesis-overrides-are-ignored-after-a-warning" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Under --dispatch, preproc runs in both the build job and each sim job
+        Unknown synthesis overrides are ignored after a warning
       
     </span>
   </a>
@@ -2434,10 +2181,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling" class="md-nav__link">
+  <a href="#fpv-coi-analysis-is-best-effort" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A build job orders the fan-out; only the stamp keeps it from recompiling
+        FPV COI analysis is best-effort
       
     </span>
   </a>
@@ -2445,10 +2192,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-retry-truncates-the-sim-capture-that-justified-it" class="md-nav__link">
+  <a href="#fpga-bitstream-generation-relaxes-two-io-drcs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A retry truncates the sim capture that justified it
+        FPGA bitstream generation relaxes two I/O DRCs
       
     </span>
   </a>
@@ -2456,10 +2203,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#with-retry-enabled-max-wait-bounds-each-wait-not-their-sum" class="md-nav__link">
+  <a href="#fpga-timing-is-optional-unless-gated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        With retry enabled, max-wait bounds each wait, not their sum
+        FPGA timing is optional unless gated
       
     </span>
   </a>
@@ -2467,10 +2214,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-begin-in-sbatch-args-silently-disables-the-retry-backoff" class="md-nav__link">
+  <a href="#graph-coverage-source-changes-attribution" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A --begin in sbatch-args silently disables the retry backoff
+        Graph coverage source changes attribution
       
     </span>
   </a>
@@ -2478,10 +2225,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail" class="md-nav__link">
+  <a href="#the-viewer-distribution-and-executable-have-different-names" class="md-nav__link">
     <span class="md-ellipsis">
       
-        A dispatched compile failure surfaces as CompileFail, not DispatchFail
+        The viewer distribution and executable have different names
       
     </span>
   </a>
@@ -2489,153 +2236,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand" class="md-nav__link">
+  <a href="#verible-lint-findings-are-on-stderr" class="md-nav__link">
     <span class="md-ellipsis">
       
-        rb nvim-install requires git + network, and pins the plugin by hand
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verilator searches a relative source name through +incdir+/-y before the cwd, so run.f pins sources absolute
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Shared-build reuse sees header edits only where the builder reports them
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#a-shared-build-predating-467-is-reused-across-a-simulator-swap" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A shared build predating #467 is reused across a simulator swap
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#whitespace-in-a-path-or-a-defineparameter-value-does-not-survive-a-yosys-script-line" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Whitespace in a path or a define/parameter value does not survive a yosys script line
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#an-unknown-synthyaml-tool_overrides-key-warns-but-does-not-stop-the-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        An unknown synth.yaml tool_overrides key warns but does not stop the run
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#a-wrong-fpv-plugin-path-degrades-coi-coverage-silently" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A wrong FPV plugin path degrades COI coverage silently
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-fpga-bitstream-downgrades-unconstrained-io-drcs-to-write-the-bitstream" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb fpga --bitstream downgrades unconstrained-I/O DRCs to write the bitstream
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb fpga PASSes a routed run that misses timing (unless require-timing-met)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-graph-results-coverage-mergedinfo-joins-design-heat-by-file-so-two-modules-in-one-file-share-numbers" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb graph results --coverage &lt;merged.info&gt; joins design heat by file, so two modules in one file share numbers
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-graph-results-coverage-takes-a-value-now-so-a-bare-coverage-no-longer-parses" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb graph results --coverage takes a value now, so a bare --coverage no longer parses
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rb-hier-block-diagram-needs-a-renderer-that-has-not-been-released-yet" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        rb hier --block-diagram needs a renderer that has not been released yet
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The viewer answers to four different names: dist rtl-buddy-sch, executable rtl-buddy-view
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verible-verilog-lint-writes-findings-to-stderr-not-stdout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        verible-verilog-lint writes findings to stderr, not stdout
+        Verible lint findings are on stderr
       
     </span>
   </a>
@@ -2663,629 +2267,92 @@
 
 
 <h1 id="quirks-known-issues">Quirks &amp; Known Issues</h1>
-<p>The home for rtl_buddy behavior that does not follow convention: quirks, surprising defaults, simulator-specific workarounds, and known limitations. If something tripped you up because it works differently than you'd expect, add it here so the next person — or agent — finds it first.</p>
-<p>Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one <code>##</code> section per quirk, name it after the behavior, and say what to do about it.</p>
-<h2 id="rb-synth-reports-macro-free-area-and-optimistic-wns-through-v6370"><code>rb synth</code> reports macro-free area and optimistic WNS through v6.37.0</h2>
-<p>An <code>openroad</code> synthesis of a design with a hard macro — one whose LEF and Liberty come in on <code>lef-paths</code> / <code>lib-paths</code>, with a port-only <code>(* blackbox *)</code> module in RTL — can report an area that leaves the macros out and a WNS that is <em>better</em> than the truth. On the project template's <code>demo_synth_macro</code>, 54 um^2 against a real 8054, and +3.906 ns against a real +3.850. The run <strong>passes</strong>, with no error and no warning.</p>
-<p>Yosys drops blackbox definitions from <code>write_verilog</code>, so the OpenROAD stage generates a port-only Verilog stub for each blackbox and reads it; without one, <code>link_design</code> fails on the undefined module. For a macro that stub is not just unnecessary but harmful: <code>read_lef</code> and <code>read_liberty</code> in the same script have already supplied a master, and reading a Verilog module of the same name can displace it. Every instance then binds to the zero-area Verilog module. The macros are gone from the OpenROAD database — <code>get_cells -hierarchical</code> cannot see them — so their area is not counted and their timing arcs are not in the graph.</p>
-<p>The WNS is the dangerous half. It is optimistic rather than absent: the paths the macro's <code>clk</code>-to-output arc dominates are not reported at all, and the number you get describes the logic around the macro. A design whose critical path runs through a memory reports the timing of everything except the memory, and passes.</p>
-<p>Whether the master is displaced turns on the port shapes. A macro with only scalar ports survives; one with a bussed port does not, which in practice means every real macro — and it means a scalar-only test case will not show the problem.</p>
-<p>Fixed in the first release after <strong>v6.37.0</strong>: the stub generator skips any blackbox whose name is already a <code>MACRO</code> in one of the LEFs or a <code>cell</code> in one of the Liberty files the same script reads. On earlier releases, check <code>artefacts/&lt;synth&gt;/synth.tcl</code> for a <code>read_verilog</code> of a generated <code>or_*_bb.sv</code>; delete that line and re-run OpenROAD on the script by hand to get the real numbers. See <a href="../concepts/synthesis/#hard-macros">Hard macros</a>.</p>
-<h2 id="xpm-cdc-macros-flood-rb-cdc-with-cdc-bbx-errors-on-rtl-buddy-cdc-03x">XPM CDC macros flood <code>rb cdc</code> with CDC-BBX errors on rtl-buddy-cdc 0.3.x</h2>
-<p>A design that synchronises with the Xilinx XPM CDC macros (<code>xpm_cdc_single</code>, <code>xpm_cdc_gray</code>, <code>xpm_cdc_handshake</code>, ...) reports one <code>CDC-BBX</code> error per macro instance on rtl-buddy-cdc <strong>0.3.x</strong> — "left opaque — not provably single-clock". Nothing is wrong with your design or your SDC. XPM sources ship inside the Vivado install tree and are injected at synthesis, so a filelist built from project RTL carries only the instantiation; the analyzer sees a bodyless, <strong>dual-clock</strong> blackbox, cannot prove it is single-clock, and declines it. The macro <em>is</em> the synchroniser, but the engine has no way to know that from a name it does not recognise.</p>
-<p>Worse than the noise, the run is also <em>less</em> informative than it looks: a declined instance is dropped from the boundary set entirely, so the crossing through the macro disappears from the report and from <code>--emit-domain-map</code>. A <code>dest_out</code> feeding a flop in some third clock domain is a real unsynchronised crossing that 0.3.x will not tell you about.</p>
-<p>Fixed in <strong>rtl-buddy-cdc 0.4.0</strong>, which recognises the <code>xpm_cdc_*</code> family by module name and classifies those crossings as synchronised (<code>uv tool install -U rtl-buddy-cdc</code>). <code>rb cdc</code> does not pin a floor for this — the tool manifest leaves <code>rtl-buddy-cdc</code> without a <code>minimum_version</code> so existing users are not broken — so upgrading is on you. On 0.3.x the workarounds are to waive the finding (<code>waive CDC-BBX u_.*_sync</code>) and, for <code>--check-xdc</code> specifically, to declare the macros with <code>recognized-syncs</code> / <code>--recognize-sync</code> so a correct XDC waiver of the crossing is not reported as a dangerous over-waive. Neither recovers the dropped third-domain crossing. See <a href="../concepts/fpga/#cdc-timing-exceptions-and-xpm-macros">FPGA: CDC timing exceptions and XPM macros</a>.</p>
-<h2 id="v6260s-rtl_buddygraph-extract-extra-fails-at-pipuv-resolution">v6.26.0's <code>rtl_buddy[graph-extract]</code> extra fails at pip/uv resolution</h2>
-<p>The v6.26.0 wheel advertises a <code>graph-extract</code> extra whose dependency, <code>rtl-buddy-graph-extract</code>, has no PyPI release yet — so <code>pip install "rtl_buddy[graph-extract]"</code> (or <code>uv add "rtl_buddy[graph-extract]"</code>) fails with a resolution error on that version. Nothing is wrong with your environment.</p>
-<p>Workaround on v6.26.0: install rtl_buddy without the extra and add the extractor directly with <code>uv pip install rtl-buddy-graph-extract</code> — <code>rb graph build</code> discovers it on PATH; without it the binding tier is simply reported as skipped. Releases from v6.26.1 through v6.33.1 do not advertise the extra at all (the dependency moved to an unpublished dev group). With rtl-buddy-graph-extract 0.1.0 on PyPI, the extra returns as a normal <code>rtl_buddy[graph-extract]</code> (with a <code>&gt;= 0.1.0</code> floor) in the next minor release after v6.33.1.</p>
-<h2 id="coverage-follows-the-platform-builder-not-a-per-testsuite-builder">Coverage follows the platform builder, not a per-test/suite <code>builder:</code></h2>
-<p>A test can pick its simulator with a per-test or suite-wide <code>builder:</code> (see <a href="../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a>), but coverage collection and reporting — <code>rb test --coverage</code>, the Coverview packer, and the <code>builder</code>/<code>simulator_family</code> labels on coverage artifacts — key off the <strong>platform-selected</strong> builder, not the test's effective one. When a test's effective builder differs from the platform default <em>and</em> no <code>--builder</code> override is in effect, the coverage layer can mislabel or misparse results.</p>
-<p>Workaround: run the suite with <code>--builder &lt;name&gt;</code> (which forces the builder consistently across simulation and coverage) or make that builder the platform default. In practice this only bites Verilator — the sole family that emits line/toggle coverage today; VCS and Icarus collect no coverage through this path. See the <a href="../reference/yaml/#selecting-the-simulator-builder">tests.yaml limitation note</a> for the full rationale.</p>
-<h2 id="instance-prng-seeding-with-verilator">Instance pRNG seeding with Verilator</h2>
-<p>Random testing does not behave reliably with Verilator. While Verilator supports multiple random tests with different seeds, tests are not always reproducible even with the same seed.</p>
-<p>VCS is recommended for stable random testing due to its hierarchical instance seeding. VCS seeds instantiated modules, process threads, and classes based on their hierarchical names. For stable random seeding with VCS, name your instances explicitly.</p>
-<p>If you require reproducible randomized testing on macOS (where VCS is not available), this is a known limitation.</p>
-<h2 id="verible-resolves-from-path-when-cfg-veriblepath-lacks-the-binaries">Verible resolves from PATH when <code>cfg-verible.path</code> lacks the binaries</h2>
-<p><code>rb verible</code> resolves each executable in a fixed precedence: the configured <code>cfg-verible.path</code> directory wins <strong>when it actually contains the binary</strong>, otherwise rtl_buddy falls back to whatever is on <code>PATH</code>, and only as a last resort returns the configured join (so a genuine "not found" still names the expected directory).</p>
-<p>This means a site can expose Verible through its environment (a <code>module load</code>, or a sourced setup script that puts <code>verible-verilog-*</code> on <code>PATH</code>) and leave <code>cfg-verible.path</code> at the committed default — no per-checkout edit to <code>root_config.yaml</code>. The flip side: if your configured directory does not contain the binaries but a <em>different</em> Verible is on <code>PATH</code>, that PATH copy is used instead. rtl_buddy <strong>warns</strong> when that happens (<code>verible.exe_fallback</code>), naming both the configured path and what <code>PATH</code> resolved — but only for the entry the active platform routes to, so another platform's entry stays quiet. If <code>rb verible</code> seems to run a different build than the one you configured, check <code>PATH</code> — the configured directory only takes precedence when the binary is present there. This mirrors how <code>cfg-surfer</code> already resolves its executable.</p>
-<h2 id="a-broken-tool-pin-is-announced-once-per-process-so-a-daemon-never-repeats-it">A broken tool pin is announced once per process, so a daemon never repeats it</h2>
-<p>The <code>verible.exe_fallback</code> warning above and <code>tool_path.unresolved_var</code> (every
-candidate of a <code>builder:</code> / <code>path:</code> / <code>tool:</code> list referencing an unset
-variable) are deduped in a module-level set: resolution runs on every
-<code>get_exe()</code> call — several times per test — so an undeduped warning would emit
-thousands of identical lines across a regression. The condition is a static
-property of the config plus the environment, so saying it once is saying it —
-but <code>rb mcp</code> and <code>rb hub</code> are long-running processes, and a pin fixed (or
-broken) while one is up is never re-announced. Restart the daemon after
-editing <code>root_config.yaml</code> or <code>.rtl-buddy/.env</code> if you are relying on those
-warnings.</p>
-<h2 id="the-skill-directory-rename-migrates-only-the-scope-you-install-at">The skill-directory rename migrates only the scope you install at</h2>
-<p>The bundled skill's directory was renamed <code>rtl_buddy/</code> -&gt; <code>rtl-buddy/</code> so it matches the <code>name:</code> in its own <code>SKILL.md</code> frontmatter, as the Agent Skills spec requires. <code>rtl-buddy skill install</code> migrates the old directory away — but only for <strong>the targets of the scope you invoked</strong>, because reaching into <code>$HOME</code> from a <code>--project</code> install would be a worse surprise than the one it fixes.</p>
-<p>So a user who upgrades and then runs only <code>rtl-buddy skill install --project</code> is left with <code>~/.claude/skills/rtl_buddy/</code> still on disk beside <code>&lt;root&gt;/.claude/skills/rtl-buddy/</code>. Claude Code keys skills by directory name, so it loads <strong>both</strong> — two directories whose frontmatter both say <code>name: rtl-buddy</code>, with no precedence dedupe, because the directory names differ. That is silent, and it is the same spec violation the rename set out to fix.</p>
-<p>After upgrading, run the install once at <strong>each</strong> scope you actually use, and confirm with both status commands:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rtl-buddy skill install
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rtl-buddy skill install --project
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rtl-buddy skill status
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>rtl-buddy skill status --project
+<p>Use this page when behavior differs from the normal workflow. Each section states the effect and the action to take; resolved bugs belong in release notes or migrations, not here.</p>
+<h2 id="xpm-cdc-macros-require-rtl-buddy-cdc-04-or-later">XPM CDC macros require rtl-buddy-cdc 0.4 or later</h2>
+<p>rtl-buddy-cdc 0.3.x treats <code>xpm_cdc_*</code> instances as dual-clock blackboxes, reports <code>CDC-BBX</code>, and drops their crossings from the report and domain map. Upgrade with <code>uv tool install -U rtl-buddy-cdc</code>. Waivers can hide the 0.3.x finding but cannot recover crossings beyond the macro.</p>
+<h2 id="coverage-uses-the-platform-builder">Coverage uses the platform builder</h2>
+<p>Coverage collection and labels use the platform-selected builder, even when a suite or test selects another <code>builder:</code>. A mismatch can mislabel or misparse coverage. Use <code>--builder &lt;name&gt;</code> for the run or make that builder the platform default. See <a href="../reference/yaml/">YAML Formats</a>.</p>
+<h2 id="verilator-randomized-runs-may-not-reproduce">Verilator randomized runs may not reproduce</h2>
+<p>Verilator can produce different behavior for the same random seed. Use VCS with <code>-xlrm hier_inst_seed</code> when reproducibility is required, and give instances stable explicit names.</p>
+<p>With hierarchical seeding, VCS writes <code>HierInstanceSeed.txt</code> in the simulation directory. If it is missing, rtl_buddy logs <code>sim.hier_seed_missing</code> and cannot record the seed, but does not change the test verdict.</p>
+<h2 id="tool-path-fallback-can-select-another-installation">Tool-path fallback can select another installation</h2>
+<p>Configured tool directories take precedence only when they contain the requested executable. Otherwise rtl_buddy may use a matching executable on <code>PATH</code> and logs a fallback warning.</p>
+<p>Warnings for fallback paths and unresolved variables are emitted once per process. Restart long-running <code>rb hub</code> or <code>rb mcp</code> processes after changing <code>root_config.yaml</code>, <code>.rtl-buddy/.env</code>, or the environment if you need the warning to be evaluated again.</p>
+<h2 id="hook-scripts-are-not-normal-standalone-scripts">Hook scripts are not normal standalone scripts</h2>
+<p><code>sweep</code> and <code>preproc</code> execute with the invocation directory as CWD and with <code>__name__ == "__rtl_buddy_hook__"</code>. Use injected <code>suite_dir</code>, <code>artifact_dir</code>, and <code>run_artifact_dir</code> paths; do not put required hook logic behind <code>if __name__ == "__main__":</code>.</p>
+<p>rtl_buddy captures Python-level <code>print()</code> output as <code>hook.stdout</code> events. The capture has no <code>.buffer</code> or file descriptor, and child-process output bypasses it. Capture child output explicitly and print the text you want logged. For a generator that can write only relative to CWD, temporarily change to <code>suite_dir</code> and restore the previous directory. See <a href="../concepts/plugins/">Plugins</a>.</p>
+<h2 id="compilation-unit-bind-requires-the-slang-frontend">Compilation-unit bind requires the slang frontend</h2>
+<p>Yosys's native <code>verilog</code> frontend does not resolve a top-level <code>bind</code>, so no formal cells elaborate. rtl_buddy fails a property-based proof that would otherwise pass vacuously. Set <code>frontend: slang</code> and configure the yosys-slang plugin. Inline assertions do not need this guard. See <a href="../concepts/fpv/">Formal Property Verification</a>.</p>
+<h2 id="verify-that-anyconst-elaborates">Verify that <code>anyconst</code> elaborates</h2>
+<p>Some yosys-slang builds drop <code>(* anyconst *)</code> without producing a <code>$anyconst</code> cell. The signal then varies freely each cycle and can invalidate symbolic-index proofs. Check the elaborated design before relying on it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>yosys<span class="w"> </span>-p<span class="w"> </span><span class="s1">&#39;read_slang ...; prep -top dut; select -assert-min 1 t:$anyconst&#39;</span>
 </code></pre></div>
-<p><code>status</code> reports a leftover directory as <code>installed at legacy path ...</code>, so a clean pair of reports means there is nothing left behind. <code>rtl-buddy skill uninstall</code> cleans both spellings at the scope it is given, with the same per-scope caveat.</p>
-<p>A project-level install also rewrites <code>.gitignore</code>: the pre-rename patterns are removed and the new ones added, but only when a line matches the shipped snippet <strong>exactly</strong>. A hand-edited variant (a trailing comment, a negation, a different path) is deliberately left alone, so a project that customised those lines keeps a dead pattern until someone removes it by hand.</p>
-<h2 id="hook-scripts-run-at-the-invocation-directory-not-the-suite">Hook scripts run at the invocation directory, not the suite</h2>
-<p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which is <code>invocation_cwd</code> — your shell's cwd — not the suite directory. Resolve suite-local inputs and outputs from the injected <code>suite_dir</code> / <code>artifact_dir</code> variables, never from <code>os.getcwd()</code>.</p>
-<p>The footgun is a hook that delegates to a <strong>third-party generator</strong> which writes its outputs relative to <code>os.getcwd()</code> and offers no output-directory argument. Under v4, <code>regression</code> chdir'd into each suite so such a generator dropped files under the suite; under v5 it drops them under the invocation directory instead (e.g. polluting the repo root when running <code>regression</code> from there). The failure is silent: generation "succeeds", but the test fails much later at sim time with a generic <code>cannot open &lt;suite_dir&gt;/&lt;gen_dir&gt;/&lt;file&gt;</code>. It only reproduces when <code>invocation_cwd != suite_dir</code>, so it passes when run from inside the suite and fails under <code>regression</code> from the repo root.</p>
-<p>Wrap the generator call in a <code>chdir</code> to the suite (restore afterwards):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">finally</span><span class="p">:</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
-</code></pre></div>
-<p>See <a href="../migrations/#v4-to-v5">Migrations: v4 to v5</a> for the full behavior change.</p>
-<h2 id="hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__">Hook scripts see <code>__name__ == "__rtl_buddy_hook__"</code>, never <code>"__main__"</code></h2>
-<p><code>sweep</code> and <code>preproc</code> hooks are <code>exec()</code>'d into a hand-built namespace rather than imported, so <code>__name__</code> is set explicitly to the sentinel <code>"__rtl_buddy_hook__"</code>. If your hook wraps its logic in <code>if __name__ == "__main__":</code> (a common habit for scripts meant to also run standalone), that block is <strong>always skipped</strong> under <code>rb</code> — the hook silently no-ops. Put hook logic at module top level; reserve the <code>__main__</code> branch for a standalone entry point only. See <a href="../concepts/plugins/#hook-working-directory">Plugins</a>.</p>
-<h2 id="a-hooks-captured-stdout-is-python-level-sysstdoutbufferfileno-raise-and-a-child-process-is-not-covered">A hook's captured stdout is Python-level: <code>sys.stdout.buffer</code>/<code>fileno()</code> raise, and a child process is not covered</h2>
-<p><code>sweep</code> and <code>preproc</code> hook stdout is captured and re-emitted as <code>hook.stdout</code> log events, so a hook's <code>print()</code> never reaches <code>rtl_buddy</code>'s own stdout (under <code>--machine</code>, the JSON envelope's stream). The capture rebinds <code>sys.stdout</code> to a text sink, which has two consequences that look like regressions:</p>
-<ul>
-<li><code>sys.stdout.fileno()</code> raises <code>io.UnsupportedOperation</code> and <code>sys.stdout.buffer</code> raises <code>AttributeError</code>. A hook doing <code>subprocess.run(cmd, stdout=sys.stdout)</code> or <code>sys.stdout.buffer.write(...)</code> used to work and now raises — which surfaces as a setup failure, not a wrong answer. Both were ways of writing straight to fd 1, i.e. exactly what corrupts the envelope; write text through <code>print()</code> instead.</li>
-<li>A <strong>child process</strong> started by the hook inherits <code>rtl_buddy</code>'s real fd 1, so its output is <em>not</em> captured. This is the documented delegate-to-a-generator pattern, so it is worth being explicit: pass <code>stdout=subprocess.DEVNULL</code> or <code>capture_output=True</code> and re-<code>print()</code> what you want kept. See <a href="../concepts/plugins/#hooks">Plugins</a>.</li>
-</ul>
-<h2 id="compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells">Compilation-unit <code>bind</code> under <code>frontend: verilog</code> elaborates zero formal cells</h2>
-<p>A property file that binds its checker module at compilation-unit scope (<code>bind dut dut_props u_props (...);</code> at the top level of the file, outside any module) does <strong>not</strong> error under the default <code>frontend: verilog</code> — but yosys's native verilog frontend never resolves the bind. The checker is stored as <code>$abstract</code> and removed as unused before any assertion cell is generated, so the proof runs against <strong>zero</strong> formal cells. With no guard, sby would prove nothing and report a silent <strong>PASS</strong> — a false pass indistinguishable from a real one.</p>
-<p><code>rb fpv</code> guards the primary proof against this: when a verification lists <code>properties:</code>, the generated sby script asserts that at least one formal cell (<code>$assert</code> / <code>$assume</code> / <code>$cover</code> / <code>$live</code> / <code>$check</code>) survives <code>prep</code>. A suite that elaborates none fails loud with:</p>
-<blockquote>
-<p>sby reported ERROR (…) — zero formal cells elaborated: the property set produced no assert/assume/cover cells, so the proof would otherwise have passed vacuously (frontend='verilog' cannot resolve a compilation-unit-scope <code>bind</code>; set <code>frontend: slang</code> for bind-based property modules)</p>
-</blockquote>
-<p>The fix is to set <code>frontend: slang</code> on that verification: yosys-slang reads all files in one <code>read_slang --top</code> invocation, so a compilation-unit-scope bind resolves and the asserts elaborate. Inline-assertion suites (<code>properties: []</code>, with assertions in the DUT) are not bind-based and are intentionally not guarded. See <a href="../concepts/fpv/#choosing-a-frontend">Choosing a frontend</a>.</p>
-<h2 id="anyconst-may-be-dropped-by-the-frontend-with-no-cell"><code>(* anyconst *)</code> may be dropped by the frontend, with no cell</h2>
-<p>Structurally the same trap as the <code>bind</code> entry above: the frontend silently drops something and leaves a proof that looks green but proves nothing.</p>
-<p>On the rtl-buddy yosys-slang branch (yosys 0.64, checked 2026-08-18), <code>(* anyconst *)</code> produces <strong>no <code>$anyconst</code> cell</strong> — <code>stat</code> after <code>prep</code> shows only the <code>$check</code> cells, and nothing warns. The wire then behaves as a <em>free</em> signal that may take a different value every cycle. A symbolic-index data tracker ("whatever entry <code>idx</code> names, its data is preserved") therefore reads as a <em>varying</em> index, and the counterexamples it produces say nothing about the design: they are artefacts of an index that moves, not bugs.</p>
-<p>Check for the cell before relying on the attribute:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>yosys -p &#39;read_slang ...; prep -top dut; select -assert-min 1 t:$anyconst&#39;
-</code></pre></div>
-<p><code>select -assert-min</code> exits non-zero when the count is not met, so this is usable as a one-off gate while bringing a property set up. For data integrity proofs, a concrete behavioural reference model (a scoreboard the checker compares against) does not depend on the attribute at all and is the more portable choice. See <a href="../concepts/fpv/#practical-authoring-gotchas">Practical authoring gotchas</a>.</p>
-<h2 id="cocotb-on-vcs-skips-its-vpi-access-flags-when-you-already-configured-any-debug_accessacc">cocotb on VCS skips its VPI-access flags when you already configured any <code>-debug_access</code>/<code>+acc</code></h2>
-<p>cocotb drives the DUT over VPI, so on a <code>vcs</code> builder rtl_buddy injects <code>-debug_access+all</code> and <code>+acc+3</code> (plus <code>-load &lt;libcocotbvpi_vcs.so&gt;</code> and <code>-LDFLAGS -Wl,--no-as-needed</code>) at elaboration. To avoid fighting a builder that already enables access, the injection is suppressed per token: if <strong>any</strong> configured compile-time opt starts with <code>-debug_access</code> (e.g. <code>-debug_access+all+class</code>) the <code>-debug_access+all</code> is not added, and likewise for any <code>+acc*</code> opt.</p>
-<p>The footgun: a <em>narrower</em> configured flag counts as "covered". If your <code>builder-opts</code> set, say, <code>-debug_access+line</code> (or <code>+acc+1</code>) but not full read/write access, rtl_buddy will <strong>not</strong> add <code>+all</code>/<code>+acc+3</code>, and cocotb may fail to drive signals it needs to write. Workaround: configure full access yourself (<code>-debug_access+all</code> / <code>+acc+rw</code>) for cocotb-targeted VCS builders, or drop the narrow flag and let rtl_buddy inject the defaults. <code>-top</code> is similarly only injected when the builder hasn't already pinned a top.</p>
-<h2 id="vcs-license-queue-waits-pause-sim_timeout-so-a-sim-can-visibly-outlive-it">VCS license-queue waits pause <code>sim_timeout</code>, so a sim can visibly outlive it</h2>
-<p>On a <code>vcs</code> builder, when <code>simv</code> prints the <code>-licqueue</code> banner (<code>Queuing for License</code> or <code>Licensed number of users already reached</code>), rtl_buddy pauses the per-sim <code>sim_timeout</code> clock until real simulator output resumes — a sim stuck behind a busy license server can therefore run far longer than its configured timeout without failing. The pause is announced with a <code>sim.license_queue</code> warning and the resume with <code>sim.license_granted</code> (both include the queued seconds in the log). Total queued time is capped at 1 hour; past the cap the normal timeout resumes counting and the eventual <code>sim.timeout</code> error reports the queue wait. Applies only to the <code>vcs</code> simulator family. See <a href="../concepts/tests/#vcs-license-queue-waits-and-sim_timeout">Tests</a>.</p>
-<p>What "real simulator output" means matters, because the pause ends on the first line outside the banner's vocabulary. If a VCS release adds a line to the banner that rtl_buddy does not recognise, the clock restarts while the sim is still queuing and every queued sim fails with <code>Sim hit timeout</code>, which reads as a design or testbench failure rather than a license one. The tell is <code>Licensed number of users already reached</code> in <code>test.err</code> alongside a timeout verdict. <code>extra-sim-timeout</code> on the builder is the backstop; see <a href="../concepts/tests/#extra-simulation-timeout-per-builder">Extra simulation timeout per builder</a>.</p>
+<p>Use a behavioral reference model when portable data-integrity checking matters.</p>
+<h2 id="narrow-vcs-access-flags-suppress-cocotb-defaults">Narrow VCS access flags suppress cocotb defaults</h2>
+<p>For cocotb, rtl_buddy adds VPI access unless any configured compile option already starts with <code>-debug_access</code> or <code>+acc</code>. A narrower configured flag therefore suppresses the full default and may prevent signal writes. Remove the narrow flag or configure sufficient access, such as <code>-debug_access+all</code> and <code>+acc+rw</code>.</p>
+<h2 id="vcs-license-waits-pause-the-simulation-timeout">VCS license waits pause the simulation timeout</h2>
+<p>When VCS prints its license-queue banner, rtl_buddy pauses <code>sim_timeout</code> until simulator output resumes, for up to one hour. A queued run can therefore outlive its nominal timeout. If a newer VCS banner is not recognized, the clock may resume too early; a timeout beside license messages in <code>test.err</code> indicates this case. Use the builder's <code>extra-sim-timeout</code> as a backstop.</p>
+<h2 id="axi-profiling-converts-vcs-vpd-traces">AXI profiling converts VCS VPD traces</h2>
+<p><code>rb axi-profile run</code> converts <code>vcdplus.vpd</code> with <code>vpd2vcd</code>, trying <code>-full64</code> first and the legacy form second. Conversion details go to <code>artefacts/axi/&lt;test&gt;/vpd-convert.log</code>.</p>
+<p>If <code>vcd2fst</code> is installed, the VCD becomes a cached <code>vcdplus.fst</code>; otherwise rtl_buddy keeps and ingests the larger VCD with a warning. Cached files live beside the original VPD in the test artifact directory.</p>
 <h2 id="a-timeout-kill-can-leave-testlog-with-an-unflushed-tail">A timeout kill can leave <code>test.log</code> with an unflushed tail</h2>
-<p>When <code>sim_timeout</code> expires, rtl_buddy terminates the simulator process group. A
-process killed before it flushes its userspace output buffer can leave
-<code>artefacts/&lt;test&gt;/test.log</code> ending mid-line, often at a power-of-two byte count.
-The last captured line is therefore not reliable evidence of the exact cycle or
-transaction where the DUT stopped.</p>
-<p>Use the timeout triage order in <a href="../concepts/tests/#triaging-sim-hit-timeout">Tests</a>:
-compare sibling tests, determine whether simulated time was still advancing, and
-identify the last completed activity. Raising <code>sim_timeout</code> only helps a slow but
-progressing run; it does not fix a functional wedge or restore the missing tail.</p>
-<h2 id="vcs-hierarchical-seed-file">VCS hierarchical seed file</h2>
-<p>When using VCS with hierarchical instance seeding (<code>-xlrm hier_inst_seed</code>), VCS writes a <code>HierInstanceSeed.txt</code> file in the simulation directory after the run. <code>rtl_buddy</code> looks for this file to record the seed for reproducibility.</p>
-<p>If the file is missing, a <code>sim.hier_seed_missing</code> warning is emitted in the log and the seed is not recorded, but the test result is not affected.</p>
-<p>Ensure your VCS compile-time flags include <code>-xlrm hier_inst_seed</code> and that the simulation directory is writable so VCS can write the file.</p>
-<h2 id="vcs-vpd-traces-convert-at-profile-time-with-two-fallbacks">VCS VPD traces convert at profile time, with two fallbacks</h2>
-<p><code>rb axi-profile run</code> ingests FST and VCD natively, but a VCS debug run dumps
-Synopsys-proprietary <code>vcdplus.vpd</code> (<code>$vcdpluson</code>), so the wrapper converts it
-on the fly — <code>vpd2vcd</code> → temporary VCD → <code>vcd2fst</code> → cached <code>vcdplus.fst</code>
-next to the VPD (skipped when the cache is newer). Two non-obvious behaviors
-inside that flow:</p>
-<ul>
-<li><strong><code>vpd2vcd</code> is invoked with <code>-full64</code> first, bare second.</strong> 64-bit-only VCS
-  installs ship no 32-bit <code>vpd2vcd.exe</code>, so the bare wrapper fails outright
-  with <code>… linux/bin/vpd2vcd.exe: No such file or directory</code>; older 32-bit
-  installs may not accept <code>-full64</code>. The wrapper tries both, in that order.
-  Both attempts (and their output) are recorded in
-  <code>artefacts/axi/&lt;test&gt;/vpd-convert.log</code>.</li>
-<li><strong>Missing <code>vcd2fst</code> degrades, not fails.</strong> Without GTKWave's <code>vcd2fst</code> on
-  PATH the intermediate VCD is kept as <code>vcdplus.vcd</code> and ingested directly —
-  results are identical, but the file is roughly 15x larger than the FST
-  (the AXI 2x2 demo: 15.8M VCD vs 1.1M FST vs 376K VPD). A WARNING
-  (<code>axi_profile_run.vcd2fst_missing</code>) flags it; install GTKWave to get the
-  compact cache.</li>
-</ul>
-<p>The cached conversion artifacts live next to the VPD in the <em>test</em> artefact
-dir (<code>artefacts/&lt;test&gt;/</code>), not in axi-profile's own root — deliberate, so the
-cache-invalidation mtime comparison and the trace stay co-located, and <code>rb
-wave</code> conventions can open the converted FST from the standard place.</p>
-<h2 id="pywellen-must-keep-the-random-access-waveform-api-025">pywellen must keep the random-access Waveform API (<code>&lt;0.25</code>)</h2>
-<p><code>rb wave</code> value annotations and <code>rb saif</code> read traces through pywellen's
-random-access <code>Waveform</code> API (<code>hierarchy</code>, <code>get_signal</code>,
-<code>get_signal_from_path</code>), which pywellen 0.25.0 removed in its streaming
-rewrite. The dependency is therefore bounded to <code>pywellen &gt;= 0.20.0, &lt;0.25</code>
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/263">#263</a>).</p>
-<p>If an environment force-resolves a newer pywellen anyway (e.g. a manually
-upgraded venv), both tools fail loudly with a <code>FatalRtlBuddyError</code> naming the
-missing API and the fix (<code>pywellen.api_missing</code>) — <code>rb wave</code> checks at launch,
-before Surfer starts. They do <strong>not</strong> degrade to blank annotations or partial
-output. Porting to the streaming API is tracked in #263; the bound, the
-runtime guard (<code>tools/pywellen_compat.py</code>), and the CI surface test
-(<code>tests/test_surfer_wcp.py::TestPywellenApiSurface</code>) are lifted together when
-that lands.</p>
-<h2 id="the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">The artefact-tree lock is per tree, and its lock file stays behind</h2>
-<p>Every artifact-writing command takes an exclusive <code>flock</code> on
-<code>&lt;artifact_root&gt;/.rtl-buddy.lock</code> and <strong>fails immediately</strong> if another
-rtl-buddy process holds it (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/73">#73</a>) —
-see <a href="../concepts/execution-context/#one-run-per-artefact-tree">Execution Context</a>.
-Three consequences that can surprise:</p>
-<ul>
-<li><strong>Contention is per artefact tree, not per command family.</strong> When
-  <code>tests.yaml</code>, <code>synth.yaml</code>, <code>fpv.yaml</code>, etc. share a suite directory, they
-  share one <code>artefacts/</code> — so <code>rb hier</code> during a long <code>rb test</code>
-  in the same suite fails loud, even though their output subtrees are
-  disjoint. Deliberate: one coarse lock per tree, no partial-overlap edge
-  cases. Wait for the running command, or work from a different suite.</li>
-<li><strong>A <code>.rtl-buddy.lock</code> file lingers in <code>artefacts/</code>.</strong> It is holder
-  metadata only; the actual lock is kernel-managed and vanishes when the
-  holding process exits (crash and <code>kill</code> included). A leftover file means
-  nothing is locked — do not "clean it up" mid-run thinking it's stale
-  state, and don't be alarmed by it after runs finish.</li>
-<li><strong>No protection across hosts (NFS).</strong> <code>flock</code> is relied on with local
-  semantics only; on an NFS-mounted workspace, two runs on <em>different
-  machines</em> may both acquire "the" lock and proceed. Whether flock spans
-  NFS depends on protocol version, mount options, and the server's lock
-  daemon — rtl_buddy assumes it doesn't. Same-host concurrent runs are the
-  protected case; cross-host coordination is on you.</li>
-<li><strong>Dispatched jobs deliberately skip the lock.</strong> Under
-  <code>regression --dispatch slurm</code>, the head process holds the lock but the
-  per-test <code>rb _test-job</code> jobs do <strong>not</strong> take it — they are cooperative
-  delegates writing disjoint <code>run-*</code> dirs and reading the shared build
-  read-only. The consequence: while a dispatched regression is running,
-  nothing stops you from starting a second <code>rb test</code> in the same tree,
-  because the head's lock does not cover what the jobs are doing on the
-  compute nodes. Don't launch other commands against a tree that has a
-  dispatch run in flight.</li>
-</ul>
-<h2 id="-dispatch-silently-implies-share-build"><code>--dispatch</code> silently implies <code>--share-build</code></h2>
-<p><code>regression --dispatch &lt;backend&gt;</code> (and <code>randtest --dispatch &lt;backend&gt;</code> and
-<code>test --dispatch &lt;backend&gt;</code>, for <code>slurm</code> and <code>local-parallel</code> alike) turn on
-<code>--share-build</code> even if you didn't pass it: a <strong>dispatched build job</strong>
-compiling one shared <code>simv</code> per unique compile key on a compute node is
-exactly what lets each sim job skip compilation and re-enter at simulation.
-This changes compile behaviour versus a plain local run — tests with
-identical compile inputs compile once, not once each. Builders share-build
-cannot handle fall back to compiling inside each job, which widens that
-job's reservation to cover the compile. The build job is skipped for them
-too, but only while there is nothing to serialize: a test fanned out over
-several runs would otherwise have every element compiling into the one
-<code>artefacts/&lt;test&gt;/</code> at once, so it gets a build job and its elements wait
-for it. See
-<a href="../concepts/dispatch/#builders-that-compile-inside-the-job">Parallel dispatch</a>.
-The promotion is logged as <code>dispatch.share_build_implied</code>. Also
-note <code>--dispatch</code> cannot be combined with <code>--early-stop</code>: a build job
-compiles and the sim jobs run sim+post, so no earlier stop point is
-expressible per job (rtl_buddy rejects the combination loudly rather than
-ignoring the flag). And <code>randtest -r &lt;n&gt; --dispatch slurm</code> runs locally — a
-single-seed replay gains nothing from the queue — logging
-<code>randtest.dispatch_ignored_for_replay</code> so the ignored flag isn't silent.</p>
-<h2 id="cfg-dispatchbackend-does-not-apply-to-rb-test"><code>cfg-dispatch.backend</code> does not apply to <code>rb test</code></h2>
-<p><code>cfg-dispatch.backend</code> defaults the backend for <code>rb regression</code> and
-<code>rb randtest</code> only. <strong><code>rb test</code> dispatches only when <code>--dispatch</code> is passed
-on the command line</strong> — set <code>backend: slurm</code> in <code>root_config.yaml</code>, run
-<code>rb test basic</code>, and it still runs in-process. That is deliberate: <code>rb test</code>
-is the local iteration command, and a project that pointed its regressions
-at a cluster must not find single-test runs queueing behind it after an
-upgrade (it also keeps <code>--early-stop</code>, which dispatch rejects, usable by
-default). Nothing else in <code>cfg-dispatch</code> is ignored — <code>resources</code>, <code>retry</code>,
-<code>jobs</code>, <code>max-wait</code> and the rest all configure the run once <code>--dispatch</code>
-opts in. Pass <code>--dispatch slurm</code> (or <code>local-parallel</code>) explicitly. See
-<a href="../concepts/dispatch/">Parallel dispatch</a>.</p>
-<h2 id="-dispatch-local-parallel-ignores-resources-j-is-the-only-limit"><code>--dispatch local-parallel</code> ignores <code>resources:</code> — <code>-j</code> is the only limit</h2>
-<p>The native-process backend runs jobs as plain subprocesses on one host, and
-a host has no portable per-process cap (<code>ulimit</code>/<code>nice</code>/<code>taskset</code> are
-coarse and platform-specific). So a <code>resources:</code> block that a cluster would
-enforce is <strong>inert</strong> here: cpus/mem/time are ignored rather than
-half-applied, <code>cfg-dispatch.max-jobs-per-array</code> (a Slurm <code>%N</code> throttle) is
-ignored too, and there is no accounting source, so reservation right-sizing
-returns no advice instead of guessing at utilization. A run whose resolved
-reservations are non-default — set under <code>cfg-dispatch</code> <em>or</em> per
-testbench/test in <code>tests.yaml</code> — <strong>warns</strong> once
-(<code>dispatch.reservations_ignored</code>) so the config cannot read as enforced.
-Practical consequence: <code>-j</code>/<code>cfg-dispatch.jobs</code>
-is your only backpressure, so size it against the <strong>memory</strong> your heaviest
-tests need, not just against core count — four unreserved simulators can
-swap a laptop even though four cores are free. Right-size reservations from
-a Slurm run, not this one. See
-<a href="../concepts/dispatch/#on-one-machine-dispatch-local-parallel">Parallel dispatch</a>.</p>
-<h2 id="a-sigkilled-head-orphans-a-local-parallel-fleet">A <code>SIGKILL</code>ed head orphans a <code>local-parallel</code> fleet</h2>
-<p>Dispatched subprocesses are started in their own session so the head owns
-their teardown: <code>Ctrl-C</code> (or any fatal head error) triggers <code>cancel_all</code>,
-which signals the whole fleet with <code>SIGTERM</code> and then escalates stragglers
-to <code>SIGKILL</code> against a single 5-second deadline, letting a simulator flush
-on the graceful signal. If the head is itself <code>SIGKILL</code>ed — a CI timeout,
-<code>kill -9</code> — that cleanup never runs, and unlike Slurm (where
-<code>--kill-on-invalid-dep</code> and the controller reap the fleet) <strong>nothing else
-will</strong>: the children run their tests to completion and write envelopes no
-one reads. Prefer <code>Ctrl-C</code>; after a hard kill, check for stray
-<code>rb _test-job</code> processes.</p>
-<h2 id="an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">An unquoted <code>time:</code> in <code>cfg-dispatch</code>/<code>resources:</code> is YAML sexagesimal</h2>
-<p>YAML 1.1 parses an unquoted <code>time: 4:00:00</code> as the <strong>integer 14400</strong>
-(base-60), not the string <code>"4:00:00"</code>. Slurm would read that as 14400
-<em>minutes</em> — a 10-day reservation instead of 4 hours. Leading-zero forms
-like <code>01:00:00</code> happen to survive (the resolver needs a non-zero leading
-digit), which is why the trap is easy to miss. rtl_buddy's <code>_validate_time</code>
-<strong>rejects the integer form loudly</strong> at config load, telling you to quote
-it — so always write <code>time: "4:00:00"</code> (or bare minutes as a string,
-<code>time: "240"</code>). Applies everywhere <code>resources:</code> appears: <code>cfg-dispatch</code>,
-per-testbench, and per-test.</p>
-<h2 id="a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation">A suite's build job compiles every compile key serially, in one reservation</h2>
-<p>The per-suite build job is a single <code>sbatch</code> job running <code>rb _build-job</code>,
-which walks the suite's planned tests in order and compiles each unique
-compile key. That is deliberate — it is what makes a VCS build take one
-license seat at a time instead of one per concurrent element — but it has
-two consequences that are easy to miss when sizing <code>cfg-dispatch.compile</code>:</p>
-<ul>
-<li><strong><code>compile.time</code> must cover the sum of those compiles, not one of them.</strong>
-  A multi-testbench suite has one key per testbench (at least), so its build
-  job's wall-clock is their total. A limit sized from one observed compile
-  gets the build job killed, and because every sim job is gated on it with
-  <code>afterok</code>, the entire array is cancelled and reported as dispatch failures
-  pointing at a build log that simply stops mid-compile.</li>
-<li><strong>The whole array waits for the slowest suite-wide build</strong>, including
-  tests whose own compile key finished first. There is no partial release.</li>
-</ul>
-<p>The lever is the compile-key count, not the reservation: tests that differ
-only in their <code>plusdefines:</code> each cost a key. The build job logs one
-<code>compile.start</code> per key, which is the cheapest way to count them (a key
-already valid in the shared dir short-circuits before that event, so the
-count is of real compiles).</p>
-<h2 id="memory-right-sizing-depends-on-the-accounting-sampling-interval">Memory right-sizing depends on the accounting sampling interval</h2>
-<p><code>MaxRSS</code> is a high-water mark over <code>JobAcctGatherFrequency</code> samples, so a
-job shorter than one interval is sampled at most once and reports a peak far
-below the truth — measured 17-27x low on a site running the stock 30 s
-default, where the resulting suggestion for every short test was the 128M
-floor (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/365">#365</a>). Dispatch
-exists to produce lots of short jobs, so this is the common case rather than
-the corner one.</p>
-<p>Two things now stand between that and a bad reservation, and it is worth
-knowing both because the first can be turned off:</p>
-<ul>
-<li>every job is submitted with <strong><code>--acctg-freq=task=1</code></strong> unless your
-  <code>cfg-dispatch.sbatch-args</code> already sets <code>--acctg-freq</code>. Setting it
-  yourself — including to a coarse value, or to <code>task=0</code> — is honoured, and
-  is the supported way for a site that must not raise the sampling rate;</li>
-<li>utilization-based <strong>memory advice is suppressed</strong> for any test whose
-  longest run finished inside the interval actually in force, logged as
-  <code>rightsize.mem_advice_unsampled</code> with the test names. Time and CPU advice
-  are unaffected (elapsed and <code>TotalCPU</code> are not sampled the same way), and
-  an <code>OUT_OF_MEMORY</code> kill still raises.</li>
-</ul>
-<p>Build jobs were never affected: they run for minutes and get sampled.</p>
-<h2 id="reservation-right-sizing-has-floors-that-can-silently-suppress-advice">Reservation right-sizing has floors that can silently suppress advice</h2>
-<p>The reservation-advice thresholds (<code>over-threshold</code>, <code>near-limit</code>,
-<code>margin</code>) are configurable under <code>cfg-dispatch.rightsize</code>, but two guards
-are fixed constants: a <strong>5-minute time floor</strong> and a <strong>128M memory floor</strong>
-on suggestions, plus a keep-ratio that only emits a <code>reduce</code> when the
-suggestion actually saves ≥25% of the reservation. Consequence: for any
-time reservation below ~6m40s (<code>5min ÷ 0.75</code>), no <code>reduce</code> time advice is
-possible regardless of utilization — a very over-provisioned but tiny
-reservation can come back with no advice and no explanation. This is
-deliberate (churn suppression) but not currently tunable; if you get empty
-advice on an obviously over-reserved short job, this is why.</p>
-<h2 id="under-dispatch-preproc-runs-in-both-the-build-job-and-each-sim-job">Under <code>--dispatch</code>, <code>preproc</code> runs in both the build job and each sim job</h2>
-<p>Hook scripts (<code>sweep</code>, <code>preproc</code>, <code>postproc</code>) are compatibility-sensitive
-APIs, and dispatch changes <em>how many times</em> they run:</p>
-<ul>
-<li><strong><code>sweep</code> runs exactly once</strong>, on the head. The head expands the suite
-  and writes a plan manifest; the build job and every sim job rebuild their
-  configs from the manifest rather than re-running the hook (so a
-  nondeterministic sweep can't expand differently per process and leave a
-  sim job's compile key unbuilt).</li>
-<li><strong><code>preproc</code> runs twice</strong>: once in the build job before the shared compile,
-  and again in each sim job before its simulation (locally it runs once per
-  test). A non-idempotent <code>preproc</code> — one that generates a stimulus file,
-  bumps a counter, or otherwise has side effects — behaves differently under
-  <code>--dispatch</code>. Make <code>preproc</code> idempotent, or move one-time setup into the
-  sweep/head path.</li>
-<li><strong>Those <code>preproc</code> runs are concurrent, and <code>artifact_dir</code> is test-keyed.</strong>
-  Every element of a dispatched <code>randtest</code> (or a seed fan-out) runs the hook
-  against the <em>same</em> <code>artifact_dir</code> while its siblings' simulations read from
-  it, so a generator using <code>open(path, "w")</code> truncates a file another element
-  is reading and the short read surfaces as a <em>design</em> failure — a checker
-  mismatch against empty expected data, not a harness error. Two rules keep a
-  hook safe: write to <code>artifact_dir</code> <strong>atomically</strong> (temp file plus
-  <code>os.replace</code>), and if the generated content depends on the run or the seed,
-  write to the injected <code>run_artifact_dir</code> instead — it is unique per run
-  (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/415">#415</a>). See
-  <a href="../concepts/plugins/#where-a-generator-should-write">Where a generator should write</a>.</li>
-</ul>
-<h2 id="a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling">A build job orders the fan-out; only the stamp keeps it from recompiling</h2>
-<p>When a self-compiling test is fanned out over several runs, dispatch submits
-a build job and gates every element on it with <code>afterok</code>
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/369">#369</a>). That dependency
-makes the elements start <em>after</em> the build — it does not make them exclusive
-of each other. What actually stops them recompiling into the one
-<code>artefacts/&lt;test&gt;/</code> is the compile stamp the build job leaves, and anything
-that invalidates it invalidates it for <strong>all N at once</strong>.</p>
-<p>The realistic way in is a <code>preproc</code> that regenerates a file listed in the
-filelist. The stamp records each source's <code>st_mtime_ns</code>, so a regenerated
-file invalidates it even when the bytes are identical — and a hook that
-writes per run is a supported pattern
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/415">#415</a>). Every element
-then runs the full compile concurrently into one directory, which is exactly
-the failure the build job exists to prevent, and the result is a
-<code>Compile failed</code> that looks like a design error.</p>
-<p><code>compile.prebuilt_stamp_invalid</code> (WARNING) is emitted by any element that
-compiles despite having been gated, and is the line that identifies this.
-Two ways out until a lock or a per-run compile dir exists: make the
-generator write to <code>run_artifact_dir</code> (per-run output does not belong in a
-filelist source anyway), or emit test-keyed files only when their content
-changes, so the mtime is stable across elements.</p>
-<h2 id="a-retry-truncates-the-sim-capture-that-justified-it">A retry truncates the sim capture that justified it</h2>
-<p><code>cfg-dispatch.retry</code> re-submits a job with the <strong>same</strong> result-envelope and
-artefact paths, so the second attempt overwrites <code>artefacts/&lt;test&gt;/test.log</code>
-and the per-job <code>rtl_buddy-&lt;tag&gt;.log</code> of the first. Only the <strong>scheduler</strong>
-log is kept per attempt (<code>slurm-&lt;tag&gt;-retry&lt;N&gt;.log</code>) — so if the license-queue
-banner that justified the retry landed only in the sim's own capture, the
-retry destroys the evidence for itself. When debugging a run that retried and
-still failed, read the <code>dispatch.result_missing</code> entry in <code>rtl_buddy.log</code> and
-the per-attempt scheduler logs, not <code>test.log</code>. See
-<a href="../concepts/dispatch/#retrying-a-license-queue-kill">Retrying a license-queue kill</a>.</p>
-<h2 id="with-retry-enabled-max-wait-bounds-each-wait-not-their-sum">With retry enabled, <code>max-wait</code> bounds each wait, not their sum</h2>
-<p><code>cfg-dispatch.max-wait</code> is a per-wait deadline, and every retry round waits
-again — so a run with <code>attempts: 2</code> can take up to roughly
-<code>attempts × (backoff + max-wait)</code>, not <code>max-wait</code>. Each round's deadline is
-additionally widened by the backoff the head asked for, because a job held on
-<code>--begin</code> is outstanding (PENDING) for the whole delay and a <code>max-wait</code>
-shorter than the backoff would otherwise trip before the job was allowed to
-start. If you set <code>max-wait</code> as a run-duration ceiling, divide it by
-<code>attempts + 1</code> or leave retry off. See
-<a href="../concepts/dispatch/#retrying-a-license-queue-kill">Retry and <code>max-wait</code></a>.</p>
-<h2 id="a-begin-in-sbatch-args-silently-disables-the-retry-backoff">A <code>--begin</code> in <code>sbatch-args</code> silently disables the retry backoff</h2>
-<p>The retry emits <code>--begin=now+&lt;delay&gt;</code> <strong>before</strong> <code>cfg-dispatch.sbatch-args</code>,
-and <code>sbatch</code> takes the last occurrence of a duplicated flag — so a site that
-passes its own <code>--begin</code> through <code>sbatch-args</code> wins and the backoff never
-happens. The retried jobs go straight back in front of the pool that killed
-them, which is the synchronised retry storm the jittered backoff exists to
-avoid. Consistent with every other <code>sbatch-args</code> override, but silent: drop
-<code>--begin</code> from <code>sbatch-args</code> if you want the backoff. See
-<a href="../concepts/dispatch/#retrying-a-license-queue-kill">Retrying a license-queue kill</a>.</p>
-<h2 id="a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail">A dispatched compile failure surfaces as CompileFail, not DispatchFail</h2>
-<p>When a test's compile fails, the build job records it and the head maps the
-row to a <strong>CompileFail</strong> — the same clean design-error result the
-in-process path produces — pointing at the build-job log. (A genuine
-infrastructure failure — a job the scheduler killed, or one that vanished
-without writing a result — is still a <code>DispatchFail</code>, and its desc names
-both the sim-job and build-job logs.) The failing test's sim job is still
-submitted and recompiles under its <strong>sim</strong> reservation, not the
-<code>cfg-dispatch.compile</code> one; if that recompile is heavier than the sim
-reservation allows it may be OOM/<code>TIMEOUT</code>-killed — size <code>cfg-dispatch</code>
-reservations so a compile fits, or expect the killed recompile to be folded
-into the CompileFail above.</p>
-<h2 id="rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand"><code>rb nvim-install</code> requires git + network, and pins the plugin by hand</h2>
-<p>Unlike the old <code>rb wave-install-nvim</code> (which copied a bundled <code>.lua</code> offline),
-<code>rb nvim-install</code> (the new primary name; <code>wave-install-nvim</code> is now an alias)
-fetches the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a>
-plugin with <code>git clone</code>. It therefore needs <strong><code>git</code> on PATH and network
-access</strong>. For air-gapped machines, install from a local checkout instead:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--source<span class="w"> </span>/path/to/rtl-buddy-nvim<span class="w"> </span>--ref<span class="w"> </span>&lt;ref&gt;
+<p>When <code>sim_timeout</code> expires, the simulator may be terminated before flushing output. <code>test.log</code> can end mid-line or at a power-of-two byte count, so its final bytes are not an exact stop location. Follow the <a href="../concepts/tests/#triaging-sim-hit-timeout">timeout triage order</a> before raising the limit.</p>
+<h2 id="pywellen-must-remain-below-025">pywellen must remain below 0.25</h2>
+<p><code>rb wave</code> annotations and <code>rb saif</code> require pywellen's removed random-access API, so the supported range is <code>&gt;=0.20,&lt;0.25</code>. A forced newer version fails at launch with <code>pywellen.api_missing</code>; restore the supported dependency range.</p>
+<h2 id="artifact-locking-is-per-tree-and-per-host">Artifact locking is per tree and per host</h2>
+<p>Artifact-writing commands take <code>&lt;artifact_root&gt;/.rtl-buddy.lock</code> and fail immediately on same-host contention. The file remains after release; kernel lock state, not file presence, determines whether the tree is locked.</p>
+<p>The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.</p>
+<h2 id="dispatch-changes-build-behavior">Dispatch changes build behavior</h2>
+<p><code>--dispatch</code> implies <code>--share-build</code> and rejects <code>--early-stop</code>. <code>cfg-dispatch.backend</code> defaults <code>regression</code> and <code>randtest</code>, but <code>rb test</code> remains local unless <code>--dispatch</code> is explicit. A one-seed <code>randtest</code> replay also stays local.</p>
+<p>Shareable builders compile once per compile key. Builders that cannot share compile in their jobs; fanned-out tests still use a build job to serialize access to their compile directory. See <a href="../concepts/dispatch/">Parallel Dispatch</a>.</p>
+<h2 id="local-parallel-enforces-only-the-job-count">local-parallel enforces only the job count</h2>
+<p>The <code>local-parallel</code> backend ignores CPU, memory, time, array-throttle, and right-sizing settings. <code>-j</code> or <code>cfg-dispatch.jobs</code> is the only limit, so size concurrency for the heaviest test's memory use.</p>
+<p>Normal interruption terminates the worker process groups. <code>SIGKILL</code> of the head process cannot run cleanup and can orphan <code>rb _test-job</code> children; inspect and stop them after a hard CI timeout or <code>kill -9</code>.</p>
+<h2 id="quote-dispatch-time-values">Quote dispatch time values</h2>
+<p>YAML 1.1 parses an unquoted value such as <code>time: 4:00:00</code> as an integer. rtl_buddy rejects it rather than submit a 10-day Slurm reservation. Use <code>time: "4:00:00"</code> or a quoted minute count everywhere <code>resources:</code> appears.</p>
+<h2 id="dispatch-build-jobs-cover-the-whole-suite">Dispatch build jobs cover the whole suite</h2>
+<p>One suite build job compiles every unique compile key serially, so <code>compile.time</code> must cover their total and all simulation jobs wait for the complete build. Count <code>compile.start</code> events to estimate the work.</p>
+<p>Under dispatch, <code>sweep</code> runs once on the head, while <code>preproc</code> runs in the build job and again in every simulation job. Make <code>preproc</code> idempotent. Write shared generated files atomically to <code>artifact_dir</code>; write run-dependent files to <code>run_artifact_dir</code>.</p>
+<p>Simulation jobs rely on the build stamp to skip recompilation. A preprocessor that rewrites a filelist source changes its mtime, invalidates every stamp, and can trigger concurrent compiles into one directory. <code>compile.prebuilt_stamp_invalid</code> identifies this case. Avoid rewriting unchanged shared inputs.</p>
+<p>A design compile error is reported as <code>CompileFail</code>, not <code>DispatchFail</code>. Infrastructure failures remain <code>DispatchFail</code>. A failed build may be retried inside a simulation reservation, so size that reservation to accommodate compilation for non-shareable or recovery paths.</p>
+<h2 id="slurm-retry-reuses-artifact-paths">Slurm retry reuses artifact paths</h2>
+<p>A retry overwrites the first attempt's simulation capture and per-job rtl_buddy log; only <code>slurm-&lt;tag&gt;-retry&lt;N&gt;.log</code> remains attempt-specific. Use scheduler logs and the head's <code>dispatch.result_missing</code> event when diagnosing retries.</p>
+<p><code>max-wait</code> applies to each attempt, not the whole run, and includes the requested backoff. A later <code>--begin</code> in <code>sbatch-args</code> overrides rtl_buddy's retry delay because Slurm uses the last duplicate option. Remove custom <code>--begin</code> when using retry backoff.</p>
+<h2 id="slurm-memory-advice-depends-on-accounting-samples">Slurm memory advice depends on accounting samples</h2>
+<p>rtl_buddy requests one-second task accounting unless <code>sbatch-args</code> already sets <code>--acctg-freq</code>. Memory advice is suppressed when the longest run ends within the active sampling interval because <code>MaxRSS</code> is unreliable; time and CPU advice remain available.</p>
+<p>Right-sizing suggestions also have fixed five-minute and 128 MB floors and require at least 25% savings. Very small reservations can therefore produce no reduction advice even when utilization is low.</p>
+<h2 id="rb-nvim-install-requires-git-and-network-access"><code>rb nvim-install</code> requires git and network access</h2>
+<p>The default install clones a pinned <code>rtl-buddy-nvim</code> revision. For an air-gapped system, provide a local checkout:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--source<span class="w"> </span>/path/to/rtl-buddy-nvim<span class="w"> </span>--ref<span class="w"> </span>&lt;ref&gt;
 </code></pre></div>
-<p>The revision it clones is pinned in <code>RTL_BUDDY_NVIM_REF</code>
-(<code>src/rtl_buddy/tools/nvim_install.py</code>). That pin and the hub wire-protocol
-version (<code>PROTOCOL_VERSION</code> in <code>src/rtl_buddy/hub/protocol.py</code>) are coupled but
-not mechanically linked: the pinned plugin speaks one protocol version, and the
-hub enforces it on the wire (<code>decode()</code> rejects a mismatched <code>v</code>), so a mismatch
-would surface only as a failed handshake on a <em>user's</em> machine — never at build
-time.</p>
-<p>The guard against that drift is a CI tripwire: <code>_PIN_PROTOCOL_VERSION</code> sits next
-to the pin and <code>test_pin_tracks_hub_protocol_version</code> asserts it equals the hub
-<code>PROTOCOL_VERSION</code>. When you bump <code>PROTOCOL_VERSION</code>, the test fails until you
-(1) tag a compatible <code>rtl-buddy-nvim</code> release, (2) bump <code>RTL_BUDDY_NVIM_REF</code> to
-it, and (3) bump <code>_PIN_PROTOCOL_VERSION</code>. Keep the three in lockstep.</p>
-<h2 id="verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute">Verilator searches a relative source name through <code>+incdir+</code>/<code>-y</code> before the cwd, so <code>run.f</code> pins sources absolute</h2>
-<p>Verilator resolves a <em>relative</em> top-level source name from a filelist by
-searching the user <code>+incdir+</code>/<code>-y</code> directories <strong>before</strong> falling back to the
-directory the path is spelled against. A climbing source entry
-(<code>../../../../design/dut.sv</code>) can therefore compose with a climbing incdir
-(<code>+incdir+../../../../common</code>) into a path that walks further up the tree than
-either alone. In a git worktree nested inside the primary checkout (e.g.
-<code>.claude/worktrees/&lt;name&gt;</code>, four levels down), the composed candidate lands on
-the <em>same-named file in the primary checkout</em> — the build silently compiles
-sources that were never edited and reports PASS
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/457">#457</a>).</p>
-<p>Since <a href="https://github.com/rtl-buddy/rtl_buddy/pull/458">#458</a>, <code>rb test</code> pins
-every explicit source entry (bare and <code>-v</code>) in the generated <code>run.f</code> to its
-resolved absolute path, quoted if it contains whitespace. Search options
-(<code>+incdir+</code>, <code>-y</code>, <code>+libext+</code>, <code>-F</code>) keep their relative spelling and
-precedence — a <code>-y</code> <em>directory</em> is resolved against the cwd and is not
-composed through the incdir list the way a source <em>name</em> is, so the search
-path itself cannot re-open the escape; the <code>filelist.path_escapes_root</code>
-warning remains the guard on out-of-tree search directories.</p>
-<p>Consequences:</p>
-<ul>
-<li><strong><code>run.f</code> is a generated, non-portable artifact.</strong> It names one checkout at
-  one mount spelling. It is regenerated on every compile, so this costs
-  nothing in the normal flow — but do not copy it between checkouts or check
-  it in.</li>
-<li><strong>The pin uses <code>abspath</code>, not <code>realpath</code></strong>, consistent with the
-  project-root escape check: symlinks are preserved, so running the same test
-  through two symlinked spellings of the same project root produces two
-  different <code>run.f</code> contents — and, because compile keys hash the raw lines,
-  two shared-build keys and two <code>obj_dir</code>s. Pick one spelling and stay with
-  it.</li>
-<li><strong>Under <code>--dispatch</code>, the process that compiles is the process that writes
-  <code>run.f</code></strong> (the build job, on a compute node), so the pinned paths are
-  always that node's own view of the project. On a cluster whose nodes mount
-  the project at <em>different</em> paths, a stamp written by one node fails to
-  validate on another and the build re-runs there — a spurious recompile,
-  never a wrong source.</li>
-</ul>
-<h2 id="shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them">Shared-build reuse sees header edits only where the builder reports them</h2>
-<p>With <a href="../concepts/tests/#sharing-compiled-builds-across-tests"><code>--share-build</code></a>
-(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/293">#293</a>), a compile is
-skipped when the <code>rb-compile-stamp.json</code> in the shared build dir matches the
-current compile inputs. The stamp covers the compile command, the extra
-compile env, the size/mtime of every <strong>file listed in the resolved <code>run.f</code></strong>,
-and — since <a href="https://github.com/rtl-buddy/rtl_buddy/issues/303">#303</a> — every
-input the builder reports having <strong>consumed</strong>, read from the dependency file
-it emits. What that last part covers depends entirely on the builder:</p>
-<ul>
-<li><strong>Verilator</strong> emits <code>V&lt;prefix&gt;__ver.d</code>, so included headers, files reached
-  through <code>-y</code> library dirs, its own std includes and the <code>verilator_bin</code>
-  binary are all tracked. A header-only edit and an in-place Verilator
-  upgrade each invalidate the stamp.</li>
-<li><strong>VCS and Icarus</strong> emit nothing comparable. Their stamps record
-  <code>"deps": null</code> — <em>no dependency information</em>, not <em>no dependencies</em> — and
-  reuse behaves as it did before: <strong>editing a header reachable only through
-  <code>+incdir+</code>/<code>-y</code> does not invalidate the stamp</strong>, and a warm run reuses a
-  simv built from the old header.</li>
-</ul>
-<p>Two things stay untracked for every builder: the <strong>ambient environment</strong> the
-compile subprocess inherits (only the <em>extra</em> compile env is recorded), and
-anything a builder consumes without declaring. The one ambient input that
-<em>is</em> tracked is the builder itself — see
-<a href="#a-shared-build-predating-467-is-reused-across-a-simulator-swap">the toolchain entry</a>
-— so a <code>PATH</code> change that selects a different simulator does invalidate the
-stamp, while a <code>PATH</code> change that reaches some other tool the builder shells
-out to does not.</p>
-<p>The escape hatch where tracking does not reach: delete the stamp, or run
-once without <code>--share-build</code>, to force a fresh compile. <strong>Which stamp
-depends on the builder</strong>, and the distinction matters most for exactly the
-builders with no dependency tracking:</p>
-<ul>
-<li>a <em>shared</em> build stamps <code>artefacts/.shared-builds/obj_dir_&lt;key&gt;/</code>, so
-  deleting <code>artefacts/.shared-builds/</code> covers it;</li>
-<li>a build that could not be shared (any non-Verilator/VCS/Icarus family, or
-  an absolute <code>builder-simv:</code>) stays in the test's own directory and stamps
-  <code>artefacts/&lt;test&gt;/rb-compile-stamp.json</code>, which that deletion does <strong>not</strong>
-  touch.</li>
-</ul>
-<p>When a warm run rebuilds and you want to know why, <code>compile.build_dep_changed</code>
-(DEBUG) names the input that changed.</p>
-<p>A stamp written by an rtl_buddy older than #303 has no dependency record at
-all, and its silence cannot be told from "there were none" — such a stamp is
-rejected, so the first run after upgrading recompiles once per compile key.</p>
-<p>The same one-time cost applies across
-<a href="https://github.com/rtl-buddy/rtl_buddy/pull/458">#458</a>: the compile key
-hashes the raw <code>run.f</code> lines, and #458 changed every explicit source line
-from relative to absolute (see
-<a href="#verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute">the <code>run.f</code> pinning entry</a>),
-so the first run after upgrading recompiles once per compile key. An
-unexplained full rebuild right after that upgrade is this, not a dependency
-change.</p>
-<p>Within-run and concurrent safety are separate concerns and <em>are</em> handled —
-same-key tests share by construction, and cross-process races are excluded by
-the
-<a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">per-tree artefact lock</a>
-(with that quirk's NFS caveat applying here too).</p>
-<h2 id="a-shared-build-predating-467-is-reused-across-a-simulator-swap">A shared build predating #467 is reused across a simulator swap</h2>
-<p>Before <a href="https://github.com/rtl-buddy/rtl_buddy/issues/467">#467</a>, the
-<code>rb-compile-stamp.json</code> recorded the builder as <strong>configured</strong> — the string
-<code>verilator</code> — which is the same string whichever install <code>PATH</code> resolves it
-to. Nothing in the stamp said <em>which</em> simulator produced the build, so
-pointing a project at a different one left the stamp validating: the compile
-short-circuited, and the run reported PASS on a binary the new toolchain had
-never produced.</p>
-<p>Nothing looks wrong while it happens. The log says
-<code>reused shared build … (compile skipped)</code>, which is what it says on a
-legitimate reuse, and there is no failure to read.</p>
-<p><code>--dispatch</code> <a href="#-dispatch-silently-implies-share-build">implies <code>--share-build</code></a>
-while a plain local <code>regression</code> compiles per test unless asked, so the same
-regression would <strong>fail correctly when run locally and pass when
-dispatched</strong> — which reads as a scheduler or environment problem and sends
-the investigation somewhere else entirely. It is not: both paths are the same
-stamp. The practical consequence is that <strong>a toolchain A/B run through a
-shared build reports green whichever side it is on</strong>.</p>
-<p>Both reuse paths were affected — the shared one, and the unshared per-test
-stamp a builder rtl_buddy cannot redirect writes into its own compile work
-dir.</p>
-<p>Fixed by <a href="https://github.com/rtl-buddy/rtl_buddy/pull/468">#468</a>: the
-resolved executable joins the compile key (so two installs get two build
-dirs, and an A/B keeps both builds runnable), while its size, mtime and
-version banner join the stamp (so upgrading one install in place rebuilds in
-place). <code>compile.build_toolchain_changed</code> names the old and new toolchain
-when that is what invalidated a stamp, and <code>compile.build_reused</code> now names
-the toolchain whose output a skipped compile is about to simulate.</p>
-<p><strong>On a release older than #468</strong>, treat a toolchain change as invalidating
-every shared build by hand:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rm<span class="w"> </span>-rf<span class="w"> </span>&lt;suite&gt;/artefacts/.shared-builds/<span class="w">          </span><span class="c1"># and artefacts/&lt;test&gt;/rb-compile-stamp.json</span>
+<p>The plugin pin must speak the hub protocol shipped by rtl_buddy; maintainers update both together.</p>
+<h2 id="generated-runf-files-are-checkout-specific">Generated <code>run.f</code> files are checkout-specific</h2>
+<p>rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. Do not commit or copy <code>run.f</code> between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.</p>
+<p>On a cluster with different mount paths per node, a stamp from one node may not validate on another. This causes a safe recompile, not compilation of the wrong source.</p>
+<h2 id="shared-build-dependency-tracking-varies-by-simulator">Shared-build dependency tracking varies by simulator</h2>
+<p>Verilator reports consumed headers, library files, its standard includes, and its binary, so changes invalidate the shared-build stamp. VCS and Icarus do not report equivalent dependency data; editing a header reached only through <code>+incdir+</code> or <code>-y</code> can reuse a stale build.</p>
+<p>Ambient environment variables and undeclared tool inputs are not tracked. Force a rebuild by deleting the specific shared directory under <code>artefacts/.shared-builds/</code> or the test's <code>rb-compile-stamp.json</code>, or run without <code>--share-build</code>. <code>compile.build_dep_changed</code> explains detected invalidation.</p>
+<h2 id="yosys-backed-flows-do-not-support-whitespace-in-paths">Yosys-backed flows do not support whitespace in paths</h2>
+<p>Yosys script parsing is not shell parsing: whitespace splits tokens, <code>#</code> starts a comment, and single quotes from <code>shlex.quote</code> do not group a path. Keep design and artifact paths for synthesis and FPV free of whitespace. <code>fpv.yaml</code> parameter validation also rejects whitespace, <code>;</code>, and <code>#</code>.</p>
+<p>String-valued parameter overrides require SystemVerilog quotes inside the YAML scalar; ordinary numeric values must not be quoted as strings.</p>
+<h2 id="unknown-synthesis-overrides-are-ignored-after-a-warning">Unknown synthesis overrides are ignored after a warning</h2>
+<p><code>synth.yaml</code> <code>tool_overrides</code> uses snake_case keys such as <code>plugin_path</code> and <code>single_unit</code>, unlike the kebab-case names under <code>cfg-synth-tools.opts</code>. An unknown key logs <code>synth_tool_config.unknown_override</code> and the run uses the default. A non-mapping override block or non-boolean <code>single_unit</code> is fatal. See <a href="../concepts/synthesis/">Synthesis</a>.</p>
+<h2 id="fpv-coi-analysis-is-best-effort">FPV COI analysis is best-effort</h2>
+<p>A cone-of-influence Yosys failure logs <code>fpv coi_yosys_failed</code>, omits COI data, and does not fail a successful proof. If COI numbers disappear, inspect <code>artefacts/&lt;name&gt;/coi.log</code> and verify <code>cfg-fpv-tools[].opts.plugin-path</code> or <code>RTL_BUDDY_SLANG_PLUGIN</code>.</p>
+<h2 id="fpga-bitstream-generation-relaxes-two-io-drcs">FPGA bitstream generation relaxes two I/O DRCs</h2>
+<p>Before <code>write_bitstream</code>, rtl_buddy downgrades Vivado NSTD-1 and UCIO-1 so bring-up designs without a complete pinout can produce a bitstream. The earlier DRC report and machine result retain their original severity. Treat either violation as blocking for real hardware and add the missing <code>IOSTANDARD</code> and <code>LOC</code> constraints.</p>
+<h2 id="fpga-timing-is-optional-unless-gated">FPGA timing is optional unless gated</h2>
+<p>A completed routed run reports PASS even with negative slack. Read <code>timing_met</code>, <code>wns_ns</code>, and <code>failing_paths</code> for closure work. Set <code>require-timing-met: true</code> in <code>fpga.yaml</code> to make a reported miss fail the run; an unsupported <code>timing_met: null</code> cannot trigger the gate.</p>
+<h2 id="graph-coverage-source-changes-attribution">Graph coverage source changes attribution</h2>
+<p>A merged LCOV <code>.info</code> attributes coverage by file, so every module declared in one file receives the same totals. Use the default <code>--coverage auto</code> or model artifacts for per-module attribution. Unresolved and re-anchored LCOV paths are reported in the summary.</p>
+<p><code>--coverage</code> requires <code>auto</code>, <code>model</code>, <code>none</code>, or a merged <code>.info</code> path. <code>--no-coverage</code> disables the join.</p>
+<h2 id="the-viewer-distribution-and-executable-have-different-names">The viewer distribution and executable have different names</h2>
+<p>Install the <code>rtl-buddy-sch</code> distribution; rtl_buddy invokes its <code>rtl-buddy-view</code> executable and imports <code>rtl_buddy_view</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-sch
 </code></pre></div>
-<p>or run the comparison without <code>--share-build</code> — which means <strong>not through
-<code>--dispatch</code></strong>, since dispatch turns it on for you.</p>
-<p>The first run after upgrading <em>to</em> #468 recompiles once per compile key: the
-key changed, so previous <code>obj_dir_&lt;hash&gt;</code> directories no longer match and are
-left behind. They are safe to delete.</p>
-<h2 id="whitespace-in-a-path-or-a-defineparameter-value-does-not-survive-a-yosys-script-line">Whitespace in a path or a define/parameter value does not survive a yosys script line</h2>
-<p>yosys splits a script line on <strong>whitespace</strong>, and it is not a shell. Measured against yosys 0.64+193:</p>
-<ul>
-<li><code>read_verilog -DX="a b" t.v</code> fails with <code>File `b"' not found</code> — the double quotes grouped nothing and the closing one stayed attached to the stray token.</li>
-<li>A token that <em>begins</em> with <code>"</code> is the one exception: it is grouped to the matching <code>"</code>, and those quotes are stripped.</li>
-<li>Quotes anywhere else in a token pass through <strong>verbatim</strong>. <code>-DW="4"</code> reaches the frontend as the string literal <code>"4"</code>, so a <code>[</code>W-1:0]<code>port elaborates 52 bits wide rather than 4. This is what makes a string-typed</code>params:<code>override work —</code>-G MODE="small"<code>elaborates, while</code>-G MODE=small` is rejected by slang as "not a valid form of parameter override".</li>
-<li><code>#</code> starts a comment for the rest of the line, <strong>mid-line included</strong>: <code>read_verilog -DW=4 #x w.v</code> fails with "Command syntax error: No filename given", i.e. the source files were silently swallowed.</li>
-<li><code>;</code> does <strong>not</strong> separate commands inside a script file. It reaches the frontend and dies as a syntax error in the design source, with nothing pointing back at the config that produced it.</li>
-</ul>
-<p>Consequences for rtl_buddy: <code>rb fpv</code> and <code>rb synth</code> <code>shlex.quote</code> the paths they emit, which is a no-op on an ordinary path and does <strong>not</strong> rescue one containing a space — <code>shlex.quote</code> emits <em>single</em> quotes, which yosys does not honour, so <code>'a dir/x.v'</code> fails as <code>File `'a' not found</code>. Keep design and artefact paths free of whitespace for the yosys-backed flows. <code>fpv.yaml</code>'s <code>params:</code> validator rejects whitespace, <code>;</code> and <code>#</code> in a value at config-load time for the same reason, so a bad override is named at load rather than surfacing as an unrelated <code>read_slang</code> error deep in <code>fpv.log</code>.</p>
-<h2 id="an-unknown-synthyaml-tool_overrides-key-warns-but-does-not-stop-the-run">An unknown <code>synth.yaml</code> <code>tool_overrides</code> key warns but does not stop the run</h2>
-<p><code>synth.yaml</code> <code>tool_overrides.&lt;tool&gt;</code> keys are the <strong>snake_case</strong> attribute names (<code>synth_args</code>, <code>abc_args</code>, <code>strategy</code>, <code>frontend</code>, <code>plugin_path</code>, <code>single_unit</code>), not the kebab-case spelling used under <code>cfg-synth-tools.opts</code>. A key outside that set — a typo, or <code>single-unit</code> / <code>plugin-path</code> copied from root-config — is reported at config resolution as a <code>synth_tool_config.unknown_override</code> <strong>WARNING</strong> (with a <code>'single-unit' -&gt; 'single_unit'</code> hint) and then <strong>ignored</strong>: the run proceeds with the tool-level default for that field, so a synthesis that looks fine in the summary may not have used the option you set. Through v6.36.0 the key was dropped with no message at all. It warns rather than fails because breaking changes only land on major bumps (see <a href="../migrations/">Migrations</a>); making it fatal is a candidate for the next major. Two related shapes <em>are</em> fatal today, since no existing config could have carried them: a wrongly-typed <code>single_unit</code> (<code>"true"</code>, <code>1</code>, or an empty value — write an unquoted YAML <code>true</code>/<code>false</code>) and a <code>tool_overrides.&lt;tool&gt;</code> block that is not a mapping. See <a href="../concepts/synthesis/#per-tool-overrides">Per-tool overrides</a>.</p>
-<h2 id="a-wrong-fpv-plugin-path-degrades-coi-coverage-silently">A wrong FPV plugin path degrades COI coverage silently</h2>
-<p><code>rb fpv</code> / <code>rb fpv-regression</code> treat the cone-of-influence pass as best-effort: when the yosys COI script fails — most commonly because the yosys-slang plugin path is wrong (stale <code>plugin-path</code>, an unbuilt <code>slang.so</code>, or a sibling-checkout convention that doesn't hold on this machine) — the run only emits <code>fpv coi_yosys_failed</code> WARNINGs and drops the COI column. The verification verdict itself still PASSes, because the proof pipeline loads the plugin separately, so a broken plugin location can sit unnoticed while COI coverage quietly reports nothing.</p>
-<p>If COI numbers disappear or <code>coi_yosys_failed</code> shows up in the log, check the resolved plugin location first: <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>, or — when that is unset — the <code>RTL_BUDDY_SLANG_PLUGIN</code> environment variable. The per-verification <code>coi.log</code> under <code>artefacts/&lt;name&gt;/</code> records the exact yosys error (e.g. <code>Can't load module ...slang.so</code>).</p>
-<h2 id="rb-fpga-bitstream-downgrades-unconstrained-io-drcs-to-write-the-bitstream"><code>rb fpga --bitstream</code> downgrades unconstrained-I/O DRCs to write the bitstream</h2>
-<p>A bitstream write (<code>rb fpga &lt;run&gt; --bitstream</code>) downgrades two I/O DRCs to warnings immediately before <code>write_bitstream</code>: <strong>NSTD-1</strong> (a port without an <code>IOSTANDARD</code>) and <strong>UCIO-1</strong> (a port without a <code>LOC</code>). Vivado treats both as errors that abort <code>write_bitstream</code>, so a design without a complete board pinout — the common <code>rb fpga</code> bring-up/smoke case — could synthesize and route but never produce a bitstream. The downgrade makes the zero-pinout case produce a <code>.bit</code> out of the box.</p>
-<p>This is deliberate and it is <strong>not silent in the data</strong>: <code>report_drc</code> runs <em>before</em> the downgrade, so both violations are still counted in <code>drc_violations</code> / <code>drc_by_severity</code> at their original severity in the results and machine payload — only the gate that blocks <code>write_bitstream</code> is relaxed. A board-targeted design with a full pinout has no NSTD-1/UCIO-1 violations, so it is unaffected. If you are taking a design to real hardware, treat any NSTD-1/UCIO-1 in the report as the error it is and add the missing <code>IOSTANDARD</code>/<code>LOC</code> constraints in your XDC; the downgrade is a bring-up convenience, not a sign-off policy.</p>
-<h2 id="rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met"><code>rb fpga</code> PASSes a routed run that misses timing (unless <code>require-timing-met</code>)</h2>
-<p>By default a routed run with negative slack (<code>timing_met: false</code>, negative <code>wns_ns</code>) still reports <strong>PASS</strong>. This is intentional and mirrors <code>rb pnr</code>: the metrics carry the truth so an agent can run a timing-closure loop — read <code>timing_met</code> / <code>wns_ns</code> / <code>failing_paths</code> from the machine JSON, edit the XDC or RTL, and rerun — instead of the run simply failing with no actionable detail. Pass/fail keys off the flow completing (synth → route → reports), not off meeting timing.</p>
-<p>To make timing a hard gate (e.g. for a regression suite that must not regress closure), set <code>require-timing-met: true</code> on the run in <code>fpga.yaml</code>. An unmet-timing run then becomes a <strong>FAIL</strong>, but the routed metrics still ride along on the failing result so the closure loop keeps its inputs. The gate only fires when the backend actually reports timing — a backend that cannot measure it (<code>timing_met: null</code>) is never gated, since a miss cannot be proven.</p>
-<h2 id="rb-graph-results-coverage-mergedinfo-joins-design-heat-by-file-so-two-modules-in-one-file-share-numbers"><code>rb graph results --coverage &lt;merged.info&gt;</code> joins design heat by file, so two modules in one file share numbers</h2>
-<p>The <code>info</code> source ingests a merged LCOV <code>.info</code>, and LCOV records files, never module names. A <code>module:</code> node therefore gets the numbers of exactly the <code>SF:</code> record that resolves to the file the node claims — so <strong>two modules declared in one source file both wear that file's whole coverage</strong>. The entry says so (<code>joined_by: "file"</code>), and the richer <code>model</code> / <code>artefacts</code> sources do not have this behavior: they read the simulator's own per-module attribution. If you need per-module numbers from one file, join from a coverage-mode run's <code>cov_dir/manifest.json</code> (<code>--coverage auto</code>, the default) rather than from an <code>.info</code>.</p>
-<p>Two related bounds on the same source. An <code>SF:</code> path is believed only when it reaches a real file — either as written (absolute, or relative to the <code>.info</code>'s own directory) or after leading segments are trimmed to re-anchor it on the project root, and <strong>never down to a bare basename</strong>: a repo-scope <code>--coverage-merge</code> can rewrite duplicate basenames against the wrong suite's root, so a basename that happens to exist under your root is not evidence. Records that only resolved after trimming are listed in <code>summary.reanchored_files</code>; records that resolved to nothing land in <code>summary.unresolved_files</code> with a <code>problems</code> row. And because a merged <code>.info</code> carries no test column and no SVA cover points, per-test badges and <code>covitem:</code> verdicts still come from the per-test <code>coverage.dat</code> databases — with none in the tree, <code>summary.items</code> counts what the graph <em>declares</em> while <code>summary.items_scored</code> is <code>0</code>, which is what distinguishes "nothing scored these" from "the run hit none of them".</p>
-<h2 id="rb-graph-results-coverage-takes-a-value-now-so-a-bare-coverage-no-longer-parses"><code>rb graph results --coverage</code> takes a value now, so a bare <code>--coverage</code> no longer parses</h2>
-<p>In v6.30.x, <code>--coverage/--no-coverage</code> was a boolean pair and the join was on by default. It now <strong>names a source</strong> — <code>auto</code> (the default), <code>model</code>, <code>none</code>, or a path to a merged LCOV <code>.info</code> — so <code>rb graph results --coverage</code> with no value fails with <em>"Option '--coverage' requires an argument"</em>. The break is loud rather than silent, and passing the flag bare was always redundant (the join was already on), but a script that did so needs one edit.</p>
-<p>The fix is whichever you meant: drop the flag entirely (the default is unchanged), or write <code>--coverage auto</code>. <code>--no-coverage</code> is untouched and still disables the join, as does <code>--coverage none</code>. Click can express an optional-value option (<code>is_flag=False, flag_value=...</code>), which would have kept the bare form working; Typer forwards neither kwarg and deprecates both, so that route is closed until Typer supports it.</p>
-<h2 id="rb-hier-block-diagram-needs-a-renderer-that-has-not-been-released-yet"><code>rb hier --block-diagram</code> needs a renderer that has not been released yet</h2>
-<p><code>--block-diagram</code> is listed in <code>rb hier --help</code> and documented on the <a href="../concepts/hier/#block-diagrams">Hierarchy Rendering</a> page, but the renderer half of it — <a href="https://github.com/rtl-buddy/rtl-buddy-sch/pull/160">rtl-buddy-sch#160</a> — is not in any published <code>rtl-buddy-sch</code> release. Every viewer you can install today rejects the option.</p>
-<p>rtl_buddy forwards the flag anyway, so that the mode works the moment the renderer release lands without an rtl_buddy release in between. The flag is inert until then, and the failure is made legible rather than raw:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>hier: --block-diagram needs rtl-buddy-sch &gt;= 0.8.0 (rtl-buddy-sch#160),
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>but the installed viewer is 0.7.1. Upgrade the renderer, or drop
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>--block-diagram to render the hierarchy instead:
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    pip uninstall -y rtl-buddy-view &amp;&amp; pip install -U &quot;rtl-buddy-sch &gt;= 0.8.0&quot;
-</code></pre></div>
-<p>What to do: drop the flag (<code>rb hier &lt;model&gt; --format dot</code> renders the hierarchy as before), or install <code>rtl-buddy-sch &gt;= 0.8.0</code> once it exists. Two details worth knowing. The floor is a <strong>prediction</strong> — 0.7.1 is the current release and #160 is a feature, so the next minor is the expected home; if it ships elsewhere the number in the message is wrong, but the diagnosis is driven by the renderer's own unknown-option reply, not by the version. And the version is probed only after a failure, never before, so a dev or editable viewer built from the feature branch is used rather than pre-emptively refused.</p>
-<h2 id="the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view">The viewer answers to four different names: dist <code>rtl-buddy-sch</code>, executable <code>rtl-buddy-view</code></h2>
-<p>The schematic viewer's PyPI <strong>distribution</strong> was renamed <code>rtl-buddy-view</code> → <code>rtl-buddy-sch</code> at 0.7.0; <code>rtl-buddy-view</code> is frozen at 0.5.0 and gets no further releases. Nothing else moved, so one tool now wears four names at once:</p>
-<table>
-<thead>
-<tr>
-<th>What</th>
-<th>Name</th>
-<th>Notes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>PyPI distribution</td>
-<td><code>rtl-buddy-sch</code></td>
-<td><code>uv tool install rtl-buddy-sch</code> / <code>pip install rtl-buddy-sch</code>. Releases up to 0.5.0 are on PyPI as <code>rtl-buddy-view</code></td>
-</tr>
-<tr>
-<td>Executable</td>
-<td><code>rtl-buddy-view</code></td>
-<td>Unchanged — it is what <code>rb hier</code>, <code>rb graph build</code>, <code>rb hub</code> and <code>--tool</code> resolve. 0.7.0+ also installs an <code>rtl-buddy-sch</code> alias</td>
-</tr>
-<tr>
-<td><code>rb tool-check</code> key</td>
-<td><code>rtl-buddy-view</code></td>
-<td><code>rb tool-check --explain rtl-buddy-view</code>. <code>--explain rtl-buddy-sch</code> is accepted as an alias for it and reports the same entry — under the canonical <code>rtl-buddy-view</code> name, which is also what stays in the JSON payload</td>
-</tr>
-<tr>
-<td>Import package</td>
-<td><code>rtl_buddy_view</code></td>
-<td>What the hub imports for the in-env SPA bundle</td>
-</tr>
-</tbody>
-</table>
-<p>rtl_buddy probes the <strong>distribution</strong> under both names, <code>rtl-buddy-sch</code> first, so either install satisfies every version floor and <code>rb tool-check</code> reports a version either way. What you have to know: <strong>pip cannot upgrade one into the other.</strong> There is no rename metadata, so <code>pip install -U rtl-buddy-sch</code> over an existing <code>rtl-buddy-view</code> leaves two distributions claiming the same console script and the same <code>rtl_buddy_view</code> import package, with each one's <code>RECORD</code> describing files the other may have overwritten. Uninstall first:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>pip<span class="w"> </span>uninstall<span class="w"> </span>-y<span class="w"> </span>rtl-buddy-view<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-U<span class="w"> </span>rtl-buddy-sch
-</code></pre></div>
-<p>One consequence worth expecting: after <code>uv tool install rtl-buddy-sch</code> (an isolated tool env) a project venv that still holds the old wheel has PATH at the new version and in-venv metadata at the old one. <code>rb tool-check</code> prefers the executable in exactly that case — a version read from the pre-rename dist name is dropped when the binary is on PATH, so the probe answers — but the stale wheel is still worth removing.</p>
-<h2 id="verible-verilog-lint-writes-findings-to-stderr-not-stdout">verible-verilog-lint writes findings to stderr, not stdout</h2>
-<p>On a plain lint run the tool's stdout is empty: every finding line
-(<code>path:line:col: message [rule]</code>) goes to <strong>stderr</strong>, with the exit code
-(1 = findings, 0 = clean) as the only stdout-independent signal. Anything
-that counts or filters findings must read stderr — a
-<code>rb verible lint ... | grep</code> pipeline silently sees nothing, and the
-<code>rb lint</code> flow's runner scans both streams for exactly this reason
-(<code>runner/lint_runner.py</code>). Verified against v0.0-3960 and v0.0-4148.</p>
+<p><code>rb tool-check --explain rtl-buddy-sch</code> accepts the alias but reports the canonical tool key <code>rtl-buddy-view</code>.</p>
+<h2 id="verible-lint-findings-are-on-stderr">Verible lint findings are on stderr</h2>
+<p><code>verible-verilog-lint</code> writes findings to stderr and uses its exit code for clean versus findings. A pipeline that reads only stdout sees nothing; capture stderr or use <code>rb lint</code>, which scans both streams.</p>
 
 
 

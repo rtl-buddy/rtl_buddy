@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to score a verification suite with rtl_buddy mutation testing via the rb mut command, mut.yaml, the rtl-buddy-xeno engine, and FPV or simulation kill oracles.">
+        <meta name="description" content="Configure and run mutation campaigns with FPV or simulation kill oracles, scoped files, budgets, and machine-readable reports.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -1013,10 +1013,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#how-scoring-works" class="md-nav__link">
+  <a href="#configure-a-campaign" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How scoring works
+        Configure a campaign
       
     </span>
   </a>
@@ -1024,10 +1024,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#kill-oracles" class="md-nav__link">
+  <a href="#scope-a-hierarchical-campaign" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Kill oracles
+        Scope a hierarchical campaign
       
     </span>
   </a>
@@ -1035,49 +1035,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#mutation-config-mutyaml" class="md-nav__link">
+  <a href="#run-and-score" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Mutation config: mut.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Mutation config: mut.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#operators" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Operators
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#scope-hierarchical-designs" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Scope: hierarchical designs
+        Run and score
       
     </span>
   </a>
@@ -1085,52 +1046,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running" class="md-nav__link">
+  <a href="#interpret-results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running
+        Interpret results
       
     </span>
   </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Output">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#machine-output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Machine output
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1711,10 +1633,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#how-scoring-works" class="md-nav__link">
+  <a href="#configure-a-campaign" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How scoring works
+        Configure a campaign
       
     </span>
   </a>
@@ -1722,10 +1644,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#kill-oracles" class="md-nav__link">
+  <a href="#scope-a-hierarchical-campaign" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Kill oracles
+        Scope a hierarchical campaign
       
     </span>
   </a>
@@ -1733,49 +1655,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#mutation-config-mutyaml" class="md-nav__link">
+  <a href="#run-and-score" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Mutation config: mut.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Mutation config: mut.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#operators" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Operators
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#scope-hierarchical-designs" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Scope: hierarchical designs
+        Run and score
       
     </span>
   </a>
@@ -1783,52 +1666,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running" class="md-nav__link">
+  <a href="#interpret-results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running
+        Interpret results
       
     </span>
   </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Output">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#machine-output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Machine output
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1852,162 +1696,63 @@
   
 
 
-<h1 id="mutation-testing">Mutation Testing</h1>
-<blockquote>
-<p><strong>Integration type:</strong> Pluggable engine. <code>rb mut</code> orchestrates the external <a href="https://github.com/rtl-buddy/rtl-buddy-xeno"><code>rtl-buddy-xeno</code></a> mutation engine; rtl_buddy supplies the config, the kill oracles, and the scoring/report.</p>
-<p><strong>Optional dependency:</strong> the engine is <strong>not</strong> installed by default. Enable it with the <code>[mut]</code> extra — <code>uv add "rtl_buddy[mut]"</code> or <code>pip install "rtl_buddy[mut]"</code> — which pulls <code>rtl-buddy-xeno[verible,slang] &gt;= 0.1.0</code> (the <code>verible</code>/<code>slang</code> extras provide the Verible CST + pyslang toolchain the operators need). You can also install the engine directly with <code>pip install "rtl-buddy-xeno[verible,slang] &gt;= 0.1.0"</code>. Running <code>rb mut</code> without it — or with a version below the floor — raises a fatal error with this hint.</p>
-<p>See also: <a href="../fpv/">Formal Property Verification</a>, <a href="../abv-simulation/">Assertion-Based Verification (sim)</a>.</p>
-</blockquote>
-<p><code>rb mut</code> measures how good your verification actually is. It mutates a single SystemVerilog design file — introducing small, deliberate bugs (mutants) — and checks whether your verification <em>kills</em> each mutant (catches the injected bug). The <strong>mutation score</strong> is the fraction of viable mutants that were killed; a high score means your properties and tests genuinely exercise the design, while survivors point at gaps.</p>
-<p>Unlike <code>fpv.yaml</code> (a list of verifications), one <code>mut.yaml</code> describes a <strong>single mutation campaign</strong> — one design file under test — so <code>rb mut list</code> / <code>rb mut run</code> are unambiguous about what is being mutated.</p>
-<h2 id="how-scoring-works">How scoring works</h2>
-<p>Each generated mutant is classified into one of three outcomes:</p>
-<ul>
-<li><strong>KILLED</strong> — the verification caught the mutant (good).</li>
-<li><strong>SURVIVED</strong> — the mutant slipped through every oracle (a coverage gap).</li>
-<li><strong>ERRORED</strong> — the mutant broke elaboration/compilation, so it could not be scored.</li>
-</ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mutation score = killed / (killed + survived)
+<h1 id="mutation-testing">Mutation testing</h1>
+<p><code>rb mut</code> injects small SystemVerilog changes and measures whether configured verification catches them. It requires <code>rtl-buddy-xeno[verible,slang] &gt;= 0.1.0</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;rtl_buddy[mut]&quot;</span>
 </code></pre></div>
-<p><code>ERRORED</code> mutants are dropped from the denominator, so a mutant that simply fails to elaborate never inflates or deflates the score. When nothing was scorable (every mutant errored, or none were generated) the score is reported as <code>n/a</code>.</p>
-<p>A <strong>SURVIVED</strong> mutant whose operator <em>predicted</em> it would perturb observable signals is the highest-signal finding — it means a change the engine expected to be observable still passed your checks. These are flagged separately as <strong>predicted-observable misses (weak properties)</strong>.</p>
-<h2 id="kill-oracles">Kill oracles</h2>
-<p>A mutant is <em>killed</em> when a configured oracle flags it. You configure at least one of two oracles in the <code>verify:</code> block (you may configure both — a mutant is killed if <strong>either</strong> oracle catches it):</p>
+<p>Without a compatible engine, <code>rb mut</code> exits with an installation hint.</p>
+<h2 id="configure-a-campaign">Configure a campaign</h2>
+<p>One <code>mut.yaml</code> defines one campaign:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mut_config</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">demo_top</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../../design/demo_top/models.yaml</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nt">design_file</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../../design/demo_top/rtl/alu.sv</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nt">operators</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">arith_flip</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">bit_op_flip</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">cond_negate</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">cond_const</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="nt">verify</span><span class="p">:</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="nt">fpv_config</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../../fpv/demo/fpv.yaml</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">verification</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">demo_fpv_alu_safety</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="nt">test_config</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../../verif/demo/tests.yaml</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">  </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">alu_smoke</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">alu_random</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="nt">budget</span><span class="p">:</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="nt">max_mutants</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="nt">per_file_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="nt">time_budget_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sequential</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="nt">scope</span><span class="p">:</span>
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">  </span><span class="nt">include</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">  </span><span class="nt">exclude</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
+</code></pre></div>
+<p>At least one kill oracle is required:</p>
 <table>
 <thead>
 <tr>
 <th>Oracle</th>
-<th>Configured by</th>
+<th>Required fields</th>
 <th>A mutant is killed when</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>FPV</strong></td>
-<td><code>fpv_config</code> + <code>verification</code></td>
-<td>the named verification's proof flips from the unmutated baseline <code>PASS</code> to <code>FAIL</code></td>
+<td>FPV</td>
+<td><code>fpv_config</code>, <code>verification</code></td>
+<td>The named baseline PASS becomes FAIL</td>
 </tr>
 <tr>
-<td><strong>Simulation</strong></td>
-<td><code>test_config</code> (+ optional <code>tests</code>, <code>assertions</code>)</td>
-<td>a test in the suite <code>FAIL</code>s or an SVA assertion fires</td>
+<td>Simulation</td>
+<td><code>test_config</code>; optional <code>tests</code>, <code>assertions</code></td>
+<td>A selected test fails or an SVA assertion fires</td>
 </tr>
 </tbody>
 </table>
-<p>The simulation oracle compiles SVA in via Verilator <code>--assert</code> by default (<code>assertions: true</code>); it is much weaker without assertions, so leave them on unless you have a reason not to. See <a href="../abv-simulation/">Assertion-Based Verification (sim)</a> for how firings are detected.</p>
-<h2 id="mutation-config-mutyaml">Mutation config: <code>mut.yaml</code></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mut_config</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">demo_top</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nt">design_file</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/rtl/alu.sv&quot;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nt">operators</span><span class="p">:</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">arith_flip</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bit_op_flip</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_negate</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_const</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="nt">verify</span><span class="p">:</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="c1"># FPV oracle (fpv_config requires verification)</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">fpv_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../fpv/demo/fpv.yaml&quot;</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">  </span><span class="nt">verification</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_alu_safety&quot;</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="c1"># Simulation oracle (optional; combine with or use instead of FPV)</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="nt">test_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../verif/demo/tests.yaml&quot;</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;alu_smoke&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;alu_random&quot;</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># empty/omitted = every test in the suite</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">  </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="nt">budget</span><span class="p">:</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">  </span><span class="nt">max_mutants</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">  </span><span class="nt">per_file_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">  </span><span class="nt">time_budget_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sequential&quot;</span>
-<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>
-<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="nt">scope</span><span class="p">:</span><span class="w">                                 </span><span class="c1"># optional; empty = single-file default</span>
-<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">  </span><span class="nt">include</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
-<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">  </span><span class="nt">exclude</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
-</code></pre></div>
-<h3 id="fields">Fields</h3>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>model</code></td>
-<td>Model name within the referenced <code>models.yaml</code></td>
-</tr>
-<tr>
-<td><code>model_path</code></td>
-<td>Path to the <code>models.yaml</code>, resolved relative to <code>mut.yaml</code></td>
-</tr>
-<tr>
-<td><code>design_file</code></td>
-<td>The single SystemVerilog file to mutate, resolved relative to <code>mut.yaml</code>. <strong>Must live within the model directory</strong> (the directory containing <code>models.yaml</code>) so per-mutant isolation can copy the tree and splice the mutant in</td>
-</tr>
-<tr>
-<td><code>operators</code></td>
-<td>Non-empty list of mutation operators (see below). An empty list or an unknown operator is a fatal config error</td>
-</tr>
-<tr>
-<td><code>verify</code></td>
-<td>The kill-oracle block — at least one oracle required (see <a href="#kill-oracles">Kill oracles</a>)</td>
-</tr>
-<tr>
-<td><code>verify.fpv_config</code></td>
-<td>Path to an <code>fpv.yaml</code>, relative to <code>mut.yaml</code> (FPV oracle)</td>
-</tr>
-<tr>
-<td><code>verify.verification</code></td>
-<td>Name of the verification in that <code>fpv.yaml</code> to use as the oracle — <strong>required when</strong> <code>fpv_config</code> is set</td>
-</tr>
-<tr>
-<td><code>verify.test_config</code></td>
-<td>Path to a <code>tests.yaml</code>, relative to <code>mut.yaml</code> (simulation oracle)</td>
-</tr>
-<tr>
-<td><code>verify.tests</code></td>
-<td>Optional subset of test names to run; empty (default) runs every test in the suite</td>
-</tr>
-<tr>
-<td><code>verify.assertions</code></td>
-<td>Compile SVA in via Verilator <code>--assert</code>. Default <code>true</code></td>
-</tr>
-<tr>
-<td><code>name</code></td>
-<td>Campaign identifier; used in <code>artefacts/mut/&lt;name&gt;/</code>. Defaults to <code>model</code></td>
-</tr>
-<tr>
-<td><code>top</code></td>
-<td>Top module under test. Defaults to <code>model</code></td>
-</tr>
-<tr>
-<td><code>budget.max_mutants</code></td>
-<td>Global ceiling on mutants generated across the campaign. Default <code>100</code>. Under a non-empty <code>scope</code> this is drained over the scoped files in sorted order, so later files may be truncated once it is spent (see <a href="#scope-hierarchical-designs">Scope: hierarchical designs</a>)</td>
-</tr>
-<tr>
-<td><code>budget.per_file_cap</code></td>
-<td>Per-file cap (max mutants per scoped file), or <code>null</code> for none (default <code>null</code>)</td>
-</tr>
-<tr>
-<td><code>budget.time_budget_minutes</code></td>
-<td>Wall-clock budget in minutes, or <code>null</code> for none (default <code>null</code>)</td>
-</tr>
-<tr>
-<td><code>budget.schedule</code></td>
-<td><code>"sequential"</code> (default) or <code>"round_robin"</code></td>
-</tr>
-<tr>
-<td><code>scope.include</code> / <code>scope.exclude</code></td>
-<td>Optional shell-glob lists selecting which files participate. Empty (default) is a single-file campaign over <code>design_file</code>; non-empty ingests the design hierarchy (see <a href="#scope-hierarchical-designs">Scope: hierarchical designs</a>)</td>
-</tr>
-</tbody>
-</table>
-<h3 id="operators">Operators</h3>
-<p>The six operators map 1:1 onto <code>rtl_buddy_xeno.MutationKind</code>. An operator not recognised by the <em>installed</em> <code>rtl-buddy-xeno</code> is a fatal error at run time:</p>
+<p>When both are configured, either oracle may kill a mutant. Simulation enables Verilator assertions by default; see <a href="../abv-simulation/">Assertion-based verification</a>.</p>
+<p><code>design_file</code> must be inside the directory containing <code>models.yaml</code>, because each mutant is evaluated in an isolated copy of that tree. It is also the baseline-oracle target. See <a href="../../reference/yaml/">YAML formats</a> for the full field schema.</p>
+<p>Supported operators are:</p>
 <table>
 <thead>
 <tr>
@@ -2018,11 +1763,11 @@
 <tbody>
 <tr>
 <td><code>arith_flip</code></td>
-<td>Flip an arithmetic operator (e.g. <code>+</code> ↔ <code>-</code>)</td>
+<td>Flip an arithmetic operator</td>
 </tr>
 <tr>
 <td><code>bit_op_flip</code></td>
-<td>Flip a bitwise/logical operator (e.g. <code>&amp;</code> ↔ <code>\|</code>)</td>
+<td>Flip a bitwise or logical operator</td>
 </tr>
 <tr>
 <td><code>cond_negate</code></td>
@@ -2030,7 +1775,7 @@
 </tr>
 <tr>
 <td><code>cond_const</code></td>
-<td>Force a condition to a constant</td>
+<td>Replace a condition with a constant</td>
 </tr>
 <tr>
 <td><code>assign_drop</code></td>
@@ -2038,94 +1783,46 @@
 </tr>
 <tr>
 <td><code>port_binding_swap</code></td>
-<td>Swap two port bindings on an instantiation</td>
+<td>Swap two port bindings</td>
 </tr>
 </tbody>
 </table>
-<h2 id="scope-hierarchical-designs">Scope: hierarchical designs</h2>
-<p><code>scope.include</code> / <code>scope.exclude</code> select which files a campaign mutates. The two modes are distinguished purely by whether the block is empty:</p>
+<p>An empty operator list or an operator unsupported by the installed engine is fatal.</p>
+<h2 id="scope-a-hierarchical-campaign">Scope a hierarchical campaign</h2>
+<p>An empty <code>scope</code> mutates only <code>design_file</code> and does not require <code>rtl-buddy-view</code>. A non-empty <code>include</code> or <code>exclude</code> resolves files through the hierarchy graph, so <code>rtl-buddy-view</code> must be on <code>PATH</code>.</p>
+<p>Scope patterns:</p>
 <ul>
-<li><strong>Empty <code>scope</code> is the single-file default.</strong> With no include/exclude, the campaign mutates exactly the one <code>design_file</code>. This is the path most leaf-block campaigns take, and it needs <strong>no</strong> rtl-buddy-view and no hierarchy graph — the empty-scope path is unchanged.</li>
-<li><strong>Non-empty <code>scope</code> ingests the design hierarchy.</strong> rtl_buddy resolves the globs against the hierarchy graph that rtl-buddy-view emits (the same graph behind <code>rb hier --format json</code>), so when <code>scope</code> is set the rtl-buddy-view binary must be on <code>PATH</code>.</li>
+<li>Use case-sensitive <code>fnmatch</code> shell globs. <code>**</code> is not recursive; spell out path segments.</li>
+<li>Match both instance paths and source paths, including model-relative and absolute source paths.</li>
+<li>An empty <code>include</code> selects all hierarchy files; matching <code>exclude</code> entries remove files.</li>
+<li>A scope that selects no files is fatal.</li>
 </ul>
-<p>How the globs are matched (this is today's implementation, not an aspiration):</p>
-<ul>
-<li><strong>Shell-glob patterns, matched case-sensitively on every platform.</strong> Patterns are stdlib <code>fnmatch</code> globs. There is <strong>no</strong> <code>**</code> recursion — spell out path segments explicitly (e.g. <code>top/sub/*.sv</code>, not <code>top/**/x.sv</code>).</li>
-<li><strong>Each pattern is matched against both a node's instance path and its source file.</strong> An <code>include</code> glob can target either an instance path (e.g. <code>top.u_alu</code>) or a file (its absolute path <em>or</em> its model-relative path).</li>
-<li><strong>Empty <code>include</code> selects every in-scope node</strong>; any <code>exclude</code> match drops a node. A scope that resolves to <strong>zero files is a hard error</strong> (<code>FatalRtlBuddyError</code>) — fix the patterns rather than silently mutating nothing.</li>
-</ul>
-<p>What gets mutated, and where the baseline lives:</p>
-<ul>
-<li><strong>Mutation granularity is per file.</strong> The scoped file-set is mutated one file at a time, with each mutant spliced into its origin file. A module instantiated twice maps to a single source file and is mutated <strong>once</strong>; per-instance scoping is a possible future extension.</li>
-<li><strong><code>design_file</code> stays required and is the baseline-oracle target in both modes.</strong> When <code>scope</code> is set it is the scoped file-set that gets mutated — <code>design_file</code> itself is <strong>not</strong> mutated, it remains the target the baseline oracle proves/runs against.</li>
-<li><strong>Budget under scope.</strong> <code>budget.per_file_cap</code> caps mutants per scoped file; <code>budget.max_mutants</code> is a global ceiling drained over the scoped files in sorted order, so later files may be truncated once it is spent.</li>
-</ul>
-<p>Scope graph-ingestion is the hierarchical-design work tracked under #206 / #239. Until per-instance scoping lands, scope narrows <em>which</em> files a campaign mutates rather than distinguishing two instances of the same module.</p>
-<h2 id="running">Running</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># List candidate mutation sites without mutating (uses ./mut.yaml)</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>mut<span class="w"> </span>list
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># A specific config</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rb<span class="w"> </span>mut<span class="w"> </span>list<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Generate mutants, score them against the oracles, and write a report</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>rb<span class="w"> </span>mut<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># Recompute the score from a saved report (no re-run)</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>rb<span class="w"> </span>mut<span class="w"> </span>score<span class="w"> </span>mut/demo/artefacts/mut/demo_top/mut_report.json
+<p>Mutation remains file-based: a module instantiated several times is mutated once in its source file. Scoped files are processed in sorted order for <code>schedule: sequential</code>; <code>round_robin</code> interleaves files. <code>per_file_cap</code> limits each file, while <code>max_mutants</code> limits the campaign globally. Under a non-empty scope, the selected files are mutated and <code>design_file</code> remains the baseline target.</p>
+<h2 id="run-and-score">Run and score</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>mut<span class="w"> </span>list
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>mut<span class="w"> </span>list<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>rb<span class="w"> </span>mut<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>rb<span class="w"> </span>mut<span class="w"> </span>score<span class="w"> </span>mut/demo/artefacts/mut/demo_top/mut_report.json
 </code></pre></div>
-<p><code>rb mut run</code> builds each mutant in <code>debug</code> builder mode by default. All three subcommands take <code>-c</code>/<code>--mut-config</code> (default <code>mut.yaml</code>) and, like every command, anchor their artefact tree on the directory containing the selected <code>mut.yaml</code> — not your shell's cwd (see <a href="../execution-context/">Execution Context</a>).</p>
-<h2 id="output">Output</h2>
-<p><code>rb mut list</code> prints a <strong>Mutation Candidates (N)</strong> table with <code>Operator</code>, <code>Line:Col</code>, and <code>Snippet</code> columns.</p>
-<p><code>rb mut run</code> prints a <strong>Mutation Testing Results</strong> table with one row per mutant:</p>
-<table>
-<thead>
-<tr>
-<th>Column</th>
-<th>Contents</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Mutant</code></td>
-<td>Mutant id</td>
-</tr>
-<tr>
-<td><code>Operator</code></td>
-<td>Operator that produced it</td>
-</tr>
-<tr>
-<td><code>Outcome</code></td>
-<td><code>KILLED</code> / <code>SURVIVED</code> / <code>ERRORED</code></td>
-</tr>
-<tr>
-<td><code>Verdict</code></td>
-<td>The oracle verdict recorded for the mutant (e.g. the FPV proof's <code>PASS</code>/<code>FAIL</code>/<code>NA</code>)</td>
-</tr>
-<tr>
-<td><code>Predicted Signals</code></td>
-<td>Signals the operator predicted it would perturb (<code>-</code> if none)</td>
-</tr>
-<tr>
-<td><code>Mutation</code></td>
-<td>Short diff summary of the injected change</td>
-</tr>
-</tbody>
-</table>
-<p>…followed by summary lines:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Mutation score: 78.6% (killed 11 / scored 14)
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>Survived: 3   Errored: 2   Baseline: PASS
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Predicted-observable misses (weak properties): m07, m12
-</code></pre></div>
-<p>The full report is written to <code>&lt;mut.yaml dir&gt;/artefacts/mut/&lt;campaign&gt;/mut_report.json</code> and echoed as <code>Report written to …</code>. Its keys are <code>name</code>, <code>baseline_verdict</code>, <code>killed</code>, <code>survived</code>, <code>errored</code>, <code>score</code>, and <code>mutants[]</code> (each with <code>mutant_id</code>, <code>operator</code>, <code>outcome</code>, <code>verdict</code>, <code>diff_summary</code>, <code>predicted_signals</code>). <code>rb mut score &lt;report&gt;</code> recomputes the score from exactly this file.</p>
-<h3 id="machine-output">Machine output</h3>
-<p>Under <code>rb --machine …</code> (a global flag, before the subcommand):</p>
 <ul>
-<li><code>rb --machine mut list</code> emits a <code>sites</code> array in the JSON envelope.</li>
-<li><code>rb --machine mut run</code> / <code>rb --machine mut score</code> emit the full report under <code>report</code>.</li>
+<li><code>list</code> shows candidate sites without mutation.</li>
+<li><code>run</code> uses <code>debug</code> builder mode by default, evaluates the baseline and mutants, then writes the report.</li>
+<li><code>score</code> recomputes the score from an existing report without rerunning verification.</li>
 </ul>
-<h3 id="exit-codes">Exit codes</h3>
-<p><code>rb mut run</code> exits <code>0</code> when it produced a scorable result and <code>1</code> only when nothing was scorable (<code>score</code> is <code>n/a</code>). <strong>Score thresholding is not gated</strong> — failing under a target score is a separate concern; the command does not exit non-zero just because the score is low. <code>rb mut list</code> and <code>rb mut score</code> exit <code>0</code> on success and fail only on fatal errors (missing engine, missing config, missing report).</p>
+<p>Paths and artefacts are anchored to the selected <code>mut.yaml</code>, not the shell working directory. See <a href="../execution-context/">Execution Context</a>.</p>
+<h2 id="interpret-results">Interpret results</h2>
+<p>Each mutant has one outcome:</p>
+<ul>
+<li><code>KILLED</code>: an oracle caught the change.</li>
+<li><code>SURVIVED</code>: all oracles passed; inspect this verification gap first.</li>
+<li><code>ERRORED</code>: the mutant could not elaborate or compile and is excluded from scoring.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>mutation score = killed / (killed + survived)
+</code></pre></div>
+<p>If nothing is scorable, the score is <code>n/a</code>. Surviving mutants whose operator predicted observable signal changes are also reported as predicted-observable misses.</p>
+<p>The report is <code>&lt;mut.yaml dir&gt;/artefacts/mut/&lt;campaign&gt;/mut_report.json</code>. It records the baseline verdict, totals, score, and each mutant's operator, outcome, verdict, diff summary, and predicted signals.</p>
+<p>With the global <code>--machine</code> flag, <code>mut list</code> returns <code>sites</code>; <code>mut run</code> and <code>mut score</code> return <code>report</code>.</p>
+<p><code>mut run</code> exits 0 when any result is scorable and 1 when the score is <code>n/a</code>. It does not gate on a score threshold. <code>mut list</code> and <code>mut score</code> exit 0 on success; configuration, engine, and report errors are fatal.</p>
 
 
 
