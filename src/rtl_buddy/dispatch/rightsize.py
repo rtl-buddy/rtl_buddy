@@ -220,15 +220,20 @@ def analyze_build_reservation(
 
     ``compile_resources`` is the *per-build* reservation
     (``cfg-dispatch.compile``); the head multiplied its cpus by
-    ``parallel`` before submitting, so every cpus number here is divided
-    back down before it is suggested — the field a project edits is
-    per-build, and advising the product would compound the scaling on the
-    next run. Its resolved ``cpus`` is also what the advice *names* as the
-    current per-build value, in preference to dividing AllocCPUS: a site
-    where the scheduler reports more cpus than were requested would
-    otherwise be shown a decomposition that does not match its YAML.
-    Empty telemetry (a local-parallel backend reports none) yields no
-    advice at all.
+    ``parallel`` before submitting, and the field a project edits is
+    per-build — so cpus advice is only offered for a job that ran an
+    effective ``parallel`` of 1 (one slot, or one build record), where the
+    whole-job ratio and the per-build one are the same number. Above that
+    the ratio also carries the tail (unequal builds; a plan with fewer
+    distinct keys than slots), so dividing it by ``parallel`` can advise
+    shrinking the cpus the longest compile saturated, and there is no
+    per-compile cpu telemetry to tell the causes apart — the row is
+    withheld with reason ``parallel-utilization-ambiguous`` (#496 review).
+    Its resolved ``cpus`` is what the advice *names* as the current
+    per-build value, in preference to dividing AllocCPUS: a site where the
+    scheduler reports more cpus than were requested would otherwise be
+    shown a decomposition that does not match its YAML. Empty telemetry (a
+    local-parallel backend reports none) yields no advice at all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -378,19 +383,53 @@ def analyze_build_reservation(
         # the ratio right.
         cpus = (compile_resources.cpus or 0) * parallel
     cpu_time = build_telemetry.get("total_cpu_s")
+    # Whole-job cpu efficiency is a *per-build* number only when the job ran
+    # one build at a time. Above that it also carries the tail — builds of
+    # unequal length, and a plan with fewer distinct keys than slots, both
+    # leave reserved cpus idle while the longest compile saturates the ones
+    # it has — so dividing it by `parallel` can advise shrinking exactly the
+    # cpus that compile needed (#496 review). There is no per-compile cpu
+    # telemetry to separate the causes with (sacct accounts the job, not the
+    # thread group), so the advice is withheld rather than guessed at.
+    effective_parallel = min(parallel, records) if records else parallel
     if may_reduce and cpus and cpus > 1 and cpu_time is not None and elapsed:
         # TotalCPU is summed over the job's steps, and elapsed is the wall
         # clock of the whole parallel batch — which is exactly the ratio
         # that says whether the scaled reservation was worth it.
         efficiency = cpu_time / (elapsed * cpus)
-        if efficiency < rightsize_cfg.over_threshold:
+        if efficiency < rightsize_cfg.over_threshold and effective_parallel > 1:
+            # Same event as the reduce gating above, because it is the same
+            # question a reader asks of an empty row: nothing to say, or
+            # something withheld? Time advice is unaffected — N concurrent
+            # builds take the wall clock of the longest, so `elapsed`
+            # against `timelimit` means what it always did.
+            log_event(
+                logger,
+                logging.INFO,
+                "rightsize.build_advice_withheld",
+                suite=suite_display,
+                reason="parallel-utilization-ambiguous",
+                builds=(compile_work or {}).get("records"),
+                compiled=compiled,
+                compiled_sec=(compile_work or {}).get("compiled_sec"),
+                elapsed_s=elapsed,
+                interval_s=accounting_interval_s,
+                parallel=parallel,
+                efficiency=round(efficiency, 3),
+            )
+        elif efficiency < rightsize_cfg.over_threshold:
             suggested_total = max(
                 1, math.ceil(cpus * efficiency * rightsize_cfg.margin)
             )
-            # Per build, because that is what the field means. Ceil after
-            # the division so N builds never end up reserving fewer cpus in
-            # total than the suggestion they came from.
-            suggested_per_build = max(1, math.ceil(suggested_total / parallel))
+            # `effective_parallel` is 1 here by the branch above, so this is
+            # the identity — kept as the division it is because that is what
+            # makes the invariant legible: the per-build figure is the
+            # whole-job one divided by the builds that were actually in
+            # flight, and the only case where those are knowably equal is
+            # one build at a time.
+            suggested_per_build = max(
+                1, math.ceil(suggested_total / effective_parallel)
+            )
             # The decomposition is stated in terms of the value the project
             # would edit, so it has to come from the head's own resolved
             # `cfg-dispatch.compile.cpus` and not from AllocCPUS: a site
@@ -407,7 +446,11 @@ def analyze_build_reservation(
             )
             per_build_now = resolved_per_build or math.ceil(cpus / parallel)
             requested_total = per_build_now * parallel
-            if requested_total == cpus:
+            if requested_total == cpus and parallel == 1:
+                # One build slot, so there is no product to decompose: the
+                # reservation IS the per-build figure.
+                decomposition = f"the build job reserved {per_build_now}"
+            elif requested_total == cpus:
                 decomposition = (
                     f"the build job reserved {cpus} = {per_build_now} "
                     f"x compile.parallel {parallel}"
@@ -421,6 +464,22 @@ def analyze_build_reservation(
                     f"{per_build_now} x compile.parallel {parallel} "
                     f"(the scheduler reported {cpus} allocated)"
                 )
+            # The `parallel` lever only exists when it is above 1, and this
+            # advice is only reachable at an effective 1 — so the sentence
+            # is here for the one shape that has both: slots reserved for
+            # builds the plan never produced.
+            lever = (
+                ""
+                if parallel == 1
+                else (
+                    " `parallel` is the other lever: it is capped by the "
+                    "suite's planned configs, not by its distinct compile "
+                    "keys, so configs that share one key reserve cpus for "
+                    "builds that never run — lower "
+                    "cfg-dispatch.compile.parallel instead when the key "
+                    "count is the smaller number."
+                )
+            )
             if suggested_per_build < per_build_now:
                 findings.append(
                     RightsizeFinding(
@@ -438,14 +497,7 @@ def analyze_build_reservation(
                             "cpus",
                             note=(
                                 f"per-build; {decomposition}. "
-                                "Suggested value is per-build. "
-                                "`parallel` is the other lever: it is capped "
-                                "by the suite's planned configs, not by its "
-                                "distinct compile keys, so configs that share "
-                                "one key reserve cpus for builds that never "
-                                "run — lower cfg-dispatch.compile.parallel "
-                                "instead when the key count is the smaller "
-                                "number."
+                                f"Suggested value is per-build.{lever}"
                             ),
                         ),
                         **common,

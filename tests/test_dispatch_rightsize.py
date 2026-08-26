@@ -744,26 +744,92 @@ def test_a_timed_out_build_job_raises_its_limit():
     assert time_a.states == ["TIMEOUT"]
 
 
-def test_build_cpus_advice_is_divided_back_down_by_parallel():
-    """The field a project edits is per-build; the reservation was N x it."""
+def test_a_serial_build_job_gets_per_build_cpus_advice():
+    """One slot, so the whole-job ratio IS the per-build one."""
     findings = _build_advice(
         {
             "state": "COMPLETED",
             "elapsed_s": 100,
             "timelimit_s": 7200,
-            "alloc_cpus": 16,
-            "total_cpu_s": 200,  # 0.125 efficiency
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,  # 0.25 efficiency
         },
-        parallel=4,
-        cpus=4,
+        parallel=1,
+        cpus=8,
     )
     (cpus_a,) = [f for f in findings if f.resource == "cpus"]
-    # ceil(16 x 0.125 x 1.5) = 3 total -> ceil(3/4) = 1 per build.
-    assert cpus_a.reserved == "16"
-    assert cpus_a.suggested == "1"
+    # ceil(8 x 0.25 x 1.5) = 3, and with one build in flight that is the
+    # per-build figure — no division, nothing to decompose.
+    assert cpus_a.reserved == "8"
+    assert cpus_a.suggested == "3"
     assert cpus_a.edit_hint["path"] == "cfg-dispatch.compile.cpus"
+    assert "the build job reserved 8." in cpus_a.edit_hint["note"]
+    # The `parallel` lever has nothing to say to a job that is already at 1.
+    assert "compile.parallel" not in cpus_a.edit_hint["note"]
+
+
+def test_a_parallel_build_job_withholds_its_cpus_advice(caplog):
+    """Whole-job utilization does not decompose into per-build cpus (#496).
+
+    With N slots the ratio also carries the tail — builds of unequal length,
+    and a plan with fewer distinct compile keys than slots, both leave
+    reserved cpus idle while the longest compile saturates the ones it has.
+    Dividing by `parallel` would then advise shrinking exactly the cpus that
+    compile needed. sacct accounts the job, not the thread group, so nothing
+    here can tell the causes apart: the row is withheld, and time advice —
+    wall clock, which N concurrent builds do not inflate — is untouched.
+    """
+    import logging
+
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "alloc_cpus": 16,
+        "total_cpu_s": 200,  # 0.125 efficiency
+    }
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(telemetry, parallel=4, cpus=4)
+
+    assert [f for f in findings if f.resource == "cpus"] == []
+    assert [f.resource for f in findings] == ["time"]
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "parallel-utilization-ambiguous"
+    assert record.rtl_fields["parallel"] == 4
+    assert record.rtl_fields["efficiency"] == 0.125
+    assert "no cpus advice for the build job" in caplog.text
+    assert "cfg-dispatch.compile.parallel" in caplog.text
+
+
+def test_a_single_build_is_advised_even_at_a_wide_parallel():
+    """One build cannot have a tail, so its ratio is still its own.
+
+    `parallel` caps at the planned config count, so the head cannot really
+    produce this pair — but the gate is on the builds that ran, not on the
+    flag, and it is the builds that decide whether the ratio decomposes.
+    """
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,  # 0.25 efficiency
+        },
+        parallel=4,
+        cpus=8,
+        compile_work={"records": 1, "compiled": 1, "compiled_sec": 90.0},
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    # ceil(8 x 0.25 x 1.5) = 3 -> not divided again by the four idle slots.
+    assert cpus_a.suggested == "3"
+    # ...but 3 > the 2 already configured, so the note explains the lever
+    # that is actually oversized here.
     assert "compile.parallel 4" in cpus_a.edit_hint["note"]
-    assert "reserved 16 = 4 x compile.parallel 4" in cpus_a.edit_hint["note"]
 
 
 def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
@@ -783,35 +849,42 @@ def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
             "state": "COMPLETED",
             "elapsed_s": 100,
             "timelimit_s": 7200,
-            "alloc_cpus": 8,  # the site rounded 3 x 2 up to a whole node's core count
+            "alloc_cpus": 8,  # the site rounded 3 up to a whole node's core count
             "total_cpu_s": 100,  # 0.125 efficiency
         },
-        parallel=2,
+        parallel=1,
         cpus=3,
     )
     (cpus_a,) = [f for f in findings if f.resource == "cpus"]
     note = cpus_a.edit_hint["note"]
-    assert "asked for 6 = 3 x compile.parallel 2" in note
+    assert "the build job reserved 3" not in note
+    assert "asked for 3 = 3 x compile.parallel 1" in note
     assert "reported 8 allocated" in note
-    # ceil(4/2) = 2 would have been the sacct-derived per-build figure.
-    assert "= 4 x" not in note
+    # 8 would have been the sacct-derived per-build figure.
+    assert "= 8 x" not in note
     # The allocated figure is still what `squeue`/`sacct` shows.
     assert cpus_a.reserved == "8"
 
 
-def test_a_saturated_build_job_gets_no_cpus_advice():
+def test_a_saturated_build_job_gets_no_cpus_advice(caplog):
     """Efficiency only ever argues for fewer cpus, and only when it is low."""
-    findings = _build_advice(
-        {
-            "state": "COMPLETED",
-            "elapsed_s": 100,
-            "timelimit_s": 200,
-            "alloc_cpus": 8,
-            "total_cpu_s": 760,  # 0.95 efficiency
-        },
-        parallel=2,
-    )
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 200,
+                "alloc_cpus": 8,
+                "total_cpu_s": 760,  # 0.95 efficiency
+            },
+            parallel=1,
+        )
     assert [f for f in findings if f.resource == "cpus"] == []
+    # Nothing was withheld: there was nothing to withhold. "No advice" and
+    # "advice withheld" stay different answers.
+    assert "build_advice_withheld" not in caplog.text
 
 
 def test_a_cpus_reduction_that_cannot_retire_is_dropped():
@@ -824,26 +897,39 @@ def test_a_cpus_reduction_that_cannot_retire_is_dropped():
             "alloc_cpus": 2,
             "total_cpu_s": 60,  # 0.3 efficiency, but 1 cpu per build already
         },
-        parallel=2,
+        parallel=1,
         cpus=1,
     )
     assert [f for f in findings if f.resource == "cpus"] == []
 
 
-def test_build_cpus_fall_back_to_what_the_head_asked_for():
+def test_build_cpus_fall_back_to_what_the_head_asked_for(caplog):
     """A backend that reports usage but not the allocation still ratios."""
-    findings = _build_advice(
-        {
-            "state": "COMPLETED",
-            "elapsed_s": 100,
-            "timelimit_s": 7200,
-            "total_cpu_s": 100,
-        },
-        parallel=2,
-        cpus=4,  # -> 8 reserved
-    )
+    import logging
+
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "total_cpu_s": 100,
+    }
+    findings = _build_advice(telemetry, parallel=1, cpus=4)
     (cpus_a,) = [f for f in findings if f.resource == "cpus"]
-    assert cpus_a.reserved == "8"
+    assert cpus_a.reserved == "4"
+
+    # The fallback is the *scaled* reservation, which the withheld row is
+    # still measured against: at parallel 2 the head asked for 4 x 2, so the
+    # ratio is 100 / (100 x 8) and not 100 / (100 x 4). Drop the scaling and
+    # a job's efficiency doubles on paper.
+    with caplog.at_level(logging.INFO):
+        scaled = _build_advice(telemetry, parallel=2, cpus=4)
+    assert [f for f in scaled if f.resource == "cpus"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["efficiency"] == 0.125
 
 
 def test_a_build_job_never_gets_memory_advice():

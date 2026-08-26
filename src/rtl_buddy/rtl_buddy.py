@@ -2018,6 +2018,15 @@ class RtlBuddy:
         run (a test with no shared build just recompiles in its own sim
         job). Exit code is always 0 unless the setup itself is fatal.
 
+        Two loop shapes, one program. A job that can only run one build at
+        a time (``--parallel 1``, or a plan with one config) streams
+        PRE → COMPILE per config, which is what a preproc hook that
+        regenerates a suite-level input has always been able to rely on.
+        Above that, every PRE runs first and the distinct builds compile
+        concurrently — which asks of preproc hooks exactly what the sim
+        fan-out already asks, that one config's hook not mutate another
+        config's inputs.
+
         With ``--result-json`` (how dispatch always invokes it) the job
         logs beside that envelope instead of the head's
         ``<suite>/rtl_buddy.log``; run by hand without it there is no head
@@ -2082,27 +2091,15 @@ class RtlBuddy:
                 )
             )
 
-        # ---- serial phase: construct, PRE, and probe the compile key.
-        #
-        # PRE stays on the main thread whatever --parallel says. Hook
-        # execution is process-global-serial by declared contract (one
-        # sys.modules registration slot and a process-wide redirect_stdout,
-        # see hooks.py), and arbitrary preproc code may write suite-level
-        # files that two configs would then race on. It is also the phase
-        # that makes the key knowable at all: a preproc script may mutate
-        # test_cfg, so the compile key exists only after pre() ran, on the
-        # sim instance that saw the mutation.
-        #
-        # Outcome rows are (plan index, test name, built?, worker error,
-        # runner, group dir) so both the envelope and the WARNINGs can be
-        # replayed in plan order below — a pool that reported in completion
-        # order would make two identical runs produce different logs. The
-        # runner rides along because the compile record it observed
-        # (duration/builder/reused) is only readable off the instance that
-        # ran the compile (#495).
-        outcomes = []
-        groups = {}
-        for index, cfg in enumerate(configs):
+        def _prepare_config(index, cfg):
+            """Construct, PRE and probe one config.
+
+            Returns ``(outcome row, group dir, member)``: either a terminal
+            outcome row (and no member), or a member for the group its
+            compile will write into. Shared by both loop shapes below, so
+            the streaming path and the batched one cannot disagree about
+            what PRE did or how a failure is reported.
+            """
             runner = TestRunner(
                 name=self.name + "/build-job",
                 root_cfg=self.root_cfg,
@@ -2127,53 +2124,21 @@ class RtlBuddy:
                 # thread. One config's broken setup must not cancel the
                 # afterok fan-out for the seven that were fine — the config
                 # is reported failed and its own sim job says why.
-                outcomes.append((index, cfg.get_name(), False, str(exc), runner, None))
-                continue
+                return (
+                    (index, cfg.get_name(), False, str(exc), runner, None),
+                    None,
+                    None,
+                )
             if res is not None:
                 # A setup or filelist failure never reaches a builder, so it
                 # is reported exactly as the serial loop reported it: failed,
                 # and the job still exits 0.
-                outcomes.append((index, cfg.get_name(), False, None, runner, group_dir))
-                continue
-            # Group by the directory the compile will WRITE, not by the
-            # config: two configs with the same compile key share one build
-            # dir, and two builders in one directory is #369. Members of a
-            # group run serially, and the second short-circuits on the
-            # first's stamp. First-seen group order preserves plan order.
-            #
-            # This assumes what a plan already promises: test names in it are
-            # unique. Two configs answering to one name share a per-test
-            # `run.f` whatever the grouping does, because the serial phase
-            # writes every filelist before any compile reads one — grouping
-            # cannot repair that, only the sweep hook that emitted the
-            # duplicate can.
-            groups.setdefault(group_dir, []).append((index, cfg.get_name(), runner))
-
-        # ---- parallel phase: one worker per distinct build.
-        pool_size = max(1, min(parallel, len(groups)))
-        if pool_size > 1 or parallel > pool_size:
-            # Liveness on a CI console, which shows INFO only under -v: a
-            # build job that sits silent for 20 minutes is indistinguishable
-            # from a hung one, and this line is what says how many compiles
-            # that silence is covering.
-            #
-            # The second half of the condition is the over-reservation case
-            # (#495): the head scaled the job's cpus by `parallel`, but the
-            # plan collapsed to fewer distinct compile keys than that, so
-            # part of the reservation can never be used. It is not an error
-            # — `parallel` is a per-suite budget and a suite that reuses one
-            # build is the normal shape of a re-run — so it stays INFO on
-            # the same event rather than becoming a warning; without it the
-            # only record of the mismatch is `build_job.done` in the job
-            # log, which nothing prints at default verbosity.
-            log_console_event(
-                logger,
-                logging.INFO,
-                "build_job.pool_configured",
-                groups=len(groups),
-                parallel=pool_size,
-                parallel_requested=parallel,
-            )
+                return (
+                    (index, cfg.get_name(), False, None, runner, group_dir),
+                    None,
+                    None,
+                )
+            return None, group_dir, (index, cfg.get_name(), runner)
 
         def _compile_group(group):
             """Compile one group's configs serially; rows for the caller."""
@@ -2203,25 +2168,119 @@ class RtlBuddy:
                 )
             return rows
 
-        if pool_size > 1:
-            # Threads, not processes: the work is a subprocess wait, and the
-            # prepared TestRunners (with their hook-mutated configs) would
-            # not survive a fork/spawn boundary. On SIGTERM the workers'
-            # builders are left to the scheduler's job-tree kill — Slurm
-            # kills the whole cgroup — which is why there is no fleet-kill
-            # here; run_managed_process already declines to install signal
-            # handlers off the main thread. The interactive price of that,
-            # for the rare hand-run `rb _build-job --parallel N`: Ctrl+C is
-            # not acted on until every in-flight compile has finished,
-            # because the workers install no handler and the pool's exit
-            # waits for them. Accepted deliberately — the alternative is a
-            # fleet-kill that would also fire under Slurm.
-            with ThreadPoolExecutor(max_workers=pool_size) as pool:
-                for rows in pool.map(_compile_group, list(groups.items())):
-                    outcomes.extend(rows)
-        else:
-            for group in groups.items():
-                outcomes.extend(_compile_group(group))
+        # ---- serial phase: construct, PRE, and probe the compile key.
+        #
+        # PRE stays on the main thread whatever --parallel says. Hook
+        # execution is process-global-serial by declared contract (one
+        # sys.modules registration slot and a process-wide redirect_stdout,
+        # see hooks.py), and arbitrary preproc code may write suite-level
+        # files that two configs would then race on. It is also the phase
+        # that makes the key knowable at all: a preproc script may mutate
+        # test_cfg, so the compile key exists only after pre() ran, on the
+        # sim instance that saw the mutation.
+        #
+        # Outcome rows are (plan index, test name, built?, worker error,
+        # runner, group dir) so both the envelope and the WARNINGs can be
+        # replayed in plan order below — a pool that reported in completion
+        # order would make two identical runs produce different logs. The
+        # runner rides along because the compile record it observed
+        # (duration/builder/reused) is only readable off the instance that
+        # ran the compile (#495).
+        #
+        # `streaming` is the default job, and it is the pre-#495 program
+        # exactly: PRE → COMPILE per config, one config at a time. Batching
+        # every PRE ahead of every compile is a semantic change for the
+        # documented generator pattern — a preproc hook that rewrites a
+        # suite-level generated input would, batched, clobber an earlier
+        # config's input before that config compiled, and the earlier
+        # config's probed fingerprint would no longer describe what its
+        # builder consumed. A job that can only ever run one build at a time
+        # buys nothing from batching, so it does not pay that (#496 review).
+        # `parallel > 1` opts into the same assumption the sim fan-out
+        # already makes — every `rb _test-job` re-runs its own pre()
+        # concurrently across nodes — and docs/known-issues.md says so.
+        streaming = min(parallel, len(configs)) <= 1
+        outcomes = []
+        groups = {}
+        for index, cfg in enumerate(configs):
+            row, group_dir, member = _prepare_config(index, cfg)
+            if row is not None:
+                outcomes.append(row)
+                continue
+            # Group by the directory the compile will WRITE, not by the
+            # config: two configs with the same compile key share one build
+            # dir, and two builders in one directory is #369. Members of a
+            # group run serially, and the second short-circuits on the
+            # first's stamp. First-seen group order preserves plan order.
+            #
+            # This assumes what a plan already promises: test names in it are
+            # unique. Two configs answering to one name share a per-test
+            # `run.f` whatever the grouping does, because the serial phase
+            # writes every filelist before any compile reads one — grouping
+            # cannot repair that, only the sweep hook that emitted the
+            # duplicate can.
+            groups.setdefault(group_dir, []).append(member)
+            if streaming:
+                # Compile it now, before the next config's hook runs. The
+                # group still records the membership so the telemetry
+                # (`groups`, the envelope's per-build `group`) reads the
+                # same in both shapes; a same-key sibling later in the plan
+                # simply short-circuits on the stamp this compile leaves,
+                # which is what the serial loop always did.
+                outcomes.extend(_compile_group((group_dir, [member])))
+
+        # ---- parallel phase: one worker per distinct build.
+        pool_size = max(1, min(parallel, len(groups)))
+        if pool_size > 1 or parallel > pool_size:
+            # Liveness on a CI console, which shows INFO only under -v: a
+            # build job that sits silent for 20 minutes is indistinguishable
+            # from a hung one, and this line is what says how many compiles
+            # that silence is covering.
+            #
+            # The second half of the condition is the over-reservation case
+            # (#495): the head scaled the job's cpus by `parallel`, but the
+            # plan collapsed to fewer distinct compile keys than that, so
+            # part of the reservation can never be used. It is not an error
+            # — `parallel` is a per-suite budget and a suite that reuses one
+            # build is the normal shape of a re-run — so it stays INFO on
+            # the same event rather than becoming a warning; without it the
+            # only record of the mismatch is `build_job.done` in the job
+            # log, which nothing prints at default verbosity.
+            log_console_event(
+                logger,
+                logging.INFO,
+                "build_job.pool_configured",
+                groups=len(groups),
+                parallel=pool_size,
+                parallel_requested=parallel,
+            )
+
+        # Nothing left to do in the streaming shape: every group was compiled
+        # as it was prepared.
+        if not streaming:
+            if pool_size > 1:
+                # Threads, not processes: the work is a subprocess wait, and
+                # the prepared TestRunners (with their hook-mutated configs)
+                # would not survive a fork/spawn boundary. On SIGTERM the
+                # workers' builders are left to the scheduler's job-tree kill
+                # — Slurm kills the whole cgroup — which is why there is no
+                # fleet-kill here; run_managed_process already declines to
+                # install signal handlers off the main thread. The
+                # interactive price of that, for the rare hand-run
+                # `rb _build-job --parallel N`: Ctrl+C is not acted on until
+                # every in-flight compile has finished, because the workers
+                # install no handler and the pool's exit waits for them.
+                # Accepted deliberately — the alternative is a fleet-kill
+                # that would also fire under Slurm.
+                with ThreadPoolExecutor(max_workers=pool_size) as pool:
+                    for rows in pool.map(_compile_group, list(groups.items())):
+                        outcomes.extend(rows)
+            else:
+                # `parallel` exceeded the group count: one group, but the
+                # plan held more than one config, so the batched shape was
+                # already chosen above.
+                for group in groups.items():
+                    outcomes.extend(_compile_group(group))
 
         built, failed, builds = [], [], []
         for _, name, ok, worker_error, runner, group_dir in sorted(

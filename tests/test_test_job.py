@@ -626,6 +626,111 @@ def test_the_default_build_job_announces_no_pool(
     ] == []
 
 
+def test_the_default_build_job_streams_pre_into_compile_per_config(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """At `parallel: 1` config B's hook must not run before A compiles.
+
+    The pre-#495 build job ran PRE → COMPILE per config, and the documented
+    generator pattern relies on it: a preproc hook that regenerates a
+    suite-level input would, if every PRE ran first, overwrite what an
+    earlier config's builder is about to consume — and that config's
+    already-probed fingerprint would no longer describe it. Batching buys a
+    serial job nothing, so the default job does not pay for it (#496
+    review). The event order is the whole assertion; a phased job produces
+    pre/pre/compile/compile.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    events: list[str] = []
+
+    def note_pre(name):
+        events.append(f"pre:{name}")
+        return None
+
+    def note_compile(name):
+        events.append(f"compile:{name}")
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.prepare_hook = note_pre
+    stub_runner.compile_hook = note_compile
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    assert events == ["pre:basic", "compile:basic", "pre:extra", "compile:extra"]
+    assert _build_payload(result.output)["built"] == ["basic", "extra"]
+
+
+def test_a_parallel_build_job_batches_every_pre_before_any_compile(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """`parallel > 1` is what opts into the batched phases (#496 review).
+
+    The compile key is only knowable after that config's PRE ran, so a pool
+    cannot be filled without probing every config first — which is why the
+    exposure is opt-in and documented rather than removed. The mirror image
+    of the streaming test above: same two configs, one flag apart.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    events: list[str] = []
+
+    def note_pre(name):
+        events.append(f"pre:{name}")
+        return None
+
+    def note_compile(name):
+        events.append(f"compile:{name}")
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.prepare_hook = note_pre
+    stub_runner.compile_hook = note_compile
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    assert events[:2] == ["pre:basic", "pre:extra"]
+    assert sorted(events[2:]) == ["compile:basic", "compile:extra"]
+    assert sorted(_build_payload(result.output)["built"]) == ["basic", "extra"]
+
+
+def test_a_one_config_plan_streams_however_wide_the_budget_is(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Effective pool size, not the flag, picks the shape.
+
+    One config can only ever be one build, so `--parallel 4` still gets the
+    streaming order — and still gets the over-reservation line, because the
+    head sized this job's cpus for four builds it cannot run.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    events: list[str] = []
+    stub_runner.prepare_hook = lambda name: events.append(f"pre:{name}")
+    stub_runner.compile_hook = lambda name: (
+        events.append(f"compile:{name}")
+        or EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+    )
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        # -l 0 keeps only `basic`: one runnable config in the plan.
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "0", "--parallel", "4"],
+    )
+    assert result.exit_code == 0, result.output
+    assert events == ["pre:basic", "compile:basic"]
+    (pool,) = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.pool_configured"
+    ]
+    assert (pool["groups"], pool["parallel"], pool["parallel_requested"]) == (1, 1, 4)
+
+
 def test_build_job_reports_in_plan_order_when_a_member_fails(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):

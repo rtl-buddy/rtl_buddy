@@ -441,6 +441,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     f"{fields.get('interval_s')}s accounting interval, so its "
                     "cpu time was sampled at most once"
                 )
+            elif reason == "parallel-utilization-ambiguous":
+                # Narrower than the others: only the cpus row is withheld,
+                # and only because a whole-job ratio is not a per-build one
+                # once slots can idle in the tail.
+                return (
+                    f"{fields.get('suite')}: no cpus advice for the build "
+                    f"job: it ran up to {fields.get('parallel')} builds at "
+                    f"once at {fields.get('efficiency')} cpu efficiency, and "
+                    "an idle slot and an under-used compile look the same "
+                    "from outside — size cfg-dispatch.compile.parallel "
+                    "against the suite's distinct compile keys first"
+                )
             elif reason == "no-build-records":
                 # Distinct from "nothing compiled": the job was accounted for
                 # (that is how we got here) but left no envelope to say what

@@ -1295,10 +1295,22 @@ def test_machine_payload_carries_build_job_reservation_advice(
     It owns no suite_results row, so it is the one job in the fleet that
     per-test analysis can never see — and with `compile.parallel` it is
     also the one whose reservation a project is most likely to overshoot.
+    Two builds over two slots is also the shape whose *cpus* row is
+    withheld: see below.
     """
     _mark_stub_builder_verilator(minimal_project)
     _build_telemetry_backend(
         monkeypatch,
+        builds=[
+            {
+                "test": name,
+                "builder": "hook-chosen-builder",
+                "duration_sec": 42.5,
+                "reused": False,
+                "group": f"obj_dir_{group}",
+            }
+            for name, group in (("basic", "cafe"), ("extra", "f00d"))
+        ],
         build_telemetry={
             "state": "COMPLETED",
             "elapsed_s": 60,
@@ -1337,22 +1349,20 @@ def test_machine_payload_carries_build_job_reservation_advice(
     advice = json.loads(payload_line)["payload"]["reservation_advice"]
     build_advice = {a["resource"]: a for a in advice if a["phase"] == "compile"}
 
-    cpus = build_advice["cpus"]
-    assert cpus["test"] == "(build job)"
-    assert cpus["direction"] == "reduce"
-    # Reported as the scaled number sacct and squeue show...
-    assert cpus["reserved"] == "8"
-    # ...but suggested per build, because that is what the field means.
-    assert cpus["suggested"] == "1"
-    assert cpus["edit_hint"]["path"] == "cfg-dispatch.compile.cpus"
-    assert cpus["edit_hint"]["file"].endswith("root_config.yaml")
-    assert "compile.parallel 2" in cpus["edit_hint"]["note"]
+    # No cpus row: the job ran two build slots, so its efficiency counts
+    # idle slots in the tail as well as under-used compilers and nothing in
+    # sacct separates them (#496 review). The withholding itself, and the
+    # reason it carries, is pinned in tests/test_dispatch_rightsize.py.
+    assert "cpus" not in build_advice
 
-    # time is not scaled by parallel, so it needs no note and no division.
+    # time IS still advised: it is wall clock, which N concurrent builds do
+    # not inflate, so it needs no note and no division.
     time_a = build_advice["time"]
+    assert time_a["test"] == "(build job)"
     assert time_a["reserved"] == "02:00:00"
     assert time_a["direction"] == "reduce"
     assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert time_a["edit_hint"]["file"].endswith("root_config.yaml")
     assert "note" not in time_a["edit_hint"]
 
 

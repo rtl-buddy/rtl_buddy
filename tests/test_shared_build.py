@@ -610,6 +610,82 @@ def test_a_pinned_simv_overwritten_by_another_test_invalidates_the_stamp(
     assert len(calls) == 3
 
 
+def test_configs_pinned_to_one_absolute_simv_land_in_one_group(tmp_path, monkeypatch):
+    """One executable, one group — even though the compile dirs differ.
+
+    An absolute `builder-simv:` cannot be shared, so each test keeps its own
+    compile work dir and its own stamp; what it cannot keep to itself is the
+    binary, which is the one path every test on that builder writes. Group
+    on the compile dirs and `compile.parallel > 1` runs two builders onto
+    one output (#496 review), so the pinned path is the grouping key. The
+    fix is serialization, not sharing: the second member still rebuilds.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+    pinned = str(tmp_path / "pinned" / "simv")
+
+    def _sim(name, simv):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=name,
+            exe="qrun",
+            family="questa",
+            simv=simv,
+        )
+
+    sim_a = _sim("test_a", pinned)
+    sim_b = _sim("test_b", pinned)
+    assert sim_a.compile_group_dir() == pinned
+    assert sim_b.compile_group_dir() == pinned
+
+    # A different pinned path is a different output, so it may compile at
+    # the same time — over-serializing a fleet is a real cost too.
+    other = _sim("test_c", str(tmp_path / "elsewhere" / "simv"))
+    assert other.compile_group_dir() != pinned
+
+    # A relative builder-simv resolves inside the test's own compile dir,
+    # which is already one writer per #369: still one group per test.
+    rel_a = _sim("test_d", "simv")
+    rel_b = _sim("test_e", "simv")
+    assert rel_a.compile_group_dir() != rel_b.compile_group_dir()
+
+    # The collision is not about sharing — `--no-share-build` writes the
+    # same pinned path — so the grouping does not depend on it either.
+    unshared = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_f",
+        exe="qrun",
+        family="questa",
+        simv=pinned,
+        share_build=False,
+    )
+    assert unshared.compile_group_dir() == pinned
+
+
+def test_verilator_ignores_an_absolute_builder_simv_for_grouping(tmp_path, monkeypatch):
+    """Verilator's output comes from `--Mdir`, so nothing is pinned.
+
+    The grouping predicate is the *same* one that declines sharing, and it
+    excuses verilator/icarus for the same reason: `builder-simv:` cannot
+    move their output, so two such configs write two build dirs and are two
+    groups. Grouping them together would serialize builds that never
+    collide.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+    pinned = str(tmp_path / "pinned" / "simv")
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a", simv=pinned)
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", simv=pinned, pd={"WIDTH": 8}
+    )
+    assert sim_a.compile_group_dir() != pinned
+    assert sim_a.compile_group_dir() != sim_b.compile_group_dir()
+    assert vlog_sim_module.pinned_simv_path(DummyBuilderCfg(simv=pinned)) is None
+
+
 def test_share_build_supported_is_the_single_capability_source():
     assert vlog_sim_module.share_build_supported("verilator")
     assert vlog_sim_module.share_build_supported("vcs")
