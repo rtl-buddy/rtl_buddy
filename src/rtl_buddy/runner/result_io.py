@@ -174,9 +174,14 @@ def refresh_result_json(path, results):
 
     Only ``result`` is replaced; ``run_token``, ``run_id`` and the
     filetype header are the identity of the envelope and are preserved.
-    Atomic like the writer, and silent on a missing or unreadable
-    envelope — or on a write that cannot land — because this is a
-    best-effort side-car, never a run's verdict.
+
+    Degrades, never raises. A missing or unreadable envelope, and a write
+    that cannot land (ENOSPC/EROFS on a shared filesystem, an
+    unserialisable value), both return ``None`` and leave the file exactly
+    as found; only the returned ``path`` says the refresh happened. The
+    envelope is a best-effort side-car and this runs after the run's
+    verdict is decided — losing the coverage paths is a worse artefact,
+    not a failed run.
     """
     path = Path(path)
     try:
@@ -253,8 +258,10 @@ def write_build_result_json(path, *, built, failed, builds=None):
     *additive* and the schema version deliberately does not move — an old
     head reading a new envelope ignores the key and keeps its
     compile-fail parity, and a new head reading an old one sees an empty
-    list. Omitted entirely when the caller has nothing to say, so a
-    ``parallel: 1`` job's envelope is byte-for-byte what it always was.
+    list. The key is written whenever a caller passes records — including
+    at ``parallel: 1``, where a real build job still reports one record
+    per planned config — and omitted only when a caller passes none (the
+    telemetry-drop retry in ``do_cmd_build_job``, and tests).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

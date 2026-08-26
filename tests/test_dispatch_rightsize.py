@@ -763,6 +763,40 @@ def test_build_cpus_advice_is_divided_back_down_by_parallel():
     assert cpus_a.suggested == "1"
     assert cpus_a.edit_hint["path"] == "cfg-dispatch.compile.cpus"
     assert "compile.parallel 4" in cpus_a.edit_hint["note"]
+    assert "reserved 16 = 4 x compile.parallel 4" in cpus_a.edit_hint["note"]
+
+
+def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
+    """AllocCPUS is what the site gave, not what the YAML asked for.
+
+    Under CR_CPU with threads-per-core, or core-granularity rounding, or a
+    site `sbatch-args` override, sacct reports more cpus than the head
+    requested. Dividing that by `parallel` names a per-build figure the
+    project never wrote — and it can round the current value up far enough
+    that the suggestion looks like a reduction from a number that is
+    already there, which is advice that never retires. The decomposition
+    is therefore stated from the resolved `cfg-dispatch.compile.cpus`, with
+    the allocated figure named separately so `sacct` still reconciles.
+    """
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,  # the site rounded 3 x 2 up to a whole node's core count
+            "total_cpu_s": 100,  # 0.125 efficiency
+        },
+        parallel=2,
+        cpus=3,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    note = cpus_a.edit_hint["note"]
+    assert "asked for 6 = 3 x compile.parallel 2" in note
+    assert "reported 8 allocated" in note
+    # ceil(4/2) = 2 would have been the sacct-derived per-build figure.
+    assert "= 4 x" not in note
+    # The allocated figure is still what `squeue`/`sacct` shows.
+    assert cpus_a.reserved == "8"
 
 
 def test_a_saturated_build_job_gets_no_cpus_advice():
@@ -898,6 +932,41 @@ def test_withheld_build_advice_is_logged_rather_than_left_silent(caplog):
     assert "accounting interval" in caplog.text
 
 
+def test_withheld_build_advice_carries_the_seconds_actually_spent_compiling(caplog):
+    """The machine payload says build time next to the job's wall clock.
+
+    "The job spent 55s of its 2 h reservation actually compiling" is the
+    number a reader wants beside the sim durations, and sacct cannot
+    produce it — only the envelope's per-build records can. It rides the
+    same event as `builds`/`compiled` and keeps their three-state rule:
+    absent, not zero, when there was no envelope to measure.
+    """
+    import logging
+
+    def _withheld():
+        return [
+            r
+            for r in caplog.records
+            if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+        ]
+
+    with caplog.at_level(logging.INFO):
+        _build_advice(
+            _REUSE_RUN,
+            compile_work={"records": 4, "compiled": 1, "compiled_sec": 55.0},
+            accounting_interval_s=300,
+        )
+    (record,) = _withheld()
+    assert record.rtl_fields["builds"] == 4
+    assert record.rtl_fields["compiled_sec"] == 55.0
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work=None)
+    (record,) = _withheld()
+    assert "compiled_sec" not in record.rtl_fields
+
+
 def test_an_unknown_build_job_is_not_reported_as_one_that_reused_stamps(caplog):
     """Could not tell is its own reason, and the line has to say so.
 
@@ -938,11 +1007,11 @@ def _rendered_metadata(findings, monkeypatch):
     return captured["metadata"]
 
 
-def _finding(phase):
+def _finding(phase, resource="time"):
     return RightsizeFinding(
         suite="verif/blk/tests.yaml",
         test="(build job)" if phase == "compile" else "t_basic",
-        resource="time",
+        resource=resource,
         reserved="02:00:00",
         peak="00:01:00",
         utilization=0.01,
@@ -973,3 +1042,21 @@ def test_the_compile_sim_note_only_appears_under_a_compile_sim_row(monkeypatch):
 
     sim_only = _rendered_metadata([_finding("sim")], monkeypatch)
     assert len(sim_only) == 1
+
+
+def test_the_per_build_clause_only_appears_under_a_build_cpus_row(monkeypatch):
+    """The cpus row is gated independently of the build-job row itself.
+
+    A `reduce` on cpus needs low efficiency *and* evidence that a compile
+    ran, so a build job routinely produces a `time` row and no `cpus` row.
+    Explaining that the cpus suggestion is per-build under a table with no
+    cpus column sends the reader looking for a number that is not there.
+    """
+    time_only = _rendered_metadata([_finding("compile")], monkeypatch)
+    assert any("the compile row is the suite's build job" in line for line in time_only)
+    assert not any("per-build" in line for line in time_only)
+
+    with_cpus = _rendered_metadata(
+        [_finding("compile"), _finding("compile", resource="cpus")], monkeypatch
+    )
+    assert any("cpus suggestion is per-build" in line for line in with_cpus)

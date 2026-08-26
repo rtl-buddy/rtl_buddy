@@ -368,10 +368,25 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "job (its sim job will retry the compile and fail there)"
             )
         case "build_job.pool_configured":
-            return (
+            parallel = fields.get("parallel")
+            requested = fields.get("parallel_requested")
+            msg = (
                 f"Compiling {fields.get('groups')} distinct build(s), up to "
-                f"{fields.get('parallel')} at a time"
+                f"{parallel} at a time"
             )
+            if isinstance(requested, int) and isinstance(parallel, int):
+                if requested > parallel:
+                    # The head reserved cpus for `requested` concurrent
+                    # builds; the suite has fewer distinct compile keys than
+                    # that, so the surplus is deliberate over-provisioning
+                    # and not a number to read off the right-sizing table.
+                    msg += (
+                        f" (cfg-dispatch.compile.parallel is {requested}, so "
+                        "the build job's cpus reservation is sized for "
+                        f"{requested} — effective parallelism here is "
+                        f"{parallel})"
+                    )
+            return msg
         case "build_job.compile_worker_error":
             return (
                 f"{fields.get('test')}: the build job's compile raised "

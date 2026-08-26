@@ -223,8 +223,12 @@ def analyze_build_reservation(
     ``parallel`` before submitting, so every cpus number here is divided
     back down before it is suggested — the field a project edits is
     per-build, and advising the product would compound the scaling on the
-    next run. Empty telemetry (a local-parallel backend reports none)
-    yields no advice at all.
+    next run. Its resolved ``cpus`` is also what the advice *names* as the
+    current per-build value, in preference to dividing AllocCPUS: a site
+    where the scheduler reports more cpus than were requested would
+    otherwise be shown a decomposition that does not match its YAML.
+    Empty telemetry (a local-parallel backend reports none) yields no
+    advice at all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -279,6 +283,12 @@ def analyze_build_reservation(
             # same three-state meaning `compile_work` has.
             builds=(compile_work or {}).get("records"),
             compiled=compiled,
+            # How much of the reservation's wall clock was real compiling —
+            # the number that says "the job spent 55s of its 2h building",
+            # which sacct's elapsed alone cannot separate from queueing and
+            # stamp checks. Same three-state rule as `builds`: None when
+            # there was no envelope to measure.
+            compiled_sec=(compile_work or {}).get("compiled_sec"),
             elapsed_s=elapsed,
             interval_s=accounting_interval_s,
         )
@@ -381,7 +391,36 @@ def analyze_build_reservation(
             # the division so N builds never end up reserving fewer cpus in
             # total than the suggestion they came from.
             suggested_per_build = max(1, math.ceil(suggested_total / parallel))
-            per_build_now = math.ceil(cpus / parallel)
+            # The decomposition is stated in terms of the value the project
+            # would edit, so it has to come from the head's own resolved
+            # `cfg-dispatch.compile.cpus` and not from AllocCPUS: a site
+            # whose sbatch-args or CR_CPU rounding makes Slurm report more
+            # cpus than were asked for would otherwise be told it reserved a
+            # per-build number it never wrote, and `suggested_per_build`
+            # could land on the value already in the YAML — advice that
+            # never retires. sacct is the fallback for a head that could not
+            # resolve the block at all.
+            resolved_per_build = (
+                getattr(compile_resources, "cpus", None)
+                if compile_resources is not None
+                else None
+            )
+            per_build_now = resolved_per_build or math.ceil(cpus / parallel)
+            requested_total = per_build_now * parallel
+            if requested_total == cpus:
+                decomposition = (
+                    f"the build job reserved {cpus} = {per_build_now} "
+                    f"x compile.parallel {parallel}"
+                )
+            else:
+                # Say both numbers rather than pick one: the reader needs
+                # the per-build figure to edit and the allocated figure to
+                # reconcile with `squeue`/`sacct`.
+                decomposition = (
+                    f"the build job asked for {requested_total} = "
+                    f"{per_build_now} x compile.parallel {parallel} "
+                    f"(the scheduler reported {cpus} allocated)"
+                )
             if suggested_per_build < per_build_now:
                 findings.append(
                     RightsizeFinding(
@@ -398,9 +437,8 @@ def analyze_build_reservation(
                         edit_hint=hint(
                             "cpus",
                             note=(
-                                f"per-build; the build job reserved {cpus} "
-                                f"= {per_build_now} x compile.parallel "
-                                f"{parallel}. Suggested value is per-build. "
+                                f"per-build; {decomposition}. "
+                                "Suggested value is per-build. "
                                 "`parallel` is the other lever: it is capped "
                                 "by the suite's planned configs, not by its "
                                 "distinct compile keys, so configs that share "

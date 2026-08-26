@@ -2151,17 +2151,28 @@ class RtlBuddy:
 
         # ---- parallel phase: one worker per distinct build.
         pool_size = max(1, min(parallel, len(groups)))
-        if pool_size > 1:
+        if pool_size > 1 or parallel > pool_size:
             # Liveness on a CI console, which shows INFO only under -v: a
             # build job that sits silent for 20 minutes is indistinguishable
             # from a hung one, and this line is what says how many compiles
             # that silence is covering.
+            #
+            # The second half of the condition is the over-reservation case
+            # (#495): the head scaled the job's cpus by `parallel`, but the
+            # plan collapsed to fewer distinct compile keys than that, so
+            # part of the reservation can never be used. It is not an error
+            # — `parallel` is a per-suite budget and a suite that reuses one
+            # build is the normal shape of a re-run — so it stays INFO on
+            # the same event rather than becoming a warning; without it the
+            # only record of the mismatch is `build_job.done` in the job
+            # log, which nothing prints at default verbosity.
             log_console_event(
                 logger,
                 logging.INFO,
                 "build_job.pool_configured",
                 groups=len(groups),
                 parallel=pool_size,
+                parallel_requested=parallel,
             )
 
         def _compile_group(group):
@@ -3755,12 +3766,19 @@ class RtlBuddy:
                 "compile+sim rows measure a job that also compiled (its "
                 "builder cannot share a build), so the peak spans both phases"
             )
-        if any(f.phase == "compile" for f in findings):
-            metadata.append(
+        compile_rows = [f for f in findings if f.phase == "compile"]
+        if compile_rows:
+            note = (
                 "the compile row is the suite's build job: one allocation "
-                "running up to cfg-dispatch.compile.parallel builds at once, "
-                "so its cpus suggestion is per-build"
+                "running up to cfg-dispatch.compile.parallel builds at once"
             )
+            # The cpus row is gated independently (efficiency threshold, and
+            # a reduce needs evidence a compile ran), so a table whose only
+            # build-job row is `time` would otherwise carry a footnote
+            # explaining a column that is not there.
+            if any(f.resource == "cpus" for f in compile_rows):
+                note += ", so its cpus suggestion is per-build"
+            metadata.append(note)
         render_summary(
             title="Reservation Advice (reserved vs used)",
             columns=[

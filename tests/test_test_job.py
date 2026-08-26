@@ -590,6 +590,41 @@ def test_build_job_never_runs_two_builders_in_one_directory(
         (1, 4, 1)
     ]
 
+    # ...and the mismatch is announced rather than left to whoever thinks
+    # to open the job log: the head sized this job's cpus for 4 concurrent
+    # builds and the suite only has one to run.
+    (pool,) = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.pool_configured"
+    ]
+    assert (pool["groups"], pool["parallel"], pool["parallel_requested"]) == (1, 1, 4)
+
+
+def test_the_default_build_job_announces_no_pool(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """At `parallel: 1` there is no pool line, because there is no pool.
+
+    Invariant 8: a project that never set `cfg-dispatch.compile.parallel`
+    gets today's build job, and that includes what it prints. The event is
+    a console line at default verbosity, so emitting it for the serial case
+    would be new output on every dispatched run.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.pool_configured"
+    ] == []
+
 
 def test_build_job_reports_in_plan_order_when_a_member_fails(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
@@ -790,6 +825,20 @@ def test_pool_configured_has_a_dedicated_human_message():
     msg = _human_message("build_job.pool_configured", {"groups": 8, "parallel": 4})
     assert "8 distinct build(s)" in msg
     assert "4 at a time" in msg
+    # A budget the suite cannot spend is deliberate over-provisioning, not
+    # an error — one INFO line, on the same event, saying what the
+    # effective parallelism actually was.
+    over = _human_message(
+        "build_job.pool_configured",
+        {"groups": 1, "parallel": 1, "parallel_requested": 4},
+    )
+    assert "cfg-dispatch.compile.parallel is 4" in over
+    assert "effective parallelism here is 1" in over
+    # No surplus, no explanation to give.
+    assert "effective parallelism" not in _human_message(
+        "build_job.pool_configured",
+        {"groups": 4, "parallel": 4, "parallel_requested": 4},
+    )
 
 
 def test_build_job_compile_failure_is_best_effort_exit_0(
@@ -1038,6 +1087,18 @@ def test_build_records_that_cannot_be_serialised_do_not_cost_the_envelope(
     br = load_build_result_json(minimal_project / "b.json")
     assert set(br["built"]) == {"basic", "extra"}
     assert br["builds"] == []
+
+
+def test_build_records_failure_warning_has_a_dedicated_human_message():
+    """A WARNING must not fall through to the generic event-name fallback."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "build_job.build_records_failed", {"error": "duration_sec is not JSON"}
+    )
+    assert "duration_sec is not JSON" in msg
+    assert "compile failures still" in msg
+    assert "build_job build_records_failed" not in msg
 
 
 def test_an_envelope_that_cannot_be_written_at_all_still_exits_0(

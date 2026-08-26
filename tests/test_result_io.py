@@ -275,6 +275,39 @@ def test_a_write_that_cannot_land_does_not_take_the_collection_down(
     assert not out.with_name(out.name + ".tmp").exists()
 
 
+def test_a_coverage_refresh_that_cannot_land_degrades_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The refresh shares the attach path's write helper, and its contract.
+
+    ``refresh_result_json`` runs after post-processing, long after the
+    run's verdict is decided — its only job is to put the coverage paths
+    the LCOV/HTML/Coverview stages produced back into the side-car. A full
+    or read-only shared filesystem there must cost the artefact paths, not
+    the run: ``None`` is returned, the envelope is left exactly as found,
+    and nothing propagates to the caller.
+    """
+    from rtl_buddy.runner import result_io
+    from rtl_buddy.runner.result_io import refresh_result_json
+
+    out = tmp_path / "result.json"
+    write_result_json(
+        out, test_name="t", run_id=1, results=TestPassResults(name="t/results")
+    )
+    before = out.read_text()
+
+    def _erofs(self, *args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(result_io.Path, "write_text", _erofs)
+    refreshed = refresh_result_json(out, CompileFailResults(name="t/results"))
+
+    monkeypatch.undo()
+    assert refreshed is None
+    assert out.read_text() == before
+    assert not out.with_name(out.name + ".tmp").exists()
+
+
 def test_build_envelope_round_trips_its_compile_records(tmp_path: Path):
     from rtl_buddy.runner.result_io import (
         load_build_result_json,
