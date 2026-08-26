@@ -148,28 +148,21 @@ jobs:
           TAG: ${{ steps.version.outputs.new_tag }}
           PREV_TAG: ${{ steps.version.outputs.latest_tag }}
           IS_PRERELEASE: ${{ steps.version.outputs.is_prerelease }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_USER: ${{ github.event.pull_request.user.login }}
           DESCRIPTION: ${{ inputs.description }}
-          ACTOR: ${{ github.actor }}
-          SERVER_URL: ${{ github.server_url }}
-          REPO: ${{ github.repository }}
         with:
           script: |
             const tag = process.env.TAG;
             const prevTag = process.env.PREV_TAG;
             const isPrerelease = process.env.IS_PRERELEASE === 'true';
-            let body;
-            if (context.eventName === 'workflow_dispatch') {
-              body = process.env.DESCRIPTION || `Manual release triggered by @${process.env.ACTOR}`;
-            } else {
-              body = `**PR #${process.env.PR_NUMBER}** by @${process.env.PR_USER}: ${process.env.PR_TITLE}`;
-            }
-
-            if (prevTag && prevTag !== 'v0.0.0') {
-              body += `\n\n**Full changelog:** ${process.env.SERVER_URL}/${process.env.REPO}/compare/${prevTag}...${tag}`;
-            }
+            const { data: generatedNotes } = await github.rest.repos.generateReleaseNotes({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              previous_tag_name: prevTag === 'v0.0.0' ? undefined : prevTag,
+            });
+            const body = process.env.DESCRIPTION
+              ? `${process.env.DESCRIPTION}\n\n${generatedNotes.body}`
+              : generatedNotes.body;
 
             await github.rest.repos.createRelease({
               owner: context.repo.owner,
