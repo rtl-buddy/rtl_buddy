@@ -358,6 +358,14 @@ def test_build_job_accepts_parallel_and_still_builds_every_config(
     envelope = json.loads(payload_line)
     assert set(envelope["payload"]["built"]) == {"basic", "extra"}
     assert envelope["payload"]["failed"] == []
+    # The budget the job was handed is on its own command record: a build
+    # job's wall clock is unreadable without the concurrency it ran at.
+    build_job = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "command.build_job"
+    ]
+    assert [record.get("parallel") for record in build_job] == [2]
 
 
 @pytest.mark.parametrize("value", ["0", "-1"])
@@ -519,13 +527,21 @@ def test_build_job_plan_compiles_plan_configs_without_hook(
 # ------------------------------------- job log paths (#437)
 
 
+def _records(log_path: Path) -> list[dict]:
+    """Every record in a machine-mode rtl_buddy log, fields included.
+
+    ``log_event`` fields are flattened into the JSON line beside ``event``
+    (JsonLinesFormatter), so a record is the assertion surface for both the
+    event name and what it carried.
+    """
+    return [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
+
+
 def _events(log_path: Path) -> list[str]:
     """Event names in a machine-mode rtl_buddy log."""
-    return [
-        json.loads(line).get("event")
-        for line in log_path.read_text().splitlines()
-        if line.strip()
-    ]
+    return [record.get("event") for record in _records(log_path)]
 
 
 def test_test_job_logs_beside_its_envelope_and_never_the_suite_log(

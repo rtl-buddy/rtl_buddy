@@ -179,11 +179,27 @@ class LocalProcessBackend(DispatchBackend):
         told too. WARNING, not INFO: the console shows INFO only under
         ``-v``, and a reservation silently doing nothing is precisely the
         misreading this exists to prevent.
+
+        A build job's cpus arrive from the head already multiplied by its
+        own ``parallel`` (#495), so they are undone again before the
+        comparison: that factor buys concurrency the build job *does*
+        honour here, and left in it would turn ``compile: {parallel: 2}``
+        with no ``resources:`` anywhere into a warning about a reservation
+        the project never wrote.
         """
         if self._warned_reservations:
             return
         resources = getattr(spec, "resources", None)
-        if resources is None or resources == JobResources():
+        if resources is None:
+            return
+        parallel = max(1, getattr(spec, "parallel", 1) or 1)
+        if parallel > 1:
+            resources = JobResources(
+                cpus=max(1, resources.cpus // parallel),
+                mem=resources.mem,
+                time=resources.time,
+            )
+        if resources == JobResources():
             return
         self._warned_reservations = True
         log_event(
@@ -220,6 +236,12 @@ class LocalProcessBackend(DispatchBackend):
         return JobHandle(job_id=job.job_id, spec=spec)
 
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
+        # The pool's own cap counts jobs, not the processes inside them: a
+        # build job carrying `--parallel N` (#495) occupies ONE slot and then
+        # fans out to N concurrent compiles, so `jobs` x `compile.parallel`
+        # is the real ceiling on this host. Nothing to enforce here yet (the
+        # job compiles serially until the pool lands), but sizing the two
+        # knobs together is a docs obligation, not an accident.
         handle = self._enqueue(
             spec, build_job_argv(spec), kind="build", dependency=None
         )

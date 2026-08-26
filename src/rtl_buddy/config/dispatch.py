@@ -90,11 +90,17 @@ class DispatchCompileFile:
     A separate class from :class:`DispatchResourcesFile` even though the
     three reservation fields are identical, because that class is also the
     serde type behind every ``resources:`` block in tests.yaml (testbench
-    and test level). ``parallel`` there would parse and then silently mean
-    nothing: a per-test reservation sizes one sim job, and "compile N
-    builds at once" is a property of the one build job per suite. Keeping
-    the shapes apart is what makes ``resources: {parallel: 2}`` a config
-    error instead of a no-op a project would trust.
+    and test level). ``parallel`` there would mean nothing: a per-test
+    reservation sizes one sim job, and "compile N builds at once" is a
+    property of the one build job per suite.
+
+    Keeping the shapes apart is schema hygiene, not a guard rail — serde
+    drops unknown keys, so ``resources: {parallel: 2}`` is silently
+    discarded wherever it is written rather than rejected. What the split
+    buys is that the field cannot be *documented* onto a per-test block by
+    accident, and that a later strict-key pass has one class to make
+    strict. A project that writes it in the wrong place is told by the
+    docs, not by an error.
     """
 
     cpus: int | None = None
@@ -305,20 +311,14 @@ class DispatchConfigFile:
             )
 
         def _validated_compile(res):
-            """The compile block, through the same mem/time validators.
-
-            ``getattr`` for ``parallel``: a caller may hand the compile
-            slot a plain DispatchResourcesFile (the two shapes were one
-            class before #495), and losing the reservation over a missing
-            concurrency field would be the worse failure.
-            """
+            """The compile block, through the same mem/time validators."""
             if res is None:
                 return None
             return DispatchCompileFile(
                 cpus=res.cpus,
                 mem=_validate_mem(res.mem),
                 time=_validate_time(res.time),
-                parallel=getattr(res, "parallel", 1),
+                parallel=res.parallel,
             )
 
         if self.progress_interval < 0:
@@ -342,11 +342,10 @@ class DispatchConfigFile:
                 f"cfg-dispatch jobs must be >= 1 (got {self.jobs}); a pool of "
                 "zero would never start a job."
             )
-        compile_parallel_ = getattr(self.compile, "parallel", 1)
-        if compile_parallel_ < 1:
+        if self.compile is not None and self.compile.parallel < 1:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch compile parallel must be >= 1 (got "
-                f"{compile_parallel_}); a build job allowed zero concurrent "
+                f"{self.compile.parallel}); a build job allowed zero concurrent "
                 "builds would compile nothing."
             )
         return DispatchConfig(
@@ -443,7 +442,7 @@ def compile_parallel(dispatch_cfg) -> int:
     """
     if dispatch_cfg is None or dispatch_cfg.compile is None:
         return 1
-    return getattr(dispatch_cfg.compile, "parallel", 1)
+    return dispatch_cfg.compile.parallel
 
 
 def mem_to_bytes(value) -> int | None:

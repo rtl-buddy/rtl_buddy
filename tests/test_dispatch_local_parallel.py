@@ -194,6 +194,62 @@ def test_no_reservation_no_ignored_notice(monkeypatch, tmp_path, caplog):
     assert "dispatch.pool_configured" in events
 
 
+def _parallel_build_spec(tmp_path: Path, parallel: int, cpus: int) -> BuildJobSpec:
+    """A build spec shaped the way the head submits one (#495).
+
+    The head multiplies the resolved compile cpus by ``parallel`` before it
+    builds the spec, so a spec with ``parallel: N`` never carries the
+    per-build number.
+    """
+    spec = _build_spec(tmp_path)
+    spec.parallel = parallel
+    spec.resources = JobResources(cpus=cpus * parallel)
+    return spec
+
+
+def test_compile_parallel_alone_is_not_a_reservation_to_ignore(
+    monkeypatch, tmp_path, caplog
+):
+    """`compile: {parallel: 2}` and nothing else must stay quiet (#495).
+
+    The scaled cpus on a build spec are not a reservation the project
+    wrote — they are the head paying for concurrency this backend's build
+    job does honour. Warning would tell a project its `resources:` is being
+    ignored when it never wrote one.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend()
+    spec = _parallel_build_spec(tmp_path, parallel=2, cpus=JobResources().cpus)
+    with caplog.at_level(logging.DEBUG):
+        handle = backend.submit_build(spec)
+        backend.wait_all([handle])
+    assert "dispatch.reservations_ignored" not in _events(caplog)
+
+
+def test_a_real_compile_reservation_still_warns_under_parallel(
+    monkeypatch, tmp_path, caplog
+):
+    """Undoing the scaling must not disarm the notice itself.
+
+    A project that reserved 4 cpus per build is reserving, and the pool
+    still cannot honour it — and the warning quotes the per-build number it
+    wrote, not the head's product.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend()
+    spec = _parallel_build_spec(tmp_path, parallel=2, cpus=4)
+    with caplog.at_level(logging.WARNING):
+        handle = backend.submit_build(spec)
+        backend.wait_all([handle])
+    warnings = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.reservations_ignored"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].__dict__["rtl_fields"]["cpus"] == 4
+
+
 # ---- the concurrency cap -------------------------------------------------
 
 

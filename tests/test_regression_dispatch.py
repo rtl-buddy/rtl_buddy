@@ -748,12 +748,16 @@ def test_no_build_job_when_no_test_can_share_a_build(
 def test_in_job_compile_reservation_covers_both_phases(
     minimal_project: Path,
     fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """The one allocation is sized max(sim, compile) field by field (#358).
 
     ``parallel: 4`` is set to prove it does NOT reach here (#495): a sim
     job that compiles for itself runs exactly one build, whatever the
-    build job would have been allowed to do concurrently.
+    build job would have been allowed to do concurrently. That holds for
+    the ``compile_floor`` rows as well as the reservation — the floor is
+    what clamps a `reduce` suggestion, so a scaled one would advise every
+    in-job compile up to N times the cpus it can use.
     """
     _add_dispatch_resources(
         minimal_project,
@@ -762,6 +766,15 @@ def test_in_job_compile_reservation_covers_both_phases(
         '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n'
         "    parallel: 4\n",
     )
+    rows_analyzed: list[dict] = []
+    original = rtl_buddy_module.analyze_suite_reservations
+
+    def _spy(suite_results, **kwargs):
+        rows_analyzed.extend(suite_results)
+        return original(suite_results, **kwargs)
+
+    monkeypatch.setattr(rtl_buddy_module, "analyze_suite_reservations", _spy)
+
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert result.exit_code == 0, result.output
 
@@ -769,6 +782,11 @@ def test_in_job_compile_reservation_covers_both_phases(
     assert resources.cpus == 8  # compile needs more; NOT 4 x 8
     assert resources.mem == "16G"  # compile needs more
     assert resources.time == "00:20:00"  # sim needs more; compile's is smaller
+
+    floors = [row["compile_floor"] for row in rows_analyzed if "compile_floor" in row]
+    assert floors, "no in-job-compile row reached right-sizing"
+    for floor in floors:
+        assert floor == {"cpus": 8, "mem": "16G", "time": "00:10:00"}
 
 
 def test_share_build_capable_builder_keeps_the_sim_sized_reservation(
