@@ -75,8 +75,10 @@ installed-version, offline interface.
 
 `npm run build:all` additionally rebuilds every published major from that
 major's latest stable Git tag. CI validates this on pull requests and uses it
-for stable release deployment after the new tag exists, so historical versions
-share the Docusaurus renderer without sharing current docs or racing a release.
+for stable release deployment after the new tag exists. That release build
+refreshes `dev` from the latest `origin/main` snapshot and stable versions from
+their tags, so the new major appears in navigation without regressing newer
+development content.
 
 For CLI help changes, regenerate the reference before building:
 

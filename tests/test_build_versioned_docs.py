@@ -29,8 +29,34 @@ def test_latest_stable_tag_requires_exact_release(monkeypatch):
         MODULE.latest_stable_tag("v6")
 
 
-def test_versions_to_build_can_exclude_dev_without_hiding_it_from_navigation():
-    versions = ["dev", "v6", "v5"]
+def test_release_dev_snapshot_uses_main_docs_and_sidebar(tmp_path, monkeypatch):
+    records = []
 
-    assert MODULE.versions_to_build(versions, {"dev"}) == ["v6", "v5"]
-    assert versions == ["dev", "v6", "v5"]
+    def fake_extract(ref, destination, *paths):
+        records.append((ref, paths))
+        (destination / "docs").mkdir(parents=True)
+        (destination / "sidebars.js").write_text("module.exports = {};")
+        return destination
+
+    def fake_build(version, **kwargs):
+        records.append(
+            (
+                version,
+                kwargs["docs_dir"],
+                kwargs["sidebar_path"],
+                kwargs["show_last_update"],
+            )
+        )
+
+    monkeypatch.setattr(MODULE, "_extract_snapshot", fake_extract)
+    monkeypatch.setattr(MODULE, "build_version", fake_build)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    (tmp_path / "docs").mkdir()
+
+    MODULE.build_all(tmp_path / "builds", ["dev"], dev_ref="origin/main")
+
+    assert records[0] == ("origin/main", ("docs", "sidebars.js"))
+    assert records[1][0] == "dev"
+    assert records[1][1].name == "docs"
+    assert records[1][2].name == "sidebars.js"
+    assert records[1][3] is False

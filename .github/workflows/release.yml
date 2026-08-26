@@ -251,7 +251,9 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_PAGES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
       - name: Fetch gh-pages branch if it exists
-        run: git fetch origin gh-pages --depth=1
+        run: |
+          git fetch origin gh-pages --depth=1
+          git fetch origin main:refs/remotes/origin/main --depth=1
 
       - name: Compute docs target
         id: target
@@ -281,7 +283,7 @@ jobs:
           DOCS_ROOT_BASE_URL: /rtl_buddy/
           DOCS_VERSION: ${{ steps.target.outputs.version }}
           DOCS_VERSIONS: ${{ steps.target.outputs.versions }}
-          DOCS_BUILD_EXCLUDE: dev
+          DOCS_DEV_REF: origin/main
         run: npm run build:all
 
       - name: Check out GitHub Pages branch
