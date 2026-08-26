@@ -154,10 +154,18 @@ jobs:
             npm run build:all
           fi
 
+      - name: Prepare site link root
+        run: |
+          mkdir link-root
+          ln -s "$GITHUB_WORKSPACE/builds" link-root/rtl_buddy
+
       - name: Check site links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --offline builds/**/*.html
+          # Docusaurus emits root-relative /rtl_buddy/<version>/ URLs. Point
+          # Lychee at the equivalent local tree while retaining builds/ as the
+          # deployment artifact layout.
+          args: --offline --root-dir link-root builds/**/*.html
           fail: true
 
       - name: Upload site preview
