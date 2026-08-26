@@ -134,6 +134,18 @@ class TestRunner:
             return SetupFailResults(name=self.name + "/results", desc=pre_error)
         return None
 
+    @property
+    def last_compile(self):
+        """This runner's sim's compile record, or ``None`` (#495).
+
+        ``{duration_sec, builder, reused}`` — what the COMPILE phase cost,
+        for the build envelope and the results overlay. ``None`` before
+        :meth:`prepare` has built the sim: a runner whose PRE never got
+        that far has nothing to report, and telemetry must never be the
+        thing that raises.
+        """
+        return None if self._vlog_sim is None else self._vlog_sim.last_compile
+
     def compile_group_dir(self):
         """``(group_dir, None)`` or ``(None, Results)`` for the prepared sim.
 

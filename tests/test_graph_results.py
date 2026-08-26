@@ -74,8 +74,13 @@ def results_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return target
 
 
-def _results(result: str, desc: str = "ok") -> _TestResults:
-    return _TestResults(name="t", results={"result": result, "desc": desc})
+def _results(result: str, desc: str = "ok", compile_record=None) -> _TestResults:
+    payload = {"result": result, "desc": desc}
+    if compile_record is not None:
+        # The block the dispatch collect folds in from the build envelope,
+        # and the in-process path records straight off the sim (#495).
+        payload["compile"] = compile_record
+    return _TestResults(name="t", results=payload)
 
 
 def _artefact_dir(project: Path, test: str, run_id: int | None = None) -> Path:
@@ -97,6 +102,7 @@ def _seed_run(
     *,
     run_id: int | None = None,
     status: str = "PASS",
+    compile_record: dict | None = None,
     seed: int = 4242,
     token: str = "tok-1",
     when: int = _T_FIRST,
@@ -123,7 +129,7 @@ def _seed_run(
             target,
             test_name=test,
             run_id=run_id,
-            results=_results(status),
+            results=_results(status, compile_record=compile_record),
             run_token=token,
         )
         _stamp(target, when)
@@ -172,6 +178,54 @@ def test_entry_is_keyed_by_test_node_id_and_reports_the_envelope(
     }
     assert overlay.with_results() == 1
     assert overlay.status_counts() == {"PASS": 1}
+    # No compile block on an envelope that carries none — the key is absent,
+    # not null, so an existing project's overlay is byte-identical (#495).
+    assert "compile" not in entry
+
+
+def test_entry_reports_the_compile_the_envelope_recorded(results_project: Path):
+    """What the compile cost, and which builder ran it (#495).
+
+    Dispatched or not, it reaches the overlay the same way: through the
+    envelope's own results dict. `rb graph results` never sees a build job
+    — the build envelope lives under `artefacts/.dispatch/`, which the
+    scanner rejects as a dot-directory — so the collecting head folds the
+    record into each test's envelope and this reads it back.
+    """
+    _seed_run(
+        results_project,
+        "t_basic",
+        compile_record={
+            "duration_sec": 42.5,
+            "builder": "verilator",
+            "reused": False,
+            # An unrecognised key must not travel: the overlay promises a
+            # fixed shape, and a build job's bookkeeping is not part of it.
+            "group": "obj_dir_cafe",
+        },
+    )
+
+    entry = collect_results(results_project).entries["test:verif/blk_a#t_basic"]
+    assert entry["compile"] == {
+        "duration_sec": 42.5,
+        "builder": "verilator",
+        "reused": False,
+    }
+
+
+def test_a_reused_build_reports_zero_duration_not_a_missing_one(
+    results_project: Path,
+):
+    """A short-circuited compile is a fact, not an absence (#495)."""
+    _seed_run(
+        results_project,
+        "t_basic",
+        compile_record={"duration_sec": 0.0, "builder": "verilator", "reused": True},
+    )
+
+    entry = collect_results(results_project).entries["test:verif/blk_a#t_basic"]
+    assert entry["compile"]["reused"] is True
+    assert entry["compile"]["duration_sec"] == 0.0
 
 
 def test_timestamp_comes_from_the_envelope_not_the_wall_clock(results_project: Path):

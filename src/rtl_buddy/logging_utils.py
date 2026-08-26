@@ -379,6 +379,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "the job still exits 0 and its afterok dependents run; the "
                 "test's own sim job will retry the compile"
             )
+        case "build_job.build_records_failed":
+            return (
+                "build job: could not record per-compile telemetry in the "
+                f"build result ({fields.get('error')}) — the built/failed "
+                "outcome was written without it, so compile failures still "
+                "map correctly; only the compile durations are missing"
+            )
         case "build_job.machine_result_failed":
             return (
                 "build job: could not emit the machine-result envelope "

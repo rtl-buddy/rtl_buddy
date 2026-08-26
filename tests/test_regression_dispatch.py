@@ -45,6 +45,10 @@ class _FakeBackend(DispatchBackend):
         self.waited = False
         self.cancelled = False
         self.extra_waits = []
+        # Job ids each collect_telemetry pass asked about, so a test can
+        # prove the build handle joined the first query and only that one
+        # (#495).
+        self.telemetry_queries = []
 
     def submit_build(self, spec):
         self.build_submitted.append(spec)
@@ -89,6 +93,9 @@ class _StubBuildRunner:
 
     canned = None
     inits = []
+    # The compile record VlogSim stamps on itself (#495); the in-process
+    # path folds it into every run's result envelope.
+    compile_record = {"duration_sec": 2.5, "builder": "stub", "reused": False}
 
     def __init__(self, **kwargs):
         type(self).inits.append(kwargs)
@@ -98,6 +105,10 @@ class _StubBuildRunner:
 
     def run_multiple(self, run_ids):
         return [type(self).canned for _ in run_ids]
+
+    @property
+    def last_compile(self):
+        return type(self).compile_record
 
 
 @pytest.fixture
@@ -446,11 +457,26 @@ def test_dispatch_writes_plan_and_threads_it_to_jobs(
 class _RecordingBackend(_FakeBackend):
     """FakeBackend that also records array submissions and wait calls."""
 
-    def __init__(self, telemetry=None, **kwargs):
+    def __init__(self, telemetry=None, build_result=None, **kwargs):
         super().__init__(**kwargs)
         self.array_calls = []
         self.wait_calls = 0
         self.telemetry = telemetry or {}
+        # What the build job "wrote" — {built, failed, builds} (#495). The
+        # base fake never runs a build job, so without this the head has no
+        # build envelope to read compile records out of.
+        self.build_result = build_result
+
+    def submit_build(self, spec):
+        handle = super().submit_build(spec)
+        if self.build_result is not None:
+            write_build_result_json(
+                spec.result_json,
+                built=self.build_result.get("built", []),
+                failed=self.build_result.get("failed", []),
+                builds=self.build_result.get("builds"),
+            )
+        return handle
 
     def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
         self.array_calls.append(
@@ -468,6 +494,7 @@ class _RecordingBackend(_FakeBackend):
         super().wait_all(handles, extra_wait=extra_wait)
 
     def collect_telemetry(self, handles):
+        self.telemetry_queries.append([h.job_id for h in handles])
         return self.telemetry
 
 
@@ -580,6 +607,152 @@ def test_collect_attaches_telemetry_to_results_and_envelope(
     envelope = json.loads(backend.submitted[0].result_json.read_text())
     assert envelope["telemetry"]["state"] == "COMPLETED"
     assert envelope["telemetry"]["elapsed_s"] == 5
+
+
+# ------------------------------------------- #495: build-job telemetry
+
+
+def _build_telemetry_backend(monkeypatch, *, builds=None, build_telemetry=None):
+    """A fleet whose build job left both a result envelope and a sacct row."""
+    telemetry = {
+        "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600},
+    }
+    if build_telemetry is not None:
+        telemetry["fake-build"] = build_telemetry
+    backend = _RecordingBackend(
+        telemetry=telemetry,
+        build_result={
+            "built": ["basic"],
+            "failed": [],
+            "builds": builds
+            if builds is not None
+            else [
+                {
+                    "test": "basic",
+                    "builder": "hook-chosen-builder",
+                    "duration_sec": 42.5,
+                    "reused": False,
+                    "group": "obj_dir_cafe",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    return backend
+
+
+def test_collect_attaches_the_build_jobs_own_telemetry_to_its_envelope(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The build job's sacct row travels with its artifact too (#495).
+
+    Until now the one job in a dispatched fleet whose reservation nobody
+    could check afterwards was the one holding the whole fan-out.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _build_telemetry_backend(
+        monkeypatch,
+        build_telemetry={"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build_envelope = json.loads(
+        Path(backend.build_submitted[0].result_json).read_text()
+    )
+    assert build_envelope["telemetry"]["elapsed_s"] == 60
+    # Additive: the half the head has always read is untouched.
+    assert build_envelope["built"] == ["basic"]
+    # The build handle rode along in the first (and only) telemetry query.
+    assert backend.telemetry_queries == [["fake-build", "fake-1"]]
+
+
+def test_sim_rows_and_envelopes_carry_the_build_jobs_compile_record(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The compile a test never ran itself still shows up on its row (#495).
+
+    The record is folded into the envelope's nested ``result.results``,
+    which is where `rb graph results` reads a run's payload from — a
+    top-level key would travel with the artifact and stay invisible.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _build_telemetry_backend(monkeypatch)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    envelope = json.loads(Path(backend.submitted[0].result_json).read_text())
+    compile_block = envelope["result"]["results"]["compile"]
+    assert compile_block["duration_sec"] == 42.5
+    # The build job's observation wins over the builder the head resolved
+    # before submitting: a preproc hook can move it, and the envelope is
+    # what actually ran.
+    assert compile_block["builder"] == "hook-chosen-builder"
+    assert compile_block["reused"] is False
+    # `group` is build-job bookkeeping, not part of the per-run record.
+    assert "group" not in compile_block
+
+
+def test_an_old_build_envelope_without_compile_records_still_collects(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Mixed-version fleets degrade, never fail (#495).
+
+    A build job from before the records writes no ``builds`` key; the head
+    must simply leave the sim rows without a compile block.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _build_telemetry_backend(monkeypatch, builds=None)
+    backend.build_result["builds"] = None  # exactly the old envelope shape
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build_envelope = json.loads(
+        Path(backend.build_submitted[0].result_json).read_text()
+    )
+    assert "builds" not in build_envelope
+    envelope = json.loads(Path(backend.submitted[0].result_json).read_text())
+    assert "compile" not in envelope["result"]["results"]
+
+
+def test_a_retry_pass_does_not_re_query_or_re_attach_the_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Build telemetry is a first-pass fact (#495).
+
+    A retry pass collects a resubmitted *sim* subset; the build job is
+    never resubmitted and was already finished by the fleet-wide wait, so
+    re-querying it would buy a second identical row and a second identical
+    write.
+    """
+    # Share-build capable, so the suite actually gets a build job to leave
+    # out of the second query.
+    _mark_stub_builder_verilator(minimal_project)
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(backend.telemetry_queries) == 2
+    assert backend.telemetry_queries[0][0] == "fake-build"
+    assert "fake-build" not in backend.telemetry_queries[1]
 
 
 def test_dispatch_fail_desc_names_scheduler_state(
@@ -1112,6 +1285,101 @@ def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(
     assert [a for a in advice if a["resource"] == "mem"] == []
 
 
+def test_machine_payload_carries_build_job_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The build job's own reservation gets a `compile` advice row (#495).
+
+    It owns no suite_results row, so it is the one job in the fleet that
+    per-test analysis can never see — and with `compile.parallel` it is
+    also the one whose reservation a project is most likely to overshoot.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 7200,
+            # 8 cpus (4 per build x parallel 2) that used 60 core-seconds of
+            # the 480 they had: badly over-reserved.
+            "alloc_cpus": 8,
+            "total_cpu_s": 60,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    parallel: 2\n",
+    )
+    # -l 5 puts both fixture tests in the plan, so the head's cap does not
+    # collapse `parallel: 2` back to 1 for a single-config suite.
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    build_advice = {a["resource"]: a for a in advice if a["phase"] == "compile"}
+
+    cpus = build_advice["cpus"]
+    assert cpus["test"] == "(build job)"
+    assert cpus["direction"] == "reduce"
+    # Reported as the scaled number sacct and squeue show...
+    assert cpus["reserved"] == "8"
+    # ...but suggested per build, because that is what the field means.
+    assert cpus["suggested"] == "1"
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.compile.cpus"
+    assert cpus["edit_hint"]["file"].endswith("root_config.yaml")
+    assert "compile.parallel 2" in cpus["edit_hint"]["note"]
+
+    # time is not scaled by parallel, so it needs no note and no division.
+    time_a = build_advice["time"]
+    assert time_a["reserved"] == "02:00:00"
+    assert time_a["direction"] == "reduce"
+    assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert "note" not in time_a["edit_hint"]
+
+
+def test_no_build_reservation_advice_without_build_telemetry(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A backend that reports no usage gets no build advice (#495).
+
+    local-parallel is exactly that backend: `collect_telemetry` returns
+    ``{}``, and inventing a reservation verdict from nothing would be the
+    one kind of wrong that costs a compile an OOM kill.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(monkeypatch, build_telemetry=None)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["phase"] == "compile"] == []
+
+
 def test_rightsize_report_false_disables_advice(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
@@ -1592,6 +1860,7 @@ class _RetryBackend(_FakeBackend):
         super().wait_all(handles, extra_wait=extra_wait)
 
     def collect_telemetry(self, handles):
+        self.telemetry_queries.append([h.job_id for h in handles])
         return {h.job_id: {"state": self.states.get(h.job_id)} for h in handles}
 
 

@@ -90,8 +90,12 @@ from .dispatch.plan import (
 )
 from .dispatch.progress import group_job_ids
 from .dispatch.retry import backoff_delay, classify_missing_result
-from .dispatch.rightsize import analyze_suite_reservations
+from .dispatch.rightsize import (
+    analyze_build_reservation,
+    analyze_suite_reservations,
+)
 from .runner.result_io import (
+    attach_result_key,
     attach_telemetry_json,
     load_build_result_json,
     load_result_json,
@@ -1449,6 +1453,7 @@ class RtlBuddy:
                 suite_config_path=str(Path(ctx.primary_config).resolve()),
                 reg_level=reg_level,
                 backend=dispatch_backend,
+                state=state,
             )
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
@@ -1619,6 +1624,7 @@ class RtlBuddy:
                 ),
                 suite_config_path=str(Path(ctx.primary_config).resolve()),
                 backend=dispatch_backend,
+                state=state,
             )
             if not self.machine:
                 self._render_test_summary(
@@ -2054,10 +2060,13 @@ class RtlBuddy:
         # test_cfg, so the compile key exists only after pre() ran, on the
         # sim instance that saw the mutation.
         #
-        # Outcome rows are (plan index, test name, built?, worker error) so
-        # both the envelope and the WARNINGs can be replayed in plan order
-        # below — a pool that reported in completion order would make two
-        # identical runs produce different logs.
+        # Outcome rows are (plan index, test name, built?, worker error,
+        # runner, group dir) so both the envelope and the WARNINGs can be
+        # replayed in plan order below — a pool that reported in completion
+        # order would make two identical runs produce different logs. The
+        # runner rides along because the compile record it observed
+        # (duration/builder/reused) is only readable off the instance that
+        # ran the compile (#495).
         outcomes = []
         groups = {}
         for index, cfg in enumerate(configs):
@@ -2085,13 +2094,13 @@ class RtlBuddy:
                 # thread. One config's broken setup must not cancel the
                 # afterok fan-out for the seven that were fine — the config
                 # is reported failed and its own sim job says why.
-                outcomes.append((index, cfg.get_name(), False, str(exc)))
+                outcomes.append((index, cfg.get_name(), False, str(exc), runner, None))
                 continue
             if res is not None:
                 # A setup or filelist failure never reaches a builder, so it
                 # is reported exactly as the serial loop reported it: failed,
                 # and the job still exits 0.
-                outcomes.append((index, cfg.get_name(), False, None))
+                outcomes.append((index, cfg.get_name(), False, None, runner, group_dir))
                 continue
             # Group by the directory the compile will WRITE, not by the
             # config: two configs with the same compile key share one build
@@ -2122,8 +2131,9 @@ class RtlBuddy:
                 parallel=pool_size,
             )
 
-        def _compile_group(members):
+        def _compile_group(group):
             """Compile one group's configs serially; rows for the caller."""
+            group_dir, members = group
             rows = []
             for index, name, runner in members:
                 try:
@@ -2135,9 +2145,18 @@ class RtlBuddy:
                     # sim job behind it. The group's remaining members still
                     # get their attempt — a crashed config says nothing
                     # about its siblings.
-                    rows.append((index, name, False, str(exc)))
+                    rows.append((index, name, False, str(exc), runner, group_dir))
                     continue
-                rows.append((index, name, isinstance(res, EarlyStopResults), None))
+                rows.append(
+                    (
+                        index,
+                        name,
+                        isinstance(res, EarlyStopResults),
+                        None,
+                        runner,
+                        group_dir,
+                    )
+                )
             return rows
 
         if pool_size > 1:
@@ -2154,14 +2173,33 @@ class RtlBuddy:
             # waits for them. Accepted deliberately — the alternative is a
             # fleet-kill that would also fire under Slurm.
             with ThreadPoolExecutor(max_workers=pool_size) as pool:
-                for rows in pool.map(_compile_group, list(groups.values())):
+                for rows in pool.map(_compile_group, list(groups.items())):
                     outcomes.extend(rows)
         else:
-            for members in groups.values():
-                outcomes.extend(_compile_group(members))
+            for group in groups.items():
+                outcomes.extend(_compile_group(group))
 
-        built, failed = [], []
-        for _, name, ok, worker_error in sorted(outcomes, key=lambda row: row[0]):
+        built, failed, builds = [], [], []
+        for _, name, ok, worker_error, runner, group_dir in sorted(
+            outcomes, key=lambda row: row[0]
+        ):
+            # Plan order, and one row per planned config whatever happened to
+            # it — a config that never reached a builder still names the
+            # builder it would have used, so a gap in the envelope means "the
+            # build job never saw this test", not "it compiled instantly".
+            record = runner.last_compile or {}
+            builds.append(
+                {
+                    "test": name,
+                    "builder": record.get("builder"),
+                    "duration_sec": record.get("duration_sec"),
+                    "reused": record.get("reused"),
+                    # The basename, not the path: it identifies the shared
+                    # build (obj_dir_<compile key>) without pinning the
+                    # compute node's mount into an artifact the head reads.
+                    "group": os.path.basename(group_dir) if group_dir else None,
+                }
+            )
             if ok:
                 built.append(name)
                 continue
@@ -2199,7 +2237,24 @@ class RtlBuddy:
         if result_json_path is not None:
             # Persist the outcome so the head can map a compile failure to a
             # CompileFail row (parity with the in-process path).
-            write_build_result_json(result_json_path, built=built, failed=failed)
+            try:
+                write_build_result_json(
+                    result_json_path, built=built, failed=failed, builds=builds
+                )
+            except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
+                # The compile records are additive telemetry; built/failed is
+                # the load-bearing half (it is what maps a compile failure to
+                # a CompileFail row). Rather than let an unserialisable record
+                # cost the head that mapping — and the fan-out its exit
+                # status — drop the telemetry and write the envelope that
+                # always existed.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "build_job.build_records_failed",
+                    error=str(exc),
+                )
+                write_build_result_json(result_json_path, built=built, failed=failed)
         if self.machine:
             # Reporting only, so it is not allowed to change the exit status
             # below. A build job that exits non-zero makes the scheduler cancel
@@ -2324,6 +2379,15 @@ class RtlBuddy:
             # so a known-failing test can live in a suite/regression.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
+        compile_record = test_runner.last_compile
+        if compile_record is not None:
+            # Same key the dispatch path folds in from the build envelope
+            # (#495), so `rb graph results` reads one shape whether the
+            # compile happened in a build job or right here. Recorded before
+            # the envelope is written — this is the only chance; the sim
+            # instance goes out of scope with the runner.
+            for res in results:
+                res.results["compile"] = dict(compile_record)
         self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
 
@@ -3293,6 +3357,19 @@ class RtlBuddy:
             else None
         )
         compile_failed = set(build_result["failed"]) if build_result else set()
+        # What the build job observed each config's compile to cost (#495),
+        # keyed by test so a sim row can carry its own compile back to the
+        # summary and the results overlay. Empty for an envelope written by
+        # a build job that predates the records.
+        compile_records = {
+            entry["test"]: {
+                "duration_sec": entry.get("duration_sec"),
+                "builder": entry.get("builder"),
+                "reused": entry.get("reused"),
+            }
+            for entry in (build_result["builds"] if build_result else [])
+            if entry.get("test")
+        }
         # Did this suite's build gate open? A build job that left no result
         # did not finish: every sim it gated was cancelled by `afterok` (or
         # skipped by the pool) and never started, so nothing in its
@@ -3311,7 +3388,29 @@ class RtlBuddy:
         # below walks; the first attempt's full fleet lives in
         # ``state["pending"]`` and is not what this pass collects (#405 review).
         run_token = state["run_token"] if pending else None
-        telemetry = backend.collect_telemetry([h for _, h in pending])
+        # The build handle joins the query on the first pass only. It costs
+        # nothing (Slurm's collect_telemetry is one `sacct --jobs a,b,c`) and
+        # the build job is guaranteed finished by then — the fleet-wide
+        # wait_all includes it. Later passes collect a resubmitted sim
+        # subset; the build job is never resubmitted, so re-querying it would
+        # buy a second identical row and a second identical write (#495).
+        query_handles = [h for _, h in pending]
+        if attempt == 0 and build_handle is not None:
+            query_handles = [build_handle, *query_handles]
+        telemetry = backend.collect_telemetry(query_handles)
+        if attempt == 0 and build_handle is not None:
+            build_tele = telemetry.get(build_handle.job_id)
+            if build_tele:
+                # (a) travels with the artifact, the way a sim job's does —
+                # attach_telemetry_json validates no filetype, so the build
+                # envelope takes the same top-level block; (b) stays in
+                # `state` for the compile-reservation advice, which is the
+                # only consumer that needs the build job's own numbers.
+                # Best-effort: a build job that died left no envelope, and
+                # that is already reported as a missing build result.
+                if build_handle.spec.result_json is not None:
+                    attach_telemetry_json(build_handle.spec.result_json, build_tele)
+                state["build_telemetry"] = build_tele
         for idx, handle in pending:
             tele = telemetry.get(handle.job_id)
             try:
@@ -3437,6 +3536,20 @@ class RtlBuddy:
                 # into the envelope so telemetry travels with the artifact.
                 results.results["telemetry"] = tele
                 attach_telemetry_json(handle.spec.result_json, tele)
+            compile_record = compile_records.get(handle.spec.test_name)
+            if compile_record is not None:
+                # The build job's own observation of this test's compile.
+                # The row already carries a head-side `builder` (what the
+                # head resolved before submitting); where the two disagree —
+                # a preproc hook that overrode the builder — the envelope
+                # wins, because it is what actually ran.
+                #
+                # Folded into `result.results`, not onto the envelope's top
+                # level: that nested dict is what `rb graph results` reads a
+                # run's payload from, so a top-level key would travel with
+                # the artifact and still be invisible to the overlay.
+                results.results["compile"] = compile_record
+                attach_result_key(handle.spec.result_json, "compile", compile_record)
             suite_results[idx]["results"] = results
         return retryable
 
@@ -3463,8 +3576,15 @@ class RtlBuddy:
         suite_config_path=None,
         reg_level=None,
         backend=None,
+        state=None,
     ):
-        """Right-size one dispatched suite's rows into advice findings."""
+        """Right-size one dispatched suite's rows into advice findings.
+
+        ``state`` is the suite's dispatch state, carrying the build job's
+        own telemetry when collect saw any (#495) — the build job has no
+        ``suite_results`` row, so its reservation can only be judged from
+        there.
+        """
         rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
         if not rightsize_cfg.report:
             return []
@@ -3490,6 +3610,29 @@ class RtlBuddy:
                 backend.accounting_interval_s() if backend is not None else None
             ),
         )
+        build_telemetry = (state or {}).get("build_telemetry")
+        if build_telemetry:
+            # Keyed, not .get(): collect only stashes build telemetry when it
+            # had a build handle to query, so the two travel together and a
+            # missing handle here is a bug that must fail loud.
+            build_spec = state["build_handle"].spec
+            findings.extend(
+                analyze_build_reservation(
+                    build_telemetry,
+                    # The per-build reservation, NOT the scaled one the build
+                    # spec carries: the advice names
+                    # cfg-dispatch.compile.cpus, which is per-build.
+                    resolve_compile_resources(self.root_cfg.get_dispatch_cfg()),
+                    build_spec.parallel,
+                    rightsize_cfg,
+                    suite_display,
+                    # cfg-dispatch lives in root_config.yaml; getattr, not the
+                    # attribute, for the same reason the per-test analysis
+                    # uses it — advice runs after every job finished and must
+                    # never turn a completed run into an abort.
+                    getattr(self.root_cfg, "root_cfg_path", None),
+                )
+            )
         for finding in findings:
             fields = {k: v for k, v in finding.as_event().items() if k != "event"}
             log_event(logger, logging.INFO, "rightsize.advice", **fields)
@@ -3817,6 +3960,7 @@ class RtlBuddy:
                         suite_config_path=str(Path(suite_cfg.get_path()).resolve()),
                         reg_level=reg_level,
                         backend=dispatch_backend,
+                        state=state,
                     )
                 )
                 reg_results.append(

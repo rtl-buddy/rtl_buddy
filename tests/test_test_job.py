@@ -56,6 +56,10 @@ class _StubTestRunner:
     prepare_hook = None
     # test name -> Results / None: a probe failure, before any group dir.
     group_fail = None
+    # test name -> compile record dict / None, the shape VlogSim stamps on
+    # itself (#495). Default: a plausible record so the envelope's `builds`
+    # list is exercised without every test having to opt in.
+    compile_record_of = None
 
     def __init__(self, **kwargs):
         type(self).last_init = kwargs
@@ -91,6 +95,17 @@ class _StubTestRunner:
             return type(self).canned
         return hook(self.test_name)
 
+    @property
+    def last_compile(self):
+        record_of = type(self).compile_record_of
+        if record_of is None:
+            return {
+                "duration_sec": 1.5,
+                "builder": "stub-builder",
+                "reused": False,
+            }
+        return record_of(self.test_name)
+
 
 @pytest.fixture
 def stub_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StubTestRunner]:
@@ -102,6 +117,7 @@ def stub_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StubTestRunner]:
     _StubTestRunner.compile_hook = None
     _StubTestRunner.prepare_hook = None
     _StubTestRunner.group_fail = None
+    _StubTestRunner.compile_record_of = None
     monkeypatch.setattr(rtl_buddy_module, "TestRunner", _StubTestRunner)
     return _StubTestRunner
 
@@ -905,6 +921,113 @@ def test_build_job_plan_compiles_plan_configs_without_hook(
     br = load_build_result_json(minimal_project / "br.json")
     assert set(br["built"]) == {"basic", "extra"}
     assert br["failed"] == []
+
+
+# ------------------------------------- build telemetry (#495)
+
+
+def test_build_envelope_carries_per_compile_records(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """`builds` records what each config's compile cost (#495).
+
+    Plan order, one row per planned config, carrying the duration/builder/
+    reused triple the sim's own instance observed plus the group directory
+    it compiled into — which is what makes two configs that shared one
+    build readable as such.
+    """
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    stub_runner.group_of = lambda name: "/w/.shared-builds/obj_dir_cafe"
+    stub_runner.compile_record_of = lambda name: {
+        "duration_sec": 12.5 if name == "basic" else 0.0,
+        "builder": "stub-builder",
+        "reused": name != "basic",
+    }
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    assert [entry["test"] for entry in br["builds"]] == ["basic", "extra"]
+    assert br["builds"][0] == {
+        "test": "basic",
+        "builder": "stub-builder",
+        "duration_sec": 12.5,
+        "reused": False,
+        # The basename, never the compute node's absolute path.
+        "group": "obj_dir_cafe",
+    }
+    assert br["builds"][1]["reused"] is True
+    assert br["builds"][1]["duration_sec"] == 0.0
+
+
+def test_build_records_name_the_builder_even_when_the_compile_never_ran(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """A failed config still gets a row — a gap means "never seen" (#495).
+
+    A missing record must not read as "compiled instantly": every planned
+    config appears, with the fields it could not know left null.
+    """
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults, SetupFailResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    stub_runner.prepare_hook = lambda name: (
+        SetupFailResults(name=name, desc="preproc blew up") if name == "basic" else None
+    )
+    stub_runner.compile_record_of = lambda name: (
+        None
+        if name == "basic"
+        else {"duration_sec": 3.0, "builder": "stub-builder", "reused": False}
+    )
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    assert br["failed"] == ["basic"]
+    by_test = {entry["test"]: entry for entry in br["builds"]}
+    assert by_test["basic"]["duration_sec"] is None
+    assert by_test["basic"]["reused"] is None
+    assert by_test["extra"]["duration_sec"] == 3.0
+
+
+def test_build_records_that_cannot_be_serialised_do_not_cost_the_envelope(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Telemetry never takes built/failed down with it (#495).
+
+    `built`/`failed` is the load-bearing half — it is what maps a compile
+    failure to a CompileFail row. An unserialisable compile record drops
+    the telemetry and keeps the envelope, and the job still exits 0 so its
+    afterok dependents run.
+    """
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    stub_runner.compile_record_of = lambda name: {
+        "duration_sec": object(),  # not JSON
+        "builder": "stub-builder",
+        "reused": False,
+    }
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    assert set(br["built"]) == {"basic", "extra"}
+    assert br["builds"] == []
 
 
 # ------------------------------------- job log paths (#437)

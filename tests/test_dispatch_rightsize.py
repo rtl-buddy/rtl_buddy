@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from rtl_buddy.config.dispatch import RightsizeConfigFile
 from rtl_buddy.dispatch.rightsize import (
+    analyze_build_reservation,
     analyze_suite_reservations,
     format_mem,
     format_time,
@@ -669,3 +670,147 @@ def test_the_omission_is_logged_rather_than_left_silent(caplog):
     assert "memory advice omitted" in caplog.text
     assert "fast" in caplog.text
     assert "slow" not in caplog.text
+
+
+# ------------------------------------ the build job's own row (#495)
+
+
+class _Res:
+    """Stand-in for the resolved per-build JobResources."""
+
+    def __init__(self, cpus):
+        self.cpus = cpus
+
+
+def _build_advice(telemetry, *, parallel=1, cpus=4, cfg=_CFG, root="root_config.yaml"):
+    return analyze_build_reservation(
+        telemetry,
+        _Res(cpus),
+        parallel,
+        cfg,
+        "verif/blk/tests.yaml",
+        root,
+    )
+
+
+def test_no_build_telemetry_means_no_build_advice():
+    """local-parallel reports none, and a verdict from nothing is a guess."""
+    assert _build_advice(None) == []
+    assert _build_advice({}) == []
+
+
+def test_an_over_reserved_build_job_gets_a_compile_phase_row():
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200}
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.phase == "compile"
+    assert time_a.test == "(build job)"
+    assert time_a.direction == "reduce"
+    assert time_a.reserved == "02:00:00"
+    # 60s x 1.5 is under the 5-minute floor.
+    assert time_a.suggested == "00:05:00"
+    assert time_a.edit_hint == {
+        "path": "cfg-dispatch.compile.time",
+        "file": "root_config.yaml",
+    }
+
+
+def test_a_timed_out_build_job_raises_its_limit():
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 7200, "timelimit_s": 7200}
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+    assert time_a.suggested == "03:00:00"
+    assert time_a.states == ["TIMEOUT"]
+
+
+def test_build_cpus_advice_is_divided_back_down_by_parallel():
+    """The field a project edits is per-build; the reservation was N x it."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 16,
+            "total_cpu_s": 200,  # 0.125 efficiency
+        },
+        parallel=4,
+        cpus=4,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    # ceil(16 x 0.125 x 1.5) = 3 total -> ceil(3/4) = 1 per build.
+    assert cpus_a.reserved == "16"
+    assert cpus_a.suggested == "1"
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.compile.cpus"
+    assert "compile.parallel 4" in cpus_a.edit_hint["note"]
+
+
+def test_a_saturated_build_job_gets_no_cpus_advice():
+    """Efficiency only ever argues for fewer cpus, and only when it is low."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 760,  # 0.95 efficiency
+        },
+        parallel=2,
+    )
+    assert [f for f in findings if f.resource == "cpus"] == []
+
+
+def test_a_cpus_reduction_that_cannot_retire_is_dropped():
+    """Suggesting the reservation it already has is churn, not advice."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 2,
+            "total_cpu_s": 60,  # 0.3 efficiency, but 1 cpu per build already
+        },
+        parallel=2,
+        cpus=1,
+    )
+    assert [f for f in findings if f.resource == "cpus"] == []
+
+
+def test_build_cpus_fall_back_to_what_the_head_asked_for():
+    """A backend that reports usage but not the allocation still ratios."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "total_cpu_s": 100,
+        },
+        parallel=2,
+        cpus=4,  # -> 8 reserved
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert cpus_a.reserved == "8"
+
+
+def test_a_build_job_never_gets_memory_advice():
+    """MaxRSS is sampled, and a too-small compile mem is an OOM kill."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 7200,
+            "req_mem_bytes": 8 * 2**30,
+            "max_rss_bytes": 2**20,
+        }
+    )
+    assert [f for f in findings if f.resource == "mem"] == []
+
+
+def test_build_advice_without_a_root_config_path_still_names_the_field():
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200}, root=None
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {"path": "cfg-dispatch.compile.time"}

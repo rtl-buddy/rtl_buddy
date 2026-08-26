@@ -273,3 +273,40 @@ def test_shim_parallel_build_job_reservation_is_scaled(parallel_shim_run):
     # The sim array is untouched: scaling is the build job's alone.
     arrays = [line for line in lines if "--array=" in line]
     assert arrays and all("--cpus-per-task=1" in line for line in arrays), arrays
+
+
+def test_shim_build_job_envelope_gains_telemetry_and_compile_records(
+    parallel_shim_run,
+):
+    """The build job's own accounting reaches its artifact (#495).
+
+    The sacct shim already knows the wrap job's id, so this is the whole
+    round trip: build job writes `builds`, head collects the build handle's
+    sacct row, attaches it, and folds each compile back onto its sim.
+    """
+    proc, _envelope, project, diag, _spans, _argv = parallel_shim_run
+    assert proc.returncode == 0, diag
+
+    build_envelopes = list(
+        project.glob("verif/*/artefacts/.dispatch/build-result-*.json")
+    )
+    assert len(build_envelopes) == 1, f"{build_envelopes}\n{diag}"
+    raw = json.loads(build_envelopes[0].read_text())
+    assert raw["telemetry"]["state"] == "COMPLETED"
+    assert raw["telemetry"]["timelimit_s"] == 3600
+
+    by_test = {entry["test"]: entry for entry in raw["builds"]}
+    assert set(by_test) == {"alpha", "beta"}, raw["builds"]
+    for entry in by_test.values():
+        assert entry["builder"], entry
+        assert entry["duration_sec"] is not None, entry
+    # Two distinct compile keys in this fixture -> two distinct group dirs.
+    assert len({entry["group"] for entry in by_test.values()}) == 2, raw["builds"]
+
+    # And each sim envelope carries the compile the build job ran for it.
+    sim_envelopes = list(project.glob("verif/*/artefacts/*/dispatch/result-*.json"))
+    assert sim_envelopes, diag
+    for path in sim_envelopes:
+        compile_block = json.loads(path.read_text())["result"]["results"]["compile"]
+        assert compile_block["builder"], (path, compile_block)
+        assert compile_block["reused"] in (True, False), compile_block

@@ -297,6 +297,18 @@ def _scope_entry(project_root: Path, scope: _Scope, test_dir: Path) -> dict:
         entry["result_json"] = _rel(project_root, scope.envelope_path)
         if scope.envelope.get("run_id") is not None:
             entry["run_id"] = scope.envelope["run_id"]
+        compile_record = results.get("compile")
+        if isinstance(compile_record, dict):
+            # Only the three fields the overlay promises, in a fixed order,
+            # and only when the envelope carries them: a project whose runs
+            # predate the record gets no key at all, so a refresh with
+            # nothing re-run stays byte-identical (#379's whole point). The
+            # values come from the envelope, never from a clock here.
+            entry["compile"] = {
+                "duration_sec": compile_record.get("duration_sec"),
+                "builder": compile_record.get("builder"),
+                "reused": compile_record.get("reused"),
+            }
     seed = _read_randseed(scope.directory)
     if seed is not None:
         entry["randseed"] = seed

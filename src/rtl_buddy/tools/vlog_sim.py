@@ -359,6 +359,13 @@ class VlogSim:
         # sources — a source edited between two compiles has to invalidate
         # the stamp.
         self._compile_plan_cache = None
+        # What the last compile *this instance* performed cost, for the
+        # build envelope and the results overlay (#495). A dict
+        # {duration_sec, builder, reused} — never a stamp key: the stamp's
+        # key set IS the fingerprint comparison (_build_stamp_is_valid), so
+        # an extra key there would permanently invalidate every stamp ever
+        # written. None until something records one.
+        self.last_compile = None
         # Set by a dispatched sim job that was gated on a build job, so
         # compiling here means the stamp that build left did not
         # validate — worth a WARNING, because the whole serialization
@@ -1093,6 +1100,21 @@ class VlogSim:
                 )
         return None
 
+    def _record_compile(self, *, duration_sec, reused):
+        """Stamp :attr:`last_compile` with this instance's compile outcome.
+
+        The one writer, so every path records the same three keys. Callers
+        read it off the sim after COMPILE: the build job folds it into the
+        build envelope's ``builds`` list, and the in-process path folds it
+        into the run's own result envelope. Best-effort telemetry — nothing
+        downstream may fail because a value here is ``None``.
+        """
+        self.last_compile = {
+            "duration_sec": duration_sec,
+            "builder": self.rtl_builder_cfg.get_name(),
+            "reused": reused,
+        }
+
     def _build_compile_plan(self):
         """Derive this test's :class:`_CompilePlan` — the pre-builder half.
 
@@ -1105,6 +1127,13 @@ class VlogSim:
         """
         rtl_builder_cfg = self.rtl_builder_cfg
         compile_work_dir = self._ensure_artifact_dir()
+        # A probe is not a compile, but it is the point at which the builder
+        # for this config is settled (a preproc hook can no longer move it).
+        # Recording it here is what lets a config that never reaches a
+        # builder — a filelist failure, a killed job — still name the
+        # builder it would have used, with `reused` left unknown rather
+        # than guessed (#495).
+        self._record_compile(duration_sec=None, reused=None)
 
         builder_opts = self._filter_builder_opts(
             rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
@@ -1254,6 +1283,11 @@ class VlogSim:
                         toolchain=fingerprint["toolchain"]["version"]
                         or fingerprint["toolchain"]["exe"],
                     )
+                    # 0.0, not the stamp-check time: the number is read as
+                    # "what this build cost", and a reuse cost no build.
+                    # The stat cost is real but sub-millisecond and would
+                    # only invite someone to sum it against a compile.
+                    self._record_compile(duration_sec=0.0, reused=True)
                     return 0
                 plan.shared_dir.mkdir(parents=True, exist_ok=True)
                 # A crashed/killed compile must never leave a stamp that
@@ -1293,6 +1327,7 @@ class VlogSim:
                         toolchain=fingerprint["toolchain"]["version"]
                         or fingerprint["toolchain"]["exe"],
                     )
+                    self._record_compile(duration_sec=0.0, reused=True)
                     return 0
                 (Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME).unlink(
                     missing_ok=True
@@ -1401,6 +1436,10 @@ class VlogSim:
                 raise FatalRtlBuddyError(f"Builder not found. Run exe: {run_cmd[0]}")
 
         e_time = time.time()
+        # Recorded before the pass/fail branch: a compile that failed after
+        # 14 minutes is exactly the number a build-job reservation is sized
+        # against, and dropping it would leave the slowest builds invisible.
+        self._record_compile(duration_sec=round(e_time - s_time, 2), reused=False)
         license_queued = self._compile_queued_for_license(result)
         if result.returncode != 0:
             transcript_path = self._write_compile_transcript(run_str, result)

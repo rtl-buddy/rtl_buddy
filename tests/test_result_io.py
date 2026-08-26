@@ -190,3 +190,115 @@ def test_attach_telemetry_missing_file_is_noop(tmp_path: Path):
 
     attach_telemetry_json(tmp_path / "nope.json", {"state": "X"})
     assert not (tmp_path / "nope.json").exists()
+
+
+# --------------------------------------------------- build envelope (#495)
+
+
+def test_attach_result_key_folds_into_the_runs_own_results(tmp_path: Path):
+    """`rb graph results` reads `result.results`, so that is where it goes."""
+    from rtl_buddy.runner.result_io import attach_result_key
+
+    out = tmp_path / "result.json"
+    write_result_json(
+        out, test_name="t", run_id=1, results=TestPassResults(name="t/results")
+    )
+    attach_result_key(out, "compile", {"duration_sec": 3.5, "builder": "verilator"})
+    envelope = json.loads(out.read_text())
+    assert envelope["result"]["results"]["compile"]["duration_sec"] == 3.5
+    # The verdict is untouched and the envelope still loads.
+    assert load_result_json(out)["result"].is_pass()
+    assert not out.with_name(out.name + ".tmp").exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, "not json at all", '{"result": "a string, not a dict"}'],
+)
+def test_attach_result_key_degrades_instead_of_raising(tmp_path: Path, content):
+    """An annotation must never re-score a collected run."""
+    from rtl_buddy.runner.result_io import attach_result_key
+
+    out = tmp_path / "result.json"
+    if content is None:  # no envelope at all
+        attach_result_key(out, "compile", {"duration_sec": 1.0})
+        assert not out.exists()
+        return
+    out.write_text(content)
+    attach_result_key(out, "compile", {"duration_sec": 1.0})
+    # Left exactly as found — including no stray .tmp beside it.
+    assert out.read_text() == content
+    assert not out.with_name(out.name + ".tmp").exists()
+
+
+def test_build_envelope_round_trips_its_compile_records(tmp_path: Path):
+    from rtl_buddy.runner.result_io import (
+        load_build_result_json,
+        write_build_result_json,
+    )
+
+    out = tmp_path / "build.json"
+    records = [
+        {
+            "test": "basic",
+            "builder": "verilator",
+            "duration_sec": 12.5,
+            "reused": False,
+            "group": "obj_dir_cafe",
+        }
+    ]
+    write_build_result_json(out, built=["basic"], failed=[], builds=records)
+    loaded = load_build_result_json(out)
+    assert loaded["built"] == ["basic"]
+    assert loaded["builds"] == records
+
+
+def test_a_build_envelope_without_records_is_still_readable(tmp_path: Path):
+    """Old envelope, new head: `builds` is additive, so it degrades (#495).
+
+    The schema version deliberately does not move — bumping it would make
+    an old head read None and lose the compile-fail parity it has today.
+    """
+    from rtl_buddy.runner.result_io import (
+        BUILD_RESULT_SCHEMA_VERSION,
+        load_build_result_json,
+        write_build_result_json,
+    )
+
+    out = tmp_path / "build.json"
+    write_build_result_json(out, built=["basic"], failed=["extra"])
+    assert "builds" not in json.loads(out.read_text())
+    assert json.loads(out.read_text())["schema_version"] == BUILD_RESULT_SCHEMA_VERSION
+
+    loaded = load_build_result_json(out)
+    assert loaded["failed"] == ["extra"]
+    assert loaded["builds"] == []
+
+
+def test_a_new_build_envelope_read_the_old_way_keeps_built_and_failed(
+    tmp_path: Path,
+):
+    """New envelope, old head: the extra key is simply not looked at (#495).
+
+    Simulated by dropping `builds` the way an older loader's fixed key set
+    does, which is the whole claim `schema_version: 1` is making.
+    """
+    from rtl_buddy.runner.result_io import (
+        BUILD_RESULT_SCHEMA_VERSION,
+        write_build_result_json,
+    )
+
+    out = tmp_path / "build.json"
+    write_build_result_json(
+        out,
+        built=["basic"],
+        failed=["extra"],
+        builds=[{"test": "basic", "builder": "verilator"}],
+    )
+    raw = json.loads(out.read_text())
+    assert raw["schema_version"] == BUILD_RESULT_SCHEMA_VERSION
+    old_view = {
+        "built": list(raw.get("built") or []),
+        "failed": list(raw.get("failed") or []),
+    }
+    assert old_view == {"built": ["basic"], "failed": ["extra"]}
