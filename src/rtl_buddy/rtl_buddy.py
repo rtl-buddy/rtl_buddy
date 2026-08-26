@@ -68,7 +68,9 @@ from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
 from .config.dispatch import (
+    JobResources,
     combine_for_in_job_compile,
+    compile_parallel,
     resolve_compile_resources,
     resolve_resources,
 )
@@ -1956,6 +1958,14 @@ class RtlBuddy:
                 help="path to write the build outcome (built/failed test names)",
             ),
         ] = None,
+        parallel: Annotated[
+            int,
+            typer.Option(
+                "--parallel",
+                help="compile up to N distinct builds concurrently "
+                "(grouped by compile key)",
+            ),
+        ] = 1,
     ):
         """
         internal: compile a suite's runnable tests on a compute node (#351)
@@ -1973,6 +1983,14 @@ class RtlBuddy:
         ``<suite>/rtl_buddy.log``; run by hand without it there is no head
         to collide with, so it falls back to the suite log (#437).
         """
+        if parallel < 1:
+            # Rejected before anything is entered or written: a job allowed
+            # zero concurrent builds would compile nothing, and a fatal here
+            # costs the fan-out nothing (no compile has succeeded yet).
+            raise FatalRtlBuddyError(
+                f"--parallel must be >= 1 (got {parallel}); a build job "
+                "allowed zero concurrent builds would compile nothing."
+            )
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2000,6 +2018,7 @@ class RtlBuddy:
             reg_level=reg_level,
             start_level=start_level,
             plan=plan,
+            parallel=parallel,
         )
 
         if plan is not None:
@@ -2659,6 +2678,7 @@ class RtlBuddy:
                 reg_level=reg_level,
                 start_level=start_level,
                 plan_path=plan_path,
+                planned=len(entries),
             )
         else:
             build_handle = None
@@ -2897,14 +2917,43 @@ class RtlBuddy:
         reg_level,
         start_level,
         plan_path,
+        planned,
     ):
-        """Submit the suite's compile as a Slurm build job (compute node)."""
+        """Submit the suite's compile as a Slurm build job (compute node).
+
+        ``planned`` is how many configs the plan holds. It caps the
+        configured ``cfg-dispatch.compile.parallel``: a suite with two
+        planned configs cannot keep four build slots busy, and reserving
+        cpus for slots that will idle is the failure mode the scaling below
+        would otherwise introduce. Planned configs, not distinct compile
+        keys — the head cannot know the keys without writing filelists on
+        the submit host, which is the build job's job (#458), so the cap is
+        an upper bound on the concurrency, never a promise of it.
+        """
         dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
         dispatch_root.mkdir(parents=True, exist_ok=True)
+        parallel = max(1, min(compile_parallel(dispatch_cfg), planned))
+        resources = resolve_compile_resources(dispatch_cfg)
+        if parallel > 1:
+            # Scale ONLY this job's reservation, and only here: the very
+            # same resolved compile resources size an in-job compile's sim
+            # reservation and the right-sizing compile floor, where one
+            # compile is still one serial build. A fresh JobResources, so
+            # scaling cannot reach those callers through a shared object.
+            resources = JobResources(
+                cpus=resources.cpus * parallel,
+                # mem/time are NOT scaled: N concurrent Verilations need
+                # roughly N times the memory but the same wall clock as the
+                # longest one, and guessing either for a project is worse
+                # than making it size cfg-dispatch.compile deliberately.
+                mem=resources.mem,
+                time=resources.time,
+            )
         spec = BuildJobSpec(
             suite_dir=suite_dir,
             test_config_path=str(suite_cfg.get_path()),
-            resources=resolve_compile_resources(dispatch_cfg),
+            resources=resources,
+            parallel=parallel,
             reg_level=reg_level,
             start_level=start_level,
             builder_mode=self.rtl_builder_mode,

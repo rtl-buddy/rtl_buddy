@@ -600,9 +600,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"queued and need cancelling by hand: {fields.get('error')}"
             )
         case "dispatch.build_submitted":
+            # `parallel` is only mentioned when it is doing something: at the
+            # default of 1 the line must read exactly as it did pre-#495.
+            parallel = fields.get("parallel") or 1
+            concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
             return (
                 f"Submitted shared-build job {fields.get('job_id')} for "
-                f"{fields.get('suite_dir')}"
+                f"{fields.get('suite_dir')}{concurrency}"
             )
         case "dispatch.submitted":
             gate = fields.get("dependency")

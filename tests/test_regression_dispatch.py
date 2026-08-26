@@ -749,18 +749,24 @@ def test_in_job_compile_reservation_covers_both_phases(
     minimal_project: Path,
     fake_backend: _FakeBackend,
 ):
-    """The one allocation is sized max(sim, compile) field by field (#358)."""
+    """The one allocation is sized max(sim, compile) field by field (#358).
+
+    ``parallel: 4`` is set to prove it does NOT reach here (#495): a sim
+    job that compiles for itself runs exactly one build, whatever the
+    build job would have been allowed to do concurrently.
+    """
     _add_dispatch_resources(
         minimal_project,
         "\ncfg-dispatch:\n"
         '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
-        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n',
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n'
+        "    parallel: 4\n",
     )
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert result.exit_code == 0, result.output
 
     resources = fake_backend.submitted[0].resources
-    assert resources.cpus == 8  # compile needs more
+    assert resources.cpus == 8  # compile needs more; NOT 4 x 8
     assert resources.mem == "16G"  # compile needs more
     assert resources.time == "00:20:00"  # sim needs more; compile's is smaller
 
@@ -785,6 +791,114 @@ def test_share_build_capable_builder_keeps_the_sim_sized_reservation(
     # ...while the build job it depends on carries the compile reservation.
     build = fake_backend.build_submitted[0].resources
     assert (build.cpus, build.mem, build.time) == (8, "16G", "02:00:00")
+    # Nothing asked for concurrency, so the reservation is unscaled and the
+    # spec says so.
+    assert fake_backend.build_submitted[0].parallel == 1
+
+
+def _add_third_test(project: Path):
+    """A third planned config, so ``parallel`` can be the binding limit.
+
+    The fixture ships two tests (basic at reglvl 0, extra at 5), which is
+    not enough to tell a cap by the planned configs from a cap by the knob.
+    """
+    tests_yaml = project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text()
+        + "\n".join(
+            [
+                "  - name: third",
+                "    desc: third test entry",
+                "    model: example",
+                "    model_path: models.yaml",
+                "    reglvl: 5",
+                "    testbench: tb_basic",
+            ]
+        )
+        + "\n"
+    )
+
+
+def _compile_parallel_config(parallel: int) -> str:
+    return (
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n'
+        f"    parallel: {parallel}\n"
+    )
+
+
+def test_build_job_cpus_scale_with_compile_parallel(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """N concurrent builds get N times the cpus — and only cpus (#495).
+
+    The reported defect: one 16-CPU reservation ran eight ~1.1-core
+    Verilations one after another while 24 sims waited. The reservation is
+    what pays for the concurrency, so the head is the only place that can
+    size it.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_third_test(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    # 3 planned configs, knob of 2: the knob binds, not the cap.
+    assert [spec.test_name for spec in fake_backend.submitted] == [
+        "basic",
+        "extra",
+        "third",
+    ]
+    assert build.parallel == 2
+    assert build.resources.cpus == 8  # 2 x 4
+    # mem/time are the project's to size for N concurrent Verilations.
+    assert (build.resources.mem, build.resources.time) == ("16G", "02:00:00")
+
+    # The sim jobs are untouched: they only simulate.
+    sim = fake_backend.submitted[0].resources
+    assert (sim.cpus, sim.mem, sim.time) == (1, "2G", "00:20:00")
+
+
+def test_build_job_parallel_is_capped_by_the_planned_configs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Two planned configs cannot keep three build slots busy (#495).
+
+    Without the cap the head would reserve cpus for slots that are
+    guaranteed to idle — the reservation grows and the wall clock does not.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(3))
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2  # basic + extra, not the configured 3
+    assert build.resources.cpus == 8  # 2 x 4, not 3 x 4
+
+
+def test_single_planned_config_leaves_the_build_reservation_alone(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One config is one build: today's spec, byte for byte."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(4))
+    # -l 0 plans "basic" alone (extra is reglvl 5).
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 1
+    assert build.resources.cpus == 4
 
 
 def test_fanned_out_in_job_compile_gets_a_build_job_to_serialize_it(

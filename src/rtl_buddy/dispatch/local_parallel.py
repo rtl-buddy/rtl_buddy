@@ -230,6 +230,7 @@ class LocalProcessBackend(DispatchBackend):
             backend=self.name,
             job_id=handle.job_id,
             suite_dir=spec.suite_dir,
+            parallel=spec.parallel,
         )
         # Start it now if a slot is free: the head goes on to plan further
         # suites, and a build running through that is free wall-clock.

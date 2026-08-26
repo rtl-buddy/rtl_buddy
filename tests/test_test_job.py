@@ -335,6 +335,49 @@ def test_build_job_compiles_runnable_tests(
     assert envelope["payload"]["failed"] == []
 
 
+def test_build_job_accepts_parallel_and_still_builds_every_config(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """``--parallel N`` is the head's concurrency budget, not a filter (#495).
+
+    Whatever the job does with the budget, the set of configs it compiles
+    and the envelope it writes are the ones the serial loop produced.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert set(envelope["payload"]["built"]) == {"basic", "extra"}
+    assert envelope["payload"]["failed"] == []
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_build_job_rejects_parallel_below_one(
+    minimal_project: Path, stub_runner: type[_StubTestRunner], value: str
+):
+    """A budget of zero builds is a setup error, and it is fatal.
+
+    Fatal is safe *here* only because nothing has compiled yet: the flag is
+    checked before the command context is entered, so the exit-0 contract
+    that keeps the afterok fan-out alive is never in play.
+    """
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "--parallel", value]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--parallel must be >= 1" in str(result.exception)
+
+
 def test_build_job_compile_failure_is_best_effort_exit_0(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):

@@ -381,6 +381,9 @@ class SlurmDispatchBackend(DispatchBackend):
             time=spec.resources.time,
             cpus=spec.resources.cpus,
             mem=spec.resources.mem,
+            # The cpus above are already scaled by this (#495); logging both
+            # is what makes a 16-CPU build job's reservation legible.
+            parallel=spec.parallel,
         )
         return JobHandle(job_id=job_id, spec=spec)
 

@@ -15,6 +15,13 @@ execution backend for regression test runs:
         cpus: 2
         mem: 4G
         time: 01:00:00
+      compile:                 # the shared compile's own reservation
+        cpus: 4
+        mem: 16G
+        time: 02:00:00
+        parallel: 4            # distinct builds compiled at once in the
+                               # build job; its cpus reservation is scaled
+                               # by this (4 x 4 = 16 above), mem/time are not
       sbatch-args:             # passed through to sbatch verbatim
         - --partition=verif
       poll-interval: 10        # seconds between queue polls while collecting
@@ -74,6 +81,31 @@ class DispatchResourcesFile:
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
+
+
+@serde
+class DispatchCompileFile:
+    """``cfg-dispatch.compile`` — the compile's reservation *and* its concurrency.
+
+    A separate class from :class:`DispatchResourcesFile` even though the
+    three reservation fields are identical, because that class is also the
+    serde type behind every ``resources:`` block in tests.yaml (testbench
+    and test level). ``parallel`` there would parse and then silently mean
+    nothing: a per-test reservation sizes one sim job, and "compile N
+    builds at once" is a property of the one build job per suite. Keeping
+    the shapes apart is what makes ``resources: {parallel: 2}`` a config
+    error instead of a no-op a project would trust.
+    """
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+    # Distinct builds (unique compile keys) the dispatched build job may
+    # Verilate concurrently (#495). A suite with 8 plusdefines sets held
+    # its whole sim fan-out behind 8 serial ~1.1-core compiles inside one
+    # 16-CPU reservation; this is what spends that reservation. 1 is
+    # today's serial loop, and the default.
+    parallel: int = 1
 
 
 def _validate_time(value):
@@ -220,8 +252,9 @@ class DispatchConfigFile:
     # that job's reservation (see combine_for_in_job_compile). Defaults to
     # `resources` when unset; give it its own cpus/mem/time when the compile
     # is heavier than the sims — a large Verilation or a VCS elaboration
-    # usually is.
-    compile: DispatchResourcesFile | None = None
+    # usually is. It also carries `parallel` (#495), which no per-job
+    # `resources:` block has — hence its own serde class.
+    compile: DispatchCompileFile | None = None
     sbatch_args: list[str] = field(rename="sbatch-args", default_factory=list)
     poll_interval: float = field(rename="poll-interval", default=10.0)
     # Cadence of the console progress/heartbeat line while the fleet drains
@@ -271,6 +304,23 @@ class DispatchConfigFile:
                 time=_validate_time(res.time),
             )
 
+        def _validated_compile(res):
+            """The compile block, through the same mem/time validators.
+
+            ``getattr`` for ``parallel``: a caller may hand the compile
+            slot a plain DispatchResourcesFile (the two shapes were one
+            class before #495), and losing the reservation over a missing
+            concurrency field would be the worse failure.
+            """
+            if res is None:
+                return None
+            return DispatchCompileFile(
+                cpus=res.cpus,
+                mem=_validate_mem(res.mem),
+                time=_validate_time(res.time),
+                parallel=getattr(res, "parallel", 1),
+            )
+
         if self.progress_interval < 0:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch progress-interval must be >= 0 "
@@ -292,10 +342,17 @@ class DispatchConfigFile:
                 f"cfg-dispatch jobs must be >= 1 (got {self.jobs}); a pool of "
                 "zero would never start a job."
             )
+        compile_parallel_ = getattr(self.compile, "parallel", 1)
+        if compile_parallel_ < 1:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch compile parallel must be >= 1 (got "
+                f"{compile_parallel_}); a build job allowed zero concurrent "
+                "builds would compile nothing."
+            )
         return DispatchConfig(
             backend=self.backend,
             resources=_validated(self.resources),
-            compile=_validated(self.compile),
+            compile=_validated_compile(self.compile),
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
             progress_interval=self.progress_interval,
@@ -313,7 +370,7 @@ class DispatchConfig:
 
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
-    compile: DispatchResourcesFile | None = None
+    compile: DispatchCompileFile | None = None
     sbatch_args: list = None
     poll_interval: float = 10.0
     progress_interval: float = 60.0
@@ -373,6 +430,20 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)
     return resolved
+
+
+def compile_parallel(dispatch_cfg) -> int:
+    """How many distinct builds one build job may compile concurrently (#495).
+
+    Deliberately NOT a field of :class:`JobResources`: the resolved compile
+    reservation is also what sizes an in-job compile's sim job and the
+    right-sizing compile floor, and both of those are one serial build. The
+    concurrency belongs to the build job alone, so it is read separately —
+    and only by the code that builds that job's spec.
+    """
+    if dispatch_cfg is None or dispatch_cfg.compile is None:
+        return 1
+    return getattr(dispatch_cfg.compile, "parallel", 1)
 
 
 def mem_to_bytes(value) -> int | None:
