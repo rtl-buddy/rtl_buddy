@@ -304,11 +304,17 @@ def _scope_entry(project_root: Path, scope: _Scope, test_dir: Path) -> dict:
             # predate the record gets no key at all, so a refresh with
             # nothing re-run stays byte-identical (#379's whole point). The
             # values come from the envelope, never from a clock here.
-            entry["compile"] = {
+            block = {
                 "duration_sec": compile_record.get("duration_sec"),
                 "builder": compile_record.get("builder"),
                 "reused": compile_record.get("reused"),
             }
+            # An all-null block says nothing and is not the same as absent —
+            # it is what a config whose prepare() failed in the build job
+            # leaves behind, and the entry-level None filter below does not
+            # reach nested values. Drop it rather than publish three nulls.
+            if any(v is not None for v in block.values()):
+                entry["compile"] = block
     seed = _read_randseed(scope.directory)
     if seed is not None:
         entry["randseed"] = seed

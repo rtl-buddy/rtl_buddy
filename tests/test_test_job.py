@@ -106,6 +106,13 @@ class _StubTestRunner:
             }
         return record_of(self.test_name)
 
+    @property
+    def builder_name(self):
+        # Known from the moment the sim exists, i.e. before any compile
+        # plan — the fallback the build job uses for a config whose PRE
+        # failed (#495).
+        return "stub-builder"
+
 
 @pytest.fixture
 def stub_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StubTestRunner]:
@@ -972,7 +979,9 @@ def test_build_records_name_the_builder_even_when_the_compile_never_ran(
     """A failed config still gets a row — a gap means "never seen" (#495).
 
     A missing record must not read as "compiled instantly": every planned
-    config appears, with the fields it could not know left null.
+    config appears, with the fields it could not know left null. The
+    builder is not one of those: it is settled the moment the sim exists,
+    which is before the PRE that failed, so the row still names it.
     """
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults, SetupFailResults
@@ -997,6 +1006,7 @@ def test_build_records_name_the_builder_even_when_the_compile_never_ran(
     by_test = {entry["test"]: entry for entry in br["builds"]}
     assert by_test["basic"]["duration_sec"] is None
     assert by_test["basic"]["reused"] is None
+    assert by_test["basic"]["builder"] == "stub-builder"
     assert by_test["extra"]["duration_sec"] == 3.0
 
 

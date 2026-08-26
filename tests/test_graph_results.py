@@ -228,6 +228,35 @@ def test_a_reused_build_reports_zero_duration_not_a_missing_one(
     assert entry["compile"]["duration_sec"] == 0.0
 
 
+def test_an_all_null_compile_block_is_dropped_rather_than_published(
+    results_project: Path,
+):
+    """Three nulls are not a compile record (#495).
+
+    A config whose prepare() failed in the build job leaves an all-null
+    `builds` row; its sim job still runs (the build job exits 0) and writes
+    an envelope, so the fold can put an empty record in. The entry-level
+    None filter does not reach nested values, so the key is dropped here
+    instead — absent and "nothing known" are the same statement.
+    """
+    _seed_run(
+        results_project,
+        "t_basic",
+        compile_record={"duration_sec": None, "builder": None, "reused": None},
+    )
+
+    entry = collect_results(results_project).entries["test:verif/blk_a#t_basic"]
+    assert "compile" not in entry
+    # One known field is still worth publishing.
+    _seed_run(
+        results_project,
+        "t_other",
+        compile_record={"duration_sec": None, "builder": "verilator", "reused": None},
+    )
+    other = collect_results(results_project).entries["test:verif/blk_a#t_other"]
+    assert other["compile"]["builder"] == "verilator"
+
+
 def test_timestamp_comes_from_the_envelope_not_the_wall_clock(results_project: Path):
     _seed_run(results_project, "t_basic", when=_T_FIRST)
 

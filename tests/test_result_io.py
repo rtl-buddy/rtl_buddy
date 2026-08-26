@@ -231,6 +231,50 @@ def test_attach_result_key_degrades_instead_of_raising(tmp_path: Path, content):
     assert not out.with_name(out.name + ".tmp").exists()
 
 
+def test_an_unserialisable_annotation_leaves_the_envelope_as_found(tmp_path: Path):
+    """The value is the caller's problem, never the collected run's."""
+    from rtl_buddy.runner.result_io import attach_result_key
+
+    out = tmp_path / "result.json"
+    write_result_json(
+        out, test_name="t", run_id=1, results=TestPassResults(name="t/results")
+    )
+    before = out.read_text()
+    attach_result_key(out, "compile", {"duration_sec": object()})
+    assert out.read_text() == before
+    assert load_result_json(out)["result"].is_pass()
+    assert not out.with_name(out.name + ".tmp").exists()
+
+
+def test_a_write_that_cannot_land_does_not_take_the_collection_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """ENOSPC/EROFS at collect time must not lose a finished fleet.
+
+    The head performs one of these rewrites per collected row; an
+    exception here would abandon every result already gathered and turn a
+    fully finished run into a traceback.
+    """
+    from rtl_buddy.runner import result_io
+    from rtl_buddy.runner.result_io import attach_telemetry_json
+
+    out = tmp_path / "result.json"
+    write_result_json(
+        out, test_name="t", run_id=1, results=TestPassResults(name="t/results")
+    )
+    before = out.read_text()
+
+    def _enospc(self, *args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(result_io.Path, "write_text", _enospc)
+    attach_telemetry_json(out, {"state": "COMPLETED"})
+
+    monkeypatch.undo()
+    assert out.read_text() == before
+    assert not out.with_name(out.name + ".tmp").exists()
+
+
 def test_build_envelope_round_trips_its_compile_records(tmp_path: Path):
     from rtl_buddy.runner.result_io import (
         load_build_result_json,

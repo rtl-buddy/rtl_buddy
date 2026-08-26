@@ -408,6 +408,29 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: compile failed in build job "
                 f"{fields.get('build_job')} — counting it as a compile failure"
             )
+        case "rightsize.build_advice_withheld":
+            # INFO, but the fallback renderer would drop the reason — and the
+            # reason is the entire content of the event.
+            if fields.get("reason") == "undersampled":
+                why = (
+                    f"it ran for {fields.get('elapsed_s')}s, inside one "
+                    f"{fields.get('interval_s')}s accounting interval, so its "
+                    "cpu time was sampled at most once"
+                )
+            else:
+                why = (
+                    f"none of its {fields.get('builds')} build(s) actually "
+                    "compiled — they reused their stamps, so its elapsed time "
+                    "says nothing about what a real compile costs"
+                )
+            return f"{fields.get('suite')}: no reduce advice for the build job: {why}"
+        case "result_io.annotate_failed":
+            return (
+                f"could not write the {fields.get('what')} into "
+                f"{fields.get('path')} ({fields.get('error')}); the result "
+                "itself is unaffected — the envelope keeps the content it "
+                "already had"
+            )
         case "rightsize.advice":
             return (
                 f"{fields.get('test')}: {fields.get('resource')} reserved "

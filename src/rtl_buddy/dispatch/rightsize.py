@@ -53,7 +53,12 @@ Semantics:
   asks the same two questions of it — wall clock against the limit, cpu
   time against the allocation. Its cpus suggestion is divided back down by
   ``cfg-dispatch.compile.parallel``, because the field a project edits is
-  per-build while the reservation the head submitted was the product.
+  per-build while the reservation the head submitted was the product. Its
+  ``reduce`` needs the build envelope to say a compile actually ran: a
+  re-run of an unchanged suite short-circuits every build on its stamp, and
+  reading those seconds as "the compile is fast" would advise a limit the
+  next real RTL change times out against — which cancels the whole afterok
+  fan-out, the failure the build job's exit-0 contract exists to prevent.
 - Every suggestion for such a job is *reachable*: a ``reduce`` is clamped
   up to the compile reservation, because the ``max`` will not let the
   allocation go below it however far the test's own ``resources:`` are
@@ -194,6 +199,9 @@ def analyze_build_reservation(
     rightsize_cfg,
     suite_display,
     root_config_hint,
+    *,
+    compile_work=None,
+    accounting_interval_s=None,
 ):
     """Right-size the *build job's* own reservation (#495).
 
@@ -217,10 +225,51 @@ def analyze_build_reservation(
     per-build, and advising the product would compound the scaling on the
     next run. Empty telemetry (a local-parallel backend reports none)
     yields no advice at all.
+
+    ``compile_work`` is what the build envelope says the job actually did:
+    ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
+    when the head could not tell (no envelope, or one written before the
+    records existed). It is what separates *nothing to compile* from
+    *compiled fast* — on any re-run of an unchanged suite every build
+    short-circuits on its stamp, so the job is seconds long with near-zero
+    cpu time, and a naive reading advises a five-minute limit that the
+    next real RTL change TIMEOUTs against, taking the whole afterok
+    fan-out with it. So a ``reduce`` needs evidence that a compile ran;
+    ``raise`` is unconditional, being a fact about the reservation rather
+    than a measurement of the work. ``accounting_interval_s`` withholds
+    ``reduce`` for the same reason ``analyze_suite_reservations`` withholds
+    memory advice: ``TotalCPU`` is accumulated from usage samples, so a job
+    that finished inside one interval was measured at most once.
     """
     if not build_telemetry:
         return []
     findings = []
+    elapsed = build_telemetry.get("elapsed_s")
+    # Only a `reduce` is gated: it is the direction that can shrink a
+    # reservation below what the next run needs.
+    compiled = (compile_work or {}).get("compiled") or 0
+    undersampled = (
+        accounting_interval_s is not None
+        and elapsed is not None
+        and elapsed < accounting_interval_s
+    )
+    may_reduce = bool(compiled) and not undersampled
+    if not may_reduce:
+        # INFO, not WARNING: an all-reused build job is the normal shape of
+        # every re-run, and a warning per re-run is noise. It is still
+        # recorded, because "no advice" and "advice withheld" are different
+        # answers to look back at.
+        log_event(
+            logger,
+            logging.INFO,
+            "rightsize.build_advice_withheld",
+            suite=suite_display,
+            reason="undersampled" if undersampled else "no-compile-observed",
+            builds=(compile_work or {}).get("records"),
+            compiled=compiled,
+            elapsed_s=elapsed,
+            interval_s=accounting_interval_s,
+        )
     # BuildJobSpec's typed field (>= 1); clamped anyway because every
     # cpus number below divides by it.
     parallel = max(1, parallel)
@@ -249,7 +298,6 @@ def analyze_build_reservation(
 
     # --- time -------------------------------------------------------
     limit = build_telemetry.get("timelimit_s")
-    elapsed = build_telemetry.get("elapsed_s")
     if limit and state == "TIMEOUT":
         findings.append(
             RightsizeFinding(
@@ -283,7 +331,8 @@ def analyze_build_reservation(
                 )
             )
         elif (
-            util < rightsize_cfg.over_threshold
+            may_reduce
+            and util < rightsize_cfg.over_threshold
             and suggested_s <= limit * _REDUCE_KEEP_RATIO
         ):
             findings.append(
@@ -307,7 +356,7 @@ def analyze_build_reservation(
         # the ratio right.
         cpus = (compile_resources.cpus or 0) * parallel
     cpu_time = build_telemetry.get("total_cpu_s")
-    if cpus and cpus > 1 and cpu_time is not None and elapsed:
+    if may_reduce and cpus and cpus > 1 and cpu_time is not None and elapsed:
         # TotalCPU is summed over the job's steps, and elapsed is the wall
         # clock of the whole parallel batch — which is exactly the ratio
         # that says whether the scaled reservation was worth it.
@@ -339,7 +388,14 @@ def analyze_build_reservation(
                             note=(
                                 f"per-build; the build job reserved {cpus} "
                                 f"= {per_build_now} x compile.parallel "
-                                f"{parallel}. Suggested value is per-build."
+                                f"{parallel}. Suggested value is per-build. "
+                                "`parallel` is the other lever: it is capped "
+                                "by the suite's planned configs, not by its "
+                                "distinct compile keys, so configs that share "
+                                "one key reserve cpus for builds that never "
+                                "run — lower cfg-dispatch.compile.parallel "
+                                "instead when the key count is the smaller "
+                                "number."
                             ),
                         ),
                         **common,

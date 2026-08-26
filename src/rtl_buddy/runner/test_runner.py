@@ -146,6 +146,25 @@ class TestRunner:
         """
         return None if self._vlog_sim is None else self._vlog_sim.last_compile
 
+    @property
+    def builder_name(self):
+        """The resolved builder's name, or ``None`` (#495).
+
+        Known from the moment :meth:`prepare` built the sim — earlier than
+        :attr:`last_compile`, which only exists once the compile plan was
+        derived. That gap is a config whose PRE failed: it never reached a
+        builder, but the builder it *would* have used is settled and worth
+        recording, so a gap in the build envelope keeps meaning "the build
+        job never saw this test". Best-effort like every other value on
+        this path.
+        """
+        if self._vlog_sim is None:
+            return None
+        try:
+            return self._vlog_sim.rtl_builder_cfg.get_name()
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return None
+
     def compile_group_dir(self):
         """``(group_dir, None)`` or ``(None, Results)`` for the prepared sim.
 

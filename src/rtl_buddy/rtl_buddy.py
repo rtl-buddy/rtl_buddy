@@ -204,6 +204,39 @@ def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
     return lines
 
 
+def _summarize_compile_work(build_entries) -> dict:
+    """How much real compiling a build envelope's ``builds`` list describes.
+
+    ``{"records": n, "compiled": n, "compiled_sec": float}`` (#495). A
+    record counts as *compiled* on ``reused is False`` and nothing else:
+    the three states of that field are the whole answer — ``True`` is a
+    stamp short-circuit, ``None`` is a config that never reached a builder,
+    and only ``False`` is a builder that actually ran. Duration is a
+    measurement, not the predicate: a fast compile is still a compile.
+    This is the one thing that separates a build job with nothing to do
+    from one that compiled quickly, which sacct alone cannot see. Tolerant
+    of a foreign or hand-edited envelope: a non-numeric duration simply
+    contributes nothing to the total.
+    """
+    records = 0
+    compiled = 0
+    compiled_sec = 0.0
+    for entry in build_entries:
+        records += 1
+        if entry.get("reused") is not False:
+            continue
+        compiled += 1
+        duration = entry.get("duration_sec")
+        # bool is an int in Python; a flag is not a time.
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            compiled_sec += float(duration)
+    return {
+        "records": records,
+        "compiled": compiled,
+        "compiled_sec": round(compiled_sec, 2),
+    }
+
+
 class RtlBuddy:
     """
     RTL Buddy Main Class
@@ -2191,7 +2224,13 @@ class RtlBuddy:
             builds.append(
                 {
                     "test": name,
-                    "builder": record.get("builder"),
+                    # The runner's own resolved builder when no compile plan
+                    # was ever derived (a config whose PRE failed): the
+                    # builder is settled once the sim exists, and naming it
+                    # is the difference between "never compiled" and "no idea
+                    # what would have compiled it".
+                    "builder": record.get("builder")
+                    or getattr(runner, "builder_name", None),
                     "duration_sec": record.get("duration_sec"),
                     "reused": record.get("reused"),
                     # The basename, not the path: it identifies the shared
@@ -3361,13 +3400,14 @@ class RtlBuddy:
         # keyed by test so a sim row can carry its own compile back to the
         # summary and the results overlay. Empty for an envelope written by
         # a build job that predates the records.
+        build_entries = build_result["builds"] if build_result else []
         compile_records = {
             entry["test"]: {
                 "duration_sec": entry.get("duration_sec"),
                 "builder": entry.get("builder"),
                 "reused": entry.get("reused"),
             }
-            for entry in (build_result["builds"] if build_result else [])
+            for entry in build_entries
             if entry.get("test")
         }
         # Did this suite's build gate open? A build job that left no result
@@ -3411,6 +3451,19 @@ class RtlBuddy:
                 if build_handle.spec.result_json is not None:
                     attach_telemetry_json(build_handle.spec.result_json, build_tele)
                 state["build_telemetry"] = build_tele
+            # What the job's wall clock actually covered. sacct cannot tell
+            # "nothing to compile" from "compiled fast", and a re-run of an
+            # unchanged suite is the first of those: every build
+            # short-circuits on its stamp, so a 2 h reservation shows
+            # seconds of elapsed and near-zero cpu time. Right-sizing needs
+            # to know that before it advises shrinking anything (#495).
+            # None (not a zeroed dict) when the build job left no envelope
+            # or wrote one predating the records — "unknown", not "nothing".
+            state["build_compile_work"] = (
+                _summarize_compile_work(build_entries)
+                if build_result is not None
+                else None
+            )
         for idx, handle in pending:
             tele = telemetry.get(handle.job_id)
             try:
@@ -3548,7 +3601,11 @@ class RtlBuddy:
                 # level: that nested dict is what `rb graph results` reads a
                 # run's payload from, so a top-level key would travel with
                 # the artifact and still be invisible to the overlay.
-                results.results["compile"] = compile_record
+                #
+                # A copy per row: one record backs every run_id of a test and
+                # every envelope written for it, and a shared dict is an
+                # aliasing invariant nothing here needs to hold.
+                results.results["compile"] = dict(compile_record)
                 attach_result_key(handle.spec.result_json, "compile", compile_record)
             suite_results[idx]["results"] = results
         return retryable
@@ -3631,6 +3688,17 @@ class RtlBuddy:
                     # uses it — advice runs after every job finished and must
                     # never turn a completed run into an abort.
                     getattr(self.root_cfg, "root_cfg_path", None),
+                    # Whether anything actually compiled: without it a re-run
+                    # whose builds all short-circuited on their stamps reads
+                    # as a fast compile and advises a limit the next real RTL
+                    # change times out against (#495).
+                    compile_work=state.get("build_compile_work"),
+                    # TotalCPU is accumulated from usage samples, so a build
+                    # job shorter than one interval was measured at most once
+                    # — the same reason memory advice is gated (#365).
+                    accounting_interval_s=(
+                        backend.accounting_interval_s() if backend is not None else None
+                    ),
                 )
             )
         for finding in findings:
@@ -3656,12 +3724,20 @@ class RtlBuddy:
         metadata = [
             "rtl-buddy suggests; apply by editing the named Field",
         ]
-        if any(f.phase != "sim" for f in findings):
+        if any(f.phase == "compile+sim" for f in findings):
             # Without this the numbers read as sim-only and a compile-sized
-            # reservation looks wildly over-reserved.
+            # reservation looks wildly over-reserved. Gated on the phase it
+            # describes: a table whose only non-sim row is the build job
+            # would otherwise explain a row it does not contain.
             metadata.append(
                 "compile+sim rows measure a job that also compiled (its "
                 "builder cannot share a build), so the peak spans both phases"
+            )
+        if any(f.phase == "compile" for f in findings):
+            metadata.append(
+                "the compile row is the suite's build job: one allocation "
+                "running up to cfg-dispatch.compile.parallel builds at once, "
+                "so its cpus suggestion is per-build"
             )
         render_summary(
             title="Reservation Advice (reserved vs used)",

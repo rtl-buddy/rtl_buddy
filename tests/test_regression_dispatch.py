@@ -1356,6 +1356,58 @@ def test_machine_payload_carries_build_job_reservation_advice(
     assert "note" not in time_a["edit_hint"]
 
 
+def test_a_build_job_that_only_reused_stamps_gets_no_reduce_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The re-run trap the whole feature could otherwise walk into (#495).
+
+    Re-dispatch an unchanged suite (the normal case after a flaky sim) and
+    every build short-circuits on its stamp: the build job is seconds long
+    against its 2 h limit with near-zero cpu time. sacct alone cannot tell
+    that from a fast compile, so without the envelope's ``reused`` flags
+    the advice would be "reduce time → 00:05:00" — which the next real RTL
+    change TIMEOUTs against, and afterok then cancels the sim fan-out.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        builds=[
+            {
+                "test": "basic",
+                "builder": "verilator",
+                "duration_sec": 0.0,
+                "reused": True,
+                "group": "obj_dir_cafe",
+            }
+        ],
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 12,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 3,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    parallel: 2\n",
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["phase"] == "compile"] == []
+
+
 def test_no_build_reservation_advice_without_build_telemetry(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],

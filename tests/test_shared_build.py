@@ -235,6 +235,88 @@ def test_share_build_reuses_simv_across_tests_with_identical_inputs(
     cmd = calls[0]["cmd"]
     assert cmd[cmd.index("--Mdir") + 1] == str(Path(sim_a._get_simv_path()).parent)
 
+    # The compile record the build envelope and the results overlay are
+    # built from (#495). The producer is here, on the sim instance: a real
+    # compile times itself, a reuse costs 0.0 and says so, and both name
+    # the builder that (would have) run.
+    assert sim_a.last_compile["reused"] is False
+    # A real number, timed around the builder (0.0 here only because the
+    # fake builder returns instantly); the reuse below is 0.0 by decision.
+    assert isinstance(sim_a.last_compile["duration_sec"], float)
+    assert sim_a.last_compile["builder"] == "verilator"
+    assert sim_b.last_compile == {
+        "duration_sec": 0.0,
+        "builder": "verilator",
+        "reused": True,
+    }
+
+
+def test_an_unshareable_builder_also_records_its_reuse(tmp_path, monkeypatch):
+    """The per-test-stamp reuse path stamps the same record (#495).
+
+    A builder that cannot share still short-circuits on its own stamp, and
+    that branch is the one a dispatched re-run of an unchanged suite takes
+    for every test — the reuse it reports is what stops right-sizing from
+    reading "nothing compiled" as "the compile is fast".
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert first.compile() == 0
+    assert first.last_compile["reused"] is False
+    assert first.last_compile["builder"] == "questa"
+
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert second.compile() == 0
+    assert len(calls) == 1  # reused, not recompiled
+    assert second.last_compile == {
+        "duration_sec": 0.0,
+        "builder": "questa",
+        "reused": True,
+    }
+
+
+def test_a_probe_records_the_builder_without_claiming_a_compile(tmp_path, monkeypatch):
+    """Probing settles the builder; it does not compile anything (#495).
+
+    So a config that never reaches a builder still names one, with the
+    duration and the reuse flag left unknown rather than guessed at 0.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.last_compile is None
+    sim.compile_group_dir()
+    assert sim.last_compile == {
+        "duration_sec": None,
+        "builder": "verilator",
+        "reused": None,
+    }
+
+
+def test_a_failed_compile_still_records_what_it_cost(tmp_path, monkeypatch):
+    """A failure is an observation too — the record is not gated on success.
+
+    A compile that failed after 14 minutes is exactly the number the build
+    job's reservation has to cover, so it counts as work that ran: the
+    record is stamped before the pass/fail branch.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [], returncode=1)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() != 0
+    assert sim.last_compile["builder"] == "verilator"
+    assert sim.last_compile["reused"] is False
+    assert sim.last_compile["duration_sec"] is not None
+
 
 def test_share_build_recompiles_when_plusdefines_differ(tmp_path, monkeypatch):
     _write_source(tmp_path)

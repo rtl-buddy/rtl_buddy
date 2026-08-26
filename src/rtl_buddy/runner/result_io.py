@@ -13,12 +13,16 @@ shared filesystem can produce collectable results.
 """
 
 import json
+import logging
 import os
 from importlib.metadata import version
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event
 from .test_results import TestResults
+
+logger = logging.getLogger(__name__)
 
 RESULT_JSON_FILETYPE = "test_result"
 RESULT_JSON_SCHEMA_VERSION = 1
@@ -101,14 +105,52 @@ def attach_result_key(path, key: str, value):
     _rewrite_envelope(path, _fold)
 
 
+def _write_envelope_best_effort(path, raw, *, what):
+    """Atomically write ``raw`` to ``path``; report failure, never raise.
+
+    The write half of every *annotating* rewrite in this module. The read
+    half was always guarded, but the serialize-and-write half was not, and
+    the collector now performs one of these per collected row: a full or
+    read-only shared filesystem (ENOSPC/EROFS/EACCES) at collect time would
+    otherwise turn a fully finished fleet into a traceback and lose every
+    result it had already gathered. A value the caller could not serialise
+    (``TypeError``) is the same class of problem — the annotation is
+    advisory, the run's verdict is not. Returns whether the write landed;
+    on failure the envelope is left exactly as it was found.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:
+        log_event(
+            logger,
+            logging.WARNING,
+            "result_io.annotate_failed",
+            path=str(path),
+            what=what,
+            error=str(e),
+        )
+        # A half-written sibling would be read by nothing (only `path` is
+        # ever loaded), but leaving one behind on a full filesystem is
+        # gratuitous.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def _rewrite_envelope(path, fold):
     """Read-modify-write one JSON envelope through a temp file + replace.
 
     ``fold`` mutates the parsed envelope in place and returns whether the
     write is still wanted; False abandons it (the envelope was not the
     shape the caller expected). Unreadable, missing and non-object files
-    are no-ops — every caller here is annotating a finished run, and an
-    annotation must never be the thing that raises.
+    are no-ops, and so is a write that fails — every caller here is
+    annotating a finished run, and an annotation must never be the thing
+    that raises.
     """
     path = Path(path)
     try:
@@ -117,9 +159,7 @@ def _rewrite_envelope(path, fold):
         return
     if not isinstance(raw, dict) or not fold(raw):
         return
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
-    os.replace(tmp, path)
+    _write_envelope_best_effort(path, raw, what="annotation")
 
 
 def refresh_result_json(path, results):
@@ -135,7 +175,8 @@ def refresh_result_json(path, results):
     Only ``result`` is replaced; ``run_token``, ``run_id`` and the
     filetype header are the identity of the envelope and are preserved.
     Atomic like the writer, and silent on a missing or unreadable
-    envelope — this is a best-effort side-car, never a run's verdict.
+    envelope — or on a write that cannot land — because this is a
+    best-effort side-car, never a run's verdict.
     """
     path = Path(path)
     try:
@@ -143,9 +184,8 @@ def refresh_result_json(path, results):
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
     raw["result"] = results.to_json_dict()
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
-    os.replace(tmp, path)
+    if not _write_envelope_best_effort(path, raw, what="coverage refresh"):
+        return None
     return path
 
 

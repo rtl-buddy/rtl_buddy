@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from rtl_buddy.config.dispatch import RightsizeConfigFile
 from rtl_buddy.dispatch.rightsize import (
+    RightsizeFinding,
     analyze_build_reservation,
     analyze_suite_reservations,
     format_mem,
@@ -682,7 +683,22 @@ class _Res:
         self.cpus = cpus
 
 
-def _build_advice(telemetry, *, parallel=1, cpus=4, cfg=_CFG, root="root_config.yaml"):
+# What the build envelope says the job did. The default is one real
+# compile, because that is the case every reduce/raise assertion below is
+# about; the "nothing compiled" cases pass their own.
+_COMPILED = {"records": 2, "compiled": 1, "compiled_sec": 55.0}
+
+
+def _build_advice(
+    telemetry,
+    *,
+    parallel=1,
+    cpus=4,
+    cfg=_CFG,
+    root="root_config.yaml",
+    compile_work=_COMPILED,
+    accounting_interval_s=None,
+):
     return analyze_build_reservation(
         telemetry,
         _Res(cpus),
@@ -690,6 +706,8 @@ def _build_advice(telemetry, *, parallel=1, cpus=4, cfg=_CFG, root="root_config.
         cfg,
         "verif/blk/tests.yaml",
         root,
+        compile_work=compile_work,
+        accounting_interval_s=accounting_interval_s,
     )
 
 
@@ -814,3 +832,117 @@ def test_build_advice_without_a_root_config_path_still_names_the_field():
     )
     (time_a,) = [f for f in findings if f.resource == "time"]
     assert time_a.edit_hint == {"path": "cfg-dispatch.compile.time"}
+
+
+# --------------------- "nothing to compile" is not "compiled fast" (#495)
+
+_ALL_REUSED = {"records": 8, "compiled": 0, "compiled_sec": 0.0}
+# A job that short-circuited every build: seconds of wall clock, no cpu.
+_REUSE_RUN = {
+    "state": "COMPLETED",
+    "elapsed_s": 60,
+    "timelimit_s": 7200,
+    "alloc_cpus": 16,
+    "total_cpu_s": 4,
+}
+
+
+def test_a_build_job_that_compiled_nothing_gets_no_reduce_advice():
+    """The re-run trap: every build reused its stamp, so the job is seconds
+    long against a 2 h limit. Reading that as "the compile is fast" advises
+    a 5-minute limit, and the next real RTL change TIMEOUTs against it —
+    which afterok turns into a cancelled sim fan-out."""
+    assert _build_advice(_REUSE_RUN, compile_work=_ALL_REUSED) == []
+
+
+def test_an_envelope_that_cannot_say_yields_no_reduce_advice():
+    """A build job that left no envelope, or one written before the records
+    existed (a mixed-version fleet), is *unknown*, not "nothing ran"."""
+    assert _build_advice(_REUSE_RUN, compile_work=None) == []
+    assert _build_advice(_REUSE_RUN, compile_work={"records": 0, "compiled": 0}) == []
+
+
+def test_a_timed_out_build_job_raises_even_with_nothing_recorded():
+    """A kill is a fact about the reservation, not a measurement of work."""
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 7200, "timelimit_s": 7200},
+        compile_work=_ALL_REUSED,
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+
+
+def test_a_build_job_shorter_than_one_accounting_interval_gets_no_reduce():
+    """TotalCPU is accumulated from usage samples, so a job that finished
+    inside one interval was measured at most once — the same reason memory
+    advice is withheld for a short test (#365)."""
+    assert _build_advice(_REUSE_RUN, accounting_interval_s=300) == []
+    # ...and the same job, once the interval says it was sampled, advises.
+    assert _build_advice(_REUSE_RUN, accounting_interval_s=30) != []
+
+
+def test_withheld_build_advice_is_logged_rather_than_left_silent(caplog):
+    """ "No advice" and "advice withheld" are different answers."""
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work=_ALL_REUSED)
+
+    assert "no reduce advice for the build job" in caplog.text
+    assert "reused their stamps" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, accounting_interval_s=300)
+
+    assert "accounting interval" in caplog.text
+
+
+# ------------------------------------------ the advice table's own notes
+
+
+def _rendered_metadata(findings, monkeypatch):
+    """The metadata lines `_render_reservation_advice` puts under the table."""
+    import rtl_buddy.rtl_buddy as rbmod
+
+    captured = {}
+    monkeypatch.setattr(rbmod, "render_summary", lambda **kw: captured.update(kw))
+    rbmod.RtlBuddy._render_reservation_advice(object(), findings)
+    return captured["metadata"]
+
+
+def _finding(phase):
+    return RightsizeFinding(
+        suite="verif/blk/tests.yaml",
+        test="(build job)" if phase == "compile" else "t_basic",
+        resource="time",
+        reserved="02:00:00",
+        peak="00:01:00",
+        utilization=0.01,
+        direction="reduce",
+        suggested="00:05:00",
+        runs=1,
+        reg_level=None,
+        phase=phase,
+    )
+
+
+def test_the_compile_sim_note_only_appears_under_a_compile_sim_row(monkeypatch):
+    """A note explaining a row the table does not contain is noise.
+
+    The build job's row is `compile`, not `compile+sim`: it is a job that
+    compiled and nothing else, so the "the peak spans both phases" line
+    would be describing something absent.
+    """
+    build_only = _rendered_metadata([_finding("compile")], monkeypatch)
+    assert not any("spans both phases" in line for line in build_only)
+    assert any(
+        "the compile row is the suite's build job" in line for line in build_only
+    )
+
+    in_job = _rendered_metadata([_finding("compile+sim")], monkeypatch)
+    assert any("spans both phases" in line for line in in_job)
+    assert not any("build job" in line for line in in_job)
+
+    sim_only = _rendered_metadata([_finding("sim")], monkeypatch)
+    assert len(sim_only) == 1
