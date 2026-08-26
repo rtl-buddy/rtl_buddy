@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
+import re
 import shutil
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from rtl_buddy.docs_access import (
     DocsPage,
@@ -20,6 +23,9 @@ from rtl_buddy.docs_access import (
 
 REPO_ROOT = Path(__file__).parent.parent
 DEFAULT_OUTPUT = REPO_ROOT / ".docusaurus-agent-static"
+_MARKDOWN_LINK_RE = re.compile(
+    r"(?P<prefix>!?\[[^\]]*\]\()(?P<destination>[^)\s]+)(?P<suffix>\))"
+)
 
 
 def _base_url(value: str) -> str:
@@ -33,6 +39,58 @@ def _url(site_url: str, base_url: str, path: str) -> str:
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
+
+
+def _human_path(slug: str) -> str:
+    if slug == "index":
+        return ""
+    if slug.endswith("/index"):
+        return f"{slug.removesuffix('/index')}/"
+    return f"{slug}/"
+
+
+def _rebase_section_links(
+    content: str,
+    *,
+    page_slug: str,
+    site_url: str,
+    base_url: str,
+) -> str:
+    """Preserve link targets after moving a section away from its source page."""
+
+    def replace(match: re.Match[str]) -> str:
+        destination = match.group("destination")
+        parsed = urlsplit(destination)
+        if parsed.scheme or parsed.netloc or destination.startswith("/"):
+            return match.group(0)
+
+        if not parsed.path:
+            target_path = _human_path(page_slug)
+        elif parsed.path.endswith(".md"):
+            parent = posixpath.dirname(page_slug)
+            target_slug = posixpath.normpath(posixpath.join(parent, parsed.path))
+            target_path = _human_path(target_slug.removesuffix(".md"))
+        else:
+            return match.group(0)
+
+        rebased = _url(site_url, base_url, target_path)
+        if parsed.query:
+            rebased += f"?{parsed.query}"
+        if parsed.fragment:
+            rebased += f"#{parsed.fragment}"
+        return f"{match.group('prefix')}{rebased}{match.group('suffix')}"
+
+    lines = []
+    in_code_block = False
+    for line in content.splitlines(keepends=True):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            lines.append(line)
+        elif in_code_block:
+            lines.append(line)
+        else:
+            lines.append(_MARKDOWN_LINK_RE.sub(replace, line))
+    return "".join(lines)
 
 
 def _list_pages(docs_dir: Path) -> list[DocsPage]:
@@ -78,7 +136,7 @@ def export(
 
     for page in _list_pages(docs_dir):
         page_path = f"agent/pages/{page.slug}.md"
-        human_path = f"{page.slug}/"
+        human_path = _human_path(page.slug)
         sections_payload = []
 
         _write(output / page_path, page.content)
@@ -91,7 +149,16 @@ def export(
             if section_content is None:
                 raise RuntimeError(f"section disappeared: {page.slug}#{section.slug}")
             section_path = f"agent/sections/{page.slug}/{section.slug}.md"
-            _write(output / section_path, section_content + "\n")
+            _write(
+                output / section_path,
+                _rebase_section_links(
+                    section_content,
+                    page_slug=page.slug,
+                    site_url=site_url,
+                    base_url=base_url,
+                )
+                + "\n",
+            )
             sections_payload.append(
                 {
                     "slug": section.slug,

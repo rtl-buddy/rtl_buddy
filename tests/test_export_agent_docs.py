@@ -108,3 +108,56 @@ This behavior belongs to the old release.
     assert [page["slug"] for page in catalog["pages"]] == ["index"]
     assert catalog["pages"][0]["description"] == "Historical release documentation."
     assert (output / "agent/pages/index.md").read_text() == content
+
+
+def test_section_export_rebases_relative_links_and_preserves_code(tmp_path):
+    docs = tmp_path / "docs"
+    (docs / "concepts").mkdir(parents=True)
+    content = """# Example
+
+## Linked section
+
+[Sibling](sibling.md#details)
+[Parent](../install.md)
+[Same page](#linked-section)
+[External](https://example.com/docs)
+
+```markdown
+[Literal](sibling.md)
+```
+"""
+    (docs / "concepts/example.md").write_text(content)
+    (docs / "concepts/sibling.md").write_text("# Sibling\n")
+    (docs / "install.md").write_text("# Install\n")
+    output = tmp_path / "agent-static"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts/export_agent_docs.py"),
+            "--docs-dir",
+            str(docs),
+            "--output",
+            str(output),
+            "--version",
+            "v2",
+            "--base-url",
+            "/rtl_buddy/v2/",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    section = (output / "agent/sections/concepts/example/linked-section.md").read_text()
+    assert (
+        "https://rtl-buddy.github.io/rtl_buddy/v2/concepts/sibling/#details" in section
+    )
+    assert "https://rtl-buddy.github.io/rtl_buddy/v2/install/" in section
+    assert (
+        "https://rtl-buddy.github.io/rtl_buddy/v2/concepts/example/#linked-section"
+        in section
+    )
+    assert "[External](https://example.com/docs)" in section
+    assert "[Literal](sibling.md)" in section

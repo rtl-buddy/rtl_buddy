@@ -27,3 +27,10 @@ def test_latest_stable_tag_requires_exact_release(monkeypatch):
 
     with pytest.raises(RuntimeError, match="no stable tag"):
         MODULE.latest_stable_tag("v6")
+
+
+def test_versions_to_build_can_exclude_dev_without_hiding_it_from_navigation():
+    versions = ["dev", "v6", "v5"]
+
+    assert MODULE.versions_to_build(versions, {"dev"}) == ["v6", "v5"]
+    assert versions == ["dev", "v6", "v5"]

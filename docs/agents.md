@@ -88,6 +88,8 @@ metadata, `agent/pages/<slug>.md` for a raw page, or
 `agent/sections/<slug>/<anchor>.md` for one bounded section. These URLs are
 versioned under `dev/` or `v<major>/`; they are the network-accessible mirror,
 not a replacement for the installed-version and offline guarantees above.
+Relative links in bounded sections are rebased to version-pinned human pages so
+they retain the same targets after extraction.
 
 ## Machine mode
 

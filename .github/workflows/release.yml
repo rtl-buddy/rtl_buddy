@@ -281,6 +281,7 @@ jobs:
           DOCS_ROOT_BASE_URL: /rtl_buddy/
           DOCS_VERSION: ${{ steps.target.outputs.version }}
           DOCS_VERSIONS: ${{ steps.target.outputs.versions }}
+          DOCS_BUILD_EXCLUDE: dev
         run: npm run build:all
 
       - name: Check out GitHub Pages branch

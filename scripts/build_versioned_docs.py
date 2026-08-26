@@ -82,7 +82,11 @@ def build_version(
     shutil.move(REPO_ROOT / "build", target)
 
 
-def build_all(output: Path, versions: list[str]) -> None:
+def versions_to_build(versions: list[str], excluded: set[str]) -> list[str]:
+    return [version for version in versions if version not in excluded]
+
+
+def build_all(output: Path, versions: list[str], *, excluded: set[str]) -> None:
     output = output.resolve()
     if output.exists():
         shutil.rmtree(output)
@@ -92,7 +96,7 @@ def build_all(output: Path, versions: list[str]) -> None:
     shutil.rmtree(temp_path, ignore_errors=True)
     temp_path.mkdir()
     try:
-        for version in versions:
+        for version in versions_to_build(versions, excluded):
             if version == "dev":
                 docs_dir = REPO_ROOT / "docs"
                 edit_ref = "main"
@@ -121,9 +125,15 @@ def main() -> None:
         "--versions",
         default=os.environ.get("DOCS_VERSIONS", "dev,v6,v5,v4,v3,v2"),
     )
+    parser.add_argument(
+        "--exclude",
+        default=os.environ.get("DOCS_BUILD_EXCLUDE", ""),
+        help="Comma-separated versions to show in navigation but not build",
+    )
     args = parser.parse_args()
     versions = [item.strip() for item in args.versions.split(",") if item.strip()]
-    build_all(args.output, versions)
+    excluded = {item.strip() for item in args.exclude.split(",") if item.strip()}
+    build_all(args.output, versions, excluded=excluded)
 
 
 if __name__ == "__main__":
