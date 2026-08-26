@@ -22,7 +22,7 @@ Read [Documentation Guidelines](development/docs.md) before editing `docs/`.
 
 Run the narrowest checks that prove the change:
 
-- Docs-only edits: run `uv run python scripts/check_docs_frontmatter.py --check` and `uv run --group docs mkdocs build --strict`.
+- Docs-only edits: run `uv run python scripts/check_docs_frontmatter.py --check` and `npm run build`.
 - CLI help changes: regenerate `docs/reference/cli.md` with `uv run python scripts/gen_cli_reference.py` and check the docs build.
 - Runtime changes: add focused tests and run the affected subset. Run the full suite for shared contracts or command dispatch.
 

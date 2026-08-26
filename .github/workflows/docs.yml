@@ -5,14 +5,24 @@ on:
     branches: [main]
     tags:
       - 'v*.*.*'
-  # No `branches:` filter — stacked PRs are based on their predecessor's
-  # branch, not on main, and a base filter would silently skip their checks.
+  # No base-branch filter: stacked PRs may target their predecessor branch.
   pull_request:
     paths:
       - 'docs/**'
-      - 'mkdocs.yml'
+      - 'static/**'
+      - 'src/css/**'
+      - 'docusaurus.config.js'
+      - 'sidebars.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docs.yml'
+      - '.github/workflows/release.yml'
       - 'scripts/gen_cli_reference.py'
       - 'scripts/check_docs_frontmatter.py'
+      - 'scripts/build_versioned_docs.py'
+      - 'scripts/export_agent_docs.py'
+      - 'scripts/publish_docusaurus.py'
+      - 'sidebars.historical.js'
       - 'src/rtl_buddy/**'
 
 jobs:
@@ -20,6 +30,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      deployable: ${{ steps.target.outputs.deployable }}
+      latest_version: ${{ steps.target.outputs.latest_version }}
+      update_latest: ${{ steps.target.outputs.update_latest }}
+      version: ${{ steps.target.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -30,8 +45,16 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Install dependencies
-        run: uv sync --group docs
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Install documentation dependencies
+        run: npm ci
 
       - name: Check generated docs files are up to date
         id: generated
@@ -72,17 +95,89 @@ jobs:
             exit 1
           }
 
-      - name: Build docs
-        run: uv run mkdocs build --strict
+      - name: Read published versions
+        id: published
+        shell: bash
+        run: |
+          git fetch origin gh-pages --depth=1 || true
+          versions="$(git show origin/gh-pages:versions.json 2>/dev/null | jq -r '[.[].version] | join(",")' || true)"
+          latest="$(git show origin/gh-pages:versions.json 2>/dev/null | jq -r '.[] | select(.aliases | index("latest")) | .version' || true)"
+          echo "versions=${versions}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute docs target
+        id: target
+        shell: bash
+        run: |
+          deployable=false
+          update_latest=false
+          version=dev
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              tag="${GITHUB_REF_NAME#v}"
+              major="${tag%%.*}"
+              version="v${major}"
+              highest_major="$(git tag --list 'v*.*.*' | sed -nE 's/^v([0-9]+)\.[0-9]+\.[0-9]+$/\1/p' | sort -n | tail -1)"
+              if [[ -n "${highest_major}" && "${major}" == "${highest_major}" ]]; then
+                update_latest=true
+              fi
+              deployable=true
+            fi
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            deployable=true
+          fi
+          versions="${{ steps.published.outputs.versions }}"
+          if [[ ",${versions}," != *",${version},"* ]]; then
+            versions="${versions:+${versions},}${version}"
+          fi
+          echo "deployable=${deployable}" >> "$GITHUB_OUTPUT"
+          latest_version="${{ steps.published.outputs.latest }}"
+          if [[ "${update_latest}" == "true" ]]; then
+            latest_version="${version}"
+          fi
+          echo "latest_version=${latest_version}" >> "$GITHUB_OUTPUT"
+          echo "update_latest=${update_latest}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "versions=${versions}" >> "$GITHUB_OUTPUT"
+          echo "base_url=/rtl_buddy/${version}/" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docusaurus sites
+        env:
+          DOCS_BASE_URL: ${{ steps.target.outputs.base_url }}
+          DOCS_ROOT_BASE_URL: /rtl_buddy/
+          DOCS_VERSION: ${{ steps.target.outputs.version }}
+          DOCS_VERSIONS: ${{ steps.target.outputs.versions }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            npm run build:all
+          else
+            npm run build
+            mkdir builds
+            mv build "builds/${{ steps.target.outputs.version }}"
+          fi
+
+      - name: Prepare site link root
+        run: |
+          mkdir link-root
+          ln -s "$GITHUB_WORKSPACE/builds" link-root/rtl_buddy
 
       - name: Check site links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --offline site/**/*.html
+          # Docusaurus emits root-relative /rtl_buddy/<version>/ URLs. Point
+          # Lychee at the equivalent local tree while retaining builds/ as the
+          # deployment artifact layout.
+          args: --offline --root-dir link-root builds/**/*.html
           fail: true
 
+      - name: Upload site preview
+        uses: actions/upload-artifact@v6
+        with:
+          name: docusaurus-site-${{ github.sha }}
+          path: builds/
+
   deploy:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && needs.build.outputs.deployable == 'true'
     needs: build
     runs-on: ubuntu-latest
     concurrency:
@@ -96,65 +191,53 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/download-artifact@v7
         with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      - name: Install dependencies
-        run: uv sync --group docs
-
-      - name: Require gh-pages token
-        env:
-          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
-        run: |
-          test -n "$GH_PAGES_TOKEN" || {
-            echo "GH_PAGES_TOKEN is required to push the gh-pages branch for GitHub Pages branch publishing."
-            exit 1
-          }
+          name: docusaurus-site-${{ github.sha }}
+          path: builds/
 
       - name: Configure git remote
         env:
           GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
         run: |
+          test -n "$GH_PAGES_TOKEN" || {
+            echo "GH_PAGES_TOKEN is required to publish versioned docs."
+            exit 1
+          }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_PAGES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-      - name: Fetch gh-pages branch if it exists
-        run: git fetch origin gh-pages --depth=1 || true
-
-      - name: Compute docs target
-        id: target
-        shell: bash
+      - name: Check out GitHub Pages branch
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            tag="${GITHUB_REF_NAME#v}"
-            major="${tag%%.*}"
-            version="v${major}"
-            highest_major="$(git tag --list 'v*.*.*' | sed -E 's/^v([0-9]+)\..*/\1/' | sort -n | tail -1)"
-            update_latest=false
-            if [[ -n "${highest_major}" && "${major}" == "${highest_major}" ]]; then
-              update_latest=true
+          git fetch origin gh-pages --depth=1
+          git worktree add "$RUNNER_TEMP/gh-pages" origin/gh-pages
+
+      - name: Publish docs version
+        env:
+          DOCS_VERSION: ${{ needs.build.outputs.version }}
+          LATEST_VERSION: ${{ needs.build.outputs.latest_version }}
+          UPDATE_LATEST: ${{ needs.build.outputs.update_latest }}
+        run: |
+          for build_dir in builds/*; do
+            version="${build_dir##*/}"
+            args=(
+              --build-dir "$build_dir"
+              --pages-dir "$RUNNER_TEMP/gh-pages"
+              --version "$version"
+            )
+            if [[ "$version" == "$LATEST_VERSION" ]]; then
+              args+=(--update-latest)
             fi
-            echo "version=${version}" >> "$GITHUB_OUTPUT"
-            echo "update_latest=${update_latest}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev" >> "$GITHUB_OUTPUT"
-            echo "update_latest=false" >> "$GITHUB_OUTPUT"
-          fi
+            python3 scripts/publish_docusaurus.py "${args[@]}"
+          done
 
-      - name: Deploy docs version
+      - name: Push GitHub Pages branch
         run: |
-          if [[ "${{ steps.target.outputs.update_latest }}" == "true" ]]; then
-            uv run mike deploy --branch gh-pages --update-aliases "${{ steps.target.outputs.version }}" latest
-          else
-            uv run mike deploy --branch gh-pages --update-aliases "${{ steps.target.outputs.version }}"
+          git -C "$RUNNER_TEMP/gh-pages" add --all
+          if git -C "$RUNNER_TEMP/gh-pages" diff --cached --quiet; then
+            echo "Published documentation is already current."
+            exit 0
           fi
-
-      - name: Set default docs version
-        if: steps.target.outputs.update_latest == 'true'
-        run: uv run mike set-default --branch gh-pages latest
-
-      - name: Push gh-pages
-        run: git push origin gh-pages
+          git -C "$RUNNER_TEMP/gh-pages" commit -m "docs: publish ${{ needs.build.outputs.version }}"
+          git -C "$RUNNER_TEMP/gh-pages" push origin HEAD:gh-pages
