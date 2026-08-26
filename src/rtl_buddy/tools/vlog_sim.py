@@ -272,7 +272,7 @@ def _stat_entry(path: str) -> list:
 
 
 @dataclass
-class CompilePlan:
+class _CompilePlan:
     """Everything about a compile that is decided *before* the builder runs.
 
     Split out of :meth:`VlogSim.compile` so the compile key can be asked for
@@ -304,6 +304,11 @@ class CompilePlan:
     # The directory this compile writes into: the shared build dir when the
     # build is shareable, else the test's own compile work dir. Two configs
     # with the same value MUST NOT compile concurrently.
+    #
+    # It is the build DIRECTORY and not (compile_work_dir, shared_dir):
+    # under share_build the whole point is that two DIFFERENT tests with one
+    # key write one shared dir, and a key that included the per-test dir
+    # would split them into two groups and put two builders in it (#369).
     group_dir: str = ""
 
 
@@ -1089,7 +1094,7 @@ class VlogSim:
         return None
 
     def _build_compile_plan(self):
-        """Derive this test's :class:`CompilePlan` — the pre-builder half.
+        """Derive this test's :class:`_CompilePlan` — the pre-builder half.
 
         Writes ``run.f`` as a side effect (the fingerprint stats what the
         filelist names, so it cannot be computed before the file exists) and
@@ -1117,7 +1122,7 @@ class VlogSim:
             filelist_path
         )  # raises FilelistError on bad path; caught by TestRunner
 
-        plan = CompilePlan(
+        plan = _CompilePlan(
             compile_work_dir=compile_work_dir,
             filelist_path=filelist_path,
             build_dir=self._get_build_dir(),
@@ -1170,6 +1175,11 @@ class VlogSim:
             plan.build_dir = str(shared_dir)
             plan.group_dir = str(shared_dir)
         else:
+            # Emitted from the plan, so since #495 it lands at probe time
+            # rather than compile time: it now precedes compile.config for
+            # the same test, and a config the caller probes and then drops
+            # warns about a compile that never runs. The count per build
+            # job is unchanged — the plan is derived once and cached.
             log_event(
                 logger,
                 logging.WARNING,
@@ -1188,7 +1198,7 @@ class VlogSim:
         return plan
 
     def _compile_plan(self):
-        """The cached :class:`CompilePlan`, deriving it on first ask."""
+        """The cached :class:`_CompilePlan`, deriving it on first ask."""
         if self._compile_plan_cache is None:
             self._compile_plan_cache = self._build_compile_plan()
         return self._compile_plan_cache

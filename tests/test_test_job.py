@@ -36,26 +36,33 @@ class _StubTestRunner:
     Implements the split contract the build job drives since #495
     (``prepare`` → ``compile_group_dir`` → ``compile_prepared``) as well as
     ``run``/``run_multiple``, so the same stub serves both the ``_test-job``
-    tests and the ``_build-job`` ones. ``inits`` is append-only under a lock
-    because the compile phase is threaded; ``last_init`` is kept for the
-    assertions that only care that *a* runner was built the right way.
+    tests and the ``_build-job`` ones. ``inits`` (and the thread each
+    construction happened on) is append-only under a lock because the
+    compile phase is threaded; ``last_init`` is kept for the assertions that
+    only care that *a* runner was built the right way.
     """
 
     canned = None
     last_init = None
     inits: list = []
+    init_threads: list = []
     lock = threading.Lock()
     # test name -> group dir. Default: every test is its own group, which is
     # what distinct compile keys look like to the build job.
     group_of = None
     # test name -> Results (or raise). Default: the canned result.
     compile_hook = None
+    # test name -> SetupFailResults / None (or raise). Default: PRE passes.
+    prepare_hook = None
+    # test name -> Results / None: a probe failure, before any group dir.
+    group_fail = None
 
     def __init__(self, **kwargs):
         type(self).last_init = kwargs
         self.test_name = kwargs["test_cfg"].get_name()
         with type(self).lock:
             type(self).inits.append(kwargs)
+            type(self).init_threads.append(threading.current_thread().name)
 
     def run(self):
         return type(self).canned
@@ -66,9 +73,15 @@ class _StubTestRunner:
     # ---- the build job's phases
 
     def prepare(self, **_kwargs):
-        return None
+        hook = type(self).prepare_hook
+        return None if hook is None else hook(self.test_name)
 
     def compile_group_dir(self):
+        group_fail = type(self).group_fail
+        if group_fail is not None:
+            results = group_fail(self.test_name)
+            if results is not None:
+                return None, results
         group_of = type(self).group_of
         return (self.test_name if group_of is None else group_of(self.test_name)), None
 
@@ -84,8 +97,11 @@ def stub_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StubTestRunner]:
     _StubTestRunner.canned = None
     _StubTestRunner.last_init = None
     _StubTestRunner.inits = []
+    _StubTestRunner.init_threads = []
     _StubTestRunner.group_of = None
     _StubTestRunner.compile_hook = None
+    _StubTestRunner.prepare_hook = None
+    _StubTestRunner.group_fail = None
     monkeypatch.setattr(rtl_buddy_module, "TestRunner", _StubTestRunner)
     return _StubTestRunner
 
@@ -429,6 +445,33 @@ def _build_payload(output: str) -> dict:
     return json.loads(payload_line)["payload"]
 
 
+def _add_third_test(project: Path, name: str = "gamma") -> None:
+    """Append a third runnable test to the *tmp copy* of the fixture suite.
+
+    Two configs cannot tell plan order from group order: whatever the
+    grouping, the pool yields them in plan order anyway. Three can — one
+    group holding the first and last config makes the two orders differ.
+    """
+    tests_yaml = project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text()
+        + f"""  - name: {name}
+    desc: third test entry, so plan order and group order can disagree
+    model: example
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb_basic
+    sim_timeout:
+"""
+    )
+
+
 def test_build_job_compiles_distinct_groups_at_the_same_time(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
@@ -457,6 +500,15 @@ def test_build_job_compiles_distinct_groups_at_the_same_time(
     payload = _build_payload(result.output)
     assert payload["built"] == ["basic", "extra"], payload
     assert payload["failed"] == []
+
+    # One TestRunner per plan config, every one of them built on the main
+    # thread: construction is immediately followed by prepare(), and PRE is
+    # process-global-serial by contract (hooks.py) however wide the pool is.
+    assert [init["test_cfg"].get_name() for init in stub_runner.inits] == [
+        "basic",
+        "extra",
+    ]
+    assert set(stub_runner.init_threads) == {threading.main_thread().name}
 
     done = [
         record
@@ -502,20 +554,35 @@ def test_build_job_never_runs_two_builders_in_one_directory(
     assert payload["built"] == ["basic", "extra"]
 
     # One group, so the pool is capped back to it: the budget buys nothing
-    # when there is only one thing to build.
+    # when there is only one thing to build. Both numbers are on the record
+    # — `parallel` is what the job used, `parallel_requested` is what the
+    # head reserved CPUs for, and the gap is what explains an
+    # over-provisioned reservation in the right-sizing report.
     done = [
         record
         for record in _records(minimal_project / "rtl_buddy.log")
         if record.get("event") == "build_job.done"
     ]
-    assert [(r["parallel"], r["groups"]) for r in done] == [(1, 1)]
+    assert [(r["parallel"], r["parallel_requested"], r["groups"]) for r in done] == [
+        (1, 4, 1)
+    ]
 
 
 def test_build_job_reports_in_plan_order_when_a_member_fails(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The envelope is plan-ordered whichever worker finishes first."""
+    """The envelope is plan-ordered, not group-ordered (#495).
+
+    Three configs in two *interleaved* groups: basic (plan 0) and gamma
+    (plan 2) share a compile key, extra (plan 1) has its own. The pool
+    yields whole groups, so its natural order is basic, gamma, extra — the
+    order the head must read back is basic, extra, gamma, and only the sort
+    makes the two agree. basic fails as well, so ``failed`` is pinned
+    against the same reordering. Delete the sort and this test says so.
+    """
     from rtl_buddy.runner.test_results import EarlyStopResults
+
+    _add_third_test(minimal_project)
 
     def first_fails(name):
         if name == "basic":
@@ -524,7 +591,43 @@ def test_build_job_reports_in_plan_order_when_a_member_fails(
             return CompileFailResults(name="basic/results")
         return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
 
+    stub_runner.group_of = lambda name: "solo" if name == "extra" else "shared"
     stub_runner.compile_hook = first_fails
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["extra", "gamma"], payload
+    assert payload["failed"] == ["basic"]
+
+    done = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.done"
+    ]
+    assert [r["groups"] for r in done] == [2]
+
+
+def test_build_job_setup_failure_is_a_failed_test_not_a_failed_job(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """A PRE failure in the serial phase is that config's failure alone.
+
+    It never reaches a builder, so it is reported the way the old serial
+    loop reported it — failed, one ``build_job.compile_failed``, exit 0 —
+    and the configs behind it still compile.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults, SetupFailResults
+
+    stub_runner.prepare_hook = lambda name: (
+        SetupFailResults(name="basic/results", desc="preproc raised")
+        if name == "basic"
+        else None
+    )
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
     runner, rb = _runner()
     result = runner.invoke(
         rb.app,
@@ -534,6 +637,82 @@ def test_build_job_reports_in_plan_order_when_a_member_fails(
     payload = _build_payload(result.output)
     assert payload["built"] == ["extra"]
     assert payload["failed"] == ["basic"]
+
+    records = _records(minimal_project / "rtl_buddy.log")
+    assert [
+        r["test"] for r in records if r.get("event") == "build_job.compile_failed"
+    ] == ["basic"]
+    # A setup failure is not a worker crash; it must not be reported as one.
+    assert not [
+        r for r in records if r.get("event") == "build_job.compile_worker_error"
+    ]
+
+
+def test_build_job_filelist_failure_in_the_probe_is_a_failed_test(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The probe writes ``run.f``, so it fails the way the compile does.
+
+    A config whose filelist cannot be written has no group dir and never
+    joins the pool; it is failed here, and the job still exits 0.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults, FilelistFailResults
+
+    stub_runner.group_fail = lambda name: (
+        FilelistFailResults(name="extra/results", desc="no such source")
+        if name == "extra"
+        else None
+    )
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["basic"]
+    assert payload["failed"] == ["extra"]
+    assert [
+        r["test"]
+        for r in _records(minimal_project / "rtl_buddy.log")
+        if r.get("event") == "build_job.compile_failed"
+    ] == ["extra"]
+
+
+def test_build_job_serial_phase_exception_is_a_failed_test_not_a_failed_job(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The exit-0 contract covers the serial phase too (#495).
+
+    The probe pulled the compile-flag assembly ahead of the builder, which
+    moved fatals like SystemCSim's missing ``cfg-systemc`` onto the main
+    thread. One config's fatal must not cancel the afterok fan-out for the
+    ones that were fine.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    def boom_for_basic(name):
+        if name == "basic":
+            raise FatalRtlBuddyError("cfg-systemc missing")
+        return None
+
+    stub_runner.prepare_hook = boom_for_basic
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["extra"]
+    assert payload["failed"] == ["basic"]
+    assert [
+        (r["test"], r["error"])
+        for r in _records(minimal_project / "rtl_buddy.log")
+        if r.get("event") == "build_job.compile_worker_error"
+    ] == [("basic", "cfg-systemc missing")]
 
 
 def test_build_job_worker_exception_is_a_failed_test_not_a_failed_job(

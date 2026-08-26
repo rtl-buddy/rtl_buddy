@@ -1,9 +1,11 @@
+import contextlib
 import json
 import io
 import logging
 import os
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 
 import click
@@ -488,8 +490,6 @@ def test_task_status_does_not_start_a_live_display_off_the_main_thread(
     caller inherits it, and a worker announces its phase the way a
     non-terminal run already does.
     """
-    import threading
-
     from rtl_buddy import logging_utils
 
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
@@ -523,7 +523,7 @@ def test_task_status_does_not_start_a_live_display_off_the_main_thread(
     monkeypatch.setattr(
         logging_utils.get_stderr_console(),
         "status",
-        lambda *a, **k: calls.append((a, k)) or __import__("contextlib").nullcontext(),
+        lambda *a, **k: calls.append((a, k)) or contextlib.nullcontext(),
         raising=False,
     )
     with logging_utils.task_status("Compiling main"):

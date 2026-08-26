@@ -2072,10 +2072,21 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 share_build=share_build,
             )
-            res = runner.prepare()
-            group_dir = None
-            if res is None:
-                group_dir, res = runner.compile_group_dir()
+            try:
+                res = runner.prepare()
+                group_dir = None
+                if res is None:
+                    group_dir, res = runner.compile_group_dir()
+            except Exception as exc:  # noqa: BLE001 - see exit-0 contract
+                # The exit-0 contract covers this phase too, and the probe
+                # made that matter: pulling the compile-flag assembly ahead
+                # of the builder moved fatals like SystemCSim's missing
+                # `cfg-systemc` out of a protected worker and onto the main
+                # thread. One config's broken setup must not cancel the
+                # afterok fan-out for the seven that were fine — the config
+                # is reported failed and its own sim job says why.
+                outcomes.append((index, cfg.get_name(), False, str(exc)))
+                continue
             if res is not None:
                 # A setup or filelist failure never reaches a builder, so it
                 # is reported exactly as the serial loop reported it: failed,
@@ -2087,6 +2098,13 @@ class RtlBuddy:
             # dir, and two builders in one directory is #369. Members of a
             # group run serially, and the second short-circuits on the
             # first's stamp. First-seen group order preserves plan order.
+            #
+            # This assumes what a plan already promises: test names in it are
+            # unique. Two configs answering to one name share a per-test
+            # `run.f` whatever the grouping does, because the serial phase
+            # writes every filelist before any compile reads one — grouping
+            # cannot repair that, only the sweep hook that emitted the
+            # duplicate can.
             groups.setdefault(group_dir, []).append((index, cfg.get_name(), runner))
 
         # ---- parallel phase: one worker per distinct build.
@@ -2129,7 +2147,12 @@ class RtlBuddy:
             # builders are left to the scheduler's job-tree kill — Slurm
             # kills the whole cgroup — which is why there is no fleet-kill
             # here; run_managed_process already declines to install signal
-            # handlers off the main thread.
+            # handlers off the main thread. The interactive price of that,
+            # for the rare hand-run `rb _build-job --parallel N`: Ctrl+C is
+            # not acted on until every in-flight compile has finished,
+            # because the workers install no handler and the pool's exit
+            # waits for them. Accepted deliberately — the alternative is a
+            # fleet-kill that would also fire under Slurm.
             with ThreadPoolExecutor(max_workers=pool_size) as pool:
                 for rows in pool.map(_compile_group, list(groups.values())):
                     outcomes.extend(rows)
@@ -2163,7 +2186,14 @@ class RtlBuddy:
             "build_job.done",
             built=len(built),
             failed=len(failed),
+            # Both numbers, because they answer different questions. The
+            # budget the head reserved CPUs for is `parallel_requested`;
+            # what the job could actually use, once the plan collapsed to
+            # its distinct builds, is `parallel`. A reservation that looks
+            # over-provisioned in the right-sizing report is explained by
+            # the gap between them, so neither can stand in for the other.
             parallel=pool_size,
+            parallel_requested=parallel,
             groups=len(groups),
         )
         if result_json_path is not None:

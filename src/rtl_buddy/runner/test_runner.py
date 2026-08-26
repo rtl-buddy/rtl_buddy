@@ -117,6 +117,18 @@ class TestRunner:
         script may mutate ``test_cfg`` — so the compile key exists only
         after this ran, on the instance it ran on.
         """
+        # The one per-test marker in a run's DEBUG log, and it belongs to
+        # the phase rather than to run(): the build job drives the phases
+        # directly, and a build-job log with no per-test line at all is
+        # unreadable when one config out of eight misbehaves.
+        log_event(
+            logger,
+            logging.DEBUG,
+            "test_runner.start",
+            runner=self.name,
+            test=self.test_cfg.get_name(),
+            run_id=self.run_id,
+        )
         pre_error = self._run_pre(pre_run_id=pre_run_id)
         if pre_error is not None:
             return SetupFailResults(name=self.name + "/results", desc=pre_error)
@@ -187,16 +199,7 @@ class TestRunner:
         return None if make_results is None else make_results()
 
     def run(self):
-        # compile simulation exe
-        log_event(
-            logger,
-            logging.DEBUG,
-            "test_runner.start",
-            runner=self.name,
-            test=self.test_cfg.get_name(),
-            run_id=self.run_id,
-        )
-        # run pre-proc python
+        # run pre-proc python (which logs test_runner.start)
         setup_failure = self.prepare()
         if setup_failure is not None:
             return setup_failure
