@@ -24,6 +24,12 @@ class RunDepth(Enum):
     POST = "post"
 
 
+# Distinguishes "call pre() with its own default run_id" from "call it with
+# run_id=None on purpose" (#415) — the latter is what run_multiple() needs
+# and None is a meaningful value there, so a plain default cannot say it.
+_PRE_RUN_ID_DEFAULT = object()
+
+
 class TestRunner:
     def __init__(
         self,
@@ -64,6 +70,10 @@ class TestRunner:
         self.suite_dir = suite_dir
         self.share_build = share_build
         self.expect_prebuilt = expect_prebuilt
+        # Set by prepare(); the phases after it all drive this one instance,
+        # because a preproc hook may mutate test_cfg and the compile key is
+        # only knowable afterwards, on the sim that saw the mutation.
+        self._vlog_sim = None
 
     def _create_vlog_sim(self):
         sim_mode = {"sim_to_stdout": True}
@@ -90,6 +100,92 @@ class TestRunner:
             expect_prebuilt=self.expect_prebuilt,
         )
 
+    def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):
+        """Create this runner's sim instance and run PRE; error string or None."""
+        self._vlog_sim = self._create_vlog_sim()
+        if pre_run_id is _PRE_RUN_ID_DEFAULT:
+            return self._vlog_sim.pre()
+        return self._vlog_sim.pre(run_id=pre_run_id)
+
+    def prepare(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):
+        """Create the sim instance and run PRE. ``SetupFailResults`` or ``None``.
+
+        Split out of :meth:`run` so a dispatched build job can keep PRE
+        serial while compiling concurrently (#495): hook execution is
+        process-global-serial by contract (one ``sys.modules`` slot and a
+        process-wide ``redirect_stdout``, see ``hooks.py``), and a preproc
+        script may mutate ``test_cfg`` — so the compile key exists only
+        after this ran, on the instance it ran on.
+        """
+        pre_error = self._run_pre(pre_run_id=pre_run_id)
+        if pre_error is not None:
+            return SetupFailResults(name=self.name + "/results", desc=pre_error)
+        return None
+
+    def compile_group_dir(self):
+        """``(group_dir, None)`` or ``(None, Results)`` for the prepared sim.
+
+        The build job's grouping probe (#495). Same failure mapping the
+        compile itself gets, because it is the same ``run.f`` write.
+        """
+        try:
+            return self._vlog_sim.compile_group_dir(), None
+        except FilelistError as e:
+            return None, FilelistFailResults(name=self.name + "/results", desc=str(e))
+
+    def _compile_outcome(self, run_ids=None):
+        """Run COMPILE on the prepared sim; a results *factory*, or ``None``.
+
+        A factory rather than an instance because :meth:`run_multiple` needs
+        one outcome as N separate objects (each run_id is recorded on its
+        own; a shared instance would make them one row wearing N names)
+        while still deriving that outcome here and only here. ``None`` means
+        the compile succeeded and the caller should go on to the simulation.
+        """
+        try:
+            compile_returncode = self._vlog_sim.compile()
+        except FilelistError as e:
+            desc = str(e)
+            return lambda: FilelistFailResults(name=self.name + "/results", desc=desc)
+        if compile_returncode != 0:
+            return lambda: CompileFailResults(name=self.name + "/results")
+
+        if self.run_depth == RunDepth.COMP:
+            if run_ids is None:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "run.early_stop",
+                    test=self.test_cfg.get_name(),
+                    run_id=self.run_id,
+                    stage="compile",
+                )
+            else:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "run.early_stop",
+                    test=self.test_cfg.get_name(),
+                    stage="compile",
+                    run_ids=run_ids,
+                )
+            return lambda: EarlyStopResults(
+                name=self.name + "/results", desc="Stopped early at compile"
+            )
+        return None
+
+    def compile_prepared(self, run_ids=None):
+        """Run COMPILE on the prepared sim.
+
+        Returns the terminal ``Results`` — ``FilelistFailResults`` /
+        ``CompileFailResults``, or ``EarlyStopResults`` when this runner
+        stops at COMP — or ``None`` when the caller should go on to the
+        simulation. ``run_ids`` only shapes the early-stop record, so
+        :meth:`run_multiple` reports the whole set it was going to run.
+        """
+        make_results = self._compile_outcome(run_ids=run_ids)
+        return None if make_results is None else make_results()
+
     def run(self):
         # compile simulation exe
         log_event(
@@ -100,12 +196,11 @@ class TestRunner:
             test=self.test_cfg.get_name(),
             run_id=self.run_id,
         )
-        vlog_sim = self._create_vlog_sim()
-
         # run pre-proc python
-        pre_error = vlog_sim.pre()
-        if pre_error is not None:
-            return SetupFailResults(name=self.name + "/results", desc=pre_error)
+        setup_failure = self.prepare()
+        if setup_failure is not None:
+            return setup_failure
+        vlog_sim = self._vlog_sim
 
         if self.run_depth == RunDepth.PRE:
             log_event(
@@ -121,25 +216,9 @@ class TestRunner:
             )
 
         # compile sim executable
-        try:
-            compile_returncode = vlog_sim.compile()
-        except FilelistError as e:
-            return FilelistFailResults(name=self.name + "/results", desc=str(e))
-        if compile_returncode != 0:
-            return CompileFailResults(name=self.name + "/results")
-
-        if self.run_depth == RunDepth.COMP:
-            log_event(
-                logger,
-                logging.INFO,
-                "run.early_stop",
-                test=self.test_cfg.get_name(),
-                run_id=self.run_id,
-                stage="compile",
-            )
-            return EarlyStopResults(
-                name=self.name + "/results", desc="Stopped early at compile"
-            )
+        compile_results = self.compile_prepared()
+        if compile_results is not None:
+            return compile_results
 
         # run simulation
         execute_returncode = vlog_sim.execute(
@@ -182,13 +261,12 @@ class TestRunner:
             test=self.test_cfg.get_name(),
             run_ids=run_ids,
         )
-        vlog_sim = self._create_vlog_sim()
-
         # One hook execution serves every run_id here, so it is preparing no
         # particular run — explicitly, because the runner was constructed with
         # run_ids[0] and the default would otherwise hand the hook run 1's
         # directory for output that runs 2..N also read (#415).
-        pre_error = vlog_sim.pre(run_id=None)
+        pre_error = self._run_pre(pre_run_id=None)
+        vlog_sim = self._vlog_sim
         if pre_error is not None:
             return [
                 SetupFailResults(name=self.name + "/results", desc=pre_error)
@@ -211,31 +289,9 @@ class TestRunner:
                 for _ in run_ids
             ]
 
-        try:
-            compile_returncode = vlog_sim.compile()
-        except FilelistError as e:
-            return [
-                FilelistFailResults(name=self.name + "/results", desc=str(e))
-                for _ in run_ids
-            ]
-        if compile_returncode != 0:
-            return [CompileFailResults(name=self.name + "/results") for _ in run_ids]
-
-        if self.run_depth == RunDepth.COMP:
-            log_event(
-                logger,
-                logging.INFO,
-                "run.early_stop",
-                test=self.test_cfg.get_name(),
-                stage="compile",
-                run_ids=run_ids,
-            )
-            return [
-                EarlyStopResults(
-                    name=self.name + "/results", desc="Stopped early at compile"
-                )
-                for _ in run_ids
-            ]
+        make_results = self._compile_outcome(run_ids=run_ids)
+        if make_results is not None:
+            return [make_results() for _ in run_ids]
 
         repeated_results = []
         for run_id in run_ids:

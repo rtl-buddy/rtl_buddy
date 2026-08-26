@@ -1,0 +1,34 @@
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb_blk
+    toplevel: tb_blk
+    filelist:
+      - src.sv
+tests:
+  - name: alpha
+    desc: dispatch ci test alpha
+    model: m
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb_blk
+    sim_timeout:
+  - name: beta
+    desc: dispatch ci test beta, a second compile key
+    model: m
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+      WIDTH: 8
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb_blk
+    sim_timeout:

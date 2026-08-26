@@ -1217,3 +1217,119 @@ def test_a_stamp_predating_the_toolchain_entry_does_not_warn(
         assert reader.compile() == 0
     assert len(calls) == 2  # rebuilt, as it must be
     assert "rebuilding rather than reusing it" not in caplog.text
+
+
+# --- the compile-key probe (#495) ------------------------------------------
+#
+# The dispatched build job groups its configs by the directory each compile
+# will write, then compiles the groups concurrently. The grouping value has
+# to be the one the compile itself uses, so these pin that it is derived in
+# exactly one place and asked for without compiling.
+
+
+def test_compile_group_dir_is_the_shared_build_dir_when_sharing_applies(
+    tmp_path, monkeypatch
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    group_dir = sim.compile_group_dir()
+
+    # Probing compiles nothing...
+    assert calls == []
+    # ...and names the shared dir the compile then writes into.
+    assert Path(group_dir).parent == tmp_path / "artefacts" / ".shared-builds"
+    assert sim.compile() == 0
+    assert Path(sim._get_simv_path()).parent == Path(group_dir)
+
+
+def test_compile_group_dir_is_the_test_dir_when_sharing_is_unsupported(
+    tmp_path, monkeypatch
+):
+    """An unshared build owns a per-test directory, so it is its own group.
+
+    #369 already guarantees a single writer there, which is what makes it
+    safe for every unshared config to compile at once.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qverilog", family="questa"
+    )
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="qverilog", family="questa"
+    )
+    assert sim_a.compile_group_dir() == sim_a._get_compile_work_dir()
+    assert sim_a.compile_group_dir() != sim_b.compile_group_dir()
+
+
+def test_compile_group_dir_without_share_build_is_the_test_dir(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    assert sim.compile_group_dir() == sim._get_compile_work_dir()
+
+
+def test_probe_and_compile_derive_the_plan_once(tmp_path, monkeypatch):
+    """Probe then compile is ONE derivation, not two.
+
+    Two derivations is how the group key and the build dir drift apart, and
+    the symptom of that drift is two builders in one directory. Counting
+    ``_write_filelist`` counts derivations: it is the plan's side effect.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    writes = []
+    real_write = sim._write_filelist
+    monkeypatch.setattr(
+        sim, "_write_filelist", lambda path: (writes.append(path), real_write(path))[1]
+    )
+
+    group_dir = sim.compile_group_dir()
+    assert len(writes) == 1
+    assert sim.compile() == 0
+    assert len(writes) == 1, "compile() re-derived the plan the probe already made"
+    assert len(calls) == 1
+    assert Path(sim._get_simv_path()).parent == Path(group_dir)
+
+
+def test_a_second_compile_re_derives_the_plan(tmp_path, monkeypatch):
+    """The cached plan serves one compile, not the instance's lifetime.
+
+    A source edited between two compiles has to invalidate the stamp, and
+    it can only do that if the second compile re-stats its inputs.
+    """
+    src = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    assert len(calls) == 1
+
+    src.write_text("module top; wire w; endmodule\n")
+    os.utime(src, (0, 0))
+    assert sim.compile() == 0
+    assert len(calls) == 2, "the second compile reused a stale fingerprint"
+
+
+def test_identical_inputs_group_together_and_plusdefines_split_them(
+    tmp_path, monkeypatch
+):
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    same_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    same_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    other = _make_sim(tmp_path, monkeypatch, test_name="test_c", pd={"WIDTH": 8})
+
+    assert same_a.compile_group_dir() == same_b.compile_group_dir()
+    assert other.compile_group_dir() != same_a.compile_group_dir()

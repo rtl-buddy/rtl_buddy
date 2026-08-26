@@ -476,3 +476,56 @@ def test_log_console_event_is_not_printed_twice_under_verbose(tmp_path, capsys):
     )
     stderr = " ".join(capsys.readouterr().err.split())
     assert stderr.count("3/8 jobs remaining") == 1
+
+
+def test_task_status_does_not_start_a_live_display_off_the_main_thread(
+    tmp_path, monkeypatch
+):
+    """Rich allows one Live per console; a second raises LiveError (#495).
+
+    The build job compiles distinct builds on worker threads, so the check
+    lives in ``task_status`` rather than at its call sites — every threaded
+    caller inherits it, and a worker announces its phase the way a
+    non-terminal run already does.
+    """
+    import threading
+
+    from rtl_buddy import logging_utils
+
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    # Pretend we are on a terminal, which is the only case that would try
+    # to open a Live display at all.
+    monkeypatch.setattr(logging_utils, "_should_use_rich_console", lambda: True)
+
+    def exploding_status(*args, **kwargs):
+        raise AssertionError("task_status opened a Rich Live off the main thread")
+
+    monkeypatch.setattr(
+        logging_utils.get_stderr_console(), "status", exploding_status, raising=False
+    )
+
+    seen = []
+
+    def worker():
+        try:
+            with logging_utils.task_status("Compiling worker_test") as status:
+                seen.append(status)
+        except BaseException as exc:  # surfaced below, not swallowed
+            seen.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=10)
+    assert seen == [None], seen
+
+    # The main thread still gets its spinner.
+    calls = []
+    monkeypatch.setattr(
+        logging_utils.get_stderr_console(),
+        "status",
+        lambda *a, **k: calls.append((a, k)) or __import__("contextlib").nullcontext(),
+        raising=False,
+    )
+    with logging_utils.task_status("Compiling main"):
+        pass
+    assert len(calls) == 1

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -29,13 +31,31 @@ from rtl_buddy.seed_mode import SeedMode
 
 
 class _StubTestRunner:
-    """Stands in for TestRunner: records ctor args, returns a canned result."""
+    """Stands in for TestRunner: records ctor args, returns a canned result.
+
+    Implements the split contract the build job drives since #495
+    (``prepare`` → ``compile_group_dir`` → ``compile_prepared``) as well as
+    ``run``/``run_multiple``, so the same stub serves both the ``_test-job``
+    tests and the ``_build-job`` ones. ``inits`` is append-only under a lock
+    because the compile phase is threaded; ``last_init`` is kept for the
+    assertions that only care that *a* runner was built the right way.
+    """
 
     canned = None
     last_init = None
+    inits: list = []
+    lock = threading.Lock()
+    # test name -> group dir. Default: every test is its own group, which is
+    # what distinct compile keys look like to the build job.
+    group_of = None
+    # test name -> Results (or raise). Default: the canned result.
+    compile_hook = None
 
     def __init__(self, **kwargs):
         type(self).last_init = kwargs
+        self.test_name = kwargs["test_cfg"].get_name()
+        with type(self).lock:
+            type(self).inits.append(kwargs)
 
     def run(self):
         return type(self).canned
@@ -43,11 +63,29 @@ class _StubTestRunner:
     def run_multiple(self, run_ids):
         return [type(self).canned for _ in run_ids]
 
+    # ---- the build job's phases
+
+    def prepare(self, **_kwargs):
+        return None
+
+    def compile_group_dir(self):
+        group_of = type(self).group_of
+        return (self.test_name if group_of is None else group_of(self.test_name)), None
+
+    def compile_prepared(self, run_ids=None):
+        hook = type(self).compile_hook
+        if hook is None:
+            return type(self).canned
+        return hook(self.test_name)
+
 
 @pytest.fixture
 def stub_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StubTestRunner]:
     _StubTestRunner.canned = None
     _StubTestRunner.last_init = None
+    _StubTestRunner.inits = []
+    _StubTestRunner.group_of = None
+    _StubTestRunner.compile_hook = None
     monkeypatch.setattr(rtl_buddy_module, "TestRunner", _StubTestRunner)
     return _StubTestRunner
 
@@ -384,6 +422,172 @@ def test_build_job_rejects_parallel_below_one(
     )
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
     assert "--parallel must be >= 1" in str(result.exception)
+
+
+def _build_payload(output: str) -> dict:
+    payload_line = [line for line in output.splitlines() if line.startswith("{")][-1]
+    return json.loads(payload_line)["payload"]
+
+
+def test_build_job_compiles_distinct_groups_at_the_same_time(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Two distinct compile keys really do compile concurrently (#495).
+
+    The proof is a rendezvous, not a stopwatch: each stub compile blocks on
+    a 2-party barrier, so a serial build job deadlocks until the timeout and
+    both configs come back failed. Both ``built`` is only reachable if the
+    two were inside ``compile_prepared`` at the same moment.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    barrier = threading.Barrier(2, timeout=15)
+
+    def rendezvous(name):
+        barrier.wait()
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.compile_hook = rendezvous  # group_of default: one group each
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["basic", "extra"], payload
+    assert payload["failed"] == []
+
+    done = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.done"
+    ]
+    assert [(r["parallel"], r["groups"]) for r in done] == [(2, 2)]
+
+
+def test_build_job_never_runs_two_builders_in_one_directory(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Same compile key ⇒ same group ⇒ strictly serial (#369).
+
+    Two writers in one build directory is corruption, not slowness, so the
+    grouping is on the directory the compile *writes*, and a group's members
+    are never in flight together however large the budget is.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    state = {"live": 0, "peak": 0}
+    lock = threading.Lock()
+
+    def occupy(name):
+        with lock:
+            state["live"] += 1
+            state["peak"] = max(state["peak"], state["live"])
+        time.sleep(0.05)
+        with lock:
+            state["live"] -= 1
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.group_of = lambda _name: "one-shared-build-dir"
+    stub_runner.compile_hook = occupy
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "4"],
+    )
+    assert result.exit_code == 0, result.output
+    assert state["peak"] == 1, "two same-key builds overlapped"
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["basic", "extra"]
+
+    # One group, so the pool is capped back to it: the budget buys nothing
+    # when there is only one thing to build.
+    done = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.done"
+    ]
+    assert [(r["parallel"], r["groups"]) for r in done] == [(1, 1)]
+
+
+def test_build_job_reports_in_plan_order_when_a_member_fails(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The envelope is plan-ordered whichever worker finishes first."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    def first_fails(name):
+        if name == "basic":
+            # Slow *and* failing: completion order would put it last.
+            time.sleep(0.1)
+            return CompileFailResults(name="basic/results")
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.compile_hook = first_fails
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["extra"]
+    assert payload["failed"] == ["basic"]
+
+
+def test_build_job_worker_exception_is_a_failed_test_not_a_failed_job(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """An exception inside a compile worker must not escape the job.
+
+    A build job that exits non-zero makes Slurm cancel every afterok sim
+    job behind it — the whole point of the best-effort contract. A crashed
+    config also says nothing about the others, so they still compile.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    def boom_for_basic(name):
+        if name == "basic":
+            raise RuntimeError("builder vanished")
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.compile_hook = boom_for_basic
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["extra"]
+    assert payload["failed"] == ["basic"]
+
+    errors = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.compile_worker_error"
+    ]
+    assert [(r["test"], r["error"]) for r in errors] == [("basic", "builder vanished")]
+
+
+def test_worker_error_warning_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "build_job.compile_worker_error", {"test": "basic", "error": "builder vanished"}
+    )
+    assert "basic" in msg and "builder vanished" in msg
+    assert "exits 0" in msg
+    assert "build_job compile_worker_error" not in msg
+
+
+def test_pool_configured_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message("build_job.pool_configured", {"groups": 8, "parallel": 4})
+    assert "8 distinct build(s)" in msg
+    assert "4 at a time" in msg
 
 
 def test_build_job_compile_failure_is_best_effort_exit_0(

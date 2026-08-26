@@ -11,6 +11,7 @@ import sys
 import time
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 import typer
@@ -2042,8 +2043,24 @@ class RtlBuddy:
                 )
             )
 
-        built, failed = [], []
-        for cfg in configs:
+        # ---- serial phase: construct, PRE, and probe the compile key.
+        #
+        # PRE stays on the main thread whatever --parallel says. Hook
+        # execution is process-global-serial by declared contract (one
+        # sys.modules registration slot and a process-wide redirect_stdout,
+        # see hooks.py), and arbitrary preproc code may write suite-level
+        # files that two configs would then race on. It is also the phase
+        # that makes the key knowable at all: a preproc script may mutate
+        # test_cfg, so the compile key exists only after pre() ran, on the
+        # sim instance that saw the mutation.
+        #
+        # Outcome rows are (plan index, test name, built?, worker error) so
+        # both the envelope and the WARNINGs can be replayed in plan order
+        # below — a pool that reported in completion order would make two
+        # identical runs produce different logs.
+        outcomes = []
+        groups = {}
+        for index, cfg in enumerate(configs):
             runner = TestRunner(
                 name=self.name + "/build-job",
                 root_cfg=self.root_cfg,
@@ -2055,23 +2072,99 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 share_build=share_build,
             )
-            res = runner.run()
-            if isinstance(res, EarlyStopResults):
-                built.append(cfg.get_name())
-            else:
-                failed.append(cfg.get_name())
+            res = runner.prepare()
+            group_dir = None
+            if res is None:
+                group_dir, res = runner.compile_group_dir()
+            if res is not None:
+                # A setup or filelist failure never reaches a builder, so it
+                # is reported exactly as the serial loop reported it: failed,
+                # and the job still exits 0.
+                outcomes.append((index, cfg.get_name(), False, None))
+                continue
+            # Group by the directory the compile will WRITE, not by the
+            # config: two configs with the same compile key share one build
+            # dir, and two builders in one directory is #369. Members of a
+            # group run serially, and the second short-circuits on the
+            # first's stamp. First-seen group order preserves plan order.
+            groups.setdefault(group_dir, []).append((index, cfg.get_name(), runner))
+
+        # ---- parallel phase: one worker per distinct build.
+        pool_size = max(1, min(parallel, len(groups)))
+        if pool_size > 1:
+            # Liveness on a CI console, which shows INFO only under -v: a
+            # build job that sits silent for 20 minutes is indistinguishable
+            # from a hung one, and this line is what says how many compiles
+            # that silence is covering.
+            log_console_event(
+                logger,
+                logging.INFO,
+                "build_job.pool_configured",
+                groups=len(groups),
+                parallel=pool_size,
+            )
+
+        def _compile_group(members):
+            """Compile one group's configs serially; rows for the caller."""
+            rows = []
+            for index, name, runner in members:
+                try:
+                    res = runner.compile_prepared()
+                except Exception as exc:  # noqa: BLE001 - see exit-0 contract
+                    # A worker exception must never escape: an unhandled one
+                    # takes the job's exit status with it, and a build job
+                    # that exits non-zero makes Slurm cancel every afterok
+                    # sim job behind it. The group's remaining members still
+                    # get their attempt — a crashed config says nothing
+                    # about its siblings.
+                    rows.append((index, name, False, str(exc)))
+                    continue
+                rows.append((index, name, isinstance(res, EarlyStopResults), None))
+            return rows
+
+        if pool_size > 1:
+            # Threads, not processes: the work is a subprocess wait, and the
+            # prepared TestRunners (with their hook-mutated configs) would
+            # not survive a fork/spawn boundary. On SIGTERM the workers'
+            # builders are left to the scheduler's job-tree kill — Slurm
+            # kills the whole cgroup — which is why there is no fleet-kill
+            # here; run_managed_process already declines to install signal
+            # handlers off the main thread.
+            with ThreadPoolExecutor(max_workers=pool_size) as pool:
+                for rows in pool.map(_compile_group, list(groups.values())):
+                    outcomes.extend(rows)
+        else:
+            for members in groups.values():
+                outcomes.extend(_compile_group(members))
+
+        built, failed = [], []
+        for _, name, ok, worker_error in sorted(outcomes, key=lambda row: row[0]):
+            if ok:
+                built.append(name)
+                continue
+            failed.append(name)
+            if worker_error is not None:
                 log_event(
                     logger,
                     logging.WARNING,
-                    "build_job.compile_failed",
-                    test=cfg.get_name(),
+                    "build_job.compile_worker_error",
+                    test=name,
+                    error=worker_error,
                 )
+            log_event(
+                logger,
+                logging.WARNING,
+                "build_job.compile_failed",
+                test=name,
+            )
         log_event(
             logger,
             logging.INFO,
             "build_job.done",
             built=len(built),
             failed=len(failed),
+            parallel=pool_size,
+            groups=len(groups),
         )
         if result_json_path is not None:
             # Persist the outcome so the head can map a compile failure to a

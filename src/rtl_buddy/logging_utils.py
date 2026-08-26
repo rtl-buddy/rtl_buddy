@@ -1,6 +1,7 @@
 import json
 import logging
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -246,10 +247,20 @@ def emit_console_text(
 
 @contextmanager
 def task_status(message: str, *, spinner: str = "dots"):
-    if _should_use_rich_console():
-        with get_stderr_console().status(message, spinner=spinner) as status:
-            yield status
-        return
+    """A spinner for a long phase, degrading to one plain line.
+
+    The spinner is a Rich ``Live``, and a console allows exactly one of
+    those at a time — a second raises ``LiveError``. Since #495 a build job
+    compiles distinct builds on worker threads, so the spinner is confined
+    to the main thread; a worker announces its phase the way a non-terminal
+    run already does. The check lives here rather than at the call sites so
+    every future threaded caller inherits it.
+    """
+    if threading.current_thread() is threading.main_thread():
+        if _should_use_rich_console():
+            with get_stderr_console().status(message, spinner=spinner) as status:
+                yield status
+            return
 
     emit_console_text(message)
     yield None
@@ -355,6 +366,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"{fields.get('test')}: compile failed in the dispatch build "
                 "job (its sim job will retry the compile and fail there)"
+            )
+        case "build_job.pool_configured":
+            return (
+                f"Compiling {fields.get('groups')} distinct build(s), up to "
+                f"{fields.get('parallel')} at a time"
+            )
+        case "build_job.compile_worker_error":
+            return (
+                f"{fields.get('test')}: the build job's compile raised "
+                f"({fields.get('error')}) — counted as a compile failure so "
+                "the job still exits 0 and its afterok dependents run; the "
+                "test's own sim job will retry the compile"
             )
         case "build_job.machine_result_failed":
             return (

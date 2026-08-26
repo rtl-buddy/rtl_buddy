@@ -21,6 +21,7 @@ import subprocess
 import logging
 import types
 import uuid
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 from ..hooks import exec_hook_script
@@ -270,6 +271,42 @@ def _stat_entry(path: str) -> list:
     return [path, stat.st_size, stat.st_mtime_ns]
 
 
+@dataclass
+class CompilePlan:
+    """Everything about a compile that is decided *before* the builder runs.
+
+    Split out of :meth:`VlogSim.compile` so the compile key can be asked for
+    without compiling (#495): a dispatched build job groups its configs by
+    :attr:`group_dir` and compiles the groups concurrently, and two configs
+    that would write the same directory must land in the same group (#369).
+
+    The grouping value is derived here and nowhere else on purpose. A second
+    derivation — a standalone "what would the key be" helper — drifts from
+    the real one the first time somebody touches the Icarus wrapper args or
+    the VCS output-flag strip, and the symptom of that drift is two builders
+    in one directory, which is corruption rather than a wrong number.
+    """
+
+    compile_work_dir: str
+    filelist_path: str
+    build_dir: str
+    builder_opts: list = field(default_factory=list)
+    extra_compile_flags: list = field(default_factory=list)
+    assertion_flags: list = field(default_factory=list)
+    plusdefines: list = field(default_factory=list)
+    is_verilator: bool = False
+    # None unless share_build is on AND the family supports sharing.
+    key_cmd: list | None = None
+    fingerprint: dict | None = None
+    shared_dir: Path | None = None
+    # Why sharing was declined, or None. Set only when share_build is on.
+    unsupported_reason: str | None = None
+    # The directory this compile writes into: the shared build dir when the
+    # build is shareable, else the test's own compile work dir. Two configs
+    # with the same value MUST NOT compile concurrently.
+    group_dir: str = ""
+
+
 class VlogSim:
     """
     Verilog Sim Compile and Execution
@@ -311,6 +348,12 @@ class VlogSim:
         # dir is only known once compile() has written the filelist.
         self.share_build = share_build
         self._shared_build_dir = None
+        # Filled by _compile_plan() and consumed (and cleared) by compile(),
+        # so a probe and the compile that follows it share one derivation
+        # while a *second* compile() on this instance still re-stats its
+        # sources — a source edited between two compiles has to invalidate
+        # the stamp.
+        self._compile_plan_cache = None
         # Set by a dispatched sim job that was gated on a build job, so
         # compiling here means the stamp that build left did not
         # validate — worth a WARNING, because the whole serialization
@@ -1045,15 +1088,17 @@ class VlogSim:
                 )
         return None
 
-    def compile(self):
+    def _build_compile_plan(self):
+        """Derive this test's :class:`CompilePlan` — the pre-builder half.
+
+        Writes ``run.f`` as a side effect (the fingerprint stats what the
+        filelist names, so it cannot be computed before the file exists) and
+        sets ``self._shared_build_dir``, which ``_get_simv_path()`` branches
+        on. Deliberately does *not* touch stamps or create the shared dir:
+        those are decisions of an actual compile, and a probe that unlinked
+        a stamp would destroy the reuse it was asked about.
+        """
         rtl_builder_cfg = self.rtl_builder_cfg
-        log_event(
-            logger,
-            logging.DEBUG,
-            "compile.config",
-            test=self.test_name,
-            config=pprint.pformat(rtl_builder_cfg),
-        )
         compile_work_dir = self._ensure_artifact_dir()
 
         builder_opts = self._filter_builder_opts(
@@ -1072,37 +1117,123 @@ class VlogSim:
             filelist_path
         )  # raises FilelistError on bad path; caught by TestRunner
 
-        build_dir = self._get_build_dir()
-        fingerprint = None
+        plan = CompilePlan(
+            compile_work_dir=compile_work_dir,
+            filelist_path=filelist_path,
+            build_dir=self._get_build_dir(),
+            builder_opts=builder_opts,
+            extra_compile_flags=extra_compile_flags,
+            assertion_flags=assertion_flags,
+            plusdefines=plusdefines,
+            is_verilator=is_verilator,
+            # Unshared builds each own a per-test directory, so every one of
+            # them is its own group: #369 already guarantees a single writer
+            # there, and they may all compile at once.
+            group_dir=compile_work_dir,
+        )
+        if not self.share_build:
+            return plan
+
+        plan.unsupported_reason = self._share_build_unsupported_reason()
+        # One key_cmd for both branches. They agreed already; spelling it
+        # twice was an invitation for them to stop agreeing.
+        key_cmd = (
+            [rtl_builder_cfg.get_exe()]
+            + builder_opts
+            + extra_compile_flags
+            + assertion_flags
+            + plusdefines
+        )
+        if self._get_simulator_family() == "icarus":
+            # The Icarus `simv` wrapper lives IN the shared dir, and it
+            # bakes in these args (CocotbSim adds the VPI module to
+            # them while contributing no compile flags of its own). Two
+            # tests that differ only there would otherwise share a key
+            # and a wrapper, and whichever compiled first would decide
+            # how vvp is invoked for both. (Icarus never reaches the
+            # unsupported branch below — it is a share-build family and is
+            # exempt from the absolute-`builder-simv:` refusal — so adding
+            # this before the branch changes no key that exists.)
+            key_cmd = key_cmd + self._icarus_vvp_extra_args()
+        plan.key_cmd = key_cmd
+        # Keyed on the configured compile line, NOT on the output flags
+        # compile() appends later: those are derived from the resulting key,
+        # so including them would be circular.
+        plan.fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
+
+        if plan.unsupported_reason is None:
+            shared_dir = shared_build_dir(
+                self.suite_work_dir, self._compile_config_key(plan.fingerprint)
+            )
+            plan.shared_dir = shared_dir
+            self._shared_build_dir = str(shared_dir)
+            plan.build_dir = str(shared_dir)
+            plan.group_dir = str(shared_dir)
+        else:
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.share_build_unsupported",
+                test=self.test_name,
+                simulator=self._get_simulator_family(),
+                reason=plan.unsupported_reason,
+            )
+            # The build cannot be *shared*, but it can still be *reused*
+            # by the next process to ask for this test — which is what
+            # lets a dispatched fan-out compile once in the build job and
+            # have its elements short-circuit instead of racing each
+            # other into one directory (#369). Same fingerprint, same
+            # stamp file; only the scope differs, so the stamp lives in
+            # the test's own compile work dir (and group_dir stays there).
+        return plan
+
+    def _compile_plan(self):
+        """The cached :class:`CompilePlan`, deriving it on first ask."""
+        if self._compile_plan_cache is None:
+            self._compile_plan_cache = self._build_compile_plan()
+        return self._compile_plan_cache
+
+    def compile_group_dir(self):
+        """The directory this test's compile will write into (#495).
+
+        The probe a dispatched build job groups on: configs sharing a value
+        here must compile serially, configs differing may compile at once.
+        Raises :class:`FilelistError` exactly as :meth:`compile` does, and
+        callers map it the same way — it is the same ``_write_filelist``.
+        """
+        return self._compile_plan().group_dir
+
+    def compile(self):
+        rtl_builder_cfg = self.rtl_builder_cfg
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.config",
+            test=self.test_name,
+            config=pprint.pformat(rtl_builder_cfg),
+        )
+        plan = self._compile_plan()
+        # One plan serves one compile. A second compile() on this instance
+        # must re-stat its inputs — that is how an edited source invalidates
+        # the stamp — so the cache is consumed here rather than kept.
+        self._compile_plan_cache = None
+
+        compile_work_dir = plan.compile_work_dir
+        # Copied: the VCS strip below rewrites these, and the plan is the
+        # record of what was decided, not a scratch buffer.
+        builder_opts = list(plan.builder_opts)
+        extra_compile_flags = list(plan.extra_compile_flags)
+        assertion_flags = plan.assertion_flags
+        plusdefines = plan.plusdefines
+        is_verilator = plan.is_verilator
+        filelist_path = plan.filelist_path
+        build_dir = plan.build_dir
+        fingerprint = plan.fingerprint
+
         if self.share_build:
-            unsupported = self._share_build_unsupported_reason()
-            if unsupported is None:
-                key_cmd = (
-                    [rtl_builder_cfg.get_exe()]
-                    + builder_opts
-                    + extra_compile_flags
-                    + assertion_flags
-                    + plusdefines
-                )
-                if self._get_simulator_family() == "icarus":
-                    # The Icarus `simv` wrapper lives IN the shared dir, and it
-                    # bakes in these args (CocotbSim adds the VPI module to
-                    # them while contributing no compile flags of its own). Two
-                    # tests that differ only there would otherwise share a key
-                    # and a wrapper, and whichever compiled first would decide
-                    # how vvp is invoked for both.
-                    key_cmd = key_cmd + self._icarus_vvp_extra_args()
-                # Keyed on the configured compile line, NOT on the output
-                # flags this method appends below: those are derived from the
-                # resulting key, so including them would be circular.
-                fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
-                shared_dir = shared_build_dir(
-                    self.suite_work_dir, self._compile_config_key(fingerprint)
-                )
-                self._shared_build_dir = str(shared_dir)
-                build_dir = str(shared_dir)
+            if plan.unsupported_reason is None:
                 if self._shared_build_is_valid(
-                    shared_dir, fingerprint, test_name=self.test_name
+                    plan.shared_dir, fingerprint, test_name=self.test_name
                 ):
                     log_event(
                         logger,
@@ -1114,13 +1245,13 @@ class VlogSim:
                         or fingerprint["toolchain"]["exe"],
                     )
                     return 0
-                shared_dir.mkdir(parents=True, exist_ok=True)
+                plan.shared_dir.mkdir(parents=True, exist_ok=True)
                 # A crashed/killed compile must never leave a stamp that
                 # validates a broken simv.
-                (shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
+                (plan.shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
                 # A shared build owns the output location, so a *relative*
                 # builder-simv: is discarded rather than honoured (the absolute
-                # case declines sharing outright, above). Say which value went
+                # case declines sharing outright). Say which value went
                 # unused instead of leaving it to be inferred from the path.
                 configured_simv = self.rtl_builder_cfg.get_simv()
                 if (
@@ -1136,29 +1267,6 @@ class VlogSim:
                         used=self._get_simv_path(),
                     )
             else:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "compile.share_build_unsupported",
-                    test=self.test_name,
-                    simulator=self._get_simulator_family(),
-                    reason=unsupported,
-                )
-                # The build cannot be *shared*, but it can still be *reused*
-                # by the next process to ask for this test — which is what
-                # lets a dispatched fan-out compile once in the build job and
-                # have its elements short-circuit instead of racing each
-                # other into one directory (#369). Same fingerprint, same
-                # stamp file; only the scope differs, so the stamp lives in
-                # the test's own compile work dir.
-                key_cmd = (
-                    [rtl_builder_cfg.get_exe()]
-                    + builder_opts
-                    + extra_compile_flags
-                    + assertion_flags
-                    + plusdefines
-                )
-                fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
                 if self._build_stamp_is_valid(
                     compile_work_dir,
                     self._get_simv_path(),
