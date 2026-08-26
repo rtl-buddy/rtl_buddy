@@ -84,6 +84,8 @@ rb graph results --strict
 
 Entries are keyed by `test:<suite dir>#<test name>` and contain the latest result status, seed, timestamp, and paths to artefacts that exist. The timestamp is the result envelope's file modification time, so refreshing unchanged inputs is byte-stable.
 
+An entry also carries an optional `compile` block with `duration_sec`, `builder`, and `reused` when the run's result envelope records one — a dispatched run whose shared build job observed the compile and reported it back at collect. Its values are read from the envelope, never measured at overlay time, and the block is absent when the envelope says nothing about the compile, so byte-stability holds for a refresh with nothing rerun.
+
 Result status comes from each run's `result.json`, not from log parsing. A test directory with artefacts but no result envelope is retained as `UNKNOWN`. Random-test iterations remain available under `runs`; the newest iteration supplies the entry's top-level status.
 
 When cross-checking against `graph.json`:

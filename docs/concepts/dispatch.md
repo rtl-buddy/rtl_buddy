@@ -57,9 +57,11 @@ The submit process only plans, submits, waits, and collects. Compilation and sim
 For each suite, dispatch:
 
 1. Writes a plan and, when needed, submits one build job.
-2. Builds each unique compile key serially. Compile keys fingerprint sources, flags, defines, and the resolved builder.
+2. Builds each unique compile key. Compile keys fingerprint sources, flags, defines, and the resolved builder.
 3. Groups simulations with identical resolved resources into Slurm arrays and gates them with `afterok` on the build.
 4. Collects each worker's `result.json` into the normal summary and exit status.
+
+The build job compiles one key at a time by default. `cfg-dispatch.compile.parallel` raises that to N distinct builds compiled concurrently inside the same job, so a suite whose eight plusdefines sets each Verilate on about one core spends its one reservation instead of serializing behind it. Concurrency is over distinct compile keys, never over tests: configs that share a key are grouped and compiled one after another, the later ones short-circuiting on the first one's build stamp, because two builders writing one build directory is what `compile.prebuilt_stamp_invalid` reports. Preprocessing hooks still run serially ahead of the pool — only the builders overlap — and a config whose compile fails is still reported per test, with the job exiting 0 so its `afterok` dependents run.
 
 Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. `max-jobs-per-array` is a `%N` throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.
 
@@ -89,6 +91,9 @@ cfg-dispatch:
     cpus: 8
     mem: 16G
     time: "02:00:00"
+    parallel: 4          # distinct builds compiled at once in the build job;
+                         # the head reserves cpus x parallel (32 here), and
+                         # leaves mem and time exactly as written
   sbatch-args:
     - --partition=verif
     - --account=chip
@@ -130,9 +135,11 @@ tests:
 
 Tests with identical resolved reservations share an array. Compilation normally uses `cfg-dispatch.compile`; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.
 
-Size `compile.time` for all unique compile keys in the suite because the build job processes them serially. Size `compile.mem` from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
+Size `compile.time` for the longest batch the build job runs, not for one build. With `compile.parallel: N` the suite's unique compile keys are compiled N at a time, so the job's wall clock is roughly `ceil(distinct builds / N)` batches, each costing its slowest member. At the default `parallel: 1` that is the serial total of every key.
 
-VCS license wait under `-licqueue` counts against the Slurm time limit. Give `compile.time` queue headroom; `compile.license_queued` records only completed builds that waited.
+Size `compile.mem` for `parallel` concurrent builds. The head scales only the `cpus` reservation (`compile.cpus` multiplied by the concurrency it can use); N Verilations need roughly N times the memory but the wall clock of the longest, and rtl_buddy will not guess either on a project's behalf. Size `compile.mem` from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
+
+VCS license wait under `-licqueue` counts against the Slurm time limit. Give `compile.time` queue headroom; `compile.license_queued` records only completed builds that waited. N concurrent elaborations hold up to N licenses at once, so raising `parallel` multiplies license pressure and can convert compute time into queue time; keep it at or below what the site's license pool can serve.
 
 Dispatch requests `--acctg-freq=task=1` unless `sbatch-args` already supplies it. Keep fine-grained accounting if you want useful memory advice for short jobs.
 
@@ -179,6 +186,8 @@ Logs are separated by process:
 
 `<tag>` is the run ID or `single`; `<pid>` is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.
 
+`build-result-<pid>.json` carries the build job's `built` and `failed` test names and a `builds` list with one record per planned config: `test`, `builder`, `duration_sec`, `reused`, and `group` (the shared build directory's basename, which is what says two tests shared a compile key). A config that never reached a builder still gets a record, with null timings. At collect the head folds the build job's own `sacct` row into the same file under `telemetry`, and copies each test's compile record into that test's `result-<tag>.json`, where [`rb graph results`](graph.md#results-overlay) surfaces it. Both are best-effort: an envelope written by an older build job simply has no `builds` key, and an annotation that cannot be written leaves the result itself untouched.
+
 ## Apply reservation advice
 
 After a Slurm run, rtl_buddy compares reservations with `sacct` usage and prints a Reservation Advice table. Machine output returns findings in `payload.reservation_advice`. It never edits configuration.
@@ -190,7 +199,9 @@ Advice is calculated per test using the peak across runs in this invocation:
 - suggestions use peak times `margin`, with floors of 5 minutes and 128 MiB;
 - time advice is limited to Verilator because VCS license wait distorts elapsed time;
 - memory advice is suppressed when the longest run is shorter than the accounting sample interval, except that an out-of-memory state still suggests an increase;
-- `phase` is `sim` or `compile+sim` and `edit_hint` identifies the configuration field that actually controlled the allocation.
+- `phase` is `sim`, `compile+sim`, or `compile` and `edit_hint` identifies the configuration field that actually controlled the allocation.
+
+The suite's build job gets one row of its own, named `(build job)` with `phase: compile`. It suggests `time` in both directions and `cpus` only downwards, because low CPU efficiency there means build slots idled rather than that more were needed. Its `cpus` suggestion is per build — the reserved figure is the scaled product the head submitted, and `edit_hint.note` names `compile.parallel` as the other lever. A `reduce` is withheld when the build job's own envelope shows that nothing actually compiled (every build reused its stamp) or that the job finished inside one accounting interval; `rightsize.build_advice_withheld` records which. Without that guard a re-run of an unchanged suite would advise a limit the next real RTL change times out against, cancelling the fan-out behind it.
 
 Advice records the run count and regression level; do not use a smoke run to shrink a nightly reservation. Apply the provided `edit_hint`, rerun, and confirm the finding clears. Disable reports with `rightsize: {report: false}`. Without `sacct` accounting, dispatch completes but emits no advice.
 

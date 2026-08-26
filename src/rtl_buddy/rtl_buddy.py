@@ -3182,7 +3182,8 @@ class RtlBuddy:
             # and stay silent on a thin one, so an oversized `parallel` is
             # caught where it is real — sbatch rejects the submission and
             # SlurmDispatchBackend.submit_build raises. Sizing `parallel`
-            # against the partition is a docs obligation (#495 phase 4).
+            # against the partition is a docs obligation instead — see
+            # docs/concepts/dispatch.md and docs/known-issues.md.
         spec = BuildJobSpec(
             suite_dir=suite_dir,
             test_config_path=str(suite_cfg.get_path()),

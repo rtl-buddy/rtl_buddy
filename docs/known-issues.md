@@ -84,6 +84,8 @@ Shareable builders compile once per compile key. Builders that cannot share comp
 
 The `local-parallel` backend ignores CPU, memory, time, array-throttle, and right-sizing settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
 
+`cfg-dispatch.compile.parallel` is the exception: it is not a reservation but concurrency the build job itself honours, and that job occupies one pool slot while fanning out inside it. The real ceiling on the host is therefore `jobs` multiplied by `compile.parallel`, and nothing clamps it. Size the two together.
+
 Normal interruption terminates the worker process groups. `SIGKILL` of the head process cannot run cleanup and can orphan `rb _test-job` children; inspect and stop them after a hard CI timeout or `kill -9`.
 
 ## Quote dispatch time values
@@ -92,7 +94,9 @@ YAML 1.1 parses an unquoted value such as `time: 4:00:00` as an integer. rtl_bud
 
 ## Dispatch build jobs cover the whole suite
 
-One suite build job compiles every unique compile key serially, so `compile.time` must cover their total and all simulation jobs wait for the complete build. Count `compile.start` events to estimate the work.
+One suite build job compiles every unique compile key, and all simulation jobs wait for the complete build. `cfg-dispatch.compile.parallel` compiles that many distinct builds at once inside that job, so `compile.time` must cover the longest batch rather than the serial total, and `compile.mem` must cover that many concurrent elaborations because only `cpus` is scaled for you. Count `compile.start` events to estimate the work.
+
+The build job's reservation is `compile.cpus` multiplied by `min(parallel, planned tests)`. The cap is planned tests, not distinct compile keys: the head cannot know the keys without writing filelists on the submit host, which is the build job's own work. A suite whose tests share compile keys therefore reserves CPUs for build slots that never run — twenty tests over three keys with `parallel: 8` reserves eight builds' worth of CPUs for three. Set `parallel` to the expected distinct-build count, not to the test count, and confirm it against the `(build job)` row of the reservation advice.
 
 Under dispatch, `sweep` runs once on the head, while `preproc` runs in the build job and again in every simulation job. Make `preproc` idempotent. Write shared generated files atomically to `artifact_dir`; write run-dependent files to `run_artifact_dir`.
 

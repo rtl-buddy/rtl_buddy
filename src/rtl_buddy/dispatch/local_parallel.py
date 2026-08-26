@@ -238,10 +238,14 @@ class LocalProcessBackend(DispatchBackend):
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
         # The pool's own cap counts jobs, not the processes inside them: a
         # build job carrying `--parallel N` (#495) occupies ONE slot and then
-        # fans out to N concurrent compiles, so `jobs` x `compile.parallel`
-        # is the real ceiling on this host. Nothing to enforce here yet (the
-        # job compiles serially until the pool lands), but sizing the two
-        # knobs together is a docs obligation, not an accident.
+        # fans out to N concurrent compiles inside it, so `jobs` x
+        # `compile.parallel` is the real ceiling on this host. Deliberately
+        # not clamped here: this backend enforces the job count and nothing
+        # else, and silently reinterpreting a project's `compile.parallel`
+        # against the local pool would be exactly the kind of hidden
+        # reservation semantics `_warn_reservations_ignored` exists to
+        # prevent. Sizing the two knobs together is a docs obligation
+        # instead — see docs/known-issues.md.
         handle = self._enqueue(
             spec, build_job_argv(spec), kind="build", dependency=None
         )

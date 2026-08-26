@@ -20,6 +20,8 @@ full scheduler contract and YAML fields.
 
 Dispatch implies shared builds. A simulation starts only after its compile-key
 build succeeds; one failed or undersized build can therefore block a whole group.
+One build job per suite compiles its distinct builds, `cfg-dispatch.compile.parallel`
+of them at a time (default 1).
 Dispatched `test`, `randtest`, and `regression` preserve their normal aggregate
 exit codes: 0 with no real failure, 1 when a job fails or its result envelope is
 missing, stale, or invalid, and 2 for a fatal orchestration/configuration error.
@@ -35,6 +37,16 @@ and `edit_hint.path` exactly: the governing field may be a test/testbench
 - Scheduler `TIMEOUT` means raise the governing job `time`; `Sim hit timeout`
   inside a completed job instead points at the test's `sim_timeout`.
 - Under-reservation costs failed work, so apply `raise` advice before `reduce`.
+- Size `compile.time` for the longest build batch, not the suite's serial total:
+  with `compile.parallel: N` the distinct builds run N at a time. Size
+  `compile.mem` for N concurrent elaborations — only `cpus` is scaled for you —
+  and keep N at or below the site's license pool for VCS.
+- A `(build job)` row with `phase: compile` is the suite's build job. Its `cpus`
+  suggestion is per build while `reserved` is the scaled product submitted; read
+  `edit_hint.note`, which names `compile.parallel` as the other lever when the
+  suite has fewer distinct builds than planned tests. A `reduce` is withheld
+  (`rightsize.build_advice_withheld`) when no build actually compiled, so
+  right-size the build job from a run that rebuilt.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 
