@@ -386,6 +386,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "outcome was written without it, so compile failures still "
                 "map correctly; only the compile durations are missing"
             )
+        case "build_job.result_json_failed":
+            return (
+                "build job: could not write the build result "
+                f"{fields.get('path')} ({fields.get('error')}) — the job "
+                "still exits 0 so its afterok dependents run, but the head "
+                "cannot map a compile failure to its test; each affected "
+                "simulation job recompiles and reports the failure itself"
+            )
         case "build_job.machine_result_failed":
             return (
                 "build job: could not emit the machine-result envelope "
@@ -411,11 +419,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "rightsize.build_advice_withheld":
             # INFO, but the fallback renderer would drop the reason — and the
             # reason is the entire content of the event.
-            if fields.get("reason") == "undersampled":
+            reason = fields.get("reason")
+            if reason == "undersampled":
                 why = (
                     f"it ran for {fields.get('elapsed_s')}s, inside one "
                     f"{fields.get('interval_s')}s accounting interval, so its "
                     "cpu time was sampled at most once"
+                )
+            elif reason == "no-build-records":
+                # Distinct from "nothing compiled": the job was accounted for
+                # (that is how we got here) but left no envelope to say what
+                # it did — the shape of a build job killed mid-compile.
+                why = (
+                    "it left no record of what it built, so its elapsed time "
+                    "cannot be read as the cost of a compile"
                 )
             else:
                 why = (

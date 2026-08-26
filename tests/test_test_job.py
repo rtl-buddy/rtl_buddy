@@ -1040,6 +1040,49 @@ def test_build_records_that_cannot_be_serialised_do_not_cost_the_envelope(
     assert br["builds"] == []
 
 
+def test_an_envelope_that_cannot_be_written_at_all_still_exits_0(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The telemetry retry must not become the escape hatch (#495).
+
+    The fallback write is reached because the first one failed, and a
+    filesystem reason (ENOSPC, EROFS, a permission change) fails both. An
+    exception out of the second write leaves the build job non-zero, and
+    afterok then cancels the whole sim fan-out — the failure mode the
+    surrounding guard exists to prevent.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+
+    def no_disk(*args, **kwargs):
+        raise OSError("[Errno 28] No space left on device")
+
+    monkeypatch.setattr(rtl_buddy_module, "write_build_result_json", no_disk)
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert not (minimal_project / "b.json").exists()
+
+
+def test_result_json_failure_warning_has_a_dedicated_human_message():
+    """A WARNING must not fall through to the generic event-name fallback."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "build_job.result_json_failed", {"path": "b.json", "error": "no space"}
+    )
+    assert "b.json" in msg
+    assert "no space" in msg
+    assert "exits 0" in msg
+    assert "build_job result_json_failed" not in msg
+
+
 # ------------------------------------- job log paths (#437)
 
 

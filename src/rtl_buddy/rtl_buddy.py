@@ -2293,7 +2293,28 @@ class RtlBuddy:
                     "build_job.build_records_failed",
                     error=str(exc),
                 )
-                write_build_result_json(result_json_path, built=built, failed=failed)
+                try:
+                    write_build_result_json(
+                        result_json_path, built=built, failed=failed
+                    )
+                except Exception as exc2:  # noqa: BLE001 - never fatal here
+                    # The retry can fail for the reason the first write did
+                    # (ENOSPC, EROFS, a permission change) and nothing above
+                    # catches a bare exception: run() handles only click
+                    # exits, FatalRtlBuddyError and FilelistError, so an
+                    # escape here exits the build job non-zero and afterok
+                    # cancels the whole sim fan-out — the 2026-08-19 ECP CI
+                    # failure the guard above exists to prevent. Losing the
+                    # envelope costs the head its compile-failure mapping;
+                    # each affected sim job then recompiles and reports the
+                    # failure itself, which is a worse report, not a lost run.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.result_json_failed",
+                        path=str(result_json_path),
+                        error=str(exc2),
+                    )
         if self.machine:
             # Reporting only, so it is not allowed to change the exit status
             # below. A build job that exits non-zero makes the scheduler cancel

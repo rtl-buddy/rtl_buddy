@@ -898,6 +898,33 @@ def test_withheld_build_advice_is_logged_rather_than_left_silent(caplog):
     assert "accounting interval" in caplog.text
 
 
+def test_an_unknown_build_job_is_not_reported_as_one_that_reused_stamps(caplog):
+    """Could not tell is its own reason, and the line has to say so.
+
+    A build job OOM-killed or TIMEOUTed leaves an sacct row but no
+    envelope, which is exactly the diagnostic case worth reading back.
+    Rendering it as "none of its None build(s) actually compiled" both
+    lies about the cause and prints a null."""
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work=None)
+
+    assert "no reduce advice for the build job" in caplog.text
+    assert "no record of what it built" in caplog.text
+    assert "reused their stamps" not in caplog.text
+    assert "None build(s)" not in caplog.text
+
+    # A pre-#495 envelope reads the same way: records, not compiles, is
+    # what separates "nothing to do" from "nothing recorded".
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work={"records": 0, "compiled": 0})
+
+    assert "no record of what it built" in caplog.text
+    assert "0 build(s)" not in caplog.text
+
+
 # ------------------------------------------ the advice table's own notes
 
 

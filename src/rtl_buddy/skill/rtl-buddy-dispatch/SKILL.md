@@ -45,8 +45,9 @@ and `edit_hint.path` exactly: the governing field may be a test/testbench
   suggestion is per build while `reserved` is the scaled product submitted; read
   `edit_hint.note`, which names `compile.parallel` as the other lever when the
   suite has fewer distinct builds than planned tests. A `reduce` is withheld
-  (`rightsize.build_advice_withheld`) when no build actually compiled, so
-  right-size the build job from a run that rebuilt.
+  (`rightsize.build_advice_withheld`) when no build actually compiled, or when
+  the job left no record of what it built, so right-size the build job from a
+  run that rebuilt.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 

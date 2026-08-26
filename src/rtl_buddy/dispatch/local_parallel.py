@@ -243,8 +243,8 @@ class LocalProcessBackend(DispatchBackend):
         # not clamped here: this backend enforces the job count and nothing
         # else, and silently reinterpreting a project's `compile.parallel`
         # against the local pool would be exactly the kind of hidden
-        # reservation semantics `_warn_reservations_ignored` exists to
-        # prevent. Sizing the two knobs together is a docs obligation
+        # reservation semantics `dispatch.reservations_ignored` exists to
+        # announce. Sizing the two knobs together is a docs obligation
         # instead — see docs/known-issues.md.
         handle = self._enqueue(
             spec, build_job_argv(spec), kind="build", dependency=None

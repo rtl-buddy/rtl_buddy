@@ -248,6 +248,12 @@ def analyze_build_reservation(
     # Only a `reduce` is gated: it is the direction that can shrink a
     # reservation below what the next run needs.
     compiled = (compile_work or {}).get("compiled") or 0
+    # Three answers, not two. No records at all means the head could not
+    # tell — the build job left no envelope (an OOM kill or a TIMEOUT still
+    # leaves the sacct row that got us here), or wrote one predating them.
+    # The gating treats unknown as no-reduce either way, but the recorded
+    # reason must not claim every build reused a stamp it never saw.
+    records = (compile_work or {}).get("records") or 0
     undersampled = (
         accounting_interval_s is not None
         and elapsed is not None
@@ -264,7 +270,13 @@ def analyze_build_reservation(
             logging.INFO,
             "rightsize.build_advice_withheld",
             suite=suite_display,
-            reason="undersampled" if undersampled else "no-compile-observed",
+            reason=(
+                "undersampled"
+                if undersampled
+                else ("no-compile-observed" if records else "no-build-records")
+            ),
+            # None, not 0, when there was no envelope: the field keeps the
+            # same three-state meaning `compile_work` has.
             builds=(compile_work or {}).get("records"),
             compiled=compiled,
             elapsed_s=elapsed,
