@@ -4,13 +4,19 @@
 tags
 .venv
 build/
+builds/
 .worktrees/
 # Sphinx
 docs/_build/
 _build/
 
 .DS_Store
-# MkDocs build output
+# Docusaurus build and generated state
+.docusaurus/
+.docusaurus-agent-static/
+.docusaurus-historical-docs/
+node_modules/
+# Legacy MkDocs output can remain after switching generators.
 site/
 rtl_buddy.log
 # rtl-buddy's own run artefacts and lock, when a verb is run in this

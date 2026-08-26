@@ -187,20 +187,5 @@ def main():
     print(f"Written: {OUTPUT}")
 
 
-def on_pre_build(config):
-    """MkDocs hook: regenerate cli.md before each build."""
-    import logging
-
-    log = logging.getLogger("mkdocs")
-    try:
-        content = generate()
-        existing = OUTPUT.read_text() if OUTPUT.exists() else ""
-        if content != existing:
-            OUTPUT.write_text(content)
-            log.info("gen_cli_reference: updated docs/reference/cli.md")
-    except RuntimeError as e:
-        log.warning(f"gen_cli_reference: skipped ({e}), using committed cli.md")
-
-
 if __name__ == "__main__":
     main()

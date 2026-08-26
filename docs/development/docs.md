@@ -102,7 +102,7 @@ Run the docs checks before opening a PR that touches docs:
 
 ```bash
 uv run python scripts/check_docs_frontmatter.py --check
-uv run --group docs mkdocs build --strict
+npm run build
 ```
 
 For CLI help changes, regenerate the CLI reference first:

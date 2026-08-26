@@ -62,11 +62,22 @@ Coverage is opt-in; plain `pytest` stays fast.
 
 ```bash
 uv run python scripts/check_docs_frontmatter.py --check
-uv run --group docs mkdocs build --strict
-uv run --group docs mkdocs serve
+npm ci
+npm run build
+npm run start
 ```
 
-`mkdocs serve` previews the site at <http://127.0.0.1:8000>. For CLI help changes, regenerate the reference before building:
+`npm run start` previews the Docusaurus site at <http://localhost:3000/>.
+The build also exports `llms.txt`, `llms-full.txt`, a JSON page catalog, raw
+Markdown pages, and section-level Markdown under `build/agent/`. These static
+resources mirror `rb docs` for networked agents while the CLI remains the
+installed-version, offline interface.
+
+`npm run build:all` additionally rebuilds every published major from that
+major's latest stable Git tag. CI uses this during main-branch deployment so
+historical versions share the Docusaurus renderer without sharing current docs.
+
+For CLI help changes, regenerate the reference before building:
 
 ```bash
 uv run python scripts/gen_cli_reference.py

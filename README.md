@@ -70,6 +70,7 @@ For local development in this repo, install the composite `dev` group:
 
 ```bash
 uv sync --group dev
+npm ci                    # required only for documentation builds
 uv run ruff check
 uv run ruff format --check
 uv run pytest
@@ -87,6 +88,10 @@ See the [installation page](https://rtl-buddy.github.io/rtl_buddy/latest/install
 ## Documentation
 
 Full documentation is at **[rtl-buddy.github.io/rtl_buddy](https://rtl-buddy.github.io/rtl_buddy/)**.
+
+The Docusaurus site also publishes version-pinned agent resources at
+`<version>/llms.txt` and `<version>/agent/catalog.json`. For an installed
+version without network access, use `rb docs list` and `rb docs show`.
 
 ## Quick Start
 

@@ -1,0 +1,62 @@
+/** @type {import('@docusaurus/plugin-content-docs').SidebarsConfig} */
+const sidebars = {
+  docs: [
+    'index',
+    'install',
+    'quickstart',
+    {
+      type: 'category',
+      label: 'Concepts',
+      items: [
+        'concepts/execution-context',
+        'concepts/root-config',
+        'concepts/tests',
+        'concepts/simulators',
+        'concepts/regressions',
+        'concepts/dispatch',
+        'concepts/expected-failures',
+        'concepts/coverage',
+        'concepts/plugins',
+        'concepts/cocotb',
+        'concepts/spec-traceability',
+        'concepts/graph',
+        'concepts/wave',
+        'concepts/hier',
+        'concepts/hub',
+        'concepts/synthesis',
+        'concepts/pnr',
+        'concepts/power',
+        'concepts/fpga',
+        'concepts/fpv',
+        'concepts/abv-simulation',
+        'concepts/mut',
+        'concepts/xplr',
+        'concepts/axi-profile',
+        'concepts/tool-check',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      items: ['reference/cli', 'reference/yaml'],
+    },
+    'agents',
+    {
+      type: 'category',
+      label: 'Development',
+      items: [
+        'development/setup',
+        'development/guidelines',
+        'development/docs',
+        'development/project-template',
+        'development/bundled-skills',
+        'development/reviews',
+      ],
+    },
+    'migrations',
+    'known-issues',
+    'CONTRIBUTING',
+  ],
+};
+
+module.exports = sidebars;
