@@ -19,8 +19,10 @@ on:
       - '.github/workflows/release.yml'
       - 'scripts/gen_cli_reference.py'
       - 'scripts/check_docs_frontmatter.py'
+      - 'scripts/build_versioned_docs.py'
       - 'scripts/export_agent_docs.py'
       - 'scripts/publish_docusaurus.py'
+      - 'sidebars.historical.js'
       - 'src/rtl_buddy/**'
 
 jobs:
@@ -146,12 +148,12 @@ jobs:
           DOCS_VERSION: ${{ steps.target.outputs.version }}
           DOCS_VERSIONS: ${{ steps.target.outputs.versions }}
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            npm run build:all
+          else
             npm run build
             mkdir builds
             mv build "builds/${{ steps.target.outputs.version }}"
-          else
-            npm run build:all
           fi
 
       - name: Prepare site link root

@@ -74,8 +74,9 @@ resources mirror `rb docs` for networked agents while the CLI remains the
 installed-version, offline interface.
 
 `npm run build:all` additionally rebuilds every published major from that
-major's latest stable Git tag. CI uses this during main-branch deployment so
-historical versions share the Docusaurus renderer without sharing current docs.
+major's latest stable Git tag. CI validates this on pull requests and uses it
+for stable release deployment after the new tag exists, so historical versions
+share the Docusaurus renderer without sharing current docs or racing a release.
 
 For CLI help changes, regenerate the reference before building:
 

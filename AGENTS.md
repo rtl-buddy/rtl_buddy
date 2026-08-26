@@ -207,6 +207,6 @@ The version is computed from the latest stable tag at dispatch time. If `main` a
 - GitHub Pages must be configured to publish from the `gh-pages` branch.
 - A `GH_PAGES_TOKEN` secret is required because pushes made with the default `GITHUB_TOKEN` do not reliably trigger downstream docs publishing from automation-created tags.
 - Docusaurus builds each release from its Git tag and publishes it under `v{major}`. This keeps the website aligned with the Markdown bundled in that release without committing duplicate `versioned_docs/` snapshots.
-- Main-branch documentation deployments also rebuild every published major from its latest stable tag. This gives historical versions the same renderer and agent endpoints without replacing their content with current documentation.
+- Main-branch documentation deployments update only `dev`. Stable release deployments rebuild every published major from its latest stable tag after the new tag exists; this avoids stale main-build snapshots racing the release while giving historical versions the same renderer and agent endpoints.
 - Every published version includes `llms.txt`, `llms-full.txt`, `agent/catalog.json`, raw page Markdown, and section-level Markdown. `rb docs` remains the offline installed-version surface.
 - Update and tag any downstream integrations that track this repo after a stable release.

@@ -275,13 +275,13 @@ jobs:
           echo "versions=${versions}" >> "$GITHUB_OUTPUT"
           echo "base_url=/rtl_buddy/${version}/" >> "$GITHUB_OUTPUT"
 
-      - name: Build Docusaurus site
+      - name: Build Docusaurus sites
         env:
           DOCS_BASE_URL: ${{ steps.target.outputs.base_url }}
           DOCS_ROOT_BASE_URL: /rtl_buddy/
           DOCS_VERSION: ${{ steps.target.outputs.version }}
           DOCS_VERSIONS: ${{ steps.target.outputs.versions }}
-        run: npm run build
+        run: npm run build:all
 
       - name: Check out GitHub Pages branch
         run: git worktree add "$RUNNER_TEMP/gh-pages" origin/gh-pages
@@ -291,15 +291,18 @@ jobs:
           DOCS_VERSION: ${{ steps.target.outputs.version }}
           UPDATE_LATEST: ${{ steps.target.outputs.update_latest }}
         run: |
-          args=(
-            --build-dir build
-            --pages-dir "$RUNNER_TEMP/gh-pages"
-            --version "$DOCS_VERSION"
-          )
-          if [[ "$UPDATE_LATEST" == "true" ]]; then
-            args+=(--update-latest)
-          fi
-          python3 scripts/publish_docusaurus.py "${args[@]}"
+          for build_dir in builds/*; do
+            version="${build_dir##*/}"
+            args=(
+              --build-dir "$build_dir"
+              --pages-dir "$RUNNER_TEMP/gh-pages"
+              --version "$version"
+            )
+            if [[ "$version" == "$DOCS_VERSION" && "$UPDATE_LATEST" == "true" ]]; then
+              args+=(--update-latest)
+            fi
+            python3 scripts/publish_docusaurus.py "${args[@]}"
+          done
 
       - name: Push gh-pages
         run: |
