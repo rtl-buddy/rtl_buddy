@@ -1,0 +1,201 @@
+---
+description: Run tests concurrently on one host or Slurm, configure resources and retries, and diagnose dispatched builds and jobs.
+---
+
+# Parallel dispatch
+
+Dispatch runs `test`, `randtest`, or regression work in parallel after planning the run and sharing compilations where possible.
+
+```bash
+rb regression --dispatch local-parallel
+rb regression --dispatch slurm
+rb randtest my_test 500 --dispatch slurm
+rb test smoke reset_error --dispatch slurm
+rb test --filter '^smoke_' --dispatch slurm
+```
+
+| Backend | Execution | Concurrency | Resource enforcement | Usage advice |
+|---|---|---|---|---|
+| `local` | Current process | 1 | None | None |
+| `local-parallel` | Subprocesses on this host | `--jobs` or `cfg-dispatch.jobs` | No | No |
+| `slurm` | Cluster jobs | Per-array throttle | Yes | From `sacct` |
+
+`local` is the default. `rb test` uses dispatch only when `--dispatch` is given explicitly; it does not inherit `cfg-dispatch.backend`. Other dispatch settings still apply after a backend is selected.
+
+`rb test` accepts the same explicit-name list or regex filter locally and under dispatch, creating one simulation job per selected test. See [Run tests](tests.md#run-tests) for selection order and validation.
+
+Dispatch cannot be combined with `--early-stop`. It implies [`--share-build`](tests.md#sharing-compiled-builds-across-tests), expands sweep hooks once on the head, and skips the per-tree lock in worker jobs.
+
+## Run on one host
+
+`local-parallel` uses one global subprocess pool across all suites and resource groups:
+
+```bash
+rb regression --dispatch local-parallel       # min(4, CPU count)
+rb regression --dispatch local-parallel -j 8
+rb randtest my_test 20 --dispatch local-parallel -j 4
+```
+
+The default is `min(4, CPU count)`. Build jobs are prioritized because they unblock their suite. A simulation starts only after its build exits 0; a failed build prevents dependent simulations from starting and makes them dispatch failures.
+
+CPU, memory, and time reservations are not enforced locally. A non-default reservation logs `dispatch.reservations_ignored`; choose `--jobs` for the memory demand of the heaviest concurrent tests. Local runs also produce no reservation advice.
+
+Use `Ctrl-C` to stop the head and its process groups. `SIGKILL` prevents cleanup and may leave child processes running.
+
+## Meet the Slurm requirements
+
+Before using `--dispatch slurm`, provide:
+
+- `sbatch`, `squeue`, `sacct`, and `scancel` on the submit host. Run `rb tool-check --explain slurm`.
+- A shared filesystem exposing the project, artefacts, and Python environment at identical absolute paths on submit and compute hosts.
+- The project's Python environment on compute hosts; workers run `sys.executable -m rtl_buddy`.
+
+The submit process only plans, submits, waits, and collects. Compilation and simulation run on compute nodes.
+
+## Understand build and simulation jobs
+
+For each suite, dispatch:
+
+1. Writes a plan and, when needed, submits one build job.
+2. Builds each unique compile key serially. Compile keys fingerprint sources, flags, defines, and the resolved builder.
+3. Groups simulations with identical resolved resources into Slurm arrays and gates them with `afterok` on the build.
+4. Collects each worker's `result.json` into the normal summary and exit status.
+
+Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. `max-jobs-per-array` is a `%N` throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.
+
+Verilator, VCS, and Icarus can place outputs in a shared compile-key directory. Other builders, and builders with an absolute `builder-simv`, keep the build under the test artefact directory:
+
+- Without shared-capable tests or seed fan-out, no separate build job is submitted; each simulation job compiles in its own directory.
+- A fanned-out test still gets a build job to prevent concurrent compiles into the same test directory. Workers use the stamp left by that job.
+- A job that may compile uses the field-wise maximum of its simulation and compile reservations. This protects against a missing or invalid prebuilt stamp.
+
+When a build job exists, every dependent is submitted with `--kill-on-invalid-dep=yes`. A failed build therefore removes jobs that could never satisfy `afterok`; collection also cancels any `DependencyNeverSatisfied` remnants. A user-supplied `--kill-on-invalid-dep=no` in `sbatch-args` overrides the default.
+
+A missing result from a scheduler kill, worker crash, or dependency failure is a failed row, not a dropped test. A compile failure for one compile key does not stop unrelated keys; the affected worker retries its own compile and reports the failure.
+
+## Configure dispatch
+
+Set defaults in `root_config.yaml`:
+
+```yaml
+cfg-dispatch:
+  backend: slurm
+  jobs: 4
+  resources:
+    cpus: 2
+    mem: 4G
+    time: "01:00:00"
+  compile:
+    cpus: 8
+    mem: 16G
+    time: "02:00:00"
+  sbatch-args:
+    - --partition=verif
+    - --account=chip
+  max-jobs-per-array: 200
+  poll-interval: 10
+  progress-interval: 60
+  max-wait: 7200
+  retry:
+    attempts: 2
+    backoff-sec: 60
+    backoff-max-sec: 600
+    jitter: 0.5
+    classifiers: [license-queue]
+  rightsize:
+    report: true
+    over-threshold: 0.5
+    near-limit: 0.9
+    margin: 1.5
+```
+
+`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array. See [YAML formats](../reference/yaml.md#root_configyaml) for defaults and validation.
+
+Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations.
+
+## Set per-test resources
+
+Reservations resolve field by field in this order: test, testbench, `cfg-dispatch.resources`, built-in defaults.
+
+```yaml
+testbenches:
+  - name: axi_tb
+    resources: {cpus: 2, mem: 8G, time: "00:30:00"}
+
+tests:
+  - name: axi_smoke
+  - name: axi_soak
+    resources: {mem: 24G, time: "04:00:00"}
+```
+
+Tests with identical resolved reservations share an array. Compilation normally uses `cfg-dispatch.compile`; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.
+
+Size `compile.time` for all unique compile keys in the suite because the build job processes them serially. Size `compile.mem` from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
+
+VCS license wait under `-licqueue` counts against the Slurm time limit. Give `compile.time` queue headroom; `compile.license_queued` records only completed builds that waited.
+
+Dispatch requests `--acctg-freq=task=1` unless `sbatch-args` already supplies it. Keep fine-grained accounting if you want useful memory advice for short jobs.
+
+<a id="retrying-a-license-queue-kill"></a>
+
+## Retry license-queue timeouts
+
+Retry is disabled until `retry.attempts` is nonzero. It applies to simulation jobs only and retries a missing result only when evidence identifies a VCS license wait:
+
+- Slurm state is `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED`; `FAILED` and `CANCELLED` are not retried.
+- Captured output ends in license-queue banner content after the last `-licqueue` marker.
+- The suite build job succeeded, so the shared-build stamp is available.
+
+For `local-parallel`, queue evidence is sufficient because there is no scheduler state. Build jobs are never retried.
+
+Delay for retry number `n` is `min(backoff-max-sec, backoff-sec * 2^(n-1))`, multiplied by jitter. Slurm holds retries with `--begin`; local-parallel holds them outside the worker pool. User `sbatch-args` occur last, so a user `--begin` overrides retry backoff.
+
+`max-wait` bounds each collection round, not the total run, and excludes the requested backoff. An exhausted retry remains a failure. A retry submission failure logs `dispatch.retry_abandoned` and preserves the already-scored run.
+
+Each retry gets a scheduler log named `slurm-<tag>-retry<N>.log`. Test capture files are reused and truncated by the next attempt; `dispatch.retry` and `dispatch.result_missing` in `rtl_buddy.log` are the durable reason trail.
+
+Scheduler-side license gating with Slurm `Licenses=` and `--licenses=<name>:1` is preferable when available because jobs wait without consuming an allocation.
+
+<a id="watching-a-run"></a>
+
+## Monitor and stop a run
+
+At normal verbosity dispatch prints:
+
+- suite submission lines with build and simulation job IDs;
+- progress when counts change and at `progress-interval` heartbeats;
+- a line when each suite drains;
+- a warning with outstanding IDs when `max-wait` expires.
+
+Set `progress-interval: 0` to suppress console progress; events remain in the head log. On timeout or interrupt, the head cancels the outstanding fleet.
+
+Logs are separated by process:
+
+| Process | rtl_buddy log | Related files |
+|---|---|---|
+| Head | `<suite>/rtl_buddy.log` | Console output |
+| Simulation | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` or `local-parallel-<tag>.log` |
+| Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log` |
+
+`<tag>` is the run ID or `single`; `<pid>` is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.
+
+## Apply reservation advice
+
+After a Slurm run, rtl_buddy compares reservations with `sacct` usage and prints a Reservation Advice table. Machine output returns findings in `payload.reservation_advice`. It never edits configuration.
+
+Advice is calculated per test using the peak across runs in this invocation:
+
+- utilization below `over-threshold` suggests a reduction;
+- utilization above `near-limit`, `TIMEOUT`, or `OUT_OF_MEMORY` suggests an increase;
+- suggestions use peak times `margin`, with floors of 5 minutes and 128 MiB;
+- time advice is limited to Verilator because VCS license wait distorts elapsed time;
+- memory advice is suppressed when the longest run is shorter than the accounting sample interval, except that an out-of-memory state still suggests an increase;
+- `phase` is `sim` or `compile+sim` and `edit_hint` identifies the configuration field that actually controlled the allocation.
+
+Advice records the run count and regression level; do not use a smoke run to shrink a nightly reservation. Apply the provided `edit_hint`, rerun, and confirm the finding clears. Disable reports with `rightsize: {report: false}`. Without `sacct` accounting, dispatch completes but emits no advice.
+
+To inspect accounting manually, query step rows without `sacct -X`:
+
+```bash
+sacct -j <jobid> --format=JobID,Elapsed,MaxRSS
+```

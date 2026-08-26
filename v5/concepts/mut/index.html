@@ -1,2041 +1,225 @@
-
 <!doctype html>
-<html lang="en" class="no-js">
-  <head>
-    
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width,initial-scale=1">
-      
-        <meta name="description" content="How to score a verification suite with rtl_buddy mutation testing via the rb mut command, mut.yaml, the rtl-buddy-xeno engine, and FPV or simulation kill oracles.">
-      
-      
-        <meta name="author" content="RTL Buddy contributors">
-      
-      
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/mut/">
-      
-      
-        <link rel="prev" href="../abv-simulation/">
-      
-      
-        <link rel="next" href="../axi-profile/">
-      
-      
-        
-      
-      
-      <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
-    
-    
-      
-        <title>Mutation Testing - RTL Buddy</title>
-      
-    
-    
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
-      
-      
-
-
-    
-    
-      
-    
-    
-      
-        
-        
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
-        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
-      
-    
-    
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
-    
-      
-
-    
-    
-  </head>
-  
-  
-    <body dir="ltr">
-  
-    
-    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
-    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
-    <label class="md-overlay" for="__drawer"></label>
-    <div data-md-component="skip">
-      
-        
-        <a href="#mutation-testing" class="md-skip">
-          Skip to content
-        </a>
-      
-    </div>
-    <div data-md-component="announce">
-      
-    </div>
-    
-      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
-        
-      </div>
-    
-    
-      
-
-  
-
-<header class="md-header md-header--shadow" data-md-component="header">
-  <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
-
-    </a>
-    <label class="md-header__button md-icon" for="__drawer">
-      
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
-    </label>
-    <div class="md-header__title" data-md-component="header-title">
-      <div class="md-header__ellipsis">
-        <div class="md-header__topic">
-          <span class="md-ellipsis">
-            RTL Buddy
-          </span>
-        </div>
-        <div class="md-header__topic" data-md-component="header-topic">
-          <span class="md-ellipsis">
-            
-              Mutation Testing
-            
-          </span>
-        </div>
-      </div>
-    </div>
-    
-    
-      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
-    
-    
-    
-      
-      
-        <label class="md-header__button md-icon" for="__search">
-          
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
-        </label>
-        <div class="md-search" data-md-component="search" role="dialog">
-  <label class="md-search__overlay" for="__search"></label>
-  <div class="md-search__inner" role="search">
-    <form class="md-search__form" name="search">
-      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
-      <label class="md-search__icon md-icon" for="__search">
-        
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
-        
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-      </label>
-      <nav class="md-search__options" aria-label="Search">
-        
-        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
-          
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
-      </nav>
-      
-    </form>
-    <div class="md-search__output">
-      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
-        <div class="md-search-result" data-md-component="search-result">
-          <div class="md-search-result__meta">
-            Initializing search
-          </div>
-          <ol class="md-search-result__list" role="presentation"></ol>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-      
-    
-    
-      <div class="md-header__source">
-        <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
-  <div class="md-source__icon md-icon">
-    
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
-  </div>
-  <div class="md-source__repository">
-    rtl-buddy/rtl_buddy
-  </div>
-</a>
-      </div>
-    
-  </nav>
-  
-</header>
-    
-    <div class="md-container" data-md-component="container">
-      
-      
-        
-          
-        
-      
-      <main class="md-main" data-md-component="main">
-        <div class="md-main__inner md-grid">
-          
-            
-              
-              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-
-
-<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
-  <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
-
-    </a>
-    RTL Buddy
-  </label>
-  
-    <div class="md-nav__source">
-      <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
-  <div class="md-source__icon md-icon">
-    
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
-  </div>
-  <div class="md-source__repository">
-    rtl-buddy/rtl_buddy
-  </div>
-</a>
-    </div>
-  
-  <ul class="md-nav__list" data-md-scrollfix>
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../install/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Installation
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../quickstart/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Quick Start
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-    
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
-        
-          
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Concepts
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_4">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Concepts
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../execution-context/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Execution Context
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../root-config/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Root Config
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../tests/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Tests
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../regressions/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Regressions
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../coverage/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Coverage
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../plugins/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plugins
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../cocotb/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    cocotb
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../spec-traceability/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Spec Traceability
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../wave/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Waveform Viewer
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../hier/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hierarchy Rendering
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../hub/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hub
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../synthesis/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Synthesis
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../pnr/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Place-and-Route
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../power/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Power Analysis
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CDC Lint
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../fpv/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Formal Property Verification
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../abv-simulation/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Assertion-Based Verification (sim)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Mutation Testing
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Mutation Testing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#how-scoring-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How scoring works
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#kill-oracles" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Kill oracles
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#mutation-config-mutyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Mutation config: mut.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Mutation config: mut.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#operators" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Operators
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Output">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#machine-output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Machine output
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../axi-profile/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    AXI Profiling
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../tool-check/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Tool Check
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
-        
-          
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Reference
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Reference
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../reference/cli/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CLI
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../reference/yaml/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    YAML Formats
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../agents/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    For Agents
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
-        
-          
-          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Development
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Development
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/setup/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Environment Setup
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/guidelines/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Engineering Guidelines
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/docs/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Documentation Guidelines
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
-        
-          
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Migrations
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Migrations
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Submodule to uv
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    v2 to v3
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../migrations/v4-to-v5/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    v4 to v5
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../known-issues/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Quirks & Known Issues
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../CONTRIBUTING/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Contributing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-  </ul>
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-            
-              
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#how-scoring-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How scoring works
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#kill-oracles" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Kill oracles
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#mutation-config-mutyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Mutation config: mut.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Mutation config: mut.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#operators" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Operators
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Output">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#machine-output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Machine output
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-          
-          
-            <div class="md-content" data-md-component="content">
-              
-              <article class="md-content__inner md-typeset">
-                
-                  
-
-
-  
-  
-
-
-<h1 id="mutation-testing">Mutation Testing</h1>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-concepts/mut" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Mutation Testing | RTL Buddy</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/mut/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Mutation Testing | RTL Buddy"><meta data-rh="true" name="description" content="How to score a verification suite with rtl_buddy mutation testing via the rb mut command, mut.yaml, the rtl-buddy-xeno engine, and FPV or simulation kill oracles."><meta data-rh="true" property="og:description" content="How to score a verification suite with rtl_buddy mutation testing via the rb mut command, mut.yaml, the rtl-buddy-xeno engine, and FPV or simulation kill oracles."><link data-rh="true" rel="icon" href="/rtl_buddy/v5/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/mut/"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/mut/" hreflang="en"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/mut/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Mutation Testing","item":"https://rtl-buddy.github.io/rtl_buddy/v5/concepts/mut"}]}</script><link rel="stylesheet" href="/rtl_buddy/v5/assets/css/styles.075370ab.css">
+<script src="/rtl_buddy/v5/assets/js/runtime~main.8e8d083c.js" defer="defer"></script>
+<script src="/rtl_buddy/v5/assets/js/main.c7c5e7aa.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><link rel="preload" as="image" href="/rtl_buddy/v5/img/logo.svg"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/rtl_buddy/v5/"><div class="navbar__logo"><img src="/rtl_buddy/v5/img/logo.svg" alt="RTL Buddy logo" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/rtl_buddy/v5/img/logo.svg" alt="RTL Buddy logo" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">RTL Buddy</b></a><div class="navbar__item dropdown dropdown--hoverable"><a href="#" aria-haspopup="true" aria-expanded="false" role="button" class="navbar__link">v5</a><ul class="dropdown__menu"><li><a href="https://rtl-buddy.github.io/rtl_buddy/dev/" target="_blank" rel="noopener noreferrer" class="dropdown__link">dev<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v6/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v6<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v5/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v5<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v4/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v4<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v3/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v3<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v2/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v2<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://rtl-buddy.github.io/rtl_buddy/v5/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">Agent docs<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/"><span class="linkLabel_WmDU">RTL Buddy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/agents/"><span class="linkLabel_WmDU">Agent use of rtl-buddy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/abv-simulation/"><span class="linkLabel_WmDU">Assertion-Based Verification in Simulation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/axi-profile/"><span class="linkLabel_WmDU">AXI Interconnect Profiling</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/cdc/"><span class="linkLabel_WmDU">CDC Lint</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/cocotb/"><span class="linkLabel_WmDU">cocotb testbenches (Verilator + VPI)</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/coverage/"><span class="linkLabel_WmDU">Coverage</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/execution-context/"><span class="linkLabel_WmDU">Execution Context</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/fpv/"><span class="linkLabel_WmDU">Formal Property Verification</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/hier/"><span class="linkLabel_WmDU">Hierarchy Rendering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/hub/"><span class="linkLabel_WmDU">Hub (rb hub)</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" href="/rtl_buddy/v5/concepts/mut/"><span class="linkLabel_WmDU">Mutation Testing</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/plugins/"><span class="linkLabel_WmDU">Plugins</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/pnr/"><span class="linkLabel_WmDU">Place-and-Route</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/power/"><span class="linkLabel_WmDU">Power Analysis</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/regressions/"><span class="linkLabel_WmDU">Regressions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/root-config/"><span class="linkLabel_WmDU">Root Config</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/spec-traceability/"><span class="linkLabel_WmDU">Spec Traceability</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/synthesis/"><span class="linkLabel_WmDU">Synthesis</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/tests/"><span class="linkLabel_WmDU">Tests</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/tool-check/"><span class="linkLabel_WmDU">Tool Dependency Check</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/concepts/wave/"><span class="linkLabel_WmDU">Waveform Viewer (rb wave)</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/CONTRIBUTING/"><span class="linkLabel_WmDU">Contributing</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/development/docs/"><span class="linkLabel_WmDU">Documentation Guidelines</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/development/guidelines/"><span class="linkLabel_WmDU">Engineering Guidelines</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/development/setup/"><span class="linkLabel_WmDU">Development Environment Setup</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/install/"><span class="linkLabel_WmDU">Installation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/known-issues/"><span class="linkLabel_WmDU">Quirks &amp; Known Issues</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/migrations/submodule-to-uv/"><span class="linkLabel_WmDU">Migrating from Submodule to uv</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/migrations/v2-to-v3/"><span class="linkLabel_WmDU">Migrating from v2 to v3</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/migrations/v4-to-v5/"><span class="linkLabel_WmDU">Migrating from v4 to v5</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/quickstart/"><span class="linkLabel_WmDU">Quick Start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/reference/cli/"><span class="linkLabel_WmDU">CLI Reference</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v5/reference/yaml/"><span class="linkLabel_WmDU">YAML Formats</span></a></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/rtl_buddy/v5/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Mutation Testing</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>Mutation Testing</h1></header>
 <blockquote>
-<p><strong>Integration type:</strong> Pluggable engine. <code>rb mut</code> orchestrates the external <a href="https://github.com/rtl-buddy/rtl-buddy-xeno"><code>rtl-buddy-xeno</code></a> mutation engine; rtl_buddy supplies the config, the kill oracles, and the scoring/report.</p>
-<p><strong>Optional dependency:</strong> the engine is <strong>not</strong> installed by default. Install it with <code>pip install "rtl-buddy-xeno[verible,slang]"</code> (the <code>verible</code>/<code>slang</code> extras provide the Verible CST + pyslang toolchain the operators need). Running <code>rb mut</code> without it raises a fatal error with this hint.</p>
-<p>See also: <a href="../fpv/">Formal Property Verification</a>, <a href="../abv-simulation/">Assertion-Based Verification (sim)</a>.</p>
+<p><strong>Integration type:</strong> Pluggable engine. <code>rb mut</code> orchestrates the external <a href="https://github.com/rtl-buddy/rtl-buddy-xeno" target="_blank" rel="noopener noreferrer" class=""><code>rtl-buddy-xeno</code></a> mutation engine; rtl_buddy supplies the config, the kill oracles, and the scoring/report.</p>
+<p><strong>Optional dependency:</strong> the engine is <strong>not</strong> installed by default. Install it with <code>pip install &quot;rtl-buddy-xeno[verible,slang]&quot;</code> (the <code>verible</code>/<code>slang</code> extras provide the Verible CST + pyslang toolchain the operators need). Running <code>rb mut</code> without it raises a fatal error with this hint.</p>
+<p>See also: <a class="" href="/rtl_buddy/v5/concepts/fpv/">Formal Property Verification</a>, <a class="" href="/rtl_buddy/v5/concepts/abv-simulation/">Assertion-Based Verification (sim)</a>.</p>
 </blockquote>
 <p><code>rb mut</code> measures how good your verification actually is. It mutates a single SystemVerilog design file — introducing small, deliberate bugs (mutants) — and checks whether your verification <em>kills</em> each mutant (catches the injected bug). The <strong>mutation score</strong> is the fraction of viable mutants that were killed; a high score means your properties and tests genuinely exercise the design, while survivors point at gaps.</p>
 <p>Unlike <code>fpv.yaml</code> (a list of verifications), one <code>mut.yaml</code> describes a <strong>single mutation campaign</strong> — one design file under test — so <code>rb mut list</code> / <code>rb mut run</code> are unambiguous about what is being mutated.</p>
-<h2 id="how-scoring-works">How scoring works</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-scoring-works">How scoring works<a href="#how-scoring-works" class="hash-link" aria-label="Direct link to How scoring works" title="Direct link to How scoring works" translate="no">​</a></h2>
 <p>Each generated mutant is classified into one of three outcomes:</p>
 <ul>
-<li><strong>KILLED</strong> — the verification caught the mutant (good).</li>
-<li><strong>SURVIVED</strong> — the mutant slipped through every oracle (a coverage gap).</li>
-<li><strong>ERRORED</strong> — the mutant broke elaboration/compilation, so it could not be scored.</li>
+<li class=""><strong>KILLED</strong> — the verification caught the mutant (good).</li>
+<li class=""><strong>SURVIVED</strong> — the mutant slipped through every oracle (a coverage gap).</li>
+<li class=""><strong>ERRORED</strong> — the mutant broke elaboration/compilation, so it could not be scored.</li>
 </ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mutation score = killed / (killed + survived)
-</code></pre></div>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">mutation score = killed / (killed + survived)</span><br></div></code></pre></div></div>
 <p><code>ERRORED</code> mutants are dropped from the denominator, so a mutant that simply fails to elaborate never inflates or deflates the score. When nothing was scorable (every mutant errored, or none were generated) the score is reported as <code>n/a</code>.</p>
 <p>A <strong>SURVIVED</strong> mutant whose operator <em>predicted</em> it would perturb observable signals is the highest-signal finding — it means a change the engine expected to be observable still passed your checks. These are flagged separately as <strong>predicted-observable misses (weak properties)</strong>.</p>
-<h2 id="kill-oracles">Kill oracles</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="kill-oracles">Kill oracles<a href="#kill-oracles" class="hash-link" aria-label="Direct link to Kill oracles" title="Direct link to Kill oracles" translate="no">​</a></h2>
 <p>A mutant is <em>killed</em> when a configured oracle flags it. You configure at least one of two oracles in the <code>verify:</code> block (you may configure both — a mutant is killed if <strong>either</strong> oracle catches it):</p>
-<table>
-<thead>
-<tr>
-<th>Oracle</th>
-<th>Configured by</th>
-<th>A mutant is killed when</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>FPV</strong></td>
-<td><code>fpv_config</code> + <code>verification</code></td>
-<td>the named verification's proof flips from the unmutated baseline <code>PASS</code> to <code>FAIL</code></td>
-</tr>
-<tr>
-<td><strong>Simulation</strong></td>
-<td><code>test_config</code> (+ optional <code>tests</code>, <code>assertions</code>)</td>
-<td>a test in the suite <code>FAIL</code>s or an SVA assertion fires</td>
-</tr>
-</tbody>
-</table>
-<p>The simulation oracle compiles SVA in via Verilator <code>--assert</code> by default (<code>assertions: true</code>); it is much weaker without assertions, so leave them on unless you have a reason not to. See <a href="../abv-simulation/">Assertion-Based Verification (sim)</a> for how firings are detected.</p>
-<h2 id="mutation-config-mutyaml">Mutation config: <code>mut.yaml</code></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mut_config</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">demo_top</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nt">design_file</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/rtl/alu.sv&quot;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nt">operators</span><span class="p">:</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">arith_flip</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bit_op_flip</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_negate</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_const</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="nt">verify</span><span class="p">:</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="c1"># FPV oracle (fpv_config requires verification)</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">fpv_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../fpv/demo/fpv.yaml&quot;</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">  </span><span class="nt">verification</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_alu_safety&quot;</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="c1"># Simulation oracle (optional; combine with or use instead of FPV)</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="nt">test_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../verif/demo/tests.yaml&quot;</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;alu_smoke&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;alu_random&quot;</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># empty/omitted = every test in the suite</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">  </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="nt">budget</span><span class="p">:</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">  </span><span class="nt">max_mutants</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">  </span><span class="nt">per_module_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">  </span><span class="nt">time_budget_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sequential&quot;</span>
-</code></pre></div>
-<h3 id="fields">Fields</h3>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>model</code></td>
-<td>Model name within the referenced <code>models.yaml</code></td>
-</tr>
-<tr>
-<td><code>model_path</code></td>
-<td>Path to the <code>models.yaml</code>, resolved relative to <code>mut.yaml</code></td>
-</tr>
-<tr>
-<td><code>design_file</code></td>
-<td>The single SystemVerilog file to mutate, resolved relative to <code>mut.yaml</code>. <strong>Must live within the model directory</strong> (the directory containing <code>models.yaml</code>) so per-mutant isolation can copy the tree and splice the mutant in</td>
-</tr>
-<tr>
-<td><code>operators</code></td>
-<td>Non-empty list of mutation operators (see below). An empty list or an unknown operator is a fatal config error</td>
-</tr>
-<tr>
-<td><code>verify</code></td>
-<td>The kill-oracle block — at least one oracle required (see <a href="#kill-oracles">Kill oracles</a>)</td>
-</tr>
-<tr>
-<td><code>verify.fpv_config</code></td>
-<td>Path to an <code>fpv.yaml</code>, relative to <code>mut.yaml</code> (FPV oracle)</td>
-</tr>
-<tr>
-<td><code>verify.verification</code></td>
-<td>Name of the verification in that <code>fpv.yaml</code> to use as the oracle — <strong>required when</strong> <code>fpv_config</code> is set</td>
-</tr>
-<tr>
-<td><code>verify.test_config</code></td>
-<td>Path to a <code>tests.yaml</code>, relative to <code>mut.yaml</code> (simulation oracle)</td>
-</tr>
-<tr>
-<td><code>verify.tests</code></td>
-<td>Optional subset of test names to run; empty (default) runs every test in the suite</td>
-</tr>
-<tr>
-<td><code>verify.assertions</code></td>
-<td>Compile SVA in via Verilator <code>--assert</code>. Default <code>true</code></td>
-</tr>
-<tr>
-<td><code>name</code></td>
-<td>Campaign identifier; used in <code>artefacts/mut/&lt;name&gt;/</code>. Defaults to <code>model</code></td>
-</tr>
-<tr>
-<td><code>top</code></td>
-<td>Top module under test. Defaults to <code>model</code></td>
-</tr>
-<tr>
-<td><code>budget.max_mutants</code></td>
-<td>Cap on the number of mutants generated. Default <code>100</code></td>
-</tr>
-<tr>
-<td><code>budget.per_module_cap</code></td>
-<td>Per-module cap, or <code>null</code> for none (default <code>null</code>)</td>
-</tr>
-<tr>
-<td><code>budget.time_budget_minutes</code></td>
-<td>Wall-clock budget in minutes, or <code>null</code> for none (default <code>null</code>)</td>
-</tr>
-<tr>
-<td><code>budget.schedule</code></td>
-<td><code>"sequential"</code> (default) or <code>"round_robin"</code></td>
-</tr>
-<tr>
-<td><code>scope.include</code> / <code>scope.exclude</code></td>
-<td>Optional include/exclude lists (no-op for single-file leaf campaigns)</td>
-</tr>
-</tbody>
-</table>
-<h3 id="operators">Operators</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Oracle</th><th>Configured by</th><th>A mutant is killed when</th></tr></thead><tbody><tr><td><strong>FPV</strong></td><td><code>fpv_config</code> + <code>verification</code></td><td>the named verification&#x27;s proof flips from the unmutated baseline <code>PASS</code> to <code>FAIL</code></td></tr><tr><td><strong>Simulation</strong></td><td><code>test_config</code> (+ optional <code>tests</code>, <code>assertions</code>)</td><td>a test in the suite <code>FAIL</code>s or an SVA assertion fires</td></tr></tbody></table>
+<p>The simulation oracle compiles SVA in via Verilator <code>--assert</code> by default (<code>assertions: true</code>); it is much weaker without assertions, so leave them on unless you have a reason not to. See <a class="" href="/rtl_buddy/v5/concepts/abv-simulation/">Assertion-Based Verification (sim)</a> for how firings are detected.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="mutation-config-mutyaml">Mutation config: <code>mut.yaml</code><a href="#mutation-config-mutyaml" class="hash-link" aria-label="Direct link to mutation-config-mutyaml" title="Direct link to mutation-config-mutyaml" translate="no">​</a></h2>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> mut_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_top</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;../../design/demo_top/models.yaml&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">design_file</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;../../design/demo_top/rtl/alu.sv&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">operators</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> arith_flip</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> bit_op_flip</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> cond_negate</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> cond_const</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">verify</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token comment" style="color:#999988;font-style:italic"># FPV oracle (fpv_config requires verification)</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">fpv_config</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;../../fpv/demo/fpv.yaml&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">verification</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;demo_fpv_alu_safety&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token comment" style="color:#999988;font-style:italic"># Simulation oracle (optional; combine with or use instead of FPV)</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">test_config</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;../../verif/demo/tests.yaml&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">tests</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token string" style="color:#e3116c">&quot;alu_smoke&quot;</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;alu_random&quot;</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain">   </span><span class="token comment" style="color:#999988;font-style:italic"># empty/omitted = every test in the suite</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">assertions</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token boolean important" style="color:#36acaa">true</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">budget</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">max_mutants</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">100</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">per_module_cap</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token null important">null</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">time_budget_minutes</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token null important">null</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">schedule</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;sequential&quot;</span><br></div></code></pre></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="fields">Fields<a href="#fields" class="hash-link" aria-label="Direct link to Fields" title="Direct link to Fields" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Description</th></tr></thead><tbody><tr><td><code>model</code></td><td>Model name within the referenced <code>models.yaml</code></td></tr><tr><td><code>model_path</code></td><td>Path to the <code>models.yaml</code>, resolved relative to <code>mut.yaml</code></td></tr><tr><td><code>design_file</code></td><td>The single SystemVerilog file to mutate, resolved relative to <code>mut.yaml</code>. <strong>Must live within the model directory</strong> (the directory containing <code>models.yaml</code>) so per-mutant isolation can copy the tree and splice the mutant in</td></tr><tr><td><code>operators</code></td><td>Non-empty list of mutation operators (see below). An empty list or an unknown operator is a fatal config error</td></tr><tr><td><code>verify</code></td><td>The kill-oracle block — at least one oracle required (see <a href="#kill-oracles" class="">Kill oracles</a>)</td></tr><tr><td><code>verify.fpv_config</code></td><td>Path to an <code>fpv.yaml</code>, relative to <code>mut.yaml</code> (FPV oracle)</td></tr><tr><td><code>verify.verification</code></td><td>Name of the verification in that <code>fpv.yaml</code> to use as the oracle — <strong>required when</strong> <code>fpv_config</code> is set</td></tr><tr><td><code>verify.test_config</code></td><td>Path to a <code>tests.yaml</code>, relative to <code>mut.yaml</code> (simulation oracle)</td></tr><tr><td><code>verify.tests</code></td><td>Optional subset of test names to run; empty (default) runs every test in the suite</td></tr><tr><td><code>verify.assertions</code></td><td>Compile SVA in via Verilator <code>--assert</code>. Default <code>true</code></td></tr><tr><td><code>name</code></td><td>Campaign identifier; used in <code>artefacts/mut/&lt;name&gt;/</code>. Defaults to <code>model</code></td></tr><tr><td><code>top</code></td><td>Top module under test. Defaults to <code>model</code></td></tr><tr><td><code>budget.max_mutants</code></td><td>Cap on the number of mutants generated. Default <code>100</code></td></tr><tr><td><code>budget.per_module_cap</code></td><td>Per-module cap, or <code>null</code> for none (default <code>null</code>)</td></tr><tr><td><code>budget.time_budget_minutes</code></td><td>Wall-clock budget in minutes, or <code>null</code> for none (default <code>null</code>)</td></tr><tr><td><code>budget.schedule</code></td><td><code>&quot;sequential&quot;</code> (default) or <code>&quot;round_robin&quot;</code></td></tr><tr><td><code>scope.include</code> / <code>scope.exclude</code></td><td>Optional include/exclude lists (no-op for single-file leaf campaigns)</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="operators">Operators<a href="#operators" class="hash-link" aria-label="Direct link to Operators" title="Direct link to Operators" translate="no">​</a></h3>
 <p>The six operators map 1:1 onto <code>rtl_buddy_xeno.MutationKind</code>. An operator not recognised by the <em>installed</em> <code>rtl-buddy-xeno</code> is a fatal error at run time:</p>
-<table>
-<thead>
-<tr>
-<th>Operator</th>
-<th>Mutation</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>arith_flip</code></td>
-<td>Flip an arithmetic operator (e.g. <code>+</code> ↔ <code>-</code>)</td>
-</tr>
-<tr>
-<td><code>bit_op_flip</code></td>
-<td>Flip a bitwise/logical operator (e.g. <code>&amp;</code> ↔ <code>\|</code>)</td>
-</tr>
-<tr>
-<td><code>cond_negate</code></td>
-<td>Negate a condition</td>
-</tr>
-<tr>
-<td><code>cond_const</code></td>
-<td>Force a condition to a constant</td>
-</tr>
-<tr>
-<td><code>assign_drop</code></td>
-<td>Drop an assignment</td>
-</tr>
-<tr>
-<td><code>port_binding_swap</code></td>
-<td>Swap two port bindings on an instantiation</td>
-</tr>
-</tbody>
-</table>
-<h2 id="running">Running</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># List candidate mutation sites without mutating (uses ./mut.yaml)</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>mut<span class="w"> </span>list
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># A specific config</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rb<span class="w"> </span>mut<span class="w"> </span>list<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Generate mutants, score them against the oracles, and write a report</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>rb<span class="w"> </span>mut<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># Recompute the score from a saved report (no re-run)</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>rb<span class="w"> </span>mut<span class="w"> </span>score<span class="w"> </span>mut/demo/artefacts/mut/demo_top/mut_report.json
-</code></pre></div>
-<p><code>rb mut run</code> builds each mutant in <code>debug</code> builder mode by default. All three subcommands take <code>-c</code>/<code>--mut-config</code> (default <code>mut.yaml</code>) and, like every command, anchor their artefact tree on the directory containing the selected <code>mut.yaml</code> — not your shell's cwd (see <a href="../execution-context/">Execution Context</a>).</p>
-<h2 id="output">Output</h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Operator</th><th>Mutation</th></tr></thead><tbody><tr><td><code>arith_flip</code></td><td>Flip an arithmetic operator (e.g. <code>+</code> ↔ <code>-</code>)</td></tr><tr><td><code>bit_op_flip</code></td><td>Flip a bitwise/logical operator (e.g. <code>&amp;</code> ↔ <code>|</code>)</td></tr><tr><td><code>cond_negate</code></td><td>Negate a condition</td></tr><tr><td><code>cond_const</code></td><td>Force a condition to a constant</td></tr><tr><td><code>assign_drop</code></td><td>Drop an assignment</td></tr><tr><td><code>port_binding_swap</code></td><td>Swap two port bindings on an instantiation</td></tr></tbody></table>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="running">Running<a href="#running" class="hash-link" aria-label="Direct link to Running" title="Direct link to Running" translate="no">​</a></h2>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token comment" style="color:#999988;font-style:italic"># List candidate mutation sites without mutating (uses ./mut.yaml)</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb mut list</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token comment" style="color:#999988;font-style:italic"># A specific config</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb mut list </span><span class="token parameter variable" style="color:#36acaa">-c</span><span class="token plain"> mut/demo/mut.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token comment" style="color:#999988;font-style:italic"># Generate mutants, score them against the oracles, and write a report</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb mut run </span><span class="token parameter variable" style="color:#36acaa">-c</span><span class="token plain"> mut/demo/mut.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token comment" style="color:#999988;font-style:italic"># Recompute the score from a saved report (no re-run)</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb mut score mut/demo/artefacts/mut/demo_top/mut_report.json</span><br></div></code></pre></div></div>
+<p><code>rb mut run</code> builds each mutant in <code>debug</code> builder mode by default. All three subcommands take <code>-c</code>/<code>--mut-config</code> (default <code>mut.yaml</code>) and, like every command, anchor their artefact tree on the directory containing the selected <code>mut.yaml</code> — not your shell&#x27;s cwd (see <a class="" href="/rtl_buddy/v5/concepts/execution-context/">Execution Context</a>).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="output">Output<a href="#output" class="hash-link" aria-label="Direct link to Output" title="Direct link to Output" translate="no">​</a></h2>
 <p><code>rb mut list</code> prints a <strong>Mutation Candidates (N)</strong> table with <code>Operator</code>, <code>Line:Col</code>, and <code>Snippet</code> columns.</p>
 <p><code>rb mut run</code> prints a <strong>Mutation Testing Results</strong> table with one row per mutant:</p>
-<table>
-<thead>
-<tr>
-<th>Column</th>
-<th>Contents</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Mutant</code></td>
-<td>Mutant id</td>
-</tr>
-<tr>
-<td><code>Operator</code></td>
-<td>Operator that produced it</td>
-</tr>
-<tr>
-<td><code>Outcome</code></td>
-<td><code>KILLED</code> / <code>SURVIVED</code> / <code>ERRORED</code></td>
-</tr>
-<tr>
-<td><code>Verdict</code></td>
-<td>The oracle verdict recorded for the mutant (e.g. the FPV proof's <code>PASS</code>/<code>FAIL</code>/<code>NA</code>)</td>
-</tr>
-<tr>
-<td><code>Predicted Signals</code></td>
-<td>Signals the operator predicted it would perturb (<code>-</code> if none)</td>
-</tr>
-<tr>
-<td><code>Mutation</code></td>
-<td>Short diff summary of the injected change</td>
-</tr>
-</tbody>
-</table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Column</th><th>Contents</th></tr></thead><tbody><tr><td><code>Mutant</code></td><td>Mutant id</td></tr><tr><td><code>Operator</code></td><td>Operator that produced it</td></tr><tr><td><code>Outcome</code></td><td><code>KILLED</code> / <code>SURVIVED</code> / <code>ERRORED</code></td></tr><tr><td><code>Verdict</code></td><td>The oracle verdict recorded for the mutant (e.g. the FPV proof&#x27;s <code>PASS</code>/<code>FAIL</code>/<code>NA</code>)</td></tr><tr><td><code>Predicted Signals</code></td><td>Signals the operator predicted it would perturb (<code>-</code> if none)</td></tr><tr><td><code>Mutation</code></td><td>Short diff summary of the injected change</td></tr></tbody></table>
 <p>…followed by summary lines:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Mutation score: 78.6% (killed 11 / scored 14)
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>Survived: 3   Errored: 2   Baseline: PASS
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Predicted-observable misses (weak properties): m07, m12
-</code></pre></div>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">Mutation score: 78.6% (killed 11 / scored 14)</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">Survived: 3   Errored: 2   Baseline: PASS</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">Predicted-observable misses (weak properties): m07, m12</span><br></div></code></pre></div></div>
 <p>The full report is written to <code>&lt;mut.yaml dir&gt;/artefacts/mut/&lt;campaign&gt;/mut_report.json</code> and echoed as <code>Report written to …</code>. Its keys are <code>name</code>, <code>baseline_verdict</code>, <code>killed</code>, <code>survived</code>, <code>errored</code>, <code>score</code>, and <code>mutants[]</code> (each with <code>mutant_id</code>, <code>operator</code>, <code>outcome</code>, <code>verdict</code>, <code>diff_summary</code>, <code>predicted_signals</code>). <code>rb mut score &lt;report&gt;</code> recomputes the score from exactly this file.</p>
-<h3 id="machine-output">Machine output</h3>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="machine-output">Machine output<a href="#machine-output" class="hash-link" aria-label="Direct link to Machine output" title="Direct link to Machine output" translate="no">​</a></h3>
 <p>Under <code>rb --machine …</code> (a global flag, before the subcommand):</p>
 <ul>
-<li><code>rb --machine mut list</code> emits a <code>sites</code> array in the JSON envelope.</li>
-<li><code>rb --machine mut run</code> / <code>rb --machine mut score</code> emit the full report under <code>report</code>.</li>
+<li class=""><code>rb --machine mut list</code> emits a <code>sites</code> array in the JSON envelope.</li>
+<li class=""><code>rb --machine mut run</code> / <code>rb --machine mut score</code> emit the full report under <code>report</code>.</li>
 </ul>
-<h3 id="exit-codes">Exit codes</h3>
-<p><code>rb mut run</code> exits <code>0</code> when it produced a scorable result and <code>1</code> only when nothing was scorable (<code>score</code> is <code>n/a</code>). <strong>Score thresholding is not gated</strong> — failing under a target score is a separate concern; the command does not exit non-zero just because the score is low. <code>rb mut list</code> and <code>rb mut score</code> exit <code>0</code> on success and fail only on fatal errors (missing engine, missing config, missing report).</p>
-
-
-
-
-
-
-
-  
-  
-
-
-
-
-
-
-                
-              </article>
-            </div>
-          
-          
-<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
-        </div>
-        
-          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
-  Back to top
-</button>
-        
-      </main>
-      
-        <footer class="md-footer">
-  
-  <div class="md-footer-meta md-typeset">
-    <div class="md-footer-meta__inner md-grid">
-      <div class="md-copyright">
-  
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
-  
-</div>
-      
-    </div>
-  </div>
-</footer>
-      
-    </div>
-    <div class="md-dialog" data-md-component="dialog">
-      <div class="md-dialog__inner md-typeset"></div>
-    </div>
-    
-    
-    
-      
-      
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
-    
-    
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
-      
-    
-  </body>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="exit-codes">Exit codes<a href="#exit-codes" class="hash-link" aria-label="Direct link to Exit codes" title="Direct link to Exit codes" translate="no">​</a></h3>
+<p><code>rb mut run</code> exits <code>0</code> when it produced a scorable result and <code>1</code> only when nothing was scorable (<code>score</code> is <code>n/a</code>). <strong>Score thresholding is not gated</strong> — failing under a target score is a separate concern; the command does not exit non-zero just because the score is low. <code>rb mut list</code> and <code>rb mut score</code> exit <code>0</code> on success and fail only on fatal errors (missing engine, missing config, missing report).</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/rtl-buddy/rtl_buddy/edit/v5.3.4/docs/concepts/mut.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/rtl_buddy/v5/concepts/hub/"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Hub (rb hub)</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/rtl_buddy/v5/concepts/plugins/"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Plugins</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#how-scoring-works" class="table-of-contents__link toc-highlight">How scoring works</a></li><li><a href="#kill-oracles" class="table-of-contents__link toc-highlight">Kill oracles</a></li><li><a href="#mutation-config-mutyaml" class="table-of-contents__link toc-highlight">Mutation config: <code>mut.yaml</code></a><ul><li><a href="#fields" class="table-of-contents__link toc-highlight">Fields</a></li><li><a href="#operators" class="table-of-contents__link toc-highlight">Operators</a></li></ul></li><li><a href="#running" class="table-of-contents__link toc-highlight">Running</a></li><li><a href="#output" class="table-of-contents__link toc-highlight">Output</a><ul><li><a href="#machine-output" class="table-of-contents__link toc-highlight">Machine output</a></li><li><a href="#exit-codes" class="table-of-contents__link toc-highlight">Exit codes</a></li></ul></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Documentation</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/v5/quickstart/">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/v5/reference/cli/">CLI Reference</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/v5/agents/#local-docs-access">Agent access</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Project</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://pypi.org/project/rtl-buddy/" target="_blank" rel="noopener noreferrer" class="footer__link-item">PyPI<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">For agents</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/v5/llms.txt" target="_blank" rel="noopener noreferrer" class="footer__link-item">llms.txt<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/v5/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="footer__link-item">Catalog JSON<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026 RTL Buddy contributors.</div></div></div></footer></div>
+</body>
 </html>

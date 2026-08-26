@@ -1,0 +1,37 @@
+# RTL Buddy v4
+
+> Version-pinned documentation for the RTL Buddy CLI and its agent interfaces.
+
+Use the catalog for page and section-level retrieval:
+
+- [Agent catalog](https://rtl-buddy.github.io/rtl_buddy/v4/agent/catalog.json)
+
+## Documentation pages
+
+- [Contributing to Docs](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/CONTRIBUTING.md): Guidelines for contributing to rtl_buddy documentation, including the frontmatter convention, writing style, and what is auto-generated.
+- [Agent use of rtl-buddy](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/agents.md): How rtl_buddy is built for AI-agent use — the bundled skill, local docs access, machine mode, and the structured log and stdout contracts agents can rely on.
+- [AXI Interconnect Profiling](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/axi-profile.md): How to profile AXI interconnect performance with rtl_buddy via the rb axi-profile subcommand group, models.yaml fields, and the standalone rtl-buddy-axi-profiler.
+- [CDC Lint](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/cdc.md): How to run CDC lint with rtl_buddy via the rb cdc command, cdc.yaml, and the standalone rtl-buddy-cdc analyzer.
+- [cocotb testbenches (Verilator + VPI)](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/cocotb.md): How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.
+- [Coverage](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/coverage.md): How to collect, merge, and report coverage for Verilator-based builds using rtl_buddy.
+- [Formal Property Verification](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/fpv.md): How to run formal property verification with rtl_buddy via the rb fpv command, fpv.yaml, and SymbiYosys.
+- [Hierarchy Rendering](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/hier.md): How to render module hierarchy diagrams with rtl_buddy via the rb hier command and the standalone rtl-buddy-view renderer.
+- [Hub (`rb hub`)](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/hub.md): rtl-buddy-hub is the broker that mediates between the rtl-buddy-view SPA, surfer (via rb wave), and editor adapters. Invocation, config, troubleshooting.
+- [Plugins](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/plugins.md): How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.
+- [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/pnr.md): How to run OpenROAD place-and-route with rtl_buddy via the rb pnr command, pnr.yaml, and cfg-pnr-platforms.
+- [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/power.md): How to run OpenROAD-driven gate-level power analysis with rtl_buddy via the rb power command, power.yaml, SAIF activity capture, and cfg-pnr-platforms.
+- [Regressions](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/regressions.md): How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.
+- [Root Config](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/root-config.md): How root_config.yaml configures platform selection, builders, and simulation settings for an RTL project.
+- [Spec Traceability](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/spec-traceability.md): How to use specs.yaml, models.yaml spec pointers, and tests.yaml covers fields to trace functional requirements through to tests.
+- [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/synthesis.md): How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-pdks + cfg-synth-platforms, and the rb synth command.
+- [Tests](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/tests.md): How to define testbenches and tests in tests.yaml for a verification suite.
+- [Tool Dependency Check](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/tool-check.md): How to verify the rtl_buddy external-tool environment with the rb tool-check command, the declarative tool manifest, and the per-subcommand readiness report.
+- [Waveform Viewer (`rb wave`)](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/wave.md): How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.
+- [RTL Buddy](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/index.md): RTL Buddy is a Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, Yosys synthesis flows, coverage, and YAML-based RTL automation.
+- [Installation](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/install.md): How to install rtl_buddy into a project using uv, including prerequisites and verification steps.
+- [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/known-issues.md): Known issues with rtl_buddy and workarounds for simulator-specific behaviors.
+- [Migrating from Submodule to uv](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/migrations/submodule-to-uv.md): How to migrate an RTL project from the legacy rtl_buddy submodule flow to a uv-managed PyPI dependency.
+- [Migrating from v2 to v3](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/migrations/v2-to-v3.md): How to migrate an rtl_buddy project from v2 to v3, covering the artifact layout change and other breaking changes.
+- [Quick Start](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/quickstart.md): Run your first rtl_buddy test, regression, synthesis, and supporting commands in an already-installed project.
+- [CLI Reference](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/reference/cli.md): Auto-generated CLI reference for all rtl-buddy commands and their options.
+- [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/reference/yaml.md): Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, cdc_regression.yaml, fpv.yaml, and fpv_regression.yaml.

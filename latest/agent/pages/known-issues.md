@@ -1,0 +1,177 @@
+---
+description: Current rtl_buddy limitations, surprising behavior, and required workarounds by workflow.
+---
+
+# Quirks & Known Issues
+
+Use this page when behavior differs from the normal workflow. Each section states the effect and the action to take; resolved bugs belong in release notes or migrations, not here.
+
+## XPM CDC macros require rtl-buddy-cdc 0.4 or later
+
+rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes, reports `CDC-BBX`, and drops their crossings from the report and domain map. Upgrade with `uv tool install -U rtl-buddy-cdc`. Waivers can hide the 0.3.x finding but cannot recover crossings beyond the macro.
+
+## Coverage uses the platform builder
+
+Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Use `--builder <name>` for the run or make that builder the platform default. See [YAML Formats](reference/yaml.md).
+
+## Verilator randomized runs may not reproduce
+
+Verilator can produce different behavior for the same random seed. Use VCS with `-xlrm hier_inst_seed` when reproducibility is required, and give instances stable explicit names.
+
+With hierarchical seeding, VCS writes `HierInstanceSeed.txt` in the simulation directory. If it is missing, rtl_buddy logs `sim.hier_seed_missing` and cannot record the seed, but does not change the test verdict.
+
+## Tool-path fallback can select another installation
+
+Configured tool directories take precedence only when they contain the requested executable. Otherwise rtl_buddy may use a matching executable on `PATH` and logs a fallback warning.
+
+Warnings for fallback paths and unresolved variables are emitted once per process. Restart long-running `rb hub` or `rb mcp` processes after changing `root_config.yaml`, `.rtl-buddy/.env`, or the environment if you need the warning to be evaluated again.
+
+## Hook scripts are not normal standalone scripts
+
+`sweep` and `preproc` execute with the invocation directory as CWD and with `__name__ == "__rtl_buddy_hook__"`. Use injected `suite_dir`, `artifact_dir`, and `run_artifact_dir` paths; do not put required hook logic behind `if __name__ == "__main__":`.
+
+rtl_buddy captures Python-level `print()` output as `hook.stdout` events. The capture has no `.buffer` or file descriptor, and child-process output bypasses it. Capture child output explicitly and print the text you want logged. For a generator that can write only relative to CWD, temporarily change to `suite_dir` and restore the previous directory. See [Plugins](concepts/plugins.md).
+
+## Compilation-unit bind requires the slang frontend
+
+Yosys's native `verilog` frontend does not resolve a top-level `bind`, so no formal cells elaborate. rtl_buddy fails a property-based proof that would otherwise pass vacuously. Set `frontend: slang` and configure the yosys-slang plugin. Inline assertions do not need this guard. See [Formal Property Verification](concepts/fpv.md).
+
+## Verify that `anyconst` elaborates
+
+Some yosys-slang builds drop `(* anyconst *)` without producing a `$anyconst` cell. The signal then varies freely each cycle and can invalidate symbolic-index proofs. Check the elaborated design before relying on it:
+
+```bash
+yosys -p 'read_slang ...; prep -top dut; select -assert-min 1 t:$anyconst'
+```
+
+Use a behavioral reference model when portable data-integrity checking matters.
+
+## Narrow VCS access flags suppress cocotb defaults
+
+For cocotb, rtl_buddy adds VPI access unless any configured compile option already starts with `-debug_access` or `+acc`. A narrower configured flag therefore suppresses the full default and may prevent signal writes. Remove the narrow flag or configure sufficient access, such as `-debug_access+all` and `+acc+rw`.
+
+## VCS license waits pause the simulation timeout
+
+When VCS prints its license-queue banner, rtl_buddy pauses `sim_timeout` until simulator output resumes, for up to one hour. A queued run can therefore outlive its nominal timeout. If a newer VCS banner is not recognized, the clock may resume too early; a timeout beside license messages in `test.err` indicates this case. Use the builder's `extra-sim-timeout` as a backstop.
+
+## AXI profiling converts VCS VPD traces
+
+`rb axi-profile run` converts `vcdplus.vpd` with `vpd2vcd`, trying `-full64` first and the legacy form second. Conversion details go to `artefacts/axi/<test>/vpd-convert.log`.
+
+If `vcd2fst` is installed, the VCD becomes a cached `vcdplus.fst`; otherwise rtl_buddy keeps and ingests the larger VCD with a warning. Cached files live beside the original VPD in the test artifact directory.
+
+## A timeout kill can leave `test.log` with an unflushed tail
+
+When `sim_timeout` expires, the simulator may be terminated before flushing output. `test.log` can end mid-line or at a power-of-two byte count, so its final bytes are not an exact stop location. Follow the [timeout triage order](concepts/tests.md#triaging-sim-hit-timeout) before raising the limit.
+
+## pywellen must remain below 0.25
+
+`rb wave` annotations and `rb saif` require pywellen's removed random-access API, so the supported range is `>=0.20,<0.25`. A forced newer version fails at launch with `pywellen.api_missing`; restore the supported dependency range.
+
+## Artifact locking is per tree and per host
+
+Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immediately on same-host contention. The file remains after release; kernel lock state, not file presence, determines whether the tree is locked.
+
+The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
+
+## Dispatch changes build behavior
+
+`--dispatch` implies `--share-build` and rejects `--early-stop`. `cfg-dispatch.backend` defaults `regression` and `randtest`, but `rb test` remains local unless `--dispatch` is explicit. A one-seed `randtest` replay also stays local.
+
+Shareable builders compile once per compile key. Builders that cannot share compile in their jobs; fanned-out tests still use a build job to serialize access to their compile directory. See [Parallel Dispatch](concepts/dispatch.md).
+
+## local-parallel enforces only the job count
+
+The `local-parallel` backend ignores CPU, memory, time, array-throttle, and right-sizing settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
+
+Normal interruption terminates the worker process groups. `SIGKILL` of the head process cannot run cleanup and can orphan `rb _test-job` children; inspect and stop them after a hard CI timeout or `kill -9`.
+
+## Quote dispatch time values
+
+YAML 1.1 parses an unquoted value such as `time: 4:00:00` as an integer. rtl_buddy rejects it rather than submit a 10-day Slurm reservation. Use `time: "4:00:00"` or a quoted minute count everywhere `resources:` appears.
+
+## Dispatch build jobs cover the whole suite
+
+One suite build job compiles every unique compile key serially, so `compile.time` must cover their total and all simulation jobs wait for the complete build. Count `compile.start` events to estimate the work.
+
+Under dispatch, `sweep` runs once on the head, while `preproc` runs in the build job and again in every simulation job. Make `preproc` idempotent. Write shared generated files atomically to `artifact_dir`; write run-dependent files to `run_artifact_dir`.
+
+Simulation jobs rely on the build stamp to skip recompilation. A preprocessor that rewrites a filelist source changes its mtime, invalidates every stamp, and can trigger concurrent compiles into one directory. `compile.prebuilt_stamp_invalid` identifies this case. Avoid rewriting unchanged shared inputs.
+
+A design compile error is reported as `CompileFail`, not `DispatchFail`. Infrastructure failures remain `DispatchFail`. A failed build may be retried inside a simulation reservation, so size that reservation to accommodate compilation for non-shareable or recovery paths.
+
+## Slurm retry reuses artifact paths
+
+A retry overwrites the first attempt's simulation capture and per-job rtl_buddy log; only `slurm-<tag>-retry<N>.log` remains attempt-specific. Use scheduler logs and the head's `dispatch.result_missing` event when diagnosing retries.
+
+`max-wait` applies to each attempt, not the whole run, and includes the requested backoff. A later `--begin` in `sbatch-args` overrides rtl_buddy's retry delay because Slurm uses the last duplicate option. Remove custom `--begin` when using retry backoff.
+
+## Slurm memory advice depends on accounting samples
+
+rtl_buddy requests one-second task accounting unless `sbatch-args` already sets `--acctg-freq`. Memory advice is suppressed when the longest run ends within the active sampling interval because `MaxRSS` is unreliable; time and CPU advice remain available.
+
+Right-sizing suggestions also have fixed five-minute and 128 MB floors and require at least 25% savings. Very small reservations can therefore produce no reduction advice even when utilization is low.
+
+## `rb nvim-install` requires git and network access
+
+The default install clones a pinned `rtl-buddy-nvim` revision. For an air-gapped system, provide a local checkout:
+
+```bash
+rb nvim-install --source /path/to/rtl-buddy-nvim --ref <ref>
+```
+
+The plugin pin must speak the hub protocol shipped by rtl_buddy; maintainers update both together.
+
+## Generated `run.f` files are checkout-specific
+
+rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+
+On a cluster with different mount paths per node, a stamp from one node may not validate on another. This causes a safe recompile, not compilation of the wrong source.
+
+## Shared-build dependency tracking varies by simulator
+
+Verilator reports consumed headers, library files, its standard includes, and its binary, so changes invalidate the shared-build stamp. VCS and Icarus do not report equivalent dependency data; editing a header reached only through `+incdir+` or `-y` can reuse a stale build.
+
+Ambient environment variables and undeclared tool inputs are not tracked. Force a rebuild by deleting the specific shared directory under `artefacts/.shared-builds/` or the test's `rb-compile-stamp.json`, or run without `--share-build`. `compile.build_dep_changed` explains detected invalidation.
+
+## Yosys-backed flows do not support whitespace in paths
+
+Yosys script parsing is not shell parsing: whitespace splits tokens, `#` starts a comment, and single quotes from `shlex.quote` do not group a path. Keep design and artifact paths for synthesis and FPV free of whitespace. `fpv.yaml` parameter validation also rejects whitespace, `;`, and `#`.
+
+String-valued parameter overrides require SystemVerilog quotes inside the YAML scalar; ordinary numeric values must not be quoted as strings.
+
+## Unknown synthesis overrides are ignored after a warning
+
+`synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs `synth_tool_config.unknown_override` and the run uses the default. A non-mapping override block or non-boolean `single_unit` is fatal. See [Synthesis](concepts/synthesis.md).
+
+## FPV COI analysis is best-effort
+
+A cone-of-influence Yosys failure logs `fpv coi_yosys_failed`, omits COI data, and does not fail a successful proof. If COI numbers disappear, inspect `artefacts/<name>/coi.log` and verify `cfg-fpv-tools[].opts.plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`.
+
+## FPGA bitstream generation relaxes two I/O DRCs
+
+Before `write_bitstream`, rtl_buddy downgrades Vivado NSTD-1 and UCIO-1 so bring-up designs without a complete pinout can produce a bitstream. The earlier DRC report and machine result retain their original severity. Treat either violation as blocking for real hardware and add the missing `IOSTANDARD` and `LOC` constraints.
+
+## FPGA timing is optional unless gated
+
+A completed routed run reports PASS even with negative slack. Read `timing_met`, `wns_ns`, and `failing_paths` for closure work. Set `require-timing-met: true` in `fpga.yaml` to make a reported miss fail the run; an unsupported `timing_met: null` cannot trigger the gate.
+
+## Graph coverage source changes attribution
+
+A merged LCOV `.info` attributes coverage by file, so every module declared in one file receives the same totals. Use the default `--coverage auto` or model artifacts for per-module attribution. Unresolved and re-anchored LCOV paths are reported in the summary.
+
+`--coverage` requires `auto`, `model`, `none`, or a merged `.info` path. `--no-coverage` disables the join.
+
+## The viewer distribution and executable have different names
+
+Install the `rtl-buddy-sch` distribution; rtl_buddy invokes its `rtl-buddy-view` executable and imports `rtl_buddy_view`:
+
+```bash
+uv tool install rtl-buddy-sch
+```
+
+`rb tool-check --explain rtl-buddy-sch` accepts the alias but reports the canonical tool key `rtl-buddy-view`.
+
+## Verible lint findings are on stderr
+
+`verible-verilog-lint` writes findings to stderr and uses its exit code for clean versus findings. A pipeline that reads only stdout sees nothing; capture stderr or use `rb lint`, which scans both streams.

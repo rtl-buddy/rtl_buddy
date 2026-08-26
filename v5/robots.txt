@@ -1,4 +1,2 @@
 User-agent: *
 Allow: /
-
-Sitemap: https://rtl-buddy.github.io/rtl_buddy/sitemap.xml

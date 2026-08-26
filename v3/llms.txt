@@ -1,0 +1,29 @@
+# RTL Buddy v3
+
+> Version-pinned documentation for the RTL Buddy CLI and its agent interfaces.
+
+Use the catalog for page and section-level retrieval:
+
+- [Agent catalog](https://rtl-buddy.github.io/rtl_buddy/v3/agent/catalog.json)
+
+## Documentation pages
+
+- [Contributing to Docs](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/CONTRIBUTING.md): Guidelines for contributing to rtl_buddy documentation, including the frontmatter convention, writing style, and what is auto-generated.
+- [For Agents](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/agents.md): How to run rtl_buddy effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+- [cocotb testbenches (Verilator + VPI)](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/cocotb.md): How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.
+- [Coverage](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/coverage.md): How to collect, merge, and report coverage for Verilator-based builds using rtl_buddy.
+- [Plugins](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/plugins.md): How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.
+- [Regressions](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/regressions.md): How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.
+- [Root Config](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/root-config.md): How root_config.yaml configures platform selection, builders, and simulation settings for an RTL project.
+- [Spec Traceability](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/spec-traceability.md): How to use specs.yaml, models.yaml spec pointers, and tests.yaml covers fields to trace functional requirements through to tests.
+- [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/synthesis.md): How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-synth-libs, and the rb synth command.
+- [Tests](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/tests.md): How to define testbenches and tests in tests.yaml for a verification suite.
+- [Waveform Viewer (`rb wave`)](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/concepts/wave.md): How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.
+- [RTL Buddy](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/index.md): RTL Buddy is a Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, Yosys synthesis flows, coverage, and YAML-based RTL automation.
+- [Installation](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/install.md): How to install rtl_buddy into a project using uv, including prerequisites and verification steps.
+- [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/known-issues.md): Known issues with rtl_buddy and workarounds for simulator-specific behaviors.
+- [Migrating from Submodule to uv](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/migrations/submodule-to-uv.md): How to migrate an RTL project from the legacy rtl_buddy submodule flow to a uv-managed PyPI dependency.
+- [Migrating from v2 to v3](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/migrations/v2-to-v3.md): How to migrate an rtl_buddy project from v2 to v3, covering the artifact layout change and other breaking changes.
+- [Quick Start](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/quickstart.md): Run your first rtl_buddy test, regression, synthesis, and supporting commands in an already-installed project.
+- [CLI Reference](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/reference/cli.md): Auto-generated CLI reference for all rtl-buddy commands and their options.
+- [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v3/agent/pages/reference/yaml.md): Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, and cdc_regression.yaml.

@@ -1,18 +1,1330 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-reference/yaml" data-has-hydrated="false">
 <head>
-  <meta charset="utf-8">
-  <title>Redirecting</title>
-  <noscript>
-    <meta http-equiv="refresh" content="1; url=../../../v6/reference/yaml/" />
-  </noscript>
-  <script>
-    window.location.replace(
-      "../../../v6/reference/yaml/" + window.location.search + window.location.hash
-    );
-  </script>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">YAML Formats | RTL Buddy</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="YAML Formats | RTL Buddy"><meta data-rh="true" name="description" content="Canonical field reference for rtl_buddy project, model, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files."><meta data-rh="true" property="og:description" content="Canonical field reference for rtl_buddy project, model, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files."><link data-rh="true" rel="icon" href="/rtl_buddy/v6/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/" hreflang="en"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"YAML Formats","item":"https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml"}]}</script><link rel="stylesheet" href="/rtl_buddy/v6/assets/css/styles.075370ab.css">
+<script src="/rtl_buddy/v6/assets/js/runtime~main.29868b3a.js" defer="defer"></script>
+<script src="/rtl_buddy/v6/assets/js/main.bfb34744.js" defer="defer"></script>
 </head>
 <body>
-  Redirecting to <a href="../../../v6/reference/yaml/">../../../v6/reference/yaml/</a>...
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><link rel="preload" as="image" href="/rtl_buddy/v6/img/logo.svg"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/rtl_buddy/v6/"><div class="navbar__logo"><img src="/rtl_buddy/v6/img/logo.svg" alt="RTL Buddy logo" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/rtl_buddy/v6/img/logo.svg" alt="RTL Buddy logo" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">RTL Buddy</b></a><div class="navbar__item dropdown dropdown--hoverable"><a href="#" aria-haspopup="true" aria-expanded="false" role="button" class="navbar__link">v6</a><ul class="dropdown__menu"><li><a href="https://rtl-buddy.github.io/rtl_buddy/dev/" target="_blank" rel="noopener noreferrer" class="dropdown__link">dev<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v6/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v6<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v5/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v5<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v4/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v4<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v3/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v3<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v2/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v2<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://rtl-buddy.github.io/rtl_buddy/v6/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">Agent docs<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/"><span class="linkLabel_WmDU">RTL Buddy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/agents/"><span class="linkLabel_WmDU">Agent use of rtl-buddy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/abv-simulation/"><span class="linkLabel_WmDU">Assertion-based verification in simulation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/axi-profile/"><span class="linkLabel_WmDU">AXI Interconnect Profiling</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/cocotb/"><span class="linkLabel_WmDU">cocotb Testbenches</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/coverage/"><span class="linkLabel_WmDU">Coverage</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/dispatch/"><span class="linkLabel_WmDU">Parallel dispatch</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/execution-context/"><span class="linkLabel_WmDU">Execution Context</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/expected-failures/"><span class="linkLabel_WmDU">Expected Failures</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/fpga/"><span class="linkLabel_WmDU">FPGA Implementation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/fpv/"><span class="linkLabel_WmDU">Formal property verification</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/graph/"><span class="linkLabel_WmDU">Design Knowledge Graph</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/hier/"><span class="linkLabel_WmDU">Hierarchy Rendering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/hub/"><span class="linkLabel_WmDU">Hub (rb hub)</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/mut/"><span class="linkLabel_WmDU">Mutation testing</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/plugins/"><span class="linkLabel_WmDU">Test plugins</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/pnr/"><span class="linkLabel_WmDU">Place-and-Route</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/power/"><span class="linkLabel_WmDU">Power Analysis</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/regressions/"><span class="linkLabel_WmDU">Regressions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/root-config/"><span class="linkLabel_WmDU">Root Config</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/simulators/"><span class="linkLabel_WmDU">Simulation Backends</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/spec-traceability/"><span class="linkLabel_WmDU">Spec traceability</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/synthesis/"><span class="linkLabel_WmDU">Synthesis</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/tests/"><span class="linkLabel_WmDU">Tests</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/tool-check/"><span class="linkLabel_WmDU">Tool dependency check</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/wave/"><span class="linkLabel_WmDU">Waveform Viewer</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/concepts/xplr/"><span class="linkLabel_WmDU">Design-Space Exploration (rb xplr)</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/CONTRIBUTING/"><span class="linkLabel_WmDU">Contributing</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/development/bundled-skills/"><span class="linkLabel_WmDU">Bundled Skill Guidelines</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/development/docs/"><span class="linkLabel_WmDU">Documentation Guidelines</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/development/guidelines/"><span class="linkLabel_WmDU">Engineering Guidelines</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/development/project-template/"><span class="linkLabel_WmDU">Project Template Guidelines</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/development/reviews/"><span class="linkLabel_WmDU">Code Reviews</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/development/setup/"><span class="linkLabel_WmDU">Development Environment Setup</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/install/"><span class="linkLabel_WmDU">Installation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/known-issues/"><span class="linkLabel_WmDU">Quirks &amp; Known Issues</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/migrations/"><span class="linkLabel_WmDU">Migrations</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/quickstart/"><span class="linkLabel_WmDU">Quick Start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/v6/reference/cli/"><span class="linkLabel_WmDU">CLI Reference</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" href="/rtl_buddy/v6/reference/yaml/"><span class="linkLabel_WmDU">YAML Formats</span></a></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/rtl_buddy/v6/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">YAML Formats</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>YAML Formats</h1></header>
+<p>Use this page for required keys, defaults, path resolution, and validation. Use the linked concept pages for procedures and interpretation.</p>
+<p>Unless stated otherwise:</p>
+<ul>
+<li class="">Relative paths resolve from the YAML file that contains them. See <a class="" href="/rtl_buddy/v6/concepts/execution-context/">Execution Context</a>.</li>
+<li class=""><code>reglvl</code> defaults to 0. It may be an integer or a per-tool/per-builder map with <code>default</code> fallback. A run is selected when its level is at most the CLI regression level.</li>
+<li class=""><code>xfail: true</code> is non-strict; <code>xfail_strict: true</code> makes an unexpected pass fail. See <a class="" href="/rtl_buddy/v6/concepts/expected-failures/">Expected failures</a>.</li>
+<li class="">Unknown references and invalid required combinations fail during configuration loading.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="root_configyaml">root_config.yaml<a href="#root_configyaml" class="hash-link" aria-label="Direct link to root_config.yaml" title="Direct link to root_config.yaml" translate="no">​</a></h2>
+<p><code>root_config.yaml</code> lives at the project root and selects the platform, simulator, shared tools, physical-design data, regression manifests, and dispatch defaults.</p>
+<p>Required top-level keys are <code>rtl-buddy-filetype: project_root_config</code>, <code>cfg-platforms</code>, <code>cfg-rtl-builder</code>, <code>cfg-verible</code>, and <code>cfg-rtl-reg</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> project_root_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-platforms</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">os</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> osx</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">unames</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">Darwin</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">builder</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verilator</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">verible</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verible</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">local</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-rtl-builder</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verilator</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">builder</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verilator</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">builder-simv</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> obj_dir/simv</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">sim-rand-seed</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">31310</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">sim-rand-seed-prefix</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> +verilator+seed+</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">builder-opts</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">debug</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">        </span><span class="token key atrule" style="color:#00a4db">compile-time</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">-</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">binary </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">sv </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">o simv</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">        </span><span class="token key atrule" style="color:#00a4db">run-time</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> +verilator+rand+reset+2</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-verible</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verible</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">local</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> /opt/homebrew/bin</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-rtl-reg</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">reg-cfg-path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> regression.yaml</span><br></div></code></pre></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="platforms-and-tool-paths">Platforms and tool paths<a href="#platforms-and-tool-paths" class="hash-link" aria-label="Direct link to Platforms and tool paths" title="Direct link to Platforms and tool paths" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>cfg-platforms[].os</code></td><td>Required</td><td>Platform identifier</td></tr><tr><td><code>cfg-platforms[].unames</code></td><td>Required</td><td><code>uname</code> values selecting this platform</td></tr><tr><td><code>cfg-platforms[].builder</code></td><td>Required</td><td>Entry in <code>cfg-rtl-builder</code></td></tr><tr><td><code>cfg-platforms[].verible</code></td><td>Required</td><td>Entry in <code>cfg-verible</code></td></tr><tr><td><code>cfg-platforms[].surfer</code></td><td>Optional</td><td>Entry in <code>cfg-surfer</code>; otherwise <code>surfer-default</code> is used</td></tr></tbody></table>
+<p>Every routed name is validated at load time for every platform entry. CLI selections such as <code>--builder</code> and <code>--surfer</code> override platform defaults. Per-flow <code>cfg-*-tools</code> blocks are selected by the flow YAML&#x27;s <code>tool</code> and cannot be routed from <code>cfg-platforms</code>.</p>
+<p>Executable and tool path fields accept a string or an ordered candidate list. This applies to <code>cfg-rtl-builder[].builder</code>, <code>cfg-verible[].path</code>, <code>cfg-surfer[].path</code>, <code>cfg-systemc.home</code>, and <code>tool</code> in <code>cfg-*-tools</code> entries.</p>
+<ul>
+<li class=""><code>~</code> and environment variables are expanded.</li>
+<li class="">Relative paths anchor to <code>root_config.yaml</code>.</li>
+<li class="">The first expanded candidate that exists wins; a bare final name is resolved through <code>PATH</code>.</li>
+<li class="">A candidate containing an unset variable is skipped. If every candidate contains an unset variable, rtl_buddy warns and retains the literal value.</li>
+</ul>
+<p>Project-local environment defaults belong in <a class="" href="/rtl_buddy/v6/concepts/root-config/#project-local-env-defaults-rtl-buddyenv"><code>.rtl-buddy/.env</code></a>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="simulator-builders">Simulator builders<a href="#simulator-builders" class="hash-link" aria-label="Direct link to Simulator builders" title="Direct link to Simulator builders" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Builder identifier</td></tr><tr><td><code>builder</code></td><td>Required</td><td>Compiler executable or candidate list</td></tr><tr><td><code>builder-simv</code></td><td>Required</td><td>Simulation executable path relative to the build directory; an absolute path disables cross-test shared builds</td></tr><tr><td><code>sim-rand-seed</code></td><td>Required</td><td>Default random seed</td></tr><tr><td><code>sim-rand-seed-prefix</code></td><td>Required</td><td>Simulator argument prefix for the seed</td></tr><tr><td><code>builder-opts.&lt;mode&gt;.compile-time</code></td><td>Required per used mode</td><td>Compile arguments</td></tr><tr><td><code>builder-opts.&lt;mode&gt;.run-time</code></td><td>Required per used mode</td><td>Simulation arguments</td></tr><tr><td><code>simulator-family</code></td><td>Optional</td><td>Backend family; otherwise inferred from the executable (<code>verilator</code>, <code>vcs</code>, or <code>icarus</code>)</td></tr><tr><td><code>wave-format</code></td><td>Optional</td><td><code>fst-postproc</code> converts VCD to FST with <code>vcd2fst</code> before <code>rb wave</code>; missing <code>vcd2fst</code> falls back to VCD</td></tr><tr><td><code>extra-sim-timeout</code></td><td>Optional, default 0</td><td>Non-negative seconds added to each test timeout for this builder; CLI <code>--extra-sim-timeout</code> overrides it</td></tr></tbody></table>
+<p><code>--builder-mode</code> selects a <code>builder-opts</code> key. A missing mode or missing compile/run stage is fatal. See <a class="" href="/rtl_buddy/v6/concepts/simulators/">Simulator support</a>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="verible-coverage-and-surfer">Verible, coverage, and Surfer<a href="#verible-coverage-and-surfer" class="hash-link" aria-label="Direct link to Verible, coverage, and Surfer" title="Direct link to Verible, coverage, and Surfer" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Block</th><th>Fields and behavior</th></tr></thead><tbody><tr><td><code>cfg-verible</code></td><td><code>name</code>, <code>path</code>; optional <code>extra_args</code> keyed by <code>lint</code>, <code>format</code>, <code>syntax</code>, or <code>preprocessor</code>, and <code>exclude</code> globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to <code>PATH</code> when possible</td></tr><tr><td><code>cfg-coverage</code></td><td><code>name</code> is the simulator family; <code>use-lcov: true</code> enables LCOV info and HTML</td></tr><tr><td><code>cfg-coverview</code></td><td><code>name</code>, <code>generate-tables</code>, and inline Coverview <code>config</code></td></tr><tr><td><code>cfg-surfer</code></td><td><code>name</code>, <code>path</code>; optional <code>wcp-port</code> (0 asks the OS), <code>editor-cmd</code> with <code>%f</code>/<code>%l</code>, <code>editor-terminal</code> (<code>tmux</code>, <code>iterm2</code>, <code>terminal</code>, or empty), <code>editor-sock</code>, and <code>ctrl-sock</code></td></tr></tbody></table>
+<p>See <a class="" href="/rtl_buddy/v6/concepts/coverage/">Coverage</a>, <a class="" href="/rtl_buddy/v6/concepts/wave/">Waveforms</a>, and the <a class="" href="/rtl_buddy/v6/reference/cli/">CLI reference</a> for lint commands.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="synthesis-and-physical-design-tools">Synthesis and physical-design tools<a href="#synthesis-and-physical-design-tools" class="hash-link" aria-label="Direct link to Synthesis and physical-design tools" title="Direct link to Synthesis and physical-design tools" translate="no">​</a></h3>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">cfg-synth-tools</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> yosys</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> yosys</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">opts</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">synth-args</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">abc-args</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">frontend</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verilog</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">plugin-path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">single-unit</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token boolean important" style="color:#36acaa">false</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-pdks</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130hd</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">site</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> unithd</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">corners</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">tt</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> pdk/sky130hd/lib/tt.lib</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tech-lef</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> pdk/sky130hd/tech.lef</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">macro-lef</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> pdk/sky130hd/macros.lef</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-synth-platforms</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130hd_tt</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">pdk</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130hd</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">corner</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> tt</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-pnr-platforms</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130hd_tt</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">pdk</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130hd</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">corner</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> tt</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">cts-buffer</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130_fd_sc_hd__clkbuf_4</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">routing-layers</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">signal</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> met1</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">met5</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">clock</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> met3</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">met5</span><span class="token punctuation" style="color:#393A34">}</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Block</th><th>Fields and behavior</th></tr></thead><tbody><tr><td><code>cfg-synth-tools</code></td><td><code>name</code>, <code>tool</code>, and <code>opts</code>. Yosys options are <code>synth-args</code>, <code>abc-args</code>, <code>frontend</code>, <code>plugin-path</code>, and <code>single-unit</code>. OpenROAD additionally accepts <code>strategy</code></td></tr><tr><td><code>cfg-pdks</code></td><td><code>name</code>, <code>site</code>, <code>corners</code>; optional <code>tech-lef</code>, <code>macro-lef</code>, <code>cell-gds</code>, <code>klayout-tech</code>, <code>klayout-props</code>, <code>tie-hi</code>, <code>tie-lo</code>, and <code>fill-cells</code>. Paths resolve from <code>root_config.yaml</code></td></tr><tr><td><code>cfg-synth-platforms</code></td><td><code>name</code>, <code>pdk</code>, optional <code>corner</code> (first declared corner by default)</td></tr><tr><td><code>cfg-pnr-platforms</code></td><td><code>name</code>, <code>pdk</code>, optional <code>corner</code>; P&amp;R fields include <code>cts-buffer</code> and <code>routing-layers.signal</code>/<code>.clock</code></td></tr><tr><td><code>cfg-synth-efforts</code></td><td>Named <code>yosys.synth-args</code>, <code>yosys.abc-args</code>, <code>openroad.run</code>, and <code>openroad.pre-sta-tcl</code> settings. Built-in default is <code>standard</code>. Precedence is per-run override, effort, tool config</td></tr><tr><td><code>cfg-pnr-tools</code></td><td><code>name</code>, <code>tool</code></td></tr><tr><td><code>cfg-power-tools</code></td><td><code>name</code>, <code>tool</code></td></tr></tbody></table>
+<p>For synthesis, <code>frontend: verilog</code> is the default. <code>frontend: slang</code> requires <code>plugin-path</code> or <code>RTL_BUDDY_SLANG_PLUGIN</code>; relative plugin paths resolve from the project root. <code>single-unit</code> is slang-only and must be a boolean. In <code>synth.yaml</code> overrides, use snake-case keys such as <code>plugin_path</code> and <code>single_unit</code>; unknown keys warn and are ignored, while a non-mapping override or wrong <code>single_unit</code> type is fatal. The elaboration override key is <code>yosys</code> for both Yosys and OpenROAD runs. See <a class="" href="/rtl_buddy/v6/concepts/synthesis/#systemverilog-frontend">Synthesis</a>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="fpga-tools-and-platforms">FPGA tools and platforms<a href="#fpga-tools-and-platforms" class="hash-link" aria-label="Direct link to FPGA tools and platforms" title="Direct link to FPGA tools and platforms" translate="no">​</a></h3>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">cfg-fpga-tools</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> vivado</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">/opt/Xilinx/Vivado/current/bin/vivado</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> vivado</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> openxc7</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> nextpnr</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">xilinx</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cfg-fpga-platforms</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> zu7ev_board</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">part</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> xczu7ev</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">ffvc1156</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">2</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">e</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">board</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> my</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">zu7ev</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">board</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">package</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ffvc1156</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">xdc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">constraints/board.xdc</span><span class="token punctuation" style="color:#393A34">]</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>cfg-fpga-tools[].name</code></td><td>Required</td><td>Tool entry and backend name, normally <code>vivado</code> or <code>openxc7</code></td></tr><tr><td><code>cfg-fpga-tools[].tool</code></td><td>Required</td><td>Executable or candidate list; relative paths anchor to <code>root_config.yaml</code></td></tr><tr><td><code>cfg-fpga-platforms[].name</code></td><td>Required</td><td>Platform identifier used by <code>fpga.yaml</code></td></tr><tr><td><code>cfg-fpga-platforms[].part</code></td><td>Required</td><td>Complete FPGA device part</td></tr><tr><td><code>cfg-fpga-platforms[].board</code></td><td>Default empty</td><td>Informational board name</td></tr><tr><td><code>cfg-fpga-platforms[].package</code></td><td>Default empty</td><td>Informational package name; it is not appended to <code>part</code></td></tr><tr><td><code>cfg-fpga-platforms[].xdc</code></td><td>Default empty</td><td>Constraint paths relative to <code>root_config.yaml</code></td></tr></tbody></table>
+<p>Platform XDC files are read before a run&#x27;s XDC files, so run-level constraints can override platform defaults. An unknown platform reference is fatal. See <a class="" href="/rtl_buddy/v6/concepts/fpga/">FPGA Implementation</a>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="formal-and-other-flow-tools">Formal and other flow tools<a href="#formal-and-other-flow-tools" class="hash-link" aria-label="Direct link to Formal and other flow tools" title="Direct link to Formal and other flow tools" translate="no">​</a></h3>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">cfg-fpv-tools</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sby</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sby</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">opts</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">timeout</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">600</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">extra-args</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">plugin-path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> tools/yosys</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">slang/build/slang.so</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">solver-versions</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">yices</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;2.6.4&quot;</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">z3</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;4.13.0&quot;</span><span class="token punctuation" style="color:#393A34">}</span><br></div></code></pre></div></div>
+<p><code>cfg-fpv-tools</code> entries contain <code>name</code>, <code>tool</code>, and optional <code>opts.timeout</code>, <code>opts.extra-args</code>, <code>opts.plugin-path</code>, and <code>opts.solver-versions</code>. Solver pins are exact; supported names are <code>yices</code>, <code>z3</code>, <code>boolector</code>, <code>bitwuzla</code>, <code>btormc</code>, and <code>abc</code>. A mismatch is fatal. See <a class="" href="/rtl_buddy/v6/concepts/fpv/">Formal Property Verification</a>.</p>
+<p>Other flows use the same <code>name</code> plus executable <code>tool</code> pattern in their <code>cfg-*-tools</code> block. A flow may use its <code>tool</code> value directly as a bare executable when its backend supports that fallback.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="tool-check-version-pins">Tool-check version pins<a href="#tool-check-version-pins" class="hash-link" aria-label="Direct link to Tool-check version pins" title="Direct link to Tool-check version pins" translate="no">​</a></h3>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">cfg-tools</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verilator</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">min-version</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;5.049&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> verilator</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">min-version</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;5.050&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">platform</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> linux</span><br></div></code></pre></div></div>
+<p><code>cfg-tools</code> overrides built-in minimum versions for <code>rb tool-check</code>. A platform-qualified entry applies only to that <code>cfg-platforms[].os</code> and takes precedence over an unqualified entry. A platform name absent from <code>cfg-platforms</code> is fatal. See <a class="" href="/rtl_buddy/v6/concepts/tool-check/">Tool dependency check</a>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="regression-manifest-defaults">Regression manifest defaults<a href="#regression-manifest-defaults" class="hash-link" aria-label="Direct link to Regression manifest defaults" title="Direct link to Regression manifest defaults" translate="no">​</a></h3>
+<p><code>cfg-rtl-reg.reg-cfg-path</code> is the fallback when <code>regression.yaml</code> is absent from the current directory. Optional flow fallbacks are <code>synth-reg-cfg-path</code>, <code>power-reg-cfg-path</code>, <code>fpga-reg-cfg-path</code>, <code>cdc-reg-cfg-path</code>, <code>fpv-reg-cfg-path</code>, and <code>lint-reg-cfg-path</code>. Relative paths resolve from <code>root_config.yaml</code>. A root-local manifest takes precedence over its fallback.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="parallel-dispatch">Parallel dispatch<a href="#parallel-dispatch" class="hash-link" aria-label="Direct link to Parallel dispatch" title="Direct link to Parallel dispatch" translate="no">​</a></h3>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">cfg-dispatch</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">backend</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> slurm</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">jobs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">4</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">resources</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">cpus</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">2</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">mem</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> 4G</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">time</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;01:00:00&quot;</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">compile</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">cpus</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">8</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">mem</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> 16G</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">time</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;02:00:00&quot;</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">sbatch-args</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token punctuation" style="color:#393A34">-</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">partition=verif</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">max-jobs-per-array</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">200</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">poll-interval</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">10</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">progress-interval</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">60</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">max-wait</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">7200</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">retry</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">attempts</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">2</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">backoff-sec</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">60</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">backoff-max-sec</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">600</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">jitter</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0.5</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">classifiers</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">license</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">queue</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">rightsize</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">report</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token boolean important" style="color:#36acaa">true</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">over-threshold</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0.5</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">near-limit</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0.9</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">margin</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">1.5</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Default and validation</th></tr></thead><tbody><tr><td><code>backend</code></td><td><code>local</code>; values are <code>local</code>, <code>local-parallel</code>, <code>slurm</code>. Applies automatically to regression and randtest; <code>rb test</code> requires an explicit <code>--dispatch</code></td></tr><tr><td><code>jobs</code></td><td><code>min(4, CPU count)</code>; positive local-parallel global pool size; CLI <code>--jobs</code> wins</td></tr><tr><td><code>resources.cpus</code></td><td>1; positive integer</td></tr><tr><td><code>resources.mem</code></td><td>Optional Slurm memory value</td></tr><tr><td><code>resources.time</code></td><td><code>&quot;01:00:00&quot;</code>; quote it. Accepted Slurm forms are minutes, <code>MM:SS</code>, <code>HH:MM:SS</code>, and <code>DD-HH[:MM[:SS]]</code>; an integer from YAML sexagesimal parsing is fatal</td></tr><tr><td><code>compile</code></td><td>Inherits <code>resources</code>; reservation for the build, or folded field-by-field into workers that compile locally</td></tr><tr><td><code>sbatch-args</code></td><td>Empty list; appended verbatim and therefore overrides duplicate generated flags</td></tr><tr><td><code>max-jobs-per-array</code></td><td>Per-array Slurm throttle, not a whole-run cap</td></tr><tr><td><code>poll-interval</code></td><td>Positive seconds between backend polls</td></tr><tr><td><code>progress-interval</code></td><td>60; non-negative seconds between console updates; 0 disables console progress</td></tr><tr><td><code>max-wait</code></td><td>Unset; positive seconds per collection round. Expiry fails the run and cancels outstanding jobs</td></tr><tr><td><code>retry.attempts</code></td><td>0; extra attempts after the first</td></tr><tr><td><code>retry.backoff-sec</code> / <code>backoff-max-sec</code></td><td>60 / 600; non-negative and max must not be below initial backoff</td></tr><tr><td><code>retry.jitter</code></td><td>0.5; must be in <code>[0, 1)</code></td></tr><tr><td><code>retry.classifiers</code></td><td><code>[license-queue]</code>; unknown classifiers are fatal</td></tr><tr><td><code>rightsize.report</code></td><td>true</td></tr><tr><td><code>rightsize.over-threshold</code> / <code>near-limit</code> / <code>margin</code></td><td>0.5 / 0.9 / 1.5</td></tr></tbody></table>
+<p>Local-parallel ignores resource reservations and produces no right-sizing advice. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires <code>TIMEOUT</code>, <code>NODE_FAIL</code>, or <code>PREEMPTED</code> and a successful build. See <a class="" href="/rtl_buddy/v6/concepts/dispatch/">Parallel dispatch</a>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="xplr-experiment-storage">XPLR experiment storage<a href="#xplr-experiment-storage" class="hash-link" aria-label="Direct link to XPLR experiment storage" title="Direct link to XPLR experiment storage" translate="no">​</a></h3>
+<p>Every <code>cfg-xplr</code> field is optional:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">cfg-xplr</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">commit-mode</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> auto</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">source-scope</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token string" style="color:#e3116c">&quot;.&quot;</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">disk-high-watermark-gb</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">50</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">disk-hard-cap-gb</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">80</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">eviction-policy</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> keep</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">frontier</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">worktree-root</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> artefacts/xplr/worktrees</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Default and validation</th></tr></thead><tbody><tr><td><code>commit-mode</code></td><td><code>auto</code>; values are <code>auto</code> and <code>self-managed</code></td></tr><tr><td><code>source-scope</code></td><td><code>[&quot;.&quot;]</code>; must be a non-empty list with no blank path</td></tr><tr><td><code>disk-high-watermark-gb</code></td><td>50.0; non-negative garbage-collection threshold</td></tr><tr><td><code>disk-hard-cap-gb</code></td><td>80.0; non-negative and not below the high watermark</td></tr><tr><td><code>eviction-policy</code></td><td><code>keep-frontier</code>; values are <code>keep-frontier</code>, <code>oldest-first</code>, and <code>manual</code></td></tr><tr><td><code>worktree-root</code></td><td><code>artefacts/xplr/worktrees</code>; must be non-blank. Relative paths resolve from the project root</td></tr></tbody></table>
+<p>Unknown keys and malformed values are fatal. When <code>root_config.yaml</code> or <code>cfg-xplr</code> is absent, XPLR uses these defaults. Keep <code>worktree-root</code> under a gitignored path so experiment worktrees do not dirty the project. See <a class="" href="/rtl_buddy/v6/concepts/xplr/">Design-space exploration</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="regressionyaml">regression.yaml<a href="#regressionyaml" class="hash-link" aria-label="Direct link to regression.yaml" title="Direct link to regression.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: reg_config</code> and <code>test-configs</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> reg_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">test-configs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> design/example_block_a/verif/tests.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> design/example_block_b/verif/tests.yaml</span><br></div></code></pre></div></div>
+<p>Paths resolve from <code>regression.yaml</code>. Each suite keeps its own command root and artefact tree. <code>rb regression</code> filters tests with <code>--start-level</code> and <code>--reg-level</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="modelsyaml">models.yaml<a href="#modelsyaml" class="hash-link" aria-label="Direct link to models.yaml" title="Direct link to models.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: model_config</code> and <code>models</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> model_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">models</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> my_design</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">filelist</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">F my_design.f</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">spec</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../spec/my_design/specs.yaml</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Model identifier</td></tr><tr><td><code>filelist</code></td><td>Required</td><td>Filelist entries resolved from <code>models.yaml</code></td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>spec</code></td><td>Optional</td><td><code>specs.yaml</code> path for <code>rb spec</code>; no simulation effect</td></tr><tr><td><code>synth</code></td><td>Optional</td><td>Synthesis ownership pointer, optionally with <code>#entry</code>; no current runtime consumer</td></tr><tr><td><code>tests</code></td><td>Optional</td><td>Test-suite ownership pointer, optionally with <code>#entry</code>; no current runtime consumer</td></tr></tbody></table>
+<p>Filelists support <code>-F</code> recursion, <code>+incdir+</code>, <code>+libext+</code>, <code>+define+</code>, <code>-v</code>, <code>-y</code>, and source paths. <code>+define+NAME[=VALUE]</code> is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with <code>+</code> separators, so a value cannot contain <code>+</code>. Environment variables in entries are expanded.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="testsyaml">tests.yaml<a href="#testsyaml" class="hash-link" aria-label="Direct link to tests.yaml" title="Direct link to tests.yaml" translate="no">​</a></h2>
+<p>Required top-level keys are <code>rtl-buddy-filetype: test_config</code>, <code>testbenches</code>, and <code>tests</code>. Optional top-level <code>builder</code> selects the suite default.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> test_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">testbenches</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> tb_top</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">filelist</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">tb_top.sv</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">tests</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> smoke</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> Sanity test</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> my_design</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../src/models.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">testbench</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> tb_top</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">reglvl</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0</span><br></div></code></pre></div></div>
+<p>Testbench fields:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Testbench identifier</td></tr><tr><td><code>filelist</code></td><td>Required</td><td>Sources appended to the model filelist</td></tr><tr><td><code>resources</code></td><td>Optional</td><td>Dispatch <code>cpus</code>, <code>mem</code>, and quoted <code>time</code>; inherited by tests</td></tr><tr><td><code>toplevel</code></td><td>Required for cocotb</td><td>DUT top passed as <code>COCOTB_TOPLEVEL</code></td></tr><tr><td><code>cocotb.module</code></td><td>Required for cocotb</td><td>Python module name or list passed as <code>COCOTB_TEST_MODULES</code></td></tr></tbody></table>
+<p>Test fields:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Test identifier and artefact directory name</td></tr><tr><td><code>model</code></td><td>Required</td><td>Model name from <code>models.yaml</code></td></tr><tr><td><code>model_path</code></td><td>Required</td><td><code>models.yaml</code> path relative to <code>tests.yaml</code></td></tr><tr><td><code>testbench</code></td><td>Required</td><td>Entry in <code>testbenches</code></td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>reglvl</code></td><td>Optional</td><td>Regression level</td></tr><tr><td><code>builder</code></td><td>Optional</td><td>Per-test builder override</td></tr><tr><td><code>plusargs</code></td><td>Optional map</td><td><code>KEY: VALUE</code> becomes <code>+KEY=VALUE</code>; a null value becomes <code>+KEY</code></td></tr><tr><td><code>plusdefines</code></td><td>Optional map</td><td><code>KEY: VALUE</code> becomes <code>+define+KEY=VALUE</code>; a null value becomes <code>+define+KEY</code></td></tr><tr><td><code>sim_timeout</code></td><td>Default 60</td><td>Seconds per simulation run</td></tr><tr><td><code>uvm.max_warns</code> / <code>uvm.max_errors</code></td><td>Optional</td><td>Thresholds whose excess fails the test</td></tr><tr><td><code>sweep.path</code></td><td>Optional</td><td>Expansion hook path</td></tr><tr><td><code>preproc.path</code></td><td>Optional</td><td>Precompile hook path</td></tr><tr><td><code>postproc.path</code></td><td>Accepted, not executed</td><td>Custom postprocessing is unavailable</td></tr><tr><td><code>covers</code></td><td>Optional list</td><td>Specification coverage IDs; no simulation effect</td></tr><tr><td><code>resources</code></td><td>Optional</td><td>Per-test dispatch reservation layered over testbench and root defaults; quote <code>time</code></td></tr><tr><td><code>assertions</code></td><td>Default false</td><td>Enables Verilator <code>--assert</code> and user coverage; other builders warn and ignore it</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p><a id="selecting-the-simulator-builder" class="anchorTargetStickyNavbar_Vzrq"></a></p>
+<p>Builder precedence is CLI <code>--builder</code>, test <code>builder</code>, suite <code>builder</code>, then the active platform default. A <code>reglvl</code> map resolves against the effective builder.</p>
+<p>Coverage processing uses the platform-selected builder unless <code>--builder</code> is supplied. If a suite or test overrides the builder, use <code>--builder</code> for coverage runs to keep simulation and coverage family selection consistent.</p>
+<p>Cocotb supports Verilator, Icarus, and VCS. <code>cocotb</code> must be installed and <code>cocotb-config</code> available; unsupported families or a missing <code>toplevel</code> are fatal. rtl_buddy reads <code>cocotb_results.xml</code>; cocotb tests do not need PASS/FAIL console markers.</p>
+<p>Hooks receive the paths and variables documented in <a class="" href="/rtl_buddy/v6/concepts/plugins/">Test plugins</a>. Generated outputs, logs, and artefacts use the directory containing <code>tests.yaml</code> as the command root; invocation cwd does not change YAML path meaning.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="synthyaml">synth.yaml<a href="#synthyaml" class="hash-link" aria-label="Direct link to synth.yaml" title="Direct link to synth.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: synth_config</code> and <code>syntheses</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> synth_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">syntheses</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130_synth</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> Technology</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">mapped synthesis</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> my_design</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../src/models.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> yosys</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">constraints</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> constraints.sdc</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">platform</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sky130hd_tt</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">reglvl</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Run identifier and artefact directory</td></tr><tr><td><code>model</code></td><td>Required</td><td>Model and elaboration top</td></tr><tr><td><code>model_path</code></td><td>Required</td><td><code>models.yaml</code> path relative to <code>synth.yaml</code></td></tr><tr><td><code>tool</code></td><td>Required</td><td>Backend and <code>cfg-synth-tools</code> entry</td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>constraints</code></td><td>Optional</td><td>SDC path relative to <code>synth.yaml</code></td></tr><tr><td><code>params</code></td><td>Optional map</td><td>Top-level parameter overrides</td></tr><tr><td><code>defines</code></td><td>Optional map</td><td>Verilog preprocessor definitions</td></tr><tr><td><code>platform</code></td><td>Optional</td><td><code>cfg-synth-platforms</code> entry; enables technology mapping</td></tr><tr><td><code>lef-paths</code> / <code>lib-paths</code></td><td>Optional lists</td><td>Block-specific LEF/Liberty files appended after platform data</td></tr><tr><td><code>reglvl</code></td><td>Optional</td><td>Regression level</td></tr><tr><td><code>tool_overrides</code></td><td>Optional map</td><td>Per-tool snake-case overrides: <code>synth_args</code>, <code>abc_args</code>, <code>strategy</code>, <code>frontend</code>, <code>plugin_path</code>, <code>single_unit</code></td></tr><tr><td><code>effort</code></td><td>Default <code>standard</code></td><td><code>cfg-synth-efforts</code> entry; CLI <code>--effort</code> wins</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p><code>tool: yosys</code> writes RTLIL without a platform and a mapped netlist with one. <code>tool: openroad</code> requires platform LEF data and runs Yosys elaboration before OpenROAD timing analysis. An effort with <code>openroad.run: false</code> uses only the Yosys stage. See <a class="" href="/rtl_buddy/v6/concepts/synthesis/">Synthesis</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="synth_regressionyaml">synth_regression.yaml<a href="#synth_regressionyaml" class="hash-link" aria-label="Direct link to synth_regression.yaml" title="Direct link to synth_regression.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: synth_reg_config</code> and <code>synth-configs</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> synth_reg_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">synth-configs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">design/example_block/synth/synth.yaml</span><span class="token punctuation" style="color:#393A34">]</span><br></div></code></pre></div></div>
+<p>Paths resolve from the manifest. Each suite retains the command root of its <code>synth.yaml</code>; <code>rb synth-regression</code> filters entries by <code>--reg-level</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pnryaml">pnr.yaml<a href="#pnryaml" class="hash-link" aria-label="Direct link to pnr.yaml" title="Direct link to pnr.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: pnr_config</code> and <code>runs</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> pnr_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">runs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_pnr</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> OpenROAD place and route</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> openroad</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">synth</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_synth</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">synth-path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../synth/demo/synth.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">constraints</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../synth/demo/constraints.sdc</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">platform</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> nangate45_typ</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">floorplan</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">utilization</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0.55</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">aspect</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">1.0</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">core-margin</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">2.0</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">reglvl</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">1000</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Run identifier and artefact directory</td></tr><tr><td><code>tool</code></td><td>Default <code>openroad</code></td><td>Backend</td></tr><tr><td><code>synth</code></td><td>Required</td><td>Upstream synthesis entry</td></tr><tr><td><code>synth-path</code></td><td>Required</td><td>Upstream <code>synth.yaml</code>, relative to <code>pnr.yaml</code></td></tr><tr><td><code>constraints</code></td><td>Required</td><td>SDC path relative to <code>pnr.yaml</code></td></tr><tr><td><code>platform</code></td><td>Required</td><td><code>cfg-pnr-platforms</code> entry</td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>lef-paths</code> / <code>lib-paths</code></td><td>Optional</td><td>Design-specific macro files relative to <code>pnr.yaml</code></td></tr><tr><td><code>floorplan.utilization</code></td><td>Default 0.55</td><td>Core utilization from 0 to 1</td></tr><tr><td><code>floorplan.aspect</code></td><td>Default 1.0</td><td>Die aspect ratio</td></tr><tr><td><code>floorplan.core-margin</code></td><td>Default 2.0</td><td>Core-to-die margin in microns</td></tr><tr><td><code>reglvl</code></td><td>Optional</td><td>Regression level</td></tr><tr><td><code>tool_overrides</code></td><td>Accepted, unused</td><td>Reserved per-tool mapping</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p>The run consumes <code>&lt;synth dir&gt;/artefacts/&lt;synth&gt;/synth_netlist.v</code>. The selected PDK and platform provide Liberty, LEF, site, tie/fill cells, CTS buffer, and routing layers. See <a class="" href="/rtl_buddy/v6/concepts/pnr/">Place and Route</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="poweryaml">power.yaml<a href="#poweryaml" class="hash-link" aria-label="Direct link to power.yaml" title="Direct link to power.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: power_config</code> and <code>runs</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> power_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">runs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_power</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> Post</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">route dynamic power</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> openroad</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">mode</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> dynamic</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">netlist-source</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> pnr</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">pnr</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_pnr</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">pnr-path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../pnr/demo/pnr.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">platform</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> nangate45_typ</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">activity</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">saif</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../verif/demo/artefacts/smoke/dump.saif</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token key atrule" style="color:#00a4db">scope</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> tb_top/u_dut</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Run identifier and artefact directory</td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>tool</code></td><td>Default <code>openroad</code></td><td>Backend</td></tr><tr><td><code>mode</code></td><td>Default <code>static</code></td><td><code>static</code> or <code>dynamic</code></td></tr><tr><td><code>netlist-source</code></td><td>Default <code>synth</code></td><td><code>synth</code> or <code>pnr</code></td></tr><tr><td><code>synth</code>, <code>synth-path</code></td><td>Required for synth source</td><td>Upstream synthesis entry and YAML path</td></tr><tr><td><code>pnr</code>, <code>pnr-path</code></td><td>Required for P&amp;R source</td><td>Upstream P&amp;R entry and YAML path</td></tr><tr><td><code>constraints</code></td><td>Required for synth source</td><td>SDC path; for P&amp;R source defaults to routed SDC</td></tr><tr><td><code>platform</code></td><td>Required</td><td><code>cfg-pnr-platforms</code> entry</td></tr><tr><td><code>activity.saif</code> / <code>.vcd</code></td><td>Mutually exclusive</td><td>Activity trace path</td></tr><tr><td><code>activity.scope</code></td><td>Only with a trace</td><td>OpenROAD trace scope; invalid without SAIF/VCD</td></tr><tr><td><code>activity.default-toggle-rate</code></td><td>Default 0.1</td><td>Synthetic toggle rate for dynamic mode without a trace</td></tr><tr><td><code>activity.default-static-prob</code></td><td>Default 0.5</td><td>Synthetic static probability</td></tr><tr><td><code>reglvl</code></td><td>Optional</td><td>Regression level</td></tr><tr><td><code>tool_overrides</code></td><td>Accepted, unused</td><td>Reserved per-tool mapping</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p>P&amp;R source reads the routed ODB and estimates parasitics from global routing; synthesis source reads the generated netlist. See <a class="" href="/rtl_buddy/v6/concepts/power/">Power Analysis</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="power_regressionyaml">power_regression.yaml<a href="#power_regressionyaml" class="hash-link" aria-label="Direct link to power_regression.yaml" title="Direct link to power_regression.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: power_reg_config</code> and <code>power-configs</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> power_reg_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">power-configs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">power/demo/power.yaml</span><span class="token punctuation" style="color:#393A34">]</span><br></div></code></pre></div></div>
+<p>Paths resolve from the manifest. Each suite retains the command root of its <code>power.yaml</code>; <code>rb power-regression</code> filters entries by <code>--reg-level</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="fpgayaml">fpga.yaml<a href="#fpgayaml" class="hash-link" aria-label="Direct link to fpga.yaml" title="Direct link to fpga.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: fpga_config</code> and <code>runs</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> fpga_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">runs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_fpga</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> Counter implementation</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> fpga_counter</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../src/models.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">part</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> xc7a35tcsg324</span><span class="token punctuation" style="color:#393A34">-</span><span class="token number" style="color:#36acaa">1</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">xdc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">constraints/clock.xdc</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">reglvl</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">1000</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Run identifier and artefact directory</td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>model</code></td><td>Required</td><td>Model name and implementation top</td></tr><tr><td><code>model_path</code></td><td>Required</td><td><code>models.yaml</code> path relative to <code>fpga.yaml</code></td></tr><tr><td><code>part</code></td><td>Exactly one of part/platform</td><td>Complete device part declared in the run</td></tr><tr><td><code>platform</code></td><td>Exactly one of part/platform</td><td><code>cfg-fpga-platforms</code> entry supplying the part and default XDC</td></tr><tr><td><code>tool</code></td><td>Default <code>vivado</code></td><td>Registered backend: <code>vivado</code> or <code>openxc7</code>; unknown values are fatal</td></tr><tr><td><code>xdc</code></td><td>Default empty</td><td>Run-specific constraint paths relative to <code>fpga.yaml</code></td></tr><tr><td><code>reglvl</code></td><td>Default 0</td><td>Regression level</td></tr><tr><td><code>tool_overrides</code></td><td>Optional map</td><td>Backend-specific overrides keyed by tool name</td></tr><tr><td><code>require-timing-met</code></td><td>Default false</td><td>Fail a passing routed run when the backend explicitly reports timing unmet; no effect when timing status is unavailable</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p>Setting both <code>part</code> and <code>platform</code>, or neither, is fatal. A platform requires <code>root_config.yaml</code>; its XDC files are read first and the run&#x27;s files afterward.</p>
+<p>For <code>openxc7</code>, <code>tool_overrides.openxc7</code> accepts <code>chipdb</code>, <code>prjxray_db</code>, <code>yosys</code>, <code>nextpnr</code>, <code>fasm2frames</code>, and <code>xc7frames2bit</code>. <code>CHIPDB</code> and <code>PRJXRAY_DB_DIR</code> provide the database fallbacks. The openXC7 backend accepts only Xilinx 7-series parts. See <a class="" href="/rtl_buddy/v6/concepts/fpga/">FPGA Implementation</a> for setup, commands, and result metrics.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="fpga_regressionyaml">fpga_regression.yaml<a href="#fpga_regressionyaml" class="hash-link" aria-label="Direct link to fpga_regression.yaml" title="Direct link to fpga_regression.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: fpga_reg_config</code> and <code>fpga-configs</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> fpga_reg_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">fpga-configs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">fpga/counter/fpga.yaml</span><span class="token punctuation" style="color:#393A34">]</span><br></div></code></pre></div></div>
+<p>Paths resolve from the manifest. Each suite retains the command root of its <code>fpga.yaml</code>; <code>rb fpga-regression</code> filters entries by <code>--reg-level</code>. Discovery checks <code>./fpga_regression.yaml</code> before <code>cfg-rtl-reg.fpga-reg-cfg-path</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="cdcyaml">cdc.yaml<a href="#cdcyaml" class="hash-link" aria-label="Direct link to cdc.yaml" title="Direct link to cdc.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: cdc_config</code> and <code>analyses</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> cdc_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">analyses</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_cdc</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> CDC analysis</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_top</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../design/demo/models.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> rtl</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">buddy</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">cdc</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">constraints</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_top.sdc</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">frontend</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> slang</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">single_unit</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token boolean important" style="color:#36acaa">true</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">reglvl</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Analysis identifier and artefact directory</td></tr><tr><td><code>model</code></td><td>Required</td><td>Model and elaboration top</td></tr><tr><td><code>model_path</code></td><td>Required</td><td><code>models.yaml</code> relative to <code>cdc.yaml</code></td></tr><tr><td><code>tool</code></td><td>Required</td><td>Analyzer and <code>cfg-cdc-tools</code> entry</td></tr><tr><td><code>constraints</code></td><td>Required</td><td>SDC path relative to <code>cdc.yaml</code></td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>waivers</code></td><td>Optional</td><td>Waiver path relative to <code>cdc.yaml</code></td></tr><tr><td><code>frontend</code></td><td>Optional</td><td>Forwarded analyzer frontend</td></tr><tr><td><code>single_unit</code></td><td>Default false</td><td>Forward <code>--single-unit</code> for one preprocessor compilation unit</td></tr><tr><td><code>blackbox</code></td><td>Optional list</td><td>Module names forwarded with <code>--blackbox</code></td></tr><tr><td><code>recognized-syncs</code></td><td>Optional list</td><td>Instance regular expressions accepted as synchronizers</td></tr><tr><td><code>reglvl</code></td><td>Optional</td><td>Regression level</td></tr><tr><td><code>tool_overrides</code></td><td>Optional map</td><td>Per-analyzer overrides</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p><code>rb cdc</code> produces text and JSON analyzer outputs. See the <a class="" href="/rtl_buddy/v6/reference/cli/">CLI reference</a> for commands and options.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="cdc_regressionyaml">cdc_regression.yaml<a href="#cdc_regressionyaml" class="hash-link" aria-label="Direct link to cdc_regression.yaml" title="Direct link to cdc_regression.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: cdc_reg_config</code> and <code>cdc-configs</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> cdc_reg_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">cdc-configs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">lint/cdc/demo/cdc.yaml</span><span class="token punctuation" style="color:#393A34">]</span><br></div></code></pre></div></div>
+<p>Paths resolve from the manifest. Each suite retains the command root of its <code>cdc.yaml</code>; <code>rb cdc-regression</code> filters analyses by <code>--reg-level</code>. Discovery checks <code>./cdc_regression.yaml</code> before <code>cfg-rtl-reg.cdc-reg-cfg-path</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lintyaml">lint.yaml<a href="#lintyaml" class="hash-link" aria-label="Direct link to lint.yaml" title="Direct link to lint.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: lint_config</code> and <code>checks</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> lint_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">checks</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_style</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> Project style policy</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_top</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../design/demo/models.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">exclude</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token string" style="color:#e3116c">&quot;*_csr_pkg.sv&quot;</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">reglvl</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Check identifier and artefact directory</td></tr><tr><td><code>model</code></td><td>Required</td><td>Model whose sources are linted</td></tr><tr><td><code>model_path</code></td><td>Required</td><td><code>models.yaml</code> relative to <code>lint.yaml</code></td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>exclude</code></td><td>Optional list</td><td>Additional <code>fnmatch</code> globs; <code>*</code> may cross <code>/</code></td></tr><tr><td><code>extra_args</code></td><td>Optional list</td><td>Appended after <code>cfg-verible.extra_args.lint</code>; later duplicate flags win</td></tr><tr><td><code>reglvl</code></td><td>Optional</td><td>Regression level</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p>Lint uses the platform-routed <code>cfg-verible</code> entry. Model expansion drops <code>-v</code>, <code>-y</code>, and <code>+</code> directives, then applies root and check exclusions. Outputs are <code>artefacts/&lt;name&gt;/lint.f</code> and <code>lint.log</code>. See the <a class="" href="/rtl_buddy/v6/reference/cli/">CLI reference</a> for commands and options.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lint_regressionyaml">lint_regression.yaml<a href="#lint_regressionyaml" class="hash-link" aria-label="Direct link to lint_regression.yaml" title="Direct link to lint_regression.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: lint_reg_config</code> and <code>lint-configs</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> lint_reg_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">lint-configs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">lint/style/lint.yaml</span><span class="token punctuation" style="color:#393A34">]</span><br></div></code></pre></div></div>
+<p>Paths resolve from the manifest. <code>rb lint-regression</code> filters checks by <code>--reg-level</code>. Discovery checks <code>./lint_regression.yaml</code> before <code>cfg-rtl-reg.lint-reg-cfg-path</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="fpvyaml">fpv.yaml<a href="#fpvyaml" class="hash-link" aria-label="Direct link to fpv.yaml" title="Direct link to fpv.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: fpv_config</code> and <code>verifications</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> fpv_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">verifications</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_fpv_fifo</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> FIFO interface properties</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">tool</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sby</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_fifo</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../design/demo_fifo/models.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">top</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_fifo</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">constraints</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> shared_clock_reset.sv</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">properties</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">demo_fifo_props.sv</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">mode</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> bmc</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">depth</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">32</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">engines</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">smtbmc yices</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">reglvl</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">1000</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>Required</td><td>Verification identifier and artefact directory</td></tr><tr><td><code>desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>tool</code></td><td>Required</td><td>Backend and <code>cfg-fpv-tools</code> entry; only <code>sby</code> is supported</td></tr><tr><td><code>model</code></td><td>Required</td><td>Model name</td></tr><tr><td><code>model_path</code></td><td>Required</td><td><code>models.yaml</code> relative to <code>fpv.yaml</code></td></tr><tr><td><code>top</code></td><td>Default model</td><td>Elaboration top</td></tr><tr><td><code>properties</code></td><td>Optional</td><td>Property files relative to <code>fpv.yaml</code>; may be omitted for in-RTL FORMAL properties</td></tr><tr><td><code>constraints</code></td><td>Optional</td><td>One environment-assumption file, read before properties</td></tr><tr><td><code>mode</code></td><td>Default <code>bmc</code></td><td><code>bmc</code>, <code>prove</code>, <code>cover</code>, or <code>live</code></td></tr><tr><td><code>depth</code></td><td>Default 20</td><td>Proof depth</td></tr><tr><td><code>engines</code></td><td>Default <code>[smtbmc yices]</code></td><td>SymbiYosys engine specifications</td></tr><tr><td><code>params</code></td><td>Optional map</td><td>Top-level parameter overrides applied to proof, vacuity, and COI elaboration</td></tr><tr><td><code>reglvl</code></td><td>Optional</td><td>Regression level</td></tr><tr><td><code>covers</code></td><td>Optional list</td><td>Specification coverage IDs; no proof effect</td></tr><tr><td><code>tool_overrides</code></td><td>Optional map</td><td>Per-tool <code>timeout</code> and <code>extra_args</code></td></tr><tr><td><code>vacuity</code></td><td>Default true for bmc/prove</td><td>Derive antecedent reachability covers; default false for cover/live</td></tr><tr><td><code>coi</code></td><td>Default true</td><td>Run cone-of-influence and dead-assume analysis</td></tr><tr><td><code>frontend</code></td><td>Default <code>verilog</code></td><td><code>verilog</code> or <code>slang</code>; slang requires the configured plugin</td></tr><tr><td><code>xfail</code> / <code>xfail_strict</code></td><td>Default false</td><td>Expected-failure handling</td></tr></tbody></table>
+<p>Parameter names must be identifiers. Values may be integers, booleans, or strings containing whitespace-free SystemVerilog literal text; string parameters need embedded quotes, for example <code>MODE: &#x27;&quot;small&quot;&#x27;</code>. YAML boolean-like keys such as unquoted <code>on</code> and invalid values are rejected. The verilog frontend uses <code>chparam</code>; slang applies <code>-G</code> during elaboration.</p>
+<p>Design sources, constraints, and properties are read in that order. See <a class="" href="/rtl_buddy/v6/concepts/fpv/">Formal Property Verification</a> for frontend behavior, proof-quality checks, artefacts, and counterexamples.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="fpv_regressionyaml">fpv_regression.yaml<a href="#fpv_regressionyaml" class="hash-link" aria-label="Direct link to fpv_regression.yaml" title="Direct link to fpv_regression.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: fpv_reg_config</code> and <code>fpv-configs</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> fpv_reg_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">fpv-configs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">design/example_block/fpv/fpv.yaml</span><span class="token punctuation" style="color:#393A34">]</span><br></div></code></pre></div></div>
+<p>Paths resolve from the manifest. Each suite retains the command root of its <code>fpv.yaml</code>; <code>rb fpv-regression</code> filters entries by <code>--reg-level</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="mutyaml">mut.yaml<a href="#mutyaml" class="hash-link" aria-label="Direct link to mut.yaml" title="Direct link to mut.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: mut_config</code>, <code>model</code>, <code>model_path</code>, <code>design_file</code>, <code>operators</code>, and <code>verify</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> mut_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">model</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_top</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">model_path</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../design/demo_top/models.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">design_file</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../design/demo_top/rtl/alu.sv</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">operators</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">arith_flip</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> bit_op_flip</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> cond_negate</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">verify</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">fpv_config</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../fpv/demo/fpv.yaml</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">verification</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> demo_fpv_alu_safety</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">budget</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">max_mutants</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">100</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">schedule</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sequential</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>model</code></td><td>Required</td><td>Model name</td></tr><tr><td><code>model_path</code></td><td>Required</td><td><code>models.yaml</code> relative to <code>mut.yaml</code></td></tr><tr><td><code>design_file</code></td><td>Required</td><td>Baseline mutation file inside the model directory</td></tr><tr><td><code>operators</code></td><td>Required, non-empty</td><td><code>arith_flip</code>, <code>bit_op_flip</code>, <code>cond_negate</code>, <code>cond_const</code>, <code>assign_drop</code>, <code>port_binding_swap</code></td></tr><tr><td><code>verify.fpv_config</code> / <code>.verification</code></td><td>Pair</td><td>FPV oracle config and entry</td></tr><tr><td><code>verify.test_config</code></td><td>Optional</td><td>Simulation oracle suite</td></tr><tr><td><code>verify.tests</code></td><td>Default all</td><td>Selected simulation tests</td></tr><tr><td><code>verify.assertions</code></td><td>Default true</td><td>Enable Verilator assertions for simulation oracle</td></tr><tr><td><code>name</code></td><td>Default model</td><td>Campaign and artefact name</td></tr><tr><td><code>top</code></td><td>Default model</td><td>Top module</td></tr><tr><td><code>budget.max_mutants</code></td><td>Default 100</td><td>Global campaign cap</td></tr><tr><td><code>budget.per_file_cap</code></td><td>Default null</td><td>Per-scoped-file cap</td></tr><tr><td><code>budget.time_budget_minutes</code></td><td>Default null</td><td>Wall-clock cap</td></tr><tr><td><code>budget.schedule</code></td><td>Default <code>sequential</code></td><td><code>sequential</code> or <code>round_robin</code></td></tr><tr><td><code>scope.include</code> / <code>.exclude</code></td><td>Default empty</td><td>Case-sensitive <code>fnmatch</code> globs over instance and source paths; <code>**</code> is not recursive</td></tr></tbody></table>
+<p>At least one oracle is required; <code>fpv_config</code> requires <code>verification</code>. Empty scope mutates <code>design_file</code> without the viewer. Non-empty scope requires <code>rtl-buddy-view</code>, selects hierarchy source files, and fails if none match. <code>design_file</code> and every scoped file must remain within the model directory. See <a class="" href="/rtl_buddy/v6/concepts/mut/">Mutation Testing</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="specsyaml">specs.yaml<a href="#specsyaml" class="hash-link" aria-label="Direct link to specs.yaml" title="Direct link to specs.yaml" translate="no">​</a></h2>
+<p>Required keys are <code>rtl-buddy-filetype: spec_config</code> and <code>blocks</code>.</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">rtl-buddy-filetype</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> spec_config</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">blocks</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">name</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> my_design</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> Design requirements</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">docs</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">README.md</span><span class="token punctuation" style="color:#393A34">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">coverage-items</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">      </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> MY</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">COV</span><span class="token punctuation" style="color:#393A34">-</span><span class="token number" style="color:#36acaa">01</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">        </span><span class="token key atrule" style="color:#00a4db">desc</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> Normal operation</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Requirement</th><th>Meaning</th></tr></thead><tbody><tr><td><code>blocks[].name</code></td><td>Required</td><td>Block identifier matched to model name in multi-block specs</td></tr><tr><td><code>blocks[].desc</code></td><td>Required</td><td>Human-readable description</td></tr><tr><td><code>blocks[].docs</code></td><td>Optional list</td><td>Markdown paths relative to <code>specs.yaml</code></td></tr><tr><td><code>blocks[].coverage-items</code></td><td>Default empty</td><td>Functional coverage item list</td></tr><tr><td><code>coverage-items[].id</code></td><td>Required</td><td>Identifier used by <code>covers</code> in tests and formal verifications</td></tr><tr><td><code>coverage-items[].desc</code></td><td>Required</td><td>Verification requirement</td></tr></tbody></table>
+<p>A single-block file matches its linked model unconditionally. These fields affect traceability only. See <a class="" href="/rtl_buddy/v6/concepts/spec-traceability/">Spec Traceability</a>.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/rtl-buddy/rtl_buddy/edit/v6.41.3/docs/reference/yaml.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/rtl_buddy/v6/reference/cli/"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">CLI Reference</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#root_configyaml" class="table-of-contents__link toc-highlight">root_config.yaml</a><ul><li><a href="#platforms-and-tool-paths" class="table-of-contents__link toc-highlight">Platforms and tool paths</a></li><li><a href="#simulator-builders" class="table-of-contents__link toc-highlight">Simulator builders</a></li><li><a href="#verible-coverage-and-surfer" class="table-of-contents__link toc-highlight">Verible, coverage, and Surfer</a></li><li><a href="#synthesis-and-physical-design-tools" class="table-of-contents__link toc-highlight">Synthesis and physical-design tools</a></li><li><a href="#fpga-tools-and-platforms" class="table-of-contents__link toc-highlight">FPGA tools and platforms</a></li><li><a href="#formal-and-other-flow-tools" class="table-of-contents__link toc-highlight">Formal and other flow tools</a></li><li><a href="#tool-check-version-pins" class="table-of-contents__link toc-highlight">Tool-check version pins</a></li><li><a href="#regression-manifest-defaults" class="table-of-contents__link toc-highlight">Regression manifest defaults</a></li><li><a href="#parallel-dispatch" class="table-of-contents__link toc-highlight">Parallel dispatch</a></li><li><a href="#xplr-experiment-storage" class="table-of-contents__link toc-highlight">XPLR experiment storage</a></li></ul></li><li><a href="#regressionyaml" class="table-of-contents__link toc-highlight">regression.yaml</a></li><li><a href="#modelsyaml" class="table-of-contents__link toc-highlight">models.yaml</a></li><li><a href="#testsyaml" class="table-of-contents__link toc-highlight">tests.yaml</a></li><li><a href="#synthyaml" class="table-of-contents__link toc-highlight">synth.yaml</a></li><li><a href="#synth_regressionyaml" class="table-of-contents__link toc-highlight">synth_regression.yaml</a></li><li><a href="#pnryaml" class="table-of-contents__link toc-highlight">pnr.yaml</a></li><li><a href="#poweryaml" class="table-of-contents__link toc-highlight">power.yaml</a></li><li><a href="#power_regressionyaml" class="table-of-contents__link toc-highlight">power_regression.yaml</a></li><li><a href="#fpgayaml" class="table-of-contents__link toc-highlight">fpga.yaml</a></li><li><a href="#fpga_regressionyaml" class="table-of-contents__link toc-highlight">fpga_regression.yaml</a></li><li><a href="#cdcyaml" class="table-of-contents__link toc-highlight">cdc.yaml</a></li><li><a href="#cdc_regressionyaml" class="table-of-contents__link toc-highlight">cdc_regression.yaml</a></li><li><a href="#lintyaml" class="table-of-contents__link toc-highlight">lint.yaml</a></li><li><a href="#lint_regressionyaml" class="table-of-contents__link toc-highlight">lint_regression.yaml</a></li><li><a href="#fpvyaml" class="table-of-contents__link toc-highlight">fpv.yaml</a></li><li><a href="#fpv_regressionyaml" class="table-of-contents__link toc-highlight">fpv_regression.yaml</a></li><li><a href="#mutyaml" class="table-of-contents__link toc-highlight">mut.yaml</a></li><li><a href="#specsyaml" class="table-of-contents__link toc-highlight">specs.yaml</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Documentation</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/v6/quickstart/">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/v6/reference/cli/">CLI Reference</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/v6/agents/#local-docs-access">Agent access</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Project</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://pypi.org/project/rtl-buddy/" target="_blank" rel="noopener noreferrer" class="footer__link-item">PyPI<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">For agents</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/v6/llms.txt" target="_blank" rel="noopener noreferrer" class="footer__link-item">llms.txt<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/v6/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="footer__link-item">Catalog JSON<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026 RTL Buddy contributors.</div></div></div></footer></div>
 </body>
 </html>

@@ -1,0 +1,32 @@
+## Artifact layout change
+
+v3 changes where test outputs are written. All per-test files now live under `artefacts/` in the suite directory instead of `logs/`.
+
+### Single run
+
+| v2 | v3 |
+|----|-----|
+| `logs/{test_name}.log` | `artefacts/{test_name}/test.log` |
+| `logs/{test_name}.err` | `artefacts/{test_name}/test.err` |
+| `logs/{test_name}.randseed` | `artefacts/{test_name}/test.randseed` |
+| `logs/{test_name}.coverage.dat` | `artefacts/{test_name}/coverage.dat` |
+| `logs/{test_name}.compile.log` | `artefacts/{test_name}/compile.log` |
+
+### Repeated runs (`randtest`)
+
+Each `randtest` iteration now writes into a numbered subdirectory:
+
+```
+artefacts/{test_name}/run-0001/test.log
+artefacts/{test_name}/run-0001/test.err
+artefacts/{test_name}/run-0001/test.randseed
+artefacts/{test_name}/run-0001/coverage.dat
+```
+
+Compile outputs (`compile.log`, `run.f`) remain at `artefacts/{test_name}/` — they are shared across all iterations of the same test.
+
+Hook scripts that previously relied on suite-relative file paths resolving from the simulator working directory must now resolve those paths explicitly. Use the preproc hook's `suite_dir` variable for suite-local inputs; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
+
+### Symlinks
+
+The convenience symlinks `test.log`, `test.err`, and `test.randseed` at the suite root still exist and still point to the latest run.

@@ -1,2239 +1,257 @@
-
 <!doctype html>
-<html lang="en" class="no-js">
-  <head>
-    
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width,initial-scale=1">
-      
-        <meta name="description" content="Build and query rtl_buddy's design knowledge graph, join test and coverage results, and use its CLI, MCP, and browser interfaces.">
-      
-      
-        <meta name="author" content="RTL Buddy contributors">
-      
-      
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/">
-      
-      
-        <link rel="prev" href="../spec-traceability/">
-      
-      
-        <link rel="next" href="../wave/">
-      
-      
-        
-      
-      
-      <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
-    
-    
-      
-        <title>Design Knowledge Graph - RTL Buddy</title>
-      
-    
-    
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
-      
-      
-
-
-    
-    
-      
-    
-    
-      
-        
-        
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
-        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
-      
-    
-    
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
-    
-      
-
-    
-    
-  </head>
-  
-  
-    <body dir="ltr">
-  
-    
-    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
-    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
-    <label class="md-overlay" for="__drawer"></label>
-    <div data-md-component="skip">
-      
-        
-        <a href="#design-knowledge-graph" class="md-skip">
-          Skip to content
-        </a>
-      
-    </div>
-    <div data-md-component="announce">
-      
-    </div>
-    
-      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
-        
-      </div>
-    
-    
-      
-
-  
-
-<header class="md-header md-header--shadow" data-md-component="header">
-  <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
-
-    </a>
-    <label class="md-header__button md-icon" for="__drawer">
-      
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
-    </label>
-    <div class="md-header__title" data-md-component="header-title">
-      <div class="md-header__ellipsis">
-        <div class="md-header__topic">
-          <span class="md-ellipsis">
-            RTL Buddy
-          </span>
-        </div>
-        <div class="md-header__topic" data-md-component="header-topic">
-          <span class="md-ellipsis">
-            
-              Design Knowledge Graph
-            
-          </span>
-        </div>
-      </div>
-    </div>
-    
-    
-      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
-    
-    
-    
-      
-      
-        <label class="md-header__button md-icon" for="__search">
-          
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
-        </label>
-        <div class="md-search" data-md-component="search" role="dialog">
-  <label class="md-search__overlay" for="__search"></label>
-  <div class="md-search__inner" role="search">
-    <form class="md-search__form" name="search">
-      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
-      <label class="md-search__icon md-icon" for="__search">
-        
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
-        
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-      </label>
-      <nav class="md-search__options" aria-label="Search">
-        
-        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
-          
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
-      </nav>
-      
-    </form>
-    <div class="md-search__output">
-      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
-        <div class="md-search-result" data-md-component="search-result">
-          <div class="md-search-result__meta">
-            Initializing search
-          </div>
-          <ol class="md-search-result__list" role="presentation"></ol>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-      
-    
-    
-      <div class="md-header__source">
-        <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
-  <div class="md-source__icon md-icon">
-    
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
-  </div>
-  <div class="md-source__repository">
-    rtl-buddy/rtl_buddy
-  </div>
-</a>
-      </div>
-    
-  </nav>
-  
-</header>
-    
-    <div class="md-container" data-md-component="container">
-      
-      
-        
-          
-        
-      
-      <main class="md-main" data-md-component="main">
-        <div class="md-main__inner md-grid">
-          
-            
-              
-              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-
-
-<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
-  <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
-
-    </a>
-    RTL Buddy
-  </label>
-  
-    <div class="md-nav__source">
-      <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
-  <div class="md-source__icon md-icon">
-    
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
-  </div>
-  <div class="md-source__repository">
-    rtl-buddy/rtl_buddy
-  </div>
-</a>
-    </div>
-  
-  <ul class="md-nav__list" data-md-scrollfix>
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../install/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Installation
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../quickstart/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Quick Start
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-    
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
-        
-          
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Concepts
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_4">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Concepts
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../execution-context/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Execution Context
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../root-config/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Root Config
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../tests/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Tests
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../simulators/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Simulators (Verilator vs Icarus)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../regressions/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Regressions
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../dispatch/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Parallel Dispatch (Slurm)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../expected-failures/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Expected Failures (xfail)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../coverage/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Coverage
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../plugins/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plugins
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../cocotb/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    cocotb
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../spec-traceability/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Spec Traceability
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Design Knowledge Graph
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Design Knowledge Graph
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#build-and-refresh-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Build and refresh the graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#query-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Query the graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#choose-graph-or-source-lookup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Choose graph or source lookup
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#results-overlay" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Results Overlay
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#coverage-on-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage on the Graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#graph-data-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Graph data model
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#node-types" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Node Types
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#edge-types" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Edge Types
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#flow-provenance" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Flow provenance
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#output-paths" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output Paths
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#looking-at-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Looking at the Graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-mcp-server" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The MCP Server
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#load-graphjson-directly" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Load graph.json directly
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../wave/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Waveform Viewer
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../hier/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hierarchy Rendering
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../hub/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hub
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../synthesis/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Synthesis
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../pnr/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Place-and-Route
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../power/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Power Analysis
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../fpga/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    FPGA Implementation
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../fpv/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Formal Property Verification
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../abv-simulation/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Assertion-Based Verification (sim)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../mut/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Mutation Testing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../xplr/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Design-Space Exploration
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../axi-profile/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    AXI Profiling
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../tool-check/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Tool Check
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
-        
-          
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Reference
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Reference
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../reference/cli/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CLI
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../reference/yaml/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    YAML Formats
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../agents/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    For Agents
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
-        
-          
-          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Development
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Development
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/setup/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Environment Setup
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/guidelines/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Engineering Guidelines
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/docs/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Documentation Guidelines
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/project-template/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Project Template Guidelines
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/bundled-skills/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Bundled Skill Guidelines
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../development/reviews/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Code Reviews
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../migrations/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Migrations
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../known-issues/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Quirks & Known Issues
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../CONTRIBUTING/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Contributing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-  </ul>
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-            
-              
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#build-and-refresh-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Build and refresh the graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#query-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Query the graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#choose-graph-or-source-lookup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Choose graph or source lookup
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#results-overlay" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Results Overlay
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#coverage-on-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage on the Graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#graph-data-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Graph data model
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#node-types" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Node Types
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#edge-types" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Edge Types
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#flow-provenance" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Flow provenance
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#output-paths" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output Paths
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#looking-at-the-graph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Looking at the Graph
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-mcp-server" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The MCP Server
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#load-graphjson-directly" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Load graph.json directly
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-          
-          
-            <div class="md-content" data-md-component="content">
-              
-              <article class="md-content__inner md-typeset">
-                
-                  
-
-
-  
-  
-
-
-<h1 id="design-knowledge-graph">Design Knowledge Graph</h1>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-concepts/graph" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Design Knowledge Graph | RTL Buddy</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Design Knowledge Graph | RTL Buddy"><meta data-rh="true" name="description" content="Build and query rtl_buddy&#x27;s design knowledge graph, join test and coverage results, and use its CLI, MCP, and browser interfaces."><meta data-rh="true" property="og:description" content="Build and query rtl_buddy&#x27;s design knowledge graph, join test and coverage results, and use its CLI, MCP, and browser interfaces."><link data-rh="true" rel="icon" href="/rtl_buddy/dev/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/" hreflang="en"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Design Knowledge Graph","item":"https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph"}]}</script><link rel="stylesheet" href="/rtl_buddy/dev/assets/css/styles.075370ab.css">
+<script src="/rtl_buddy/dev/assets/js/runtime~main.07db7c2c.js" defer="defer"></script>
+<script src="/rtl_buddy/dev/assets/js/main.4726d2b3.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><link rel="preload" as="image" href="/rtl_buddy/dev/img/logo.svg"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/rtl_buddy/dev/"><div class="navbar__logo"><img src="/rtl_buddy/dev/img/logo.svg" alt="RTL Buddy logo" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/rtl_buddy/dev/img/logo.svg" alt="RTL Buddy logo" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">RTL Buddy</b></a><div class="navbar__item dropdown dropdown--hoverable"><a href="#" aria-haspopup="true" aria-expanded="false" role="button" class="navbar__link">dev</a><ul class="dropdown__menu"><li><a href="https://rtl-buddy.github.io/rtl_buddy/dev/" target="_blank" rel="noopener noreferrer" class="dropdown__link">dev<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v6/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v6<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v5/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v5<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v4/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v4<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v3/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v3<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li><a href="https://rtl-buddy.github.io/rtl_buddy/v2/" target="_blank" rel="noopener noreferrer" class="dropdown__link">v2<svg width="12" height="12" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://rtl-buddy.github.io/rtl_buddy/dev/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">Agent docs<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/dev/"><span class="linkLabel_WmDU">RTL Buddy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/dev/install/"><span class="linkLabel_WmDU">Installation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/dev/quickstart/"><span class="linkLabel_WmDU">Quick Start</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/rtl_buddy/dev/concepts/execution-context/"><span class="categoryLinkLabel_W154">Concepts</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/execution-context/"><span class="linkLabel_WmDU">Execution Context</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/root-config/"><span class="linkLabel_WmDU">Root Config</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/tests/"><span class="linkLabel_WmDU">Tests</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/simulators/"><span class="linkLabel_WmDU">Simulation Backends</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/regressions/"><span class="linkLabel_WmDU">Regressions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/dispatch/"><span class="linkLabel_WmDU">Parallel dispatch</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/expected-failures/"><span class="linkLabel_WmDU">Expected Failures</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/coverage/"><span class="linkLabel_WmDU">Coverage</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/plugins/"><span class="linkLabel_WmDU">Test plugins</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/cocotb/"><span class="linkLabel_WmDU">cocotb Testbenches</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/spec-traceability/"><span class="linkLabel_WmDU">Spec traceability</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/rtl_buddy/dev/concepts/graph/"><span class="linkLabel_WmDU">Design Knowledge Graph</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/wave/"><span class="linkLabel_WmDU">Waveform Viewer</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/hier/"><span class="linkLabel_WmDU">Hierarchy Rendering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/hub/"><span class="linkLabel_WmDU">Hub (rb hub)</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/synthesis/"><span class="linkLabel_WmDU">Synthesis</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/pnr/"><span class="linkLabel_WmDU">Place-and-Route</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/power/"><span class="linkLabel_WmDU">Power Analysis</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/fpga/"><span class="linkLabel_WmDU">FPGA Implementation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/fpv/"><span class="linkLabel_WmDU">Formal property verification</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/abv-simulation/"><span class="linkLabel_WmDU">Assertion-based verification in simulation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/mut/"><span class="linkLabel_WmDU">Mutation testing</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/xplr/"><span class="linkLabel_WmDU">Design-Space Exploration (rb xplr)</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/axi-profile/"><span class="linkLabel_WmDU">AXI Interconnect Profiling</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/rtl_buddy/dev/concepts/tool-check/"><span class="linkLabel_WmDU">Tool dependency check</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/rtl_buddy/dev/reference/cli/"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/dev/agents/"><span class="linkLabel_WmDU">Agent use of rtl-buddy</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/rtl_buddy/dev/development/setup/"><span class="categoryLinkLabel_W154">Development</span></a></div></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/dev/migrations/"><span class="linkLabel_WmDU">Migrations</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/dev/known-issues/"><span class="linkLabel_WmDU">Quirks &amp; Known Issues</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/rtl_buddy/dev/CONTRIBUTING/"><span class="linkLabel_WmDU">Contributing</span></a></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/rtl_buddy/dev/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Concepts</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Design Knowledge Graph</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>Design Knowledge Graph</h1></header>
 <p>The design knowledge graph connects project configuration, elaborated RTL hierarchy, tests, specifications, and source bindings. Use it for questions that cross files or require elaborated relationships; read a source or config file directly for a fact contained in one file.</p>
-<h2 id="build-and-refresh-the-graph">Build and refresh the graph</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="build-and-refresh-the-graph">Build and refresh the graph<a href="#build-and-refresh-the-graph" class="hash-link" aria-label="Direct link to Build and refresh the graph" title="Direct link to Build and refresh the graph" translate="no">​</a></h2>
 <p>Build structural data first, then refresh the independent results overlay after tests or coverage runs:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>build
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rb<span class="w"> </span>graph<span class="w"> </span>results
-</code></pre></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb graph build</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb graph results</span><br></div></code></pre></div></div>
 <p>By default, <code>graph build</code> finds every model under the design directory. Select a smaller scope with a repeatable <code>--model NAME</code> or with <code>-c/--regression FILE</code>; those two selectors are mutually exclusive.</p>
 <p>The normal build includes:</p>
 <ul>
-<li>DUT, testbench, and non-simulation run hierarchies from <code>rtl-buddy-view</code>.</li>
-<li>Test, model, regression, specification, and coverage declarations from rtl_buddy configs.</li>
-<li>cocotb, Python import, signal-access, golden-model, and DPI bindings.</li>
-<li>An optional external binding tier when <code>rtl-buddy-graph-extract</code> is installed.</li>
+<li class="">DUT, testbench, and non-simulation run hierarchies from <code>rtl-buddy-view</code>.</li>
+<li class="">Test, model, regression, specification, and coverage declarations from rtl_buddy configs.</li>
+<li class="">cocotb, Python import, signal-access, golden-model, and DPI bindings.</li>
+<li class="">An optional external binding tier when <code>rtl-buddy-graph-extract</code> is installed.</li>
 </ul>
-<p>Useful reductions are <code>--no-design</code>, <code>--no-tb</code>, <code>--no-flow-tops</code>, <code>--no-bind</code>, and <code>--no-extract</code>. Use <code>--force</code> to ignore a valid cache. See the <a href="../../reference/cli/#graph">CLI reference</a> for the complete option list.</p>
+<p>Useful reductions are <code>--no-design</code>, <code>--no-tb</code>, <code>--no-flow-tops</code>, <code>--no-bind</code>, and <code>--no-extract</code>. Use <code>--force</code> to ignore a valid cache. See the <a class="" href="/rtl_buddy/dev/reference/cli/#graph">CLI reference</a> for the complete option list.</p>
 <p>The design tier requires a compatible <code>rtl-buddy-view</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>tool-check<span class="w"> </span>--explain<span class="w"> </span>rtl-buddy-view
-</code></pre></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb tool-check </span><span class="token parameter variable" style="color:#36acaa">--explain</span><span class="token plain"> rtl-buddy-view</span><br></div></code></pre></div></div>
 <p>The external extractor is optional. If absent, its tier is <code>skipped</code> and the graph remains usable. A requested tier that breaks is <code>failed</code>; per-model failures become non-zero only with <code>--strict</code>. Inspect <code>graph-meta.json</code> for tier status and failure details.</p>
 <p>Unchanged inputs, tool versions, and schema produce a cached no-op build. A failure remains cached until an input or tool version changes, or <code>--force</code> is used.</p>
-<h2 id="query-the-graph">Query the graph</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="query-the-graph">Query the graph<a href="#query-the-graph" class="hash-link" aria-label="Direct link to Query the graph" title="Direct link to Query the graph" translate="no">​</a></h2>
 <p>Use the three read verbs from the project root:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>graph<span class="w"> </span>path<span class="w"> </span>cocotb_random<span class="w"> </span>module:demo_tiny_alu
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>rb<span class="w"> </span>graph<span class="w"> </span>explain<span class="w"> </span>test:verif/demo_tiny_alu#flags
-</code></pre></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb graph query </span><span class="token string" style="color:#e3116c">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb graph path cocotb_random module:demo_tiny_alu</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb graph explain test:verif/demo_tiny_alu</span><span class="token comment" style="color:#999988;font-style:italic">#flags</span><br></div></code></pre></div></div>
 <ul>
-<li><code>query</code> performs deterministic keyword matching and bounded neighbourhood expansion. Use <code>--type</code>, <code>--tier</code>, <code>--depth</code>, or <code>--limit</code> to narrow the result.</li>
-<li><code>path</code> returns shortest paths. Traversal is undirected by default because edge direction expresses role, not reachability; pass <code>--directed</code> when direction matters.</li>
-<li><code>explain</code> returns one node's attributes, incident edges, test result, coverage entry, and a source-citation command for instance nodes.</li>
+<li class=""><code>query</code> performs deterministic keyword matching and bounded neighbourhood expansion. Use <code>--type</code>, <code>--tier</code>, <code>--depth</code>, or <code>--limit</code> to narrow the result.</li>
+<li class=""><code>path</code> returns shortest paths. Traversal is undirected by default because edge direction expresses role, not reachability; pass <code>--directed</code> when direction matters.</li>
+<li class=""><code>explain</code> returns one node&#x27;s attributes, incident edges, test result, coverage entry, and a source-citation command for instance nodes.</li>
 </ul>
 <p>Bare names are accepted only when they identify one node. Ambiguous names fail with candidate ids instead of choosing silently. <code>query</code> exits 1 when nothing matches; an invalid or ambiguous node reference exits 2.</p>
 <p>All three verbs read without taking the graph write lock, so they can run while a regression is writing separate test artefacts. Pass <code>--no-results</code> for a structural-only query.</p>
-<p>With <code>--machine</code>, each command emits the standard <a href="../../agents/#machine-mode">machine envelope</a>. Query payloads include the graph and overlay paths plus <code>matches</code>, <code>paths</code>, or the explained node. Truncation metadata reports neighbours omitted by bounded expansion; raise the corresponding limit or explain a specific peer rather than assuming the result is complete.</p>
-<h2 id="choose-graph-or-source-lookup">Choose graph or source lookup</h2>
+<p>With <code>--machine</code>, each command emits the standard <a class="" href="/rtl_buddy/dev/agents/#machine-mode">machine envelope</a>. Query payloads include the graph and overlay paths plus <code>matches</code>, <code>paths</code>, or the explained node. Truncation metadata reports neighbours omitted by bounded expansion; raise the corresponding limit or explain a specific peer rather than assuming the result is complete.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="choose-graph-or-source-lookup">Choose graph or source lookup<a href="#choose-graph-or-source-lookup" class="hash-link" aria-label="Direct link to Choose graph or source lookup" title="Direct link to Choose graph or source lookup" translate="no">​</a></h2>
 <p>The graph is most useful for:</p>
 <ul>
-<li>transitive impact through elaborated hierarchy;</li>
-<li>paths that cross design, test, specification, and binding data;</li>
-<li>stable node ids and exact structural relationships;</li>
-<li>joining current results or coverage to those relationships.</li>
+<li class="">transitive impact through elaborated hierarchy;</li>
+<li class="">paths that cross design, test, specification, and binding data;</li>
+<li class="">stable node ids and exact structural relationships;</li>
+<li class="">joining current results or coverage to those relationships.</li>
 </ul>
 <p>For a port list, a YAML field, or another single-file fact, use the graph to locate the source and read the relevant lines. Do not enumerate a small config file through many <code>explain</code> calls. Use <code>explain --expand</code> only when the full attributes of every peer are needed.</p>
 <p><code>scripts/graph_token_benchmark.py</code> compares graph and raw-file routes on a built project. Run it after changing query payloads:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/graph_token_benchmark.py<span class="w"> </span>-p<span class="w"> </span>/path/to/project<span class="w"> </span>--markdown
-</code></pre></div>
-<h2 id="results-overlay">Results Overlay</h2>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">uv run python scripts/graph_token_benchmark.py </span><span class="token parameter variable" style="color:#36acaa">-p</span><span class="token plain"> /path/to/project </span><span class="token parameter variable" style="color:#36acaa">--markdown</span><br></div></code></pre></div></div>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="results-overlay">Results Overlay<a href="#results-overlay" class="hash-link" aria-label="Direct link to Results Overlay" title="Direct link to Results Overlay" translate="no">​</a></h2>
 <p><code>rb graph results</code> writes current run state to <code>artefacts/graph/results-overlay.json</code> without modifying structural <code>graph.json</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>results
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>graph<span class="w"> </span>results<span class="w"> </span>--strict
-</code></pre></div>
-<p>Entries are keyed by <code>test:&lt;suite dir&gt;#&lt;test name&gt;</code> and contain the latest result status, seed, timestamp, and paths to artefacts that exist. The timestamp is the result envelope's file modification time, so refreshing unchanged inputs is byte-stable.</p>
-<p>Result status comes from each run's <code>result.json</code>, not from log parsing. A test directory with artefacts but no result envelope is retained as <code>UNKNOWN</code>. Random-test iterations remain available under <code>runs</code>; the newest iteration supplies the entry's top-level status.</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb graph results</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb graph results </span><span class="token parameter variable" style="color:#36acaa">--strict</span><br></div></code></pre></div></div>
+<p>Entries are keyed by <code>test:&lt;suite dir&gt;#&lt;test name&gt;</code> and contain the latest result status, seed, timestamp, and paths to artefacts that exist. The timestamp is the result envelope&#x27;s file modification time, so refreshing unchanged inputs is byte-stable.</p>
+<p>Result status comes from each run&#x27;s <code>result.json</code>, not from log parsing. A test directory with artefacts but no result envelope is retained as <code>UNKNOWN</code>. Random-test iterations remain available under <code>runs</code>; the newest iteration supplies the entry&#x27;s top-level status.</p>
 <p>When cross-checking against <code>graph.json</code>:</p>
 <ul>
-<li><code>missing</code> identifies graph test nodes with no result.</li>
-<li><code>unmatched</code> identifies results with no declared test node, such as generated sweep names.</li>
-<li><code>problems</code> identifies unreadable result data.</li>
+<li class=""><code>missing</code> identifies graph test nodes with no result.</li>
+<li class=""><code>unmatched</code> identifies results with no declared test node, such as generated sweep names.</li>
+<li class=""><code>problems</code> identifies unreadable result data.</li>
 </ul>
 <p>These are reported normally and become failures with <code>--strict</code>. A missing or unreadable overlay does not prevent structural queries.</p>
-<h2 id="coverage-on-the-graph">Coverage on the Graph</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="coverage-on-the-graph">Coverage on the Graph<a href="#coverage-on-the-graph" class="hash-link" aria-label="Direct link to Coverage on the Graph" title="Direct link to Coverage on the Graph" translate="no">​</a></h2>
 <p><code>rb graph results</code> can correlate declared <code>covers:</code> relationships with observed coverage already on disk. It never reruns the simulator or rewrites <code>graph.json</code>.</p>
 <p>The default <code>--coverage auto</code> uses the newest coverage manifest and model, then falls back to per-test <code>coverage.dat</code> files. You can select a manifest with <code>--cov-dir</code> or <code>--cov-manifest</code>, pass a merged LCOV <code>.info</code> file, require the model source with <code>--coverage model</code>, or disable the join with <code>--no-coverage</code>.</p>
 <p>Coverage items receive one of three states:</p>
-<table>
-<thead>
-<tr>
-<th>State</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>exercised</code></td>
-<td>A declared item matched an observed cover point with hits.</td>
-</tr>
-<tr>
-<td><code>declared-only</code></td>
-<td>The item was declared but no matched point fired.</td>
-</tr>
-<tr>
-<td><code>observed-but-undeclared</code></td>
-<td>An observed cover point has no <code>covers:</code> declaration.</td>
-</tr>
-</tbody>
-</table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>State</th><th>Meaning</th></tr></thead><tbody><tr><td><code>exercised</code></td><td>A declared item matched an observed cover point with hits.</td></tr><tr><td><code>declared-only</code></td><td>The item was declared but no matched point fired.</td></tr><tr><td><code>observed-but-undeclared</code></td><td>An observed cover point has no <code>covers:</code> declaration.</td></tr></tbody></table>
 <p>Name correlation prefers exact, case-insensitive, normalized, then <code>cov</code>/<code>cvr</code>/<code>c</code>-affix matches. The selected rung is recorded; treat an <code>affix</code> match as a prompt to align the names. Module coverage joins exact elaborated names first, then names with one trailing parameterization suffix removed. Multiple elaborations are aggregated onto the source-module node.</p>
 <p>LCOV lacks module and per-test identity. It joins design coverage by resolved file and still uses any available per-test databases for test badges and coverage-item verdicts. Unresolved, re-anchored, or unmatched paths are reported rather than guessed.</p>
-<p>See <a href="../coverage/">Coverage</a> for metric semantics and coverage collection.</p>
-<h2 id="graph-data-model">Graph data model</h2>
-<p><code>graph.json</code> is directed, multigraph <a href="https://networkx.org/documentation/stable/reference/readwrite/json_graph.html">NetworkX node-link JSON</a>. Every node has <code>id</code>, <code>type</code>, <code>label</code>, and <code>tier</code>; source-backed nodes also carry a project-relative <code>file</code>. Every edge has <code>type</code> and <code>confidence</code>.</p>
+<p>See <a class="" href="/rtl_buddy/dev/concepts/coverage/">Coverage</a> for metric semantics and coverage collection.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="graph-data-model">Graph data model<a href="#graph-data-model" class="hash-link" aria-label="Direct link to Graph data model" title="Direct link to Graph data model" translate="no">​</a></h2>
+<p><code>graph.json</code> is directed, multigraph <a href="https://networkx.org/documentation/stable/reference/readwrite/json_graph.html" target="_blank" rel="noopener noreferrer" class="">NetworkX node-link JSON</a>. Every node has <code>id</code>, <code>type</code>, <code>label</code>, and <code>tier</code>; source-backed nodes also carry a project-relative <code>file</code>. Every edge has <code>type</code> and <code>confidence</code>.</p>
 <p>The tiers share one id namespace and merge by node id:</p>
-<table>
-<thead>
-<tr>
-<th>Tier</th>
-<th>Contents</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>design</code></td>
-<td>Modules, instances, ports, parameters, interfaces, and modports from <code>rtl-buddy-view</code>.</td>
-</tr>
-<tr>
-<td><code>config</code></td>
-<td>Suites, tests, testbenches, flow runs, models, specs, coverage items, docs, and golden models.</td>
-</tr>
-<tr>
-<td><code>binding</code></td>
-<td>Python modules, imports, cocotb-to-DUT and signal bindings, golden-model checks, and DPI implementations.</td>
-</tr>
-</tbody>
-</table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tier</th><th>Contents</th></tr></thead><tbody><tr><td><code>design</code></td><td>Modules, instances, ports, parameters, interfaces, and modports from <code>rtl-buddy-view</code>.</td></tr><tr><td><code>config</code></td><td>Suites, tests, testbenches, flow runs, models, specs, coverage items, docs, and golden models.</td></tr><tr><td><code>binding</code></td><td>Python modules, imports, cocotb-to-DUT and signal bindings, golden-model checks, and DPI implementations.</td></tr></tbody></table>
 <p>Paths inside ids are project-relative and POSIX-separated. When different testbench files declare the same module name, testbench-side ids are qualified with <code>@&lt;suite dir&gt;</code>; DUT ids remain unqualified so the tiers can stitch through them. Use the full qualified id when a label is ambiguous.</p>
-<h2 id="node-types">Node Types</h2>
-<table>
-<thead>
-<tr>
-<th>Type</th>
-<th>Id form</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>module</code></td>
-<td><code>module:&lt;name&gt;</code></td>
-</tr>
-<tr>
-<td><code>instance</code></td>
-<td><code>inst:&lt;top&gt;/&lt;dot.path&gt;</code></td>
-</tr>
-<tr>
-<td><code>port</code></td>
-<td><code>port:&lt;module&gt;.&lt;port&gt;</code></td>
-</tr>
-<tr>
-<td><code>parameter</code></td>
-<td><code>param:&lt;module&gt;.&lt;name&gt;</code></td>
-</tr>
-<tr>
-<td><code>interface</code>, <code>modport</code></td>
-<td><code>iface:&lt;name&gt;</code>, <code>modport:&lt;interface&gt;.&lt;name&gt;</code></td>
-</tr>
-<tr>
-<td><code>suite</code></td>
-<td><code>suite:&lt;suite dir&gt;</code></td>
-</tr>
-<tr>
-<td><code>test</code></td>
-<td><code>test:&lt;suite dir&gt;#&lt;name&gt;</code></td>
-</tr>
-<tr>
-<td><code>testbench</code></td>
-<td><code>tb:&lt;suite dir&gt;#&lt;name&gt;</code></td>
-</tr>
-<tr>
-<td><code>model</code></td>
-<td><code>model:&lt;models.yaml&gt;#&lt;name&gt;</code></td>
-</tr>
-<tr>
-<td><code>spec_block</code></td>
-<td><code>spec:&lt;block&gt;</code></td>
-</tr>
-<tr>
-<td><code>coverage_item</code></td>
-<td><code>covitem:&lt;block&gt;#&lt;id&gt;</code></td>
-</tr>
-<tr>
-<td><code>spec_doc</code>, <code>golden_model</code></td>
-<td><code>doc:&lt;path&gt;</code>, <code>golden:&lt;path&gt;</code></td>
-</tr>
-<tr>
-<td><code>python_module</code></td>
-<td>Normally <code>py:&lt;path&gt;</code>; an extractor may supply another id for the same file.</td>
-</tr>
-</tbody>
-</table>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="node-types">Node Types<a href="#node-types" class="hash-link" aria-label="Direct link to Node Types" title="Direct link to Node Types" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Type</th><th>Id form</th></tr></thead><tbody><tr><td><code>module</code></td><td><code>module:&lt;name&gt;</code></td></tr><tr><td><code>instance</code></td><td><code>inst:&lt;top&gt;/&lt;dot.path&gt;</code></td></tr><tr><td><code>port</code></td><td><code>port:&lt;module&gt;.&lt;port&gt;</code></td></tr><tr><td><code>parameter</code></td><td><code>param:&lt;module&gt;.&lt;name&gt;</code></td></tr><tr><td><code>interface</code>, <code>modport</code></td><td><code>iface:&lt;name&gt;</code>, <code>modport:&lt;interface&gt;.&lt;name&gt;</code></td></tr><tr><td><code>suite</code></td><td><code>suite:&lt;suite dir&gt;</code></td></tr><tr><td><code>test</code></td><td><code>test:&lt;suite dir&gt;#&lt;name&gt;</code></td></tr><tr><td><code>testbench</code></td><td><code>tb:&lt;suite dir&gt;#&lt;name&gt;</code></td></tr><tr><td><code>model</code></td><td><code>model:&lt;models.yaml&gt;#&lt;name&gt;</code></td></tr><tr><td><code>spec_block</code></td><td><code>spec:&lt;block&gt;</code></td></tr><tr><td><code>coverage_item</code></td><td><code>covitem:&lt;block&gt;#&lt;id&gt;</code></td></tr><tr><td><code>spec_doc</code>, <code>golden_model</code></td><td><code>doc:&lt;path&gt;</code>, <code>golden:&lt;path&gt;</code></td></tr><tr><td><code>python_module</code></td><td>Normally <code>py:&lt;path&gt;</code>; an extractor may supply another id for the same file.</td></tr></tbody></table>
 <p><code>reglvl</code> is stored as written because resolving builder-specific values requires runtime context.</p>
-<h2 id="edge-types">Edge Types</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="edge-types">Edge Types<a href="#edge-types" class="hash-link" aria-label="Direct link to Edge Types" title="Direct link to Edge Types" translate="no">​</a></h2>
 <p>Design edges are <code>instantiates</code>, <code>child_of</code>, <code>instance_of</code>, <code>connects</code>, <code>implements</code>, and <code>overrides</code>.</p>
 <p>Important cross-tier and config edges are:</p>
-<table>
-<thead>
-<tr>
-<th>Edge</th>
-<th>Relationship</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>declares</code></td>
-<td>Suite to test/testbench, or spec block to coverage item.</td>
-</tr>
-<tr>
-<td><code>runs_on</code></td>
-<td>Test to testbench.</td>
-</tr>
-<tr>
-<td><code>exercises</code></td>
-<td>Testbench or non-simulation run to model.</td>
-</tr>
-<tr>
-<td><code>covers</code></td>
-<td>Test or formal run to coverage item.</td>
-</tr>
-<tr>
-<td><code>specified_by</code>, <code>documented_by</code>, <code>implements</code></td>
-<td>Model, spec block, document, and golden-model traceability.</td>
-</tr>
-<tr>
-<td><code>maps_to</code></td>
-<td>Model declaration to design module.</td>
-</tr>
-<tr>
-<td><code>elaborates_as</code></td>
-<td>Testbench to its elaborated top module.</td>
-</tr>
-<tr>
-<td><code>targets</code></td>
-<td>Non-simulation run to its top module.</td>
-</tr>
-</tbody>
-</table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Edge</th><th>Relationship</th></tr></thead><tbody><tr><td><code>declares</code></td><td>Suite to test/testbench, or spec block to coverage item.</td></tr><tr><td><code>runs_on</code></td><td>Test to testbench.</td></tr><tr><td><code>exercises</code></td><td>Testbench or non-simulation run to model.</td></tr><tr><td><code>covers</code></td><td>Test or formal run to coverage item.</td></tr><tr><td><code>specified_by</code>, <code>documented_by</code>, <code>implements</code></td><td>Model, spec block, document, and golden-model traceability.</td></tr><tr><td><code>maps_to</code></td><td>Model declaration to design module.</td></tr><tr><td><code>elaborates_as</code></td><td>Testbench to its elaborated top module.</td></tr><tr><td><code>targets</code></td><td>Non-simulation run to its top module.</td></tr></tbody></table>
 <p>Binding edges are <code>binds_to</code>, <code>imports</code>, <code>drives</code>, <code>checks_against</code>, and <code>implemented_by</code>. Only <code>drives</code> and <code>implemented_by</code> may be <code>INFERRED</code>; unresolved signal or symbol matches carry <code>resolved: false</code>. A <code>via</code> field identifies evidence inherited through a helper module.</p>
 <p>The config tier reads the same loaders as the test, spec, and regression commands.</p>
-<h2 id="flow-provenance">Flow provenance</h2>
-<p>Flow ownership comes from each flow's regression manifest, first at the project root and then at the path configured in <a href="../../reference/yaml/#root_configyaml"><code>cfg-rtl-reg</code></a>. A missing manifest means the project does not use that flow; an invalid manifest is reported. Unclaimed <code>tests.yaml</code> suites default to <code>sim</code>.</p>
-<h2 id="output-paths">Output Paths</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="flow-provenance">Flow provenance<a href="#flow-provenance" class="hash-link" aria-label="Direct link to Flow provenance" title="Direct link to Flow provenance" translate="no">​</a></h2>
+<p>Flow ownership comes from each flow&#x27;s regression manifest, first at the project root and then at the path configured in <a class="" href="/rtl_buddy/dev/reference/yaml/#root_configyaml"><code>cfg-rtl-reg</code></a>. A missing manifest means the project does not use that flow; an invalid manifest is reported. Unclaimed <code>tests.yaml</code> suites default to <code>sim</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="output-paths">Output Paths<a href="#output-paths" class="hash-link" aria-label="Direct link to Output Paths" title="Direct link to Output Paths" translate="no">​</a></h2>
 <p>The stable outputs are:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>artefacts/graph/
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>├── graph.json
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>├── graph-meta.json
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>├── results-overlay.json
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>├── design/&lt;model&gt;/graph.json
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>├── config/graph.json
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>├── binding/graph.json
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>└── bind/graph.json
-</code></pre></div>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">artefacts/graph/</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">├── graph.json</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">├── graph-meta.json</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">├── results-overlay.json</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">├── design/&lt;model&gt;/graph.json</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">├── config/graph.json</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">├── binding/graph.json</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">└── bind/graph.json</span><br></div></code></pre></div></div>
 <p><code>graph-meta.json</code> records the build fingerprint, input hashes, tool versions, tier status, failures, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under <code>design/&lt;model&gt;/tb/</code> and <code>design/&lt;model&gt;/run/</code>. Their generated filelists and renderer logs live under <code>artefacts/hier/</code>.</p>
 <p>Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over <code>graph.json</code>.</p>
-<h2 id="looking-at-the-graph">Looking at the Graph</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="looking-at-the-graph">Looking at the Graph<a href="#looking-at-the-graph" class="hash-link" aria-label="Direct link to Looking at the Graph" title="Direct link to Looking at the Graph" translate="no">​</a></h2>
 <p>Serve the interactive graph pane through the hub:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>build
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>rb<span class="w"> </span>graph<span class="w"> </span>results
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer
-</code></pre></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb graph build</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb graph results</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb hub start --serve-viewer</span><br></div></code></pre></div></div>
 <p>Open <code>http://127.0.0.1:&lt;http_port&gt;/gph</code>. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage.</p>
 <p>Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rb<span class="w"> </span>hub<span class="w"> </span>send<span class="w"> </span>graph-focus<span class="w"> </span>module:dma_engine
-</code></pre></div>
-<p>The hub caches the focus so it is delivered when the pane connects. See <a href="../hub/#design-knowledge-graph-pane">Hub</a> for browser behavior.</p>
-<h2 id="the-mcp-server">The MCP Server</h2>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb hub send graph-focus module:dma_engine</span><br></div></code></pre></div></div>
+<p>The hub caches the focus so it is delivered when the pane connects. See <a class="" href="/rtl_buddy/dev/concepts/hub/#design-knowledge-graph-pane">Hub</a> for browser behavior.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-mcp-server">The MCP Server<a href="#the-mcp-server" class="hash-link" aria-label="Direct link to The MCP Server" title="Direct link to The MCP Server" translate="no">​</a></h2>
 <p>Install the optional MCP dependency and configure an agent host to launch the stateless stdio server:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s1">&#39;rtl_buddy[mcp]&#39;</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>rb<span class="w"> </span>mcp<span class="w"> </span>--list-tools
-</code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">&quot;rtl-buddy&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;mcp&quot;</span><span class="p">]}</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="p">}</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">}</span>
-</code></pre></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">uv </span><span class="token function" style="color:#d73a49">add</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&#x27;rtl_buddy[mcp]&#x27;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb mcp --list-tools</span><br></div></code></pre></div></div>
+<div class="language-json codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-json codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token punctuation" style="color:#393A34">{</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token property" style="color:#36acaa">&quot;mcpServers&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token property" style="color:#36acaa">&quot;rtl-buddy&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token property" style="color:#36acaa">&quot;command&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;rb&quot;</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token property" style="color:#36acaa">&quot;args&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token string" style="color:#e3116c">&quot;mcp&quot;</span><span class="token punctuation" style="color:#393A34">]</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token punctuation" style="color:#393A34">}</span><br></div></code></pre></div></div>
 <p>Graph, test-status, coverage, and hierarchy tools mirror their <code>rb --machine</code> payloads. Each call rereads graph and coverage files, so no daemon is required and updates are visible without restarting the MCP server.</p>
 <p>When a live hub is discoverable, the server also advertises tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage focus. Without a hub those tools are omitted rather than exposed in a permanently failing state.</p>
-<h2 id="load-graphjson-directly">Load graph.json directly</h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="load-graphjson-directly">Load graph.json directly<a href="#load-graphjson-directly" class="hash-link" aria-label="Direct link to Load graph.json directly" title="Direct link to Load graph.json directly" translate="no">​</a></h2>
 <p>The file is plain JSON; NetworkX is optional:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">networkx</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nx</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;artefacts/graph/graph.json&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">handle</span><span class="p">:</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">data</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
-<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="n">graph</span> <span class="o">=</span> <span class="n">nx</span><span class="o">.</span><span class="n">node_link_graph</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">edges</span><span class="o">=</span><span class="s2">&quot;links&quot;</span><span class="p">)</span>
-</code></pre></div>
-<p>Do not assume that a config-only graph has no dangling endpoints: config-to-design edges intentionally name modules that the design tier supplies when included.</p>
-
-
-
-
-
-
-
-  
-  
-
-
-
-
-
-
-                
-              </article>
-            </div>
-          
-          
-<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
-        </div>
-        
-          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
-  Back to top
-</button>
-        
-      </main>
-      
-        <footer class="md-footer">
-  
-  <div class="md-footer-meta md-typeset">
-    <div class="md-footer-meta__inner md-grid">
-      <div class="md-copyright">
-  
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
-  
-</div>
-      
-    </div>
-  </div>
-</footer>
-      
-    </div>
-    <div class="md-dialog" data-md-component="dialog">
-      <div class="md-dialog__inner md-typeset"></div>
-    </div>
-    
-    
-    
-      
-      
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
-    
-    
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
-      
-    
-  </body>
+<div class="language-python codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-python codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token keyword" style="color:#00009f">import</span><span class="token plain"> json</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token keyword" style="color:#00009f">import</span><span class="token plain"> networkx </span><span class="token keyword" style="color:#00009f">as</span><span class="token plain"> nx</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token keyword" style="color:#00009f">with</span><span class="token plain"> </span><span class="token builtin">open</span><span class="token punctuation" style="color:#393A34">(</span><span class="token string" style="color:#e3116c">&quot;artefacts/graph/graph.json&quot;</span><span class="token punctuation" style="color:#393A34">)</span><span class="token plain"> </span><span class="token keyword" style="color:#00009f">as</span><span class="token plain"> handle</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    data </span><span class="token operator" style="color:#393A34">=</span><span class="token plain"> json</span><span class="token punctuation" style="color:#393A34">.</span><span class="token plain">load</span><span class="token punctuation" style="color:#393A34">(</span><span class="token plain">handle</span><span class="token punctuation" style="color:#393A34">)</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">graph </span><span class="token operator" style="color:#393A34">=</span><span class="token plain"> nx</span><span class="token punctuation" style="color:#393A34">.</span><span class="token plain">node_link_graph</span><span class="token punctuation" style="color:#393A34">(</span><span class="token plain">data</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> edges</span><span class="token operator" style="color:#393A34">=</span><span class="token string" style="color:#e3116c">&quot;links&quot;</span><span class="token punctuation" style="color:#393A34">)</span><br></div></code></pre></div></div>
+<p>Do not assume that a config-only graph has no dangling endpoints: config-to-design edges intentionally name modules that the design tier supplies when included.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/rtl-buddy/rtl_buddy/edit/main/docs/concepts/graph.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/rtl_buddy/dev/concepts/spec-traceability/"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Spec traceability</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/rtl_buddy/dev/concepts/wave/"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Waveform Viewer</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#build-and-refresh-the-graph" class="table-of-contents__link toc-highlight">Build and refresh the graph</a></li><li><a href="#query-the-graph" class="table-of-contents__link toc-highlight">Query the graph</a></li><li><a href="#choose-graph-or-source-lookup" class="table-of-contents__link toc-highlight">Choose graph or source lookup</a></li><li><a href="#results-overlay" class="table-of-contents__link toc-highlight">Results Overlay</a></li><li><a href="#coverage-on-the-graph" class="table-of-contents__link toc-highlight">Coverage on the Graph</a></li><li><a href="#graph-data-model" class="table-of-contents__link toc-highlight">Graph data model</a></li><li><a href="#node-types" class="table-of-contents__link toc-highlight">Node Types</a></li><li><a href="#edge-types" class="table-of-contents__link toc-highlight">Edge Types</a></li><li><a href="#flow-provenance" class="table-of-contents__link toc-highlight">Flow provenance</a></li><li><a href="#output-paths" class="table-of-contents__link toc-highlight">Output Paths</a></li><li><a href="#looking-at-the-graph" class="table-of-contents__link toc-highlight">Looking at the Graph</a></li><li><a href="#the-mcp-server" class="table-of-contents__link toc-highlight">The MCP Server</a></li><li><a href="#load-graphjson-directly" class="table-of-contents__link toc-highlight">Load graph.json directly</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Documentation</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/quickstart/">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/reference/cli/">CLI Reference</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/agents/#local-docs-access">Agent access</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Project</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://pypi.org/project/rtl-buddy/" target="_blank" rel="noopener noreferrer" class="footer__link-item">PyPI<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">For agents</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/dev/llms.txt" target="_blank" rel="noopener noreferrer" class="footer__link-item">llms.txt<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/dev/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="footer__link-item">Catalog JSON<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026 RTL Buddy contributors.</div></div></div></footer></div>
+</body>
 </html>

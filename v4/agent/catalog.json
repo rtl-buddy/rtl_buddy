@@ -1,0 +1,1407 @@
+{
+  "pages": [
+    {
+      "description": "Guidelines for contributing to rtl_buddy documentation, including the frontmatter convention, writing style, and what is auto-generated.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/CONTRIBUTING/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/CONTRIBUTING/#frontmatter",
+          "slug": "frontmatter",
+          "title": "Frontmatter",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/CONTRIBUTING/frontmatter.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/CONTRIBUTING/#writing-style",
+          "slug": "writing-style",
+          "title": "Writing style",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/CONTRIBUTING/writing-style.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/CONTRIBUTING/#page-structure",
+          "slug": "page-structure",
+          "title": "Page structure",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/CONTRIBUTING/page-structure.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/CONTRIBUTING/#auto-generated-pages",
+          "slug": "auto-generated-pages",
+          "title": "Auto-generated pages",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/CONTRIBUTING/auto-generated-pages.md"
+        }
+      ],
+      "slug": "CONTRIBUTING",
+      "title": "Contributing to Docs",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/CONTRIBUTING.md"
+    },
+    {
+      "description": "How rtl_buddy is built for AI-agent use \u2014 the bundled skill, local docs access, machine mode, and the structured log and stdout contracts agents can rely on.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/agents/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/agents/#bundled-agent-skill",
+          "slug": "bundled-agent-skill",
+          "title": "Bundled agent skill",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/agents/bundled-agent-skill.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/agents/#local-docs-access",
+          "slug": "local-docs-access",
+          "title": "Local docs access",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/agents/local-docs-access.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/agents/#machine-mode",
+          "slug": "machine-mode",
+          "title": "Machine mode",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/agents/machine-mode.md"
+        }
+      ],
+      "slug": "agents",
+      "title": "Agent use of rtl-buddy",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/agents.md"
+    },
+    {
+      "description": "How to profile AXI interconnect performance with rtl_buddy via the rb axi-profile subcommand group, models.yaml fields, and the standalone rtl-buddy-axi-profiler.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#installing-rtl-buddy-axi-profiler",
+          "slug": "installing-rtl-buddy-axi-profiler",
+          "title": "Installing rtl-buddy-axi-profiler",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/installing-rtl-buddy-axi-profiler.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#modelsyaml-fields",
+          "slug": "modelsyaml-fields",
+          "title": "`models.yaml` fields",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/modelsyaml-fields.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#subcommand-discover",
+          "slug": "subcommand-discover",
+          "title": "Subcommand: `discover`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/subcommand-discover.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#subcommand-gen-monitor",
+          "slug": "subcommand-gen-monitor",
+          "title": "Subcommand: `gen-monitor`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/subcommand-gen-monitor.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#subcommand-run",
+          "slug": "subcommand-run",
+          "title": "Subcommand: `run`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/subcommand-run.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#subcommand-notebook",
+          "slug": "subcommand-notebook",
+          "title": "Subcommand: `notebook`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/subcommand-notebook.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#artefacts",
+          "slug": "artefacts",
+          "title": "Artefacts",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#hub-integration",
+          "slug": "hub-integration",
+          "title": "Hub integration",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/hub-integration.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/axi-profile/#out-of-scope-today",
+          "slug": "out-of-scope-today",
+          "title": "Out of scope (today)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/axi-profile/out-of-scope-today.md"
+        }
+      ],
+      "slug": "concepts/axi-profile",
+      "title": "AXI Interconnect Profiling",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/axi-profile.md"
+    },
+    {
+      "description": "How to run CDC lint with rtl_buddy via the rb cdc command, cdc.yaml, and the standalone rtl-buddy-cdc analyzer.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#supported-backend",
+          "slug": "supported-backend",
+          "title": "Supported backend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/supported-backend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#installing-rtl-buddy-cdc",
+          "slug": "installing-rtl-buddy-cdc",
+          "title": "Installing rtl-buddy-cdc",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/installing-rtl-buddy-cdc.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#cdc-config-cdcyaml",
+          "slug": "cdc-config-cdcyaml",
+          "title": "CDC config: `cdc.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/cdc-config-cdcyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#root-config-cfg-cdc-tools",
+          "slug": "root-config-cfg-cdc-tools",
+          "title": "Root config: `cfg-cdc-tools`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/root-config-cfg-cdc-tools.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#running-cdc",
+          "slug": "running-cdc",
+          "title": "Running CDC",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/running-cdc.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#results-table",
+          "slug": "results-table",
+          "title": "Results table",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/results-table.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#artefacts",
+          "slug": "artefacts",
+          "title": "Artefacts",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#hub-integration",
+          "slug": "hub-integration",
+          "title": "Hub integration",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/hub-integration.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cdc/#out-of-scope-today",
+          "slug": "out-of-scope-today",
+          "title": "Out of scope (today)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cdc/out-of-scope-today.md"
+        }
+      ],
+      "slug": "concepts/cdc",
+      "title": "CDC Lint",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/cdc.md"
+    },
+    {
+      "description": "How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cocotb/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cocotb/#prerequisites",
+          "slug": "prerequisites",
+          "title": "Prerequisites",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cocotb/prerequisites.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cocotb/#yaml-shape",
+          "slug": "yaml-shape",
+          "title": "YAML shape",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cocotb/yaml-shape.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cocotb/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cocotb/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cocotb/#testbench-field-reference",
+          "slug": "testbench-field-reference",
+          "title": "Testbench field reference",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/cocotb/testbench-field-reference.md"
+        }
+      ],
+      "slug": "concepts/cocotb",
+      "title": "cocotb testbenches (Verilator + VPI)",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/cocotb.md"
+    },
+    {
+      "description": "How to collect, merge, and report coverage for Verilator-based builds using rtl_buddy.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/#setup",
+          "slug": "setup",
+          "title": "Setup",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/coverage/setup.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/#coverage-merge-modes",
+          "slug": "coverage-merge-modes",
+          "title": "Coverage merge modes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/coverage/coverage-merge-modes.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/#generating-merged-output",
+          "slug": "generating-merged-output",
+          "title": "Generating merged output",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/coverage/generating-merged-output.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/#directory-level-coverage-summary",
+          "slug": "directory-level-coverage-summary",
+          "title": "Directory-level coverage summary",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/coverage/directory-level-coverage-summary.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/#full-flag-reference",
+          "slug": "full-flag-reference",
+          "title": "Full flag reference",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/coverage/full-flag-reference.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/#full-schema",
+          "slug": "full-schema",
+          "title": "Full schema",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/coverage/full-schema.md"
+        }
+      ],
+      "slug": "concepts/coverage",
+      "title": "Coverage",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/coverage.md"
+    },
+    {
+      "description": "How to run formal property verification with rtl_buddy via the rb fpv command, fpv.yaml, and SymbiYosys.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#supported-backend",
+          "slug": "supported-backend",
+          "title": "Supported backend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/supported-backend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#installing-symbiyosys",
+          "slug": "installing-symbiyosys",
+          "title": "Installing SymbiYosys",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/installing-symbiyosys.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#fpv-config-fpvyaml",
+          "slug": "fpv-config-fpvyaml",
+          "title": "FPV config: `fpv.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/fpv-config-fpvyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#root-config-cfg-fpv-tools",
+          "slug": "root-config-cfg-fpv-tools",
+          "title": "Root config: `cfg-fpv-tools`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/root-config-cfg-fpv-tools.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#running-fpv",
+          "slug": "running-fpv",
+          "title": "Running FPV",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/running-fpv.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#results-table",
+          "slug": "results-table",
+          "title": "Results table",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/results-table.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#artefacts",
+          "slug": "artefacts",
+          "title": "Artefacts",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#opening-counterexamples",
+          "slug": "opening-counterexamples",
+          "title": "Opening counterexamples",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/opening-counterexamples.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/#out-of-scope-today",
+          "slug": "out-of-scope-today",
+          "title": "Out of scope (today)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/fpv/out-of-scope-today.md"
+        }
+      ],
+      "slug": "concepts/fpv",
+      "title": "Formal Property Verification",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/fpv.md"
+    },
+    {
+      "description": "How to render module hierarchy diagrams with rtl_buddy via the rb hier command and the standalone rtl-buddy-view renderer.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#installing-rtl-buddy-view",
+          "slug": "installing-rtl-buddy-view",
+          "title": "Installing rtl-buddy-view",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/installing-rtl-buddy-view.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#output-formats",
+          "slug": "output-formats",
+          "title": "Output formats",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/output-formats.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#running-rb-hier",
+          "slug": "running-rb-hier",
+          "title": "Running `rb hier`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/running-rb-hier.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#parser-frontend",
+          "slug": "parser-frontend",
+          "title": "Parser frontend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/parser-frontend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#cdc-and-rdc-annotations",
+          "slug": "cdc-and-rdc-annotations",
+          "title": "CDC and RDC annotations",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/cdc-and-rdc-annotations.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#artefacts",
+          "slug": "artefacts",
+          "title": "Artefacts",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#hub-integration",
+          "slug": "hub-integration",
+          "title": "Hub integration",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/hub-integration.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hier/#out-of-scope-today",
+          "slug": "out-of-scope-today",
+          "title": "Out of scope (today)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hier/out-of-scope-today.md"
+        }
+      ],
+      "slug": "concepts/hier",
+      "title": "Hierarchy Rendering",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/hier.md"
+    },
+    {
+      "description": "rtl-buddy-hub is the broker that mediates between the rtl-buddy-view SPA, surfer (via rb wave), and editor adapters. Invocation, config, troubleshooting.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#quick-start",
+          "slug": "quick-start",
+          "title": "Quick start",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/quick-start.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#cli-surface",
+          "slug": "cli-surface",
+          "title": "CLI surface",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/cli-surface.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#discovery-rtl-buddyhubjson",
+          "slug": "discovery-rtl-buddyhubjson",
+          "title": "Discovery (`.rtl-buddy/hub.json`)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/discovery-rtl-buddyhubjson.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#configuration-rtl-buddyhubtoml",
+          "slug": "configuration-rtl-buddyhubtoml",
+          "title": "Configuration (`.rtl-buddy/hub.toml`)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/configuration-rtl-buddyhubtoml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#peers-who-connects-to-the-hub",
+          "slug": "peers-who-connects-to-the-hub",
+          "title": "Peers (who connects to the hub)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/peers-who-connects-to-the-hub.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#protocol",
+          "slug": "protocol",
+          "title": "Protocol",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/protocol.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/troubleshooting.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#writing-a-new-adapter",
+          "slug": "writing-a-new-adapter",
+          "title": "Writing a new adapter",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/writing-a-new-adapter.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/#reference",
+          "slug": "reference",
+          "title": "Reference",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/hub/reference.md"
+        }
+      ],
+      "slug": "concepts/hub",
+      "title": "Hub (`rb hub`)",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/hub.md"
+    },
+    {
+      "description": "How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/plugins/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/plugins/#sweep-expanding-one-test-into-many",
+          "slug": "sweep-expanding-one-test-into-many",
+          "title": "Sweep: expanding one test into many",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/plugins/sweep-expanding-one-test-into-many.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/plugins/#pre-processing-mutate-test-params-before-compile",
+          "slug": "pre-processing-mutate-test-params-before-compile",
+          "title": "Pre-processing: mutate test params before compile",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/plugins/pre-processing-mutate-test-params-before-compile.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/plugins/#post-processing",
+          "slug": "post-processing",
+          "title": "Post-processing",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/plugins/post-processing.md"
+        }
+      ],
+      "slug": "concepts/plugins",
+      "title": "Plugins",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/plugins.md"
+    },
+    {
+      "description": "How to run OpenROAD place-and-route with rtl_buddy via the rb pnr command, pnr.yaml, and cfg-pnr-platforms.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#supported-backend",
+          "slug": "supported-backend",
+          "title": "Supported backend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/supported-backend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#installing-openroad",
+          "slug": "installing-openroad",
+          "title": "Installing OpenROAD",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/installing-openroad.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#installing-klayout-optional",
+          "slug": "installing-klayout-optional",
+          "title": "Installing KLayout (optional)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/installing-klayout-optional.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#pr-config-pnryaml",
+          "slug": "pr-config-pnryaml",
+          "title": "P&R config: `pnr.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/pr-config-pnryaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#root-config-cfg-pdks-and-cfg-pnr-platforms",
+          "slug": "root-config-cfg-pdks-and-cfg-pnr-platforms",
+          "title": "Root config: `cfg-pdks` and `cfg-pnr-platforms`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/root-config-cfg-pdks-and-cfg-pnr-platforms.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#running-pr",
+          "slug": "running-pr",
+          "title": "Running P&R",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/running-pr.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#results-table",
+          "slug": "results-table",
+          "title": "Results table",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/results-table.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#artefacts",
+          "slug": "artefacts",
+          "title": "Artefacts",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/#out-of-scope-today",
+          "slug": "out-of-scope-today",
+          "title": "Out of scope (today)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/pnr/out-of-scope-today.md"
+        }
+      ],
+      "slug": "concepts/pnr",
+      "title": "Place-and-Route",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/pnr.md"
+    },
+    {
+      "description": "How to run OpenROAD-driven gate-level power analysis with rtl_buddy via the rb power command, power.yaml, SAIF activity capture, and cfg-pnr-platforms.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#where-the-numbers-come-from",
+          "slug": "where-the-numbers-come-from",
+          "title": "Where the numbers come from",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/where-the-numbers-come-from.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#supported-backend",
+          "slug": "supported-backend",
+          "title": "Supported backend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/supported-backend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#power-config-poweryaml",
+          "slug": "power-config-poweryaml",
+          "title": "Power config: `power.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/power-config-poweryaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#capturing-a-saif-from-simulation",
+          "slug": "capturing-a-saif-from-simulation",
+          "title": "Capturing a SAIF from simulation",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/capturing-a-saif-from-simulation.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#running-power",
+          "slug": "running-power",
+          "title": "Running power",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/running-power.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#results-table",
+          "slug": "results-table",
+          "title": "Results table",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/results-table.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#artefacts",
+          "slug": "artefacts",
+          "title": "Artefacts",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/#out-of-scope-today",
+          "slug": "out-of-scope-today",
+          "title": "Out of scope (today)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/power/out-of-scope-today.md"
+        }
+      ],
+      "slug": "concepts/power",
+      "title": "Power Analysis",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/power.md"
+    },
+    {
+      "description": "How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/regressions/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/regressions/#regression-config-regressionsyaml",
+          "slug": "regression-config-regressionsyaml",
+          "title": "Regression config: `regressions.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/regressions/regression-config-regressionsyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/regressions/#running-a-regression",
+          "slug": "running-a-regression",
+          "title": "Running a regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/regressions/running-a-regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/regressions/#working-directory-behavior",
+          "slug": "working-directory-behavior",
+          "title": "Working directory behavior",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/regressions/working-directory-behavior.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/regressions/#full-schema",
+          "slug": "full-schema",
+          "title": "Full schema",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/regressions/full-schema.md"
+        }
+      ],
+      "slug": "concepts/regressions",
+      "title": "Regressions",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/regressions.md"
+    },
+    {
+      "description": "How root_config.yaml configures platform selection, builders, and simulation settings for an RTL project.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/root-config/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/root-config/#location",
+          "slug": "location",
+          "title": "Location",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/root-config/location.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/root-config/#structure",
+          "slug": "structure",
+          "title": "Structure",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/root-config/structure.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/root-config/#key-fields",
+          "slug": "key-fields",
+          "title": "Key fields",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/root-config/key-fields.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/root-config/#builder-and-mode-overrides",
+          "slug": "builder-and-mode-overrides",
+          "title": "Builder and mode overrides",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/root-config/builder-and-mode-overrides.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/root-config/#full-schema",
+          "slug": "full-schema",
+          "title": "Full schema",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/root-config/full-schema.md"
+        }
+      ],
+      "slug": "concepts/root-config",
+      "title": "Root Config",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/root-config.md"
+    },
+    {
+      "description": "How to use specs.yaml, models.yaml spec pointers, and tests.yaml covers fields to trace functional requirements through to tests.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/spec-traceability/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/spec-traceability/#workflow",
+          "slug": "workflow",
+          "title": "Workflow",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/spec-traceability/workflow.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/spec-traceability/#multi-block-specsyaml",
+          "slug": "multi-block-specsyaml",
+          "title": "Multi-block specs.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/spec-traceability/multi-block-specsyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/spec-traceability/#command-reference",
+          "slug": "command-reference",
+          "title": "Command reference",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/spec-traceability/command-reference.md"
+        }
+      ],
+      "slug": "concepts/spec-traceability",
+      "title": "Spec Traceability",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/spec-traceability.md"
+    },
+    {
+      "description": "How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-pdks + cfg-synth-platforms, and the rb synth command.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#supported-backends",
+          "slug": "supported-backends",
+          "title": "Supported backends",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/supported-backends.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#installing-yosys",
+          "slug": "installing-yosys",
+          "title": "Installing Yosys",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/installing-yosys.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#installing-openroad",
+          "slug": "installing-openroad",
+          "title": "Installing OpenROAD",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/installing-openroad.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#synthesis-config-synthyaml",
+          "slug": "synthesis-config-synthyaml",
+          "title": "Synthesis config: `synth.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/synthesis-config-synthyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#root-config-rootconfigyaml",
+          "slug": "root-config-rootconfigyaml",
+          "title": "Root config: `root_config.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/root-config-rootconfigyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#synthesis-regression-synthregressionyaml",
+          "slug": "synthesis-regression-synthregressionyaml",
+          "title": "Synthesis regression: `synth_regression.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/synthesis-regression-synthregressionyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#running-synthesis",
+          "slug": "running-synthesis",
+          "title": "Running synthesis",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/running-synthesis.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#results-table",
+          "slug": "results-table",
+          "title": "Results table",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/results-table.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#artefacts",
+          "slug": "artefacts",
+          "title": "Artefacts",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#passfail-detection",
+          "slug": "passfail-detection",
+          "title": "Pass/fail detection",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/passfail-detection.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/#full-schema",
+          "slug": "full-schema",
+          "title": "Full schema",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/synthesis/full-schema.md"
+        }
+      ],
+      "slug": "concepts/synthesis",
+      "title": "Synthesis",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/synthesis.md"
+    },
+    {
+      "description": "How to define testbenches and tests in tests.yaml for a verification suite.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/#test-config-testsyaml",
+          "slug": "test-config-testsyaml",
+          "title": "Test config: `tests.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tests/test-config-testsyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/#running-tests",
+          "slug": "running-tests",
+          "title": "Running tests",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tests/running-tests.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/#randomization",
+          "slug": "randomization",
+          "title": "Randomization",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tests/randomization.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/#logging",
+          "slug": "logging",
+          "title": "Logging",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tests/logging.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/#path-and-working-directory",
+          "slug": "path-and-working-directory",
+          "title": "Path and working directory",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tests/path-and-working-directory.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/#full-schema",
+          "slug": "full-schema",
+          "title": "Full schema",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tests/full-schema.md"
+        }
+      ],
+      "slug": "concepts/tests",
+      "title": "Tests",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/tests.md"
+    },
+    {
+      "description": "How to verify the rtl_buddy external-tool environment with the rb tool-check command, the declarative tool manifest, and the per-subcommand readiness report.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#quick-start",
+          "slug": "quick-start",
+          "title": "Quick start",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/quick-start.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#output",
+          "slug": "output",
+          "title": "Output",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/output.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#subcommand-required-for",
+          "slug": "subcommand-required-for",
+          "title": "Subcommand: `--required-for`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/subcommand-required-for.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#subcommand-explain",
+          "slug": "subcommand-explain",
+          "title": "Subcommand: `--explain`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/subcommand-explain.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#json-output",
+          "slug": "json-output",
+          "title": "JSON output",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/json-output.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#how-the-manifest-works",
+          "slug": "how-the-manifest-works",
+          "title": "How the manifest works",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/how-the-manifest-works.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#reconciliation-with-rootconfigyaml",
+          "slug": "reconciliation-with-rootconfigyaml",
+          "title": "Reconciliation with `root_config.yaml`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/reconciliation-with-rootconfigyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#version-cache",
+          "slug": "version-cache",
+          "title": "Version cache",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/version-cache.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#exit-codes",
+          "slug": "exit-codes",
+          "title": "Exit codes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/exit-codes.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#when-to-use-it",
+          "slug": "when-to-use-it",
+          "title": "When to use it",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/when-to-use-it.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tool-check/#out-of-scope-today",
+          "slug": "out-of-scope-today",
+          "title": "Out of scope (today)",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/tool-check/out-of-scope-today.md"
+        }
+      ],
+      "slug": "concepts/tool-check",
+      "title": "Tool Dependency Check",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/tool-check.md"
+    },
+    {
+      "description": "How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/wave/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/wave/#basic-usage",
+          "slug": "basic-usage",
+          "title": "Basic usage",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/wave/basic-usage.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/wave/#configuration",
+          "slug": "configuration",
+          "title": "Configuration",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/wave/configuration.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/wave/#signal-value-annotation",
+          "slug": "signal-value-annotation",
+          "title": "Signal value annotation",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/wave/signal-value-annotation.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/concepts/wave/#surfer-build",
+          "slug": "surfer-build",
+          "title": "Surfer build",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/concepts/wave/surfer-build.md"
+        }
+      ],
+      "slug": "concepts/wave",
+      "title": "Waveform Viewer (`rb wave`)",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/concepts/wave.md"
+    },
+    {
+      "description": "RTL Buddy is a Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, Yosys synthesis flows, coverage, and YAML-based RTL automation.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/#features",
+          "slug": "features",
+          "title": "Features",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/index/features.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/#systemverilog-regression-testing",
+          "slug": "systemverilog-regression-testing",
+          "title": "SystemVerilog Regression Testing",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/index/systemverilog-regression-testing.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/#verilator-and-vcs-simulation-workflows",
+          "slug": "verilator-and-vcs-simulation-workflows",
+          "title": "Verilator and VCS Simulation Workflows",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/index/verilator-and-vcs-simulation-workflows.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/#yosys-synthesis-workflows",
+          "slug": "yosys-synthesis-workflows",
+          "title": "Yosys Synthesis Workflows",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/index/yosys-synthesis-workflows.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/#getting-started",
+          "slug": "getting-started",
+          "title": "Getting Started",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/index/getting-started.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/#reference",
+          "slug": "reference",
+          "title": "Reference",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/index/reference.md"
+        }
+      ],
+      "slug": "index",
+      "title": "RTL Buddy",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/index.md"
+    },
+    {
+      "description": "How to install rtl_buddy into a project using uv, including prerequisites and verification steps.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#prerequisites",
+          "slug": "prerequisites",
+          "title": "Prerequisites",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/prerequisites.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#dependency-types",
+          "slug": "dependency-types",
+          "title": "Dependency types",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/dependency-types.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#required-dependencies",
+          "slug": "required-dependencies",
+          "title": "Required dependencies",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/required-dependencies.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#external-tools-by-feature",
+          "slug": "external-tools-by-feature",
+          "title": "External tools by feature",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/external-tools-by-feature.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#install-into-a-project-with-uv",
+          "slug": "install-into-a-project-with-uv",
+          "title": "Install Into A Project With `uv`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/install-into-a-project-with-uv.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#updating",
+          "slug": "updating",
+          "title": "Updating",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/updating.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#installing-a-pre-release",
+          "slug": "installing-a-pre-release",
+          "title": "Installing A Pre-release",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/installing-a-pre-release.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/install/#set-up-the-agent-skill",
+          "slug": "set-up-the-agent-skill",
+          "title": "Set Up The Agent Skill",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/install/set-up-the-agent-skill.md"
+        }
+      ],
+      "slug": "install",
+      "title": "Installation",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/install.md"
+    },
+    {
+      "description": "Known issues with rtl_buddy and workarounds for simulator-specific behaviors.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/known-issues/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/known-issues/#instance-prng-seeding-with-verilator",
+          "slug": "instance-prng-seeding-with-verilator",
+          "title": "Instance pRNG seeding with Verilator",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/known-issues/instance-prng-seeding-with-verilator.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/known-issues/#vcs-hierarchical-seed-file",
+          "slug": "vcs-hierarchical-seed-file",
+          "title": "VCS hierarchical seed file",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/known-issues/vcs-hierarchical-seed-file.md"
+        }
+      ],
+      "slug": "known-issues",
+      "title": "Known Issues",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/known-issues.md"
+    },
+    {
+      "description": "How to migrate an RTL project from the legacy rtl_buddy submodule flow to a uv-managed PyPI dependency.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/migrations/submodule-to-uv/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/migrations/submodule-to-uv/#existing-state-before-migration",
+          "slug": "existing-state-before-migration",
+          "title": "Existing state before migration",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/migrations/submodule-to-uv/existing-state-before-migration.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/migrations/submodule-to-uv/#new-state-after-migration",
+          "slug": "new-state-after-migration",
+          "title": "New state after migration",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/migrations/submodule-to-uv/new-state-after-migration.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/migrations/submodule-to-uv/#migration-guide",
+          "slug": "migration-guide",
+          "title": "Migration guide",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/migrations/submodule-to-uv/migration-guide.md"
+        }
+      ],
+      "slug": "migrations/submodule-to-uv",
+      "title": "Migrating from Submodule to uv",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/migrations/submodule-to-uv.md"
+    },
+    {
+      "description": "How to migrate an rtl_buddy project from v2 to v3, covering the artifact layout change and other breaking changes.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/migrations/v2-to-v3/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/migrations/v2-to-v3/#artifact-layout-change",
+          "slug": "artifact-layout-change",
+          "title": "Artifact layout change",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/migrations/v2-to-v3/artifact-layout-change.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/migrations/v2-to-v3/#what-to-update",
+          "slug": "what-to-update",
+          "title": "What to update",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/migrations/v2-to-v3/what-to-update.md"
+        }
+      ],
+      "slug": "migrations/v2-to-v3",
+      "title": "Migrating from v2 to v3",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/migrations/v2-to-v3.md"
+    },
+    {
+      "description": "Run your first rtl_buddy test, regression, synthesis, and supporting commands in an already-installed project.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/#run-a-test",
+          "slug": "run-a-test",
+          "title": "Run a test",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/quickstart/run-a-test.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/#run-a-regression",
+          "slug": "run-a-regression",
+          "title": "Run a regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/quickstart/run-a-regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/#run-synthesis",
+          "slug": "run-synthesis",
+          "title": "Run synthesis",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/quickstart/run-synthesis.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/#run-with-randomization",
+          "slug": "run-with-randomization",
+          "title": "Run with randomization",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/quickstart/run-with-randomization.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/#check-logs",
+          "slug": "check-logs",
+          "title": "Check logs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/quickstart/check-logs.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/#next-steps",
+          "slug": "next-steps",
+          "title": "Next steps",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/quickstart/next-steps.md"
+        }
+      ],
+      "slug": "quickstart",
+      "title": "Quick Start",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/quickstart.md"
+    },
+    {
+      "description": "Auto-generated CLI reference for all rtl-buddy commands and their options.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#rtl-buddy",
+          "slug": "rtl-buddy",
+          "title": "rtl-buddy",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/rtl-buddy.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#test",
+          "slug": "test",
+          "title": "test",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/test.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#randtest",
+          "slug": "randtest",
+          "title": "randtest",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/randtest.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#regression",
+          "slug": "regression",
+          "title": "regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#filelist",
+          "slug": "filelist",
+          "title": "filelist",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/filelist.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#hier",
+          "slug": "hier",
+          "title": "hier",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/hier.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#axi-profile",
+          "slug": "axi-profile",
+          "title": "axi-profile",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/axi-profile.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#verible",
+          "slug": "verible",
+          "title": "verible",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/verible.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#wave",
+          "slug": "wave",
+          "title": "wave",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/wave.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#wave-install-nvim",
+          "slug": "wave-install-nvim",
+          "title": "wave-install-nvim",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/wave-install-nvim.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#skill",
+          "slug": "skill",
+          "title": "skill",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/skill.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#docs",
+          "slug": "docs",
+          "title": "docs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/docs.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#spec",
+          "slug": "spec",
+          "title": "spec",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/spec.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#synth",
+          "slug": "synth",
+          "title": "synth",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/synth.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#synth-regression",
+          "slug": "synth-regression",
+          "title": "synth-regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/synth-regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#pnr",
+          "slug": "pnr",
+          "title": "pnr",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/pnr.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#cdc",
+          "slug": "cdc",
+          "title": "cdc",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/cdc.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#cdc-regression",
+          "slug": "cdc-regression",
+          "title": "cdc-regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/cdc-regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#fpv",
+          "slug": "fpv",
+          "title": "fpv",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/fpv.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#fpv-regression",
+          "slug": "fpv-regression",
+          "title": "fpv-regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/fpv-regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/#tool-check",
+          "slug": "tool-check",
+          "title": "tool-check",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/cli/tool-check.md"
+        }
+      ],
+      "slug": "reference/cli",
+      "title": "CLI Reference",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/reference/cli.md"
+    },
+    {
+      "description": "Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, cdc_regression.yaml, fpv.yaml, and fpv_regression.yaml.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#rootconfigyaml",
+          "slug": "rootconfigyaml",
+          "title": "root_config.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/rootconfigyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#regressionyaml",
+          "slug": "regressionyaml",
+          "title": "regression.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/regressionyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#modelsyaml",
+          "slug": "modelsyaml",
+          "title": "models.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/modelsyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#testsyaml",
+          "slug": "testsyaml",
+          "title": "tests.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/testsyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#path-semantics-and-cwd",
+          "slug": "path-semantics-and-cwd",
+          "title": "Path semantics and cwd",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/path-semantics-and-cwd.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#synthyaml",
+          "slug": "synthyaml",
+          "title": "synth.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/synthyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#synthregressionyaml",
+          "slug": "synthregressionyaml",
+          "title": "synth_regression.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/synthregressionyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#pnryaml",
+          "slug": "pnryaml",
+          "title": "pnr.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/pnryaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#cdcyaml",
+          "slug": "cdcyaml",
+          "title": "cdc.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/cdcyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#cdcregressionyaml",
+          "slug": "cdcregressionyaml",
+          "title": "cdc_regression.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/cdcregressionyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#fpvyaml",
+          "slug": "fpvyaml",
+          "title": "fpv.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/fpvyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#fpvregressionyaml",
+          "slug": "fpvregressionyaml",
+          "title": "fpv_regression.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/fpvregressionyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#specsyaml",
+          "slug": "specsyaml",
+          "title": "specs.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/specsyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/#authoring-checklist-for-new-suites",
+          "slug": "authoring-checklist-for-new-suites",
+          "title": "Authoring checklist for new suites",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/sections/reference/yaml/authoring-checklist-for-new-suites.md"
+        }
+      ],
+      "slug": "reference/yaml",
+      "title": "YAML Formats",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v4/agent/pages/reference/yaml.md"
+    }
+  ],
+  "rtl_buddy_version": "v4",
+  "schema_version": 1
+}

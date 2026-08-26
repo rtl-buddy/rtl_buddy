@@ -1,0 +1,23 @@
+# RTL Buddy v2
+
+> Version-pinned documentation for the RTL Buddy CLI and its agent interfaces.
+
+Use the catalog for page and section-level retrieval:
+
+- [Agent catalog](https://rtl-buddy.github.io/rtl_buddy/v2/agent/catalog.json)
+
+## Documentation pages
+
+- [For Agents](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/agents.md): 
+- [Coverage](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/concepts/coverage.md): 
+- [Plugins](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/concepts/plugins.md): 
+- [Regressions](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/concepts/regressions.md): 
+- [Root Config](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/concepts/root-config.md): 
+- [Tests](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/concepts/tests.md): 
+- [RTL Buddy](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/index.md): 
+- [Installation](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/install.md): 
+- [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/known-issues.md): 
+- [Migrating from Submodule to uv](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/migrations/submodule-to-uv.md): 
+- [Quick Start](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/quickstart.md): 
+- [CLI Reference](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/reference/cli.md): 
+- [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v2/agent/pages/reference/yaml.md): 

@@ -1,0 +1,2876 @@
+# RTL Buddy documentation (v3)
+
+Canonical Markdown for this published RTL Buddy documentation version.
+
+---
+
+<!-- source: CONTRIBUTING -->
+
+---
+description: Guidelines for contributing to rtl_buddy documentation, including the frontmatter convention, writing style, and what is auto-generated.
+---
+
+# Contributing to Docs
+
+This page covers the standards for writing and maintaining `rtl_buddy` documentation.
+It applies to everyone editing files under `docs/`. It is also accessible via `rb docs show CONTRIBUTING`.
+
+## Frontmatter
+
+Every docs page must start with a YAML frontmatter block containing a `description:` field:
+
+```markdown
+---
+description: One or two sentences describing what this page covers.
+---
+
+# Page Title
+```
+
+The `description:` value is used as the page summary in `rb docs list` and `rb docs show --machine`.
+Agents read it to decide which page to fetch; make it accurate and specific.
+
+Rules:
+- Required on every page except `reference/cli.md` (auto-generated — see below)
+- One or two sentences; focus on what the page covers, not that it "explains" or "describes" something
+- CI enforces this via `scripts/check_docs_frontmatter.py --check`
+
+## Writing style
+
+Write for both humans and agents:
+
+- **Be concise.** Agents parse these pages programmatically. Long preambles add noise.
+- **Be complete.** Every H2 section should stand alone. Agents may fetch a single section via `rb docs show slug#anchor`.
+- **One topic per H2.** If a section covers two things, split it.
+- **Prose over bullets** for explanations. Bullets are fine for option lists and step sequences.
+
+## Page structure
+
+```markdown
+---
+description: ...
+---
+
+# Title
+
+Opening sentence or short paragraph that orients the reader.
+
+## Section One
+
+Content.
+
+## Section Two
+
+Content.
+```
+
+Avoid deeply nested subsections (`###` and below) when the content can be reorganized into top-level H2 sections.
+
+## Auto-generated pages
+
+`docs/reference/cli.md` is generated from `rtl-buddy --help` output by `scripts/gen_cli_reference.py`.
+Do not edit it by hand — changes will be overwritten. Edit CLI help strings in `src/rtl_buddy/rtl_buddy.py` instead.
+
+CI auto-commits regenerated `cli.md` if it drifts. Its `description:` frontmatter is part of the generated output and is maintained by the generator, not by hand.
+
+
+---
+
+<!-- source: agents -->
+
+---
+description: How to run rtl_buddy effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+---
+
+# For Agents
+
+Use this page to run `rtl_buddy` effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+
+## Local docs access
+
+Use the bundled docs commands first when you need CLI or YAML reference:
+
+```bash
+rtl-buddy docs list
+rtl-buddy docs show agents
+rtl-buddy --machine docs show reference/yaml
+```
+
+`docs list` shows each page's slug, title, and summary. `docs show --machine` returns lightweight metadata plus the canonical Markdown for the selected page. GitHub Pages remains a convenient human-facing fallback.
+
+## Agent Skill Install
+
+The `rtl_buddy` wheel bundles an agent skill for Claude Code and Codex. Users run a one-time install to materialize it into their agent skill directories:
+
+```bash
+rtl-buddy skill install             # default: user-level
+rtl-buddy skill install --project   # project-level (overrides user-level for that project)
+rtl-buddy skill install --root PATH # explicit target (implies project-level layout)
+rtl-buddy skill status              # report installed version vs current
+rtl-buddy skill uninstall           # remove skill files
+```
+
+Targets:
+
+| Scope | Claude Code | Codex |
+|-------|-------------|-------|
+| User (default) | `~/.claude/skills/rtl_buddy/SKILL.md` | `~/.codex/skills/rtl_buddy/SKILL.md` |
+| Project (`--project`) | `<root>/.claude/skills/rtl_buddy/SKILL.md` | `<root>/.agents/skills/rtl_buddy/SKILL.md` |
+
+User-level is the recommended default — one install per machine, one place to keep current. Project-level is an opt-in override for projects pinned to a divergent `rtl_buddy` major; Claude Code's resolution order puts the project copy first, so both can coexist.
+
+For project-level installs, add the target dirs to your project's `.gitignore` — the install command prints the exact lines. `rtl-buddy skill install --project` discovers the project root via `root_config.yaml` (falling back to `.git/`), so it is safe to run from a `verif/` subdirectory.
+
+## Always use machine mode
+
+Run `rtl_buddy` with `--machine` in all agent-driven workflows:
+
+```bash
+rtl-buddy --machine test basic
+rtl-buddy --machine regression -c design/regression.yaml
+```
+
+In machine mode:
+
+- `rtl_buddy.log` is written as **JSON Lines** (one JSON object per line) instead of human-readable text.
+- Console output switches to plain, colorless text — no Rich formatting, no spinners.
+- All structured event fields (event name, status, durations, paths) are present in the log.
+
+This makes it reliable to parse outcomes from `rtl_buddy.log` without screen-scraping.
+
+## Log file locations
+
+| File | Description |
+|------|-------------|
+| `rtl_buddy.log` | Orchestration log; JSONL in machine mode, human-readable otherwise |
+| `artefacts/{test_name}/test.log` | Simulation stdout for each test |
+| `artefacts/{test_name}/test.err` | Simulation stderr for each test |
+| `artefacts/{test_name}/test.randseed` | Seed used for this test run |
+| `artefacts/{test_name}/coverage.dat` | Coverage database (if coverage is enabled) |
+| `artefacts/{test_name}/compile.log` | Compile transcript |
+| `artefacts/{test_name}/run-NNNN/test.log` | Per-iteration output for `randtest` |
+| `test.log` | Symlink to the most recent test's log |
+| `test.err` | Symlink to the most recent test's stderr |
+| `test.randseed` | Symlink to the most recent test's seed |
+
+All files are written relative to the suite directory where `rtl_buddy` is invoked.
+
+## Machine mode log format
+
+Each line in `rtl_buddy.log` (machine mode) is a JSON object:
+
+```json
+{"event": "sim.completed", "test": "smoke", "duration_sec": 4.2, "message": "smoke: simulation completed in 4.20s"}
+{"event": "postproc.completed", "test": "smoke", "result": "PASS", "desc": "smoke completed", "message": "smoke: post-processing completed with result PASS (smoke completed)"}
+```
+
+Key fields:
+
+- `event`: dotted event name identifying what happened (e.g. `sim.start`, `compile.failed`, `postproc.completed`)
+- `message`: the human-readable message corresponding to the event
+- Other fields are event-specific (name, duration, seed, exit code, etc.)
+
+## How pass/fail is detected
+
+Agents authoring tests need to follow the parser that `rtl_buddy` actually uses:
+
+- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and compares it against `max_warns` / `max_errors`.
+- Otherwise, `rtl_buddy` parses `artefacts/{test_name}/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
+- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
+- If neither `PASS` nor `FAIL` appears, the test result becomes `NA`.
+- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
+
+Minimal non-UVM example:
+
+```systemverilog
+if (test_passed) begin
+  $display("PASS smoke completed");
+end else begin
+  $display("FAIL smoke completed");
+  $display("ERR: expected done=1 before timeout");
+end
+```
+
+In machine mode, the authoritative per-test outcome appears in the `postproc.completed` event's `result` and `desc` fields.
+
+## Spec traceability commands
+
+The `rb spec` commands check the spec-to-test traceability layer. They do not affect simulation and are safe to run at any time:
+
+```bash
+# List all spec blocks discovered in the project
+rtl-buddy --machine spec list
+
+# Check which spec blocks have a linked design model (models.yaml spec: pointer)
+rtl-buddy --machine spec check-design
+
+# Check which coverage items are addressed by at least one test (tests.yaml covers:)
+rtl-buddy --machine spec check-coverage
+```
+
+In machine mode, `spec list` returns `{"blocks": [...]}` and `spec check-coverage` returns `{"items": [...]}` with a `"covered": true/false` field per item. Use these to identify uncovered items programmatically.
+
+All three commands default to searching `spec/`, `design/`, and `verif/` under the project root. Pass `--spec-dir`, `--design-dir`, or `--verif-dir` to narrow the scope.
+
+## Recommended validation workflow
+
+```bash
+# 1. Check rtl_buddy version
+rtl-buddy --version
+
+# 2. Dry-run: verify pre-flight config without compiling or simulating
+rtl-buddy --machine test basic --early-stop pre
+
+# 3. Run a single test
+rtl-buddy --machine test basic
+
+# 4. Check the log for outcome
+grep '"event"' rtl_buddy.log | tail -5
+
+# 5. Run a full regression
+rtl-buddy --machine regression -c design/regression.yaml
+```
+
+Use `--early-stop pre` to validate that config files, model paths, and testbench paths all resolve correctly before committing to a compile step.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | All tests passed |
+| 1 | One or more tests failed |
+| 2 | Fatal configuration or environment error |
+
+## Version checking
+
+Always verify the installed version before running, especially in CI or after dependency updates:
+
+```bash
+rtl-buddy --version
+```
+
+The version follows semantic versioning. Breaking YAML schema or CLI changes are signaled by a major version bump.
+
+
+---
+
+<!-- source: concepts/cocotb -->
+
+---
+description: How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.
+---
+
+# cocotb testbenches (Verilator + VPI)
+
+Explains how `rtl_buddy` integrates [cocotb](https://www.cocotb.org) — a coroutine-based Python verification framework — to drive Verilator-compiled RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.
+
+## Prerequisites
+
+`cocotb` must be installed in the active Python environment:
+
+```bash
+uv add cocotb
+# or: pip install cocotb
+```
+
+The runner calls `cocotb-config` at compile time. If it is missing, `rtl_buddy` raises a `FatalRtlBuddyError` with an actionable message rather than a raw traceback.
+
+## YAML shape
+
+Add `toplevel:` and a `cocotb:` block to a testbench entry in `tests.yaml`. `toplevel:` is **required** when `cocotb:` is present — omitting it is a fatal config error caught at load time.
+
+```yaml
+testbenches:
+  - name: "tb_my_design"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design          # required: DUT top-level module name
+    cocotb:
+      module: test_my_design     # Python module with @cocotb.test() coroutines
+
+  - name: "tb_multi"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design
+    cocotb:
+      module:                    # list form: all modules are loaded
+        - test_smoke
+        - test_corner_cases
+
+tests:
+  - name: "test_my_design"
+    desc: "cocotb test"
+    reglvl: 0
+    model: "my_design"
+    model_path: "../../design/block/models.yaml"
+    testbench: "tb_my_design"
+```
+
+## Pass/fail detection
+
+cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/`FAIL` stdout lines. `rtl_buddy` parses this file automatically — do **not** add `$display("PASS …")` in cocotb tests. The `desc` field reports the first three failure messages with a `(+N more)` suffix when there are more.
+
+## Testbench field reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `toplevel` | string | Yes (cocotb only) | Top-level DUT module name → `COCOTB_TOPLEVEL` |
+| `cocotb.module` | string or list | Yes | Python test module(s) → `COCOTB_TEST_MODULES` |
+
+See `rtl-buddy docs show reference/yaml` for the full `tests.yaml` schema.
+
+
+---
+
+<!-- source: concepts/coverage -->
+
+---
+description: How to collect, merge, and report coverage for Verilator-based builds using rtl_buddy.
+---
+
+# Coverage
+
+`rtl_buddy` supports coverage collection, merging, and reporting for Verilator-based builds. Coverage workflows use a dedicated builder mode to compile with instrumentation, then optionally merge results across tests and export them as LCOV HTML or Coverview packages.
+
+## Setup
+
+### Builder mode
+
+Coverage instrumentation requires a builder mode that adds coverage flags at compile time. Add a `cov` mode (or similar name) to your builder entry in `root_config.yaml`:
+
+```yaml
+cfg-rtl-builder:
+  - name: "verilator"
+    builder: "verilator"
+    builder-simv: "obj_dir/simv"
+    builder-opts:
+      cov:
+        compile-time: >-
+          --binary -sv -o simv
+          --coverage
+        run-time: "+verilator+rand+reset+2"
+```
+
+Run with the coverage builder mode:
+
+```bash
+rtl-buddy --builder-mode cov test basic
+rtl-buddy --builder-mode cov regression
+```
+
+### Coverage config in root_config.yaml
+
+The `cfg-coverage` section tells `rtl_buddy` how to post-process coverage output for each simulator family:
+
+```yaml
+cfg-coverage:
+  - name: "verilator"
+    use-lcov: true
+```
+
+`use-lcov: true` enables `.info` file export and LCOV HTML generation when `--coverage-html` is used. The `name` field must match the simulator family name used in `cfg-rtl-builder`.
+
+### Coverview config in root_config.yaml
+
+The optional `cfg-coverview` section configures Coverview packaging:
+
+```yaml
+cfg-coverview:
+  - name: "verilator"
+    generate-tables: "line"
+    config:
+      # inline Coverview JSON configuration values
+```
+
+Fields:
+
+- `name`: simulator family name, matching `cfg-rtl-builder`
+- `generate-tables`: coverage type to use for Coverview tables (e.g. `"line"`)
+- `config`: inline dict of Coverview JSON configuration values
+
+## Coverage merge modes
+
+Three merge modes are available, selected by a mutually exclusive flag. Only one may be used per run.
+
+| Flag | Merge method | Outputs |
+|------|-------------|---------|
+| `--coverage-merge` | Raw for summary/HTML, info-process for Coverview | summary, HTML (if `--coverage-html`), Coverview (if `--coverage-coverview`) |
+| `--coverage-merge-raw` | Raw Verilator merge only | summary, HTML, Coverview |
+| `--coverage-merge-info-process` | info-process only | summary, Coverview — HTML not supported |
+
+If none of these flags is given, no merging is done and coverage is reported per test.
+
+## Generating merged output
+
+### LCOV HTML report
+
+Requires `use-lcov: true` in `cfg-coverage`. Not supported with `--coverage-merge-info-process`.
+
+```bash
+rtl-buddy --builder-mode cov regression --coverage-merge --coverage-html
+```
+
+Output is written to `coverage_merge.html` in the current directory.
+
+### Coverview zip
+
+```bash
+rtl-buddy --builder-mode cov regression --coverage-merge --coverage-coverview
+```
+
+In regression mode, use `--coverage-per-test` to package one Coverview dataset per test instead of merging:
+
+```bash
+rtl-buddy --builder-mode cov regression --coverage-coverview --coverage-per-test
+```
+
+## Directory-level coverage summary
+
+Add per-directory coverage breakdowns to the summary output using `--coverage-dir-summary`. Pass repo-relative directory prefixes; the flag may be repeated.
+
+```bash
+rtl-buddy --builder-mode cov regression \
+  --coverage-merge \
+  --coverage-dir-summary src/core \
+  --coverage-dir-summary src/mem
+```
+
+Or provide prefixes from a file (one per line):
+
+```bash
+rtl-buddy --builder-mode cov regression \
+  --coverage-merge \
+  --coverage-dir-summary-file coverage_dirs.txt
+```
+
+## Full flag reference
+
+See the [CLI reference](../reference/cli.md) for the complete flag descriptions on `test` and `regression`.
+
+## Full schema
+
+See [YAML Formats: root_config.yaml](../reference/yaml.md#root_configyaml) for `cfg-coverage` and `cfg-coverview` schema details.
+
+
+---
+
+<!-- source: concepts/plugins -->
+
+---
+description: How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.
+---
+
+# Plugins
+
+`rtl_buddy` supports three Python plugin hooks that let you extend test behavior without modifying the tool itself. All hooks are specified per-test in `tests.yaml` and are executed by the tool at the appropriate point in the test flow.
+
+Hook scripts receive their input through named variables injected into the script's namespace. They do not use `import` or function arguments — instead they read from and write to these predefined variables.
+
+## Sweep: expanding one test into many
+
+The sweep hook runs before the test flow and expands a single test entry into multiple `TestConfig` objects, each with different parameters. Use it to cover a combinatorial space of plusargs, seeds, or configurations without manually listing every variant.
+
+**`tests.yaml` entry:**
+
+```yaml
+- name: "sweep_case"
+  sweep:
+    path: "example_sweep.py"
+  model: "my_design"
+  model_path: "../src/models.yaml"
+  testbench: "tb_top"
+  reglvl: 2000
+```
+
+**Available variables in the script:**
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `logger` | Logger | Use this for all logging so output goes through `rtl_buddy`'s log system |
+| `test_cfg` | TestConfig (immutable) | The original test entry from `tests.yaml` |
+| `root_cfg` | RootConfig (mutable) | The loaded root config |
+| `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
+| `artifact_dir` | string | Artifact root for the incoming test name under `suite_dir/artefacts/` |
+| `out_test_cfgs` | list | **Assign** the expanded list of `TestConfig` objects here |
+| `__file__` | string | Absolute path to the current sweep script |
+
+Everything in `TestConfig` except `reglvl` can be mutated in the generated tests (e.g. change `name`, `plusargs`, `plusdefines`).
+
+**Example:**
+
+```python
+# example_sweep.py
+out_test_cfgs = []
+for i in range(4):
+    cfg = test_cfg.copy()
+    cfg.name = f"{test_cfg.name}_{i}"
+    cfg.plusargs["SCENARIO"] = str(i)
+    out_test_cfgs.append(cfg)
+```
+
+If the sweep script raises an exception, `rtl_buddy` records that test as a setup failure and continues with the remaining tests.
+
+See the template repo for a working example.
+
+## Pre-processing: mutate test params before compile
+
+The pre-processing hook runs after sweep expansion but before the compilation step. Use it to dynamically adjust plusargs, plusdefines, or other test parameters based on runtime state.
+
+**`tests.yaml` entry:**
+
+```yaml
+- name: "basic"
+  preproc:
+    path: "my_preproc.py"
+  model: "my_design"
+  model_path: "../src/models.yaml"
+  testbench: "tb_top"
+```
+
+**Available variables:**
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `logger` | Logger | Use for all logging |
+| `test_cfg` | TestConfig (mutable) | Modify this to change compile/sim parameters |
+| `root_cfg` | RootConfig (mutable) | The loaded root config |
+| `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
+| `artifact_dir` | string | Artifact root for this test under `suite_dir/artefacts/` |
+| `__file__` | string | Absolute path to the current pre-processing script |
+
+Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against `suite_dir` in preproc. Output filenames that should land in the per-test artefact tree can remain relative to `artifact_dir`.
+
+**Example:**
+
+```python
+# my_preproc.py
+import os
+from pathlib import Path
+
+test_cfg.plusargs["BUILD_ID"] = os.environ.get("CI_BUILD_ID", "local")
+test_cfg.plusargs["stimulus"] = str(Path(suite_dir) / "vectors" / "streaming_contract.txt")
+```
+
+If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.
+
+See the template repo for a working example.
+
+## Post-processing
+
+The `postproc` hook is parsed from config but the runtime flow currently relies on built-in post-processing. Custom post-processing support is planned for a future release.
+
+
+---
+
+<!-- source: concepts/regressions -->
+
+---
+description: How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.
+---
+
+# Regressions
+
+A regression runs multiple test suites in sequence, filtering tests by regression level. It is the standard way to validate a full design before a release or merge.
+
+## Regression config: `regressions.yaml`
+
+```yaml
+rtl-buddy-filetype: reg_config
+
+test-configs:
+  - "design/example_block_a/verif/tests.yaml"
+  - "design/example_block_b/verif/tests.yaml"
+```
+
+Each entry in `test-configs` is a path to a suite's `tests.yaml`, resolved relative to the directory where `rtl-buddy regression` is invoked (usually the repo root).
+
+The default path to `regressions.yaml` is set in `root_config.yaml` under `cfg-rtl-reg.reg-cfg-path`. Override it per run with `--reg-config`.
+
+## Running a regression
+
+Use the default config:
+
+```bash
+rtl-buddy regression
+```
+
+Specify a config file explicitly:
+
+```bash
+rtl-buddy regression --reg-config path/to/regressions.yaml
+```
+
+### Config resolution order
+
+When `--reg-config` is not given, `rtl_buddy` resolves the regression config in this order:
+
+1. `./regression.yaml` in the current working directory, if it exists
+2. The path set in `root_config.yaml` under `cfg-rtl-reg.reg-cfg-path`
+
+This means you can drop a `regression.yaml` at the repo root and run `rtl-buddy regression` without any flags, even if `root_config.yaml` points elsewhere.
+
+### Regression levels
+
+`rtl_buddy` filters tests by the `reglvl` value set in each `tests.yaml`. Use `--reg-level` and `--start-level` to select a range:
+
+```bash
+# Run all tests with reglvl <= 2000
+rtl-buddy regression --reg-level 2000
+
+# Run tests with reglvl in [1000, 3000]
+rtl-buddy regression --start-level 1000 --reg-level 3000
+```
+
+The default is `--reg-level 0`, which runs only tests with `reglvl: 0` (must-run sanity tests).
+
+## Working directory behavior
+
+Unlike `test`, the `regression` subcommand **changes directory** into each suite directory before running its tests. This means relative paths in `tests.yaml` (such as `model_path`) are resolved correctly without any extra setup.
+
+Run `regression` from the repo root so that the paths in `regressions.yaml` resolve correctly.
+
+## Full schema
+
+See [YAML Formats: regressions.yaml](../reference/yaml.md#regressionyaml) for the complete field reference.
+
+
+---
+
+<!-- source: concepts/root-config -->
+
+---
+description: How root_config.yaml configures platform selection, builders, and simulation settings for an RTL project.
+---
+
+# Root Config
+
+The `root_config.yaml` file sits at the root of your RTL project and tells `rtl_buddy` how to build and simulate designs on the current platform.
+
+## Location
+
+`rtl_buddy` looks for `root_config.yaml` in the current working directory. All paths in the config are resolved relative to where `rtl_buddy` is invoked.
+
+## Structure
+
+```yaml
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "osx"
+    unames: ["Darwin"]
+    builder: "verilator"
+    verible: "verible-macos"
+
+cfg-rtl-builder:
+  - name: "verilator"
+    builder: "verilator"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 31310
+    sim-rand-seed-prefix: "+verilator+seed+"
+    builder-opts:
+      debug:
+        compile-time: "--binary -sv -o simv"
+        run-time: "+verilator+rand+reset+2"
+      reg:
+        compile-time: "--binary -sv -o simv"
+        run-time: "+verilator+rand+reset+2"
+
+cfg-verible:
+  - name: "verible-macos"
+    path: "/opt/homebrew/bin"
+    extra_args:
+      lint:
+        - "--rules=-module-filename"
+
+cfg-rtl-reg:
+  reg-cfg-path: "design/regression.yaml"
+```
+
+## Key fields
+
+**`cfg-platforms`**
+
+Maps the current OS (detected via `uname`) to a builder and Verible config. `rtl_buddy` picks the first platform entry whose `unames` list contains the output of `uname`.
+
+**`cfg-rtl-builder`**
+
+Defines simulation tool configurations. Each entry has:
+
+- `builder`: simulator executable name (`verilator`, `vcs`, etc.)
+- `builder-simv`: path to the compiled simulation binary
+- `sim-rand-seed` / `sim-rand-seed-prefix`: default seed value and the plusarg prefix used to pass it
+- `builder-opts`: named compile-time and run-time option sets, selected by builder mode
+
+**`cfg-verible`**
+
+Defines Verible tool configurations for lint and syntax checks. `path` is the directory containing Verible executables — absolute or relative to `root_config.yaml`.
+
+**`cfg-surfer`** *(optional)*
+
+Configures the Surfer waveform viewer for `rb wave`. Fields:
+
+- `path`: bare executable name (resolved via PATH, e.g. `"surfer"`) or a relative/absolute path to the binary
+- `wcp-port`: TCP port rtl-buddy listens on; Surfer connects with `--wcp-initiate` (default: `0` — OS auto-assigns a free port)
+- `editor-cmd`: command template with `%f` (file path) and `%l` (line number) placeholders — e.g. `"vim +%l %f"`, `"code --goto %f:%l"`
+- `editor-terminal`: how to open terminal editors — `tmux` (new tmux window), `iterm2`, `terminal` (macOS Terminal.app), or `""` to run the command directly (for GUI editors)
+- `editor-sock`: path to a Unix socket for nvim remote reuse (e.g. `"/tmp/nvim-rb.sock"`). When set, rtl-buddy launches nvim with `--listen <sock>` on first use and reuses the already-running instance for subsequent "Go to declaration" and cursor-moved events. Omit this field if you do not use nvim or do not want remote reuse.
+
+`rb wave <test>` looks for a signal layout file at `<test>.surfer` in the same directory as `tests.yaml` (e.g. `verif/sandbox/basic.surfer`). If found it is passed to Surfer via `-c`; if not, Surfer opens with no pre-loaded signals. If no FST exists for the test, `rb wave` runs a debug sim automatically before launching Surfer.
+
+### Signal value annotation with nvim
+
+When `editor-sock` is set and the nvim plugin is installed, `rb wave` annotates signal values as end-of-line virtual text in nvim:
+
+- Right-click a signal in Surfer and choose "Go to declaration": nvim opens at the signal's declaration and all signals in the same module scope are annotated with their waveform values (`▶ value [instance]` style, black text on a lemon-chiffon background using the `WaveValue` highlight group).
+- Moving the Surfer time cursor updates all annotations in real time.
+- Two signals that share a source line are combined into a single annotation: `▶ a=val  b=val [inst]`.
+- Pass `--focused-signal` to `rb wave` to annotate only the signal explicitly selected via "Go to declaration" instead of the full module scope.
+
+**Installing the nvim plugin:**
+
+```bash
+rb wave-install-nvim          # installs rtl_buddy_wave.lua to ~/.local/share/nvim/site/plugin/
+rb wave-install-nvim --force  # overwrite an existing installation
+```
+
+The plugin provides the `WaveValue` highlight group and a `VimEnter` hook required for annotation to work.
+
+**`cfg-rtl-reg`**
+
+Sets the default path to `regressions.yaml` used by `rtl-buddy regression` when `--reg-config` is not specified.
+
+## Builder and mode overrides
+
+Use command-line flags to override the platform defaults for a run:
+
+- `--builder b`: use a different builder (e.g. `--builder vcs`)
+- `--builder-mode m`: use a different named option set (e.g. `--builder-mode reg`)
+
+See the [CLI reference](../reference/cli.md) for the full option list.
+
+## Full schema
+
+See [YAML Formats: root_config.yaml](../reference/yaml.md#root_configyaml) for the complete field reference.
+
+
+---
+
+<!-- source: concepts/spec-traceability -->
+
+---
+description: How to use specs.yaml, models.yaml spec pointers, and tests.yaml covers fields to trace functional requirements through to tests.
+---
+
+# Spec Traceability
+
+`rtl_buddy` provides a lightweight traceability layer that links functional specification items to design models and tests. It is driven by three files across the three-tier ownership model:
+
+| Tier | File | Role |
+|------|------|------|
+| `spec/<block>/` | `specs.yaml` | Defines blocks and their functional coverage items |
+| `design/<block>/` | `models.yaml` | Links a design model to its spec block via `spec:` |
+| `verif/<block>/` | `tests.yaml` | Declares which coverage items each test addresses via `covers:` |
+
+None of these fields affect simulation. They are consumed only by the `rb spec` commands.
+
+## Workflow
+
+### 1. Write the spec
+
+Create `spec/<block>/specs.yaml` with one or more blocks, each listing its functional coverage items:
+
+```yaml
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "my_block"
+    desc: "Brief description"
+    docs:
+      - "README.md"
+      - "behavior.md"
+    coverage-items:
+      - id: "MYBLK-COV-01"
+        desc: "Normal operation path verified"
+      - id: "MYBLK-COV-02"
+        desc: "Error handling and recovery"
+```
+
+Coverage item IDs are arbitrary strings; a block-prefix convention (e.g. `MYBLK-COV-NN`) keeps them unique across a multi-block project.
+
+### 2. Link the design model
+
+Add a `spec:` field to the relevant entry in `design/<block>/models.yaml`, pointing to the `specs.yaml` relative to that `models.yaml`:
+
+```yaml
+models:
+  - name: "my_block"
+    filelist:
+      - "-F my_block.f"
+    spec: "../../spec/my_block/specs.yaml"
+```
+
+The model `name` is matched against the block `name` in the referenced `specs.yaml`. In a single-block `specs.yaml` the match is unconditional.
+
+### 3. Annotate tests
+
+Add `covers:` to each test in `verif/<block>/tests.yaml` listing the IDs it exercises:
+
+```yaml
+tests:
+  - name: "basic"
+    model: "my_block"
+    model_path: "../../design/my_block/models.yaml"
+    testbench: "tb_top"
+    covers:
+      - "MYBLK-COV-01"
+      - "MYBLK-COV-02"
+```
+
+A single test can cover multiple items; multiple tests can cover the same item.
+
+### 4. Check traceability
+
+```bash
+rb spec list             # discover all spec blocks in the project
+rb spec check-design     # which spec blocks have a linked design model
+rb spec check-coverage   # which coverage items are addressed by at least one test
+```
+
+`check-coverage` prints a table of all items with a `Covered: yes/no` column and calls out uncovered IDs at the end. Use `--machine` to get JSON output for programmatic consumption.
+
+## Multi-block specs.yaml
+
+A single `specs.yaml` can contain multiple blocks — useful when a directory holds several closely related IP:
+
+```yaml
+blocks:
+  - name: "ip_cdc_sync"
+    desc: "Multi-flop level synchronizer"
+    coverage-items:
+      - id: "CDCSYNC-COV-01"
+        desc: "..."
+
+  - name: "ip_cdc_handshake"
+    desc: "Four-phase request/acknowledge CDC primitive"
+    coverage-items:
+      - id: "CDCHS-COV-01"
+        desc: "..."
+```
+
+Each design model still points to the same `specs.yaml`; the model `name` selects the correct block.
+
+## Command reference
+
+| Command | What it checks |
+|---------|----------------|
+| `rb spec list` | Lists all spec blocks discovered under `spec/` (or `--spec-dir`) |
+| `rb spec check-design` | For every spec block, shows whether a design model references it |
+| `rb spec check-coverage` | For every coverage item, shows which tests cover it and flags uncovered items |
+
+All three commands accept `--spec-dir` to target a subdirectory. `check-design` also accepts `--design-dir`; `check-coverage` accepts `--verif-dir`.
+
+
+---
+
+<!-- source: concepts/synthesis -->
+
+---
+description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-synth-libs, and the rb synth command.
+---
+
+# Synthesis
+
+`rtl_buddy` provides a tool-agnostic synthesis flow that mirrors the simulation workflow. Synthesis runs are described in `synth.yaml` files; tool-specific defaults and PDK library paths live in `root_config.yaml`.
+
+## Supported backends
+
+`rtl_buddy` ships two synthesis backends selectable via `tool:` in `synth.yaml`:
+
+| `tool:` | Backend | Multi-clock SDC | Reports |
+|---------|---------|-----------------|---------|
+| `yosys` | Yosys + ABC | Workaround (min period) | Gates, Area, WNS |
+| `openroad` | Yosys (stage 1) + OpenROAD STA (stage 2) | Native `read_sdc` | Gates, Area, WNS, TNS |
+
+The OpenROAD backend removes the multi-clock SDC workaround: stage 1 maps RTL to a gate-level netlist with Yosys, stage 2 feeds that netlist into OpenROAD which loads the SDC natively and reports WNS (actual worst slack from `report_checks`) and TNS (total negative slack).
+
+## Installing Yosys
+
+`rtl_buddy` uses the [rtl-buddy fork of Yosys](https://github.com/rtl-buddy/yosys), which tracks upstream with rtl-buddy-specific patches. Build from source:
+
+```bash
+# Install deps with brew. Adjust to your package manager as needed.
+brew install cmake python tcl-tk libffi readline
+
+# Clone, build and install
+git clone --recursive https://github.com/rtl-buddy/yosys.git
+cd yosys
+make config-clang   # or `make config-gcc` on Linux
+make -j 8           # adjust to no. of CPU cores if needed
+make install        # installs to /usr/local/bin/yosys
+```
+
+Verify the install:
+
+```bash
+yosys --version
+```
+
+The `yosys` binary must be on `PATH` when `rb synth` is invoked.
+
+## Installing OpenROAD
+
+OpenROAD is required only for the `openroad` backend. It must be built from source on macOS — no official binaries are published. See the build notes in your project's `tools/openroad/SETUP_OSX.md` (the starter template uses that filename) for the full procedure. After building, symlink the binary to a directory on `PATH`:
+
+```bash
+ln -s /path/to/OpenROAD/build/bin/openroad /usr/local/bin/openroad
+openroad -version
+```
+
+The `openroad` binary must be on `PATH` when `rb synth` is invoked with `tool: "openroad"`.
+
+## Synthesis config: `synth.yaml`
+
+A `synth.yaml` file defines one or more synthesis runs for a block.
+
+```yaml
+rtl-buddy-filetype: synth_config
+
+syntheses:
+  # Technology-independent run
+  - name: "sandbox_synth"
+    desc: "Synthesize sandbox module with Yosys"
+    model: "test_module"
+    model_path: "../../design/sandbox/models.yaml"
+    tool: "yosys"
+    reglvl: 0
+
+  # Technology-mapped run targeting SKY130 (Yosys backend)
+  - name: "sandbox_sky130"
+    desc: "Synthesize sandbox module targeting SKY130 HD TT corner"
+    model: "test_module"
+    model_path: "../../design/sandbox/models.yaml"
+    tool: "yosys"
+    libraries:
+      - "sky130hd_tt"
+    constraints: "constraints.sdc"
+    params:
+      WIDTH: 8
+    defines:
+      TARGET_SYNTH: 1
+    reglvl: 0
+    tool_overrides:
+      yosys:
+        synth_args: "-flatten"
+
+  # Technology-mapped run with OpenROAD backend (native multi-clock SDC, WNS + TNS)
+  - name: "sandbox_openroad"
+    desc: "Synthesize sandbox module with OpenROAD timing analysis"
+    model: "test_module"
+    model_path: "../../design/sandbox/models.yaml"
+    tool: "openroad"
+    libraries:
+      - "sky130hd_tt"
+    constraints: "constraints.sdc"
+    reglvl: 0
+```
+
+### Synthesis fields
+
+| Field | Description |
+|-------|-------------|
+| `name` | Run identifier used on the command line and in artefact paths |
+| `desc` | Human-readable description |
+| `model` | Model name from `models.yaml`; also used as the synthesis top module |
+| `model_path` | Path to `models.yaml`, resolved relative to the `synth.yaml` directory |
+| `tool` | Synthesis tool name — must match a `cfg-synth-tools` entry in `root_config.yaml` |
+| `libraries` | Optional list of library names from `cfg-synth-libs`; enables technology mapping |
+| `constraints` | Optional SDC constraints file, resolved relative to `synth.yaml` |
+| `params` | Optional key-value pairs passed as top-level parameter overrides (`chparam` in Yosys) |
+| `defines` | Optional compile-time Verilog defines passed via `-D KEY=VALUE` |
+| `reglvl` | Regression level (int or per-tool dict); same semantics as simulation `reglvl` |
+| `tool_overrides` | Optional per-tool option overrides — keyed by tool name, merges over `cfg-synth-tools` defaults |
+
+### SDC constraints
+
+When `constraints` points to an SDC file, the Yosys backend extracts the `create_clock` period and passes it to ABC as `-D <period_ps>` for timing-driven technology mapping. The critical path delay is then used to compute WNS in the results table.
+
+```sdc
+create_clock -period 10.0 [get_ports clk]
+set_input_delay  2.0 -clock clk [all_inputs]
+set_output_delay 2.0 -clock clk [all_outputs]
+```
+
+**Multi-clock designs (Yosys backend):** ABC's `-D` flag takes a single timing window. When multiple `create_clock` entries are present, `rtl_buddy` uses the minimum period as a workaround and emits a warning. For correct per-domain timing analysis across multiple clocks, use the `openroad` backend, which passes the full SDC to `read_sdc` and handles each clock domain natively.
+
+### Regression levels
+
+`reglvl` works the same way as for simulation tests. Use `--reg-level` on `synth-regression` to filter by level.
+
+```yaml
+# Same level for all tools
+reglvl: 0
+
+# Tool-specific with fallback
+reglvl:
+  default: 0
+  dc: 1000
+```
+
+### Per-tool overrides
+
+`tool_overrides` is an escape hatch for tool-specific options that don't have a tool-agnostic equivalent. Keys match the `opts` fields in `cfg-synth-tools`:
+
+```yaml
+tool_overrides:
+  yosys:
+    synth_args: "-flatten -nordff"
+    abc_args: "-fast"
+```
+
+### Effort levels
+
+A synthesis can select a named **effort level** that controls how much work the flow does. Efforts are defined once in `root_config.yaml` under `cfg-synth-efforts` (see [below](#synthesis-effort-configuration)) and referenced per synthesis:
+
+```yaml
+syntheses:
+  - name: "sandbox_quick"
+    desc: "Fast iteration build — Yosys-only, no STA"
+    model: "test_module"
+    model_path: "../../design/sandbox/models.yaml"
+    tool: "openroad"
+    libraries:
+      - "sky130hd_tt"
+    constraints: "constraints.sdc"
+    effort: "quick"      # references a cfg-synth-efforts entry
+    reglvl: 0
+```
+
+When `effort:` is omitted, a built-in `standard` effort with all defaults is used — equivalent to the pre-effort behaviour. The `--effort <name>` CLI flag overrides the per-synthesis setting at runtime:
+
+```bash
+rb synth sandbox_openroad --effort quick     # force the quick path
+rb synth-regression --effort accurate        # apply across a whole regression
+```
+
+Precedence for the same knob: per-synthesis `tool_overrides` > `cfg-synth-efforts` > `cfg-synth-tools`.
+
+## Root config: `root_config.yaml`
+
+### Synthesis tool configuration
+
+Synthesis tool defaults live under `cfg-synth-tools`. Multiple tools can be listed; the `tool` field in `synth.yaml` selects which entry to use:
+
+```yaml
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"        # executable name (must be on PATH)
+    opts:
+      synth-args: ""
+      abc-args: ""
+
+  - name: "openroad"
+    tool: "openroad"     # executable name (must be on PATH)
+    opts:
+      strategy: "AREA"   # AREA (default) | TIMING | TIMING_ANNEAL | TIMING_GENETIC
+```
+
+The `strategy` option controls optional OpenROAD resynthesis after timing analysis:
+
+| `strategy` | Effect |
+|------------|--------|
+| `AREA` (default) | No resynthesis; report area and timing only |
+| `TIMING` / `TIMING_ANNEAL` | Run `resynth_annealing` after loading the netlist |
+| `TIMING_GENETIC` | Run `resynth_genetic` after loading the netlist |
+
+### Synthesis effort configuration
+
+`cfg-synth-efforts` defines named levels that shape both the Yosys stage and the OpenROAD stage. Reference an entry from `synth.yaml` `effort:` or `rb synth --effort <name>`.
+
+```yaml
+cfg-synth-efforts:
+  - name: "quick"
+    # Yosys-only fast path; skips OpenROAD entirely.
+    # Returns gate count + area only. No LEF/STA needed.
+    yosys:
+      synth-args: "-flatten"
+      abc-args: "-fast"
+    openroad:
+      run: false
+
+  - name: "standard"
+    # Default behaviour: Yosys + OpenROAD STA with ideal wires (zero RC).
+    openroad:
+      run: true
+
+  - name: "accurate"
+    # Apply the Liberty default_wire_load model for RC-aware pre-layout
+    # timing without needing a tech LEF + floorplan. Swap pre-sta-tcl
+    # for initialize_floorplan + global_placement + estimate_parasitics
+    # once a tech LEF is available.
+    openroad:
+      run: true
+      pre-sta-tcl: |
+        set_wire_load_mode top
+        set_wire_load_model -name Small
+```
+
+Effort schema:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique effort identifier; referenced from `synth.yaml` or `--effort` |
+| `yosys.synth-args` | string | Appended to the `synth -top` command in both backends |
+| `yosys.abc-args` | string | Used by the unmapped ABC step (Yosys backend without `libraries`) |
+| `openroad.run` | bool | When `false`, a `tool: openroad` synthesis falls back to the Yosys-only backend (no LEF/STA required) — the recommended quick-look path |
+| `openroad.pre-sta-tcl` | string | Raw Tcl snippet injected into `synth.tcl` between `read_sdc` and `report_checks` — use for floorplan/placement/parasitic-estimation before timing analysis |
+
+> **Built-in fallback:** when `cfg-synth-efforts` is not configured (or the synthesis omits `effort:` and no override is passed), an internal `standard` effort with all defaults is used. Existing projects therefore need no migration.
+
+> **Tradeoff:** `pre-sta-tcl` is a raw snippet — powerful, but errors in it surface only at OpenROAD runtime. Test new snippets against a small design before adopting them in a regression.
+
+### Example: quick / standard / accurate on SKY130
+
+Running the same DMA design at all three levels (ip_dma, sky130hd_tt, 5-clock SDC):
+
+| Effort | Gates | WNS | TNS | Notes |
+|--------|-------|-----|-----|-------|
+| `quick` | 213 | +3.314 ns | — | Yosys-only with `-flatten` / `-fast`; aggressive optimisation; no STA |
+| `standard` | 10218 | −1.172 ns | −7835.2 ns | OpenROAD STA with ideal wires (zero RC) |
+| `accurate` | 10218 | −1.347 ns | −8418.4 ns | OpenROAD STA + Liberty wire-load model |
+
+The pessimization between `standard` and `accurate` (−1.347 vs −1.172 ns WNS) shows the wire-load model adding parasitic RC; the gate count is unchanged because the Yosys stage runs identically.
+
+### PDK library configuration
+
+Liberty files for technology mapping are registered under `cfg-synth-libs`. Paths are resolved relative to `root_config.yaml`:
+
+```yaml
+cfg-synth-libs:
+  - name: "sky130hd_tt"
+    path: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
+    lef-paths:                                          # required for OpenROAD backend
+      - "pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef"
+```
+
+The `libraries` list in `synth.yaml` references entries by name.
+
+- **Yosys backend:** uses `path` (liberty) for `read_liberty` → `dfflibmap` → `abc -liberty` → `write_verilog`. `lef-paths` is ignored.
+- **OpenROAD backend:** requires both `path` (liberty) for timing and `lef-paths` (LEF) for technology loading. Without `lef-paths` the run fails immediately with an actionable error.
+
+PDK files are typically large and should be gitignored. Provide a download script:
+
+```bash
+# pdk/download_pdk.sh
+curl -fL <liberty-url> -o pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+curl -fL <lef-url>     -o pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef
+```
+
+## Synthesis regression: `synth_regression.yaml`
+
+`synth_regression.yaml` lists the `synth.yaml` files to include in a synthesis regression:
+
+```yaml
+rtl-buddy-filetype: synth_reg_config
+
+synth-configs:
+  - "synth/sandbox/synth.yaml"
+  - "synth/dma/synth.yaml"
+```
+
+Paths are resolved relative to `synth_regression.yaml`.
+
+## Running synthesis
+
+Run all syntheses in a config:
+```bash
+rtl-buddy synth -c synth/sandbox/synth.yaml
+```
+
+Run a named synthesis:
+```bash
+rtl-buddy synth sandbox_sky130 -c synth/sandbox/synth.yaml
+```
+
+List syntheses without running:
+```bash
+rtl-buddy synth --list -c synth/sandbox/synth.yaml
+```
+
+Run a synthesis regression:
+```bash
+rtl-buddy synth-regression -c synth_regression.yaml
+```
+
+Run only up to regression level 0:
+```bash
+rtl-buddy synth-regression -c synth_regression.yaml --reg-level 0
+```
+
+## Results table
+
+`rb synth` prints a results table after each run. Columns appear conditionally:
+
+```
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Synthesis        ┃ Result ┃ Description      ┃ Gates ┃ Area       ┃ WNS       ┃ TNS       ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ sandbox_synth    │ PASS   │ Synthesis passed │ 18    │ -          │ -         │ -         │
+│ sandbox_sky130   │ PASS   │ Synthesis passed │ 18    │ 178.92 µm² │ +8.882 ns │ -         │
+│ sandbox_openroad │ PASS   │ Synthesis passed │ 18    │ 179.00 µm² │ +6.754 ns │ +0.000 ns │
+└──────────────────┴────────┴──────────────────┴───────┴────────────┴───────────┴───────────┘
+```
+
+| Column | Source | When shown |
+|--------|--------|-----------|
+| **Gates** | Yosys `stat` cell count | All lib-mapped flows |
+| **Area** | Yosys `stat -liberty` / OpenROAD `report_design_area` | Lib-mapped flows |
+| **WNS** | Yosys: clock period − critical path delay; OpenROAD: `report_checks -path_delay max` | Lib-mapped flows with SDC |
+| **TNS** | OpenROAD `report_tns` — sum of all negative endpoint slacks | OpenROAD backend with SDC |
+
+WNS and TNS are positive when timing is met and negative when violated. TNS = 0 means no violations; a negative TNS indicates the total repair budget needed.
+
+**WNS difference between backends:** Yosys computes WNS as `period − critical_path`, which always reports positive slack. OpenROAD's `report_checks` reports the actual worst slack across all timing paths. The two values are closely aligned for single-clock designs.
+
+## Artefacts
+
+Synthesis artefacts land under `artefacts/<synth_name>/` relative to the `synth.yaml` directory.
+
+**Yosys backend:**
+
+| File | Contents |
+|------|----------|
+| `synth.f` | Generated source filelist (resolved from `models.yaml`) |
+| `synth.ys` | Generated Yosys script |
+| `synth.log` | Captured Yosys stdout and stderr |
+| `synth.rtlil` | Output netlist, technology-independent flow (RTLIL format) |
+| `synth_netlist.v` | Output netlist, technology-mapped flow (Verilog) |
+
+**OpenROAD backend:**
+
+| File | Contents |
+|------|----------|
+| `synth.f` | Generated source filelist |
+| `synth.ys` | Yosys script (stage 1 — maps RTL to gate-level netlist) |
+| `synth_yosys.log` | Yosys stdout and stderr |
+| `synth_netlist.v` | Gate-level Verilog produced by Yosys, fed into OpenROAD |
+| `synth.tcl` | OpenROAD Tcl script (stage 2 — timing analysis) |
+| `synth.log` | OpenROAD stdout and stderr |
+
+## Pass/fail detection
+
+**Yosys backend:** a run passes when the tool exits with code 0 and `synth.log` contains no lines starting with `ERROR:`.
+
+**OpenROAD backend:** both stages must succeed. The Yosys stage applies the same exit-code and `ERROR:` check; the OpenROAD stage checks exit code and the absence of `[ERROR ...]` lines in `synth.log`.
+
+Any other outcome is **FAIL** with a description in the results table.
+
+## Full schema
+
+See [YAML Formats: synth.yaml](../reference/yaml.md#synthyaml) for the complete field reference.
+
+
+---
+
+<!-- source: concepts/tests -->
+
+---
+description: How to define testbenches and tests in tests.yaml for a verification suite.
+---
+
+# Tests
+
+## Test config: `tests.yaml`
+
+A `tests.yaml` file defines the testbenches and tests for a verification suite. Each suite has its own `tests.yaml`.
+
+`rtl_buddy` looks for `tests.yaml` in the current directory, or you can specify a file with `--test-config`.
+
+### Structure
+
+```yaml
+rtl-buddy-filetype: test_config
+
+testbenches:
+  - name: "tb_top"
+    filelist:
+      - "+incdir+../../../verif/tb"
+      - "tb_top.sv"
+
+tests:
+  - name: "smoke"
+    desc: "sanity test"
+    reglvl: 0
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    testbench: "tb_top"
+    plusargs:
+      test_cycles: "50"
+    plusdefines:
+      FEATURE_X: "1"
+    sim_timeout: 120
+```
+
+### Test fields
+
+| Field | Description |
+|-------|-------------|
+| `name` | Test identifier used on the command line and in log file names |
+| `desc` | Human-readable description |
+| `reglvl` | Regression level (int or per-builder dict) |
+| `model` | Model name from `models.yaml` |
+| `model_path` | Path to `models.yaml`, resolved relative to the suite directory |
+| `testbench` | Testbench name from `testbenches` list |
+| `plusargs` | Key-value pairs passed as `+KEY=VALUE` at sim runtime |
+| `plusdefines` | Key-value pairs passed as `+define+KEY=VALUE` at compile time |
+| `sim_timeout` | Timeout in seconds (default: 60) |
+| `uvm` | UVM report thresholds (see below) |
+| `sweep` | Sweep expansion script (see [Plugins](plugins.md)) |
+| `preproc` | Pre-processing script (see [Plugins](plugins.md)) |
+
+### Regression levels
+
+`reglvl` controls which tests run during a regression:
+
+```yaml
+# Same level for all builders
+reglvl: 1500
+
+# Builder-specific, with a fallback
+reglvl:
+  default: 2500
+  vcs: 3500
+```
+
+Use `--reg-level` and `--start-level` on the `regression` subcommand to select a level range. See [Regressions](regressions.md).
+
+### Default transcript parsing
+
+When `uvm` is **not** set, `rtl_buddy` determines the result by parsing `artefacts/{test_name}/test.log` after simulation. Your testbench must print a result marker to **stdout** at the start of a line:
+
+- `PASS <optional detail>`
+- `FAIL <optional detail>`
+
+When emitting `FAIL`, also print an `ERR:` or `FAT:` line. The default failure parser expects one:
+
+```systemverilog
+if (test_passed) begin
+  $display("PASS smoke completed");
+end else begin
+  $display("FAIL smoke completed");
+  $display("ERR: expected done=1 before timeout");
+end
+```
+
+Rules to follow:
+
+- Emit exactly one terminal result marker.
+- Start the line with `PASS` or `FAIL`; other wording will not be detected.
+- Write the marker to stdout, not stderr.
+- When using `FAIL`, follow it with an `ERR:` or `FAT:` line.
+- If no `PASS` or `FAIL` marker is found, `rtl_buddy` records the test as `NA` with description `test result unknown`.
+- Do not rely on the simulator exit code alone to communicate pass/fail in non-UVM tests.
+
+### UVM report parsing
+
+When `uvm` is set, `rtl_buddy` parses the UVM summary at the end of simulation output and fails the test if thresholds are exceeded:
+
+```yaml
+uvm:
+  max_warns: 0
+  max_errors: 0
+```
+
+With `uvm` enabled, `rtl_buddy` uses the UVM Report Summary instead of `PASS` / `FAIL` transcript markers. Missing or malformed UVM summaries are treated as test failures.
+
+### Other failure modes
+
+The transcript parser is not the only source of failures. `rtl_buddy` also marks a test as `FAIL` when:
+
+- a sweep or pre-processing script fails during setup
+- filelist validation fails before compile
+- compilation fails
+- simulation times out
+
+## Running tests
+
+Run a named test:
+```bash
+rtl-buddy test smoke
+```
+
+Run all tests in a config:
+```bash
+rtl-buddy test
+```
+
+List tests without running:
+```bash
+rtl-buddy test --list
+```
+
+## Randomization
+
+Two seed options are available with the `test` subcommand:
+
+- `--rnd-new`: use a randomly generated seed instead of the root config seed. The seed is saved to `artefacts/{test_name}/test.randseed`.
+- `--rnd-last`: repeat the test with the seed from the last `--rnd-new` run.
+
+For running a test many times with different seeds, use `randtest`. See the [CLI reference](../reference/cli.md#randtest).
+
+## Logging
+
+`rtl_buddy` writes orchestration output to `rtl_buddy.log` in the directory where it is invoked.
+
+Per-test simulation output goes to `artefacts/{test_name}/`:
+
+- `test.log` — full simulation output
+- `test.err` — stderr
+- `test.randseed` — the seed used
+- `coverage.dat` — coverage database (if coverage is enabled)
+- `compile.log` — compile transcript
+- `run.f` — generated filelist
+
+For repeated runs (`randtest`), each iteration writes into a numbered subdirectory — `artefacts/{test_name}/run-0001/`, `run-0002/`, etc. — while compile outputs remain at the top of `artefacts/{test_name}/`.
+
+The symlinks `test.log`, `test.err`, and `test.randseed` at the suite root always point to the most recent run.
+
+For machine-readable logs (JSON Lines), use `--machine`. See [For Agents](../agents.md).
+
+## Path and working directory
+
+`test` and `randtest` do **not** automatically change directory to the suite directory. Run them from the directory containing `tests.yaml`, or pass an explicit `--test-config` path.
+
+Paths in `tests.yaml` (such as `model_path`) are resolved relative to the suite file's directory, not the invocation directory.
+
+Plusargs are passed to the simulator verbatim. If a plusarg should reference a suite-local file, resolve it explicitly in preproc using `suite_dir`. Bare output filenames can remain artifact-relative so they land under `artefacts/{test_name}/`.
+
+## Full schema
+
+See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for the complete field reference.
+
+
+---
+
+<!-- source: concepts/wave -->
+
+---
+description: How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.
+---
+
+# Waveform Viewer (`rb wave`)
+
+`rb wave` opens the [Surfer](https://surfer-project.org/) waveform viewer for a test and connects it to your editor via the **WCP** (Waveform Client Protocol). When you right-click a signal in Surfer and choose **Go to declaration**, rtl-buddy:
+
+1. Resolves the signal to its source file and line number
+2. Opens (or reuses) your editor at that location
+3. Annotates the signal's waveform value at the current cursor position as inline virtual text
+
+## Basic usage
+
+```bash
+cd verif/sandbox
+uv run rb wave basic          # runs debug sim if no FST exists, then opens Surfer
+uv run rb wave basic --resim  # force re-run of debug sim
+```
+
+Signal layout files are loaded automatically: if `basic.surfer` exists next to `tests.yaml`, Surfer opens with those signals pre-loaded.
+
+## Configuration
+
+Add a `cfg-surfer` section to `root_config.yaml`:
+
+```yaml
+cfg-surfer:
+  - name: "surfer-default"
+    path: "../surfer/target/release/surfer"  # or bare name on PATH
+    wcp-port: 0                              # 0 = OS assigns a free port
+    editor-cmd: "nvim +%l %f"               # %f = file, %l = line
+    editor-terminal: "tmux"                  # tmux | iterm2 | terminal | ""
+    editor-sock: "~/.local/share/rtl-buddy/wave-nvim.sock"  # enables nvim reuse
+    ctrl-sock: "~/.local/share/rtl-buddy/wave-ctrl.sock"    # enables nvim → Surfer
+```
+
+See [YAML Formats](../reference/yaml.md) for all fields.
+
+## Signal value annotation
+
+### How it works
+
+When a `goto_declaration` event arrives from Surfer, rtl-buddy:
+
+1. Reads the signal value at the cursor timestamp from the FST via **pywellen**
+2. Enumerates all other signals in the same module scope using the FST hierarchy
+3. Runs a **single bulk grep** across the SV source files to map every signal to its declaration line (result cached for the session)
+4. Pushes all values to the editor as EOL virtual text
+
+Moving the Surfer time cursor fires a `cursor_moved` WCP event, which re-reads all scope signal values and updates the annotations live — no interaction required.
+
+Two signals declared on the same source line are combined into one annotation:
+
+```systemverilog
+logic a, b;    ▶ a=8'h0a  b=8'h05 [i_dut]
+logic clk;     ▶ 1'b0 [i_dut]
+```
+
+### Active scope
+
+Clicking any signal in Surfer's signal list sets the **active scope** — the module instance used to resolve signal names. rtl-buddy updates the scope cache automatically via the `scope_changed` WCP event, so annotation context is always current without requiring a "Go to declaration".
+
+### nvim setup
+
+The annotation feature requires a small nvim plugin. Install it once:
+
+```bash
+rb wave-install-nvim
+```
+
+This copies `rtl_buddy_wave.lua` to `~/.local/share/nvim/site/plugin/`, which nvim auto-sources at startup. No `init.lua` changes are needed. Reinstall after rtl-buddy upgrades with `--force`:
+
+```bash
+rb wave-install-nvim --force
+```
+
+If the plugin is missing when `rb wave` starts with `editor-sock` configured, a warning is shown:
+
+```
+WARNING  nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations
+```
+
+### Adding signals to Surfer from nvim
+
+With `ctrl-sock` configured, place the cursor on any signal name in nvim and press **`<Space>wa`** (`<leader>wa`) to add it to Surfer's waveform view.
+
+The signal is resolved using the active scope — click a signal in Surfer first to establish the instance context (e.g. clicking `tb_top.i_dut.clk` sets scope `tb_top.i_dut`), then add signals freely from nvim.
+
+```
+nvim: cursor on "rst"  →  <Space>wa  →  Surfer adds tb_top.i_dut.rst to waveform
+```
+
+The keymap requires `ctrl-sock` to be set in `cfg-surfer` and `rb wave` to be running. A warning is shown if the socket is unreachable.
+
+### Single-signal mode
+
+To annotate only the signal you right-clicked (not the whole scope):
+
+```bash
+uv run rb wave basic --focused-signal
+```
+
+### Editor socket reuse
+
+When `editor-sock` is set, rtl-buddy launches nvim with `--listen <sock>` on first use. Subsequent `goto_declaration` and `cursor_moved` events reuse the running instance via `--remote-expr nvim_exec2(...)` — no new windows, no command-line flicker.
+
+The socket is probed with a 300 ms timeout. If the socket is stale (nvim has been closed), the next `goto_declaration` opens a fresh nvim window.
+
+## Surfer build
+
+The annotation features require Surfer built from the `rtl-buddy` branch:
+
+```bash
+git clone https://github.com/rtl-buddy/surfer.git ../surfer
+cd ../surfer && git checkout rtl-buddy
+cargo build --release
+```
+
+Point `cfg-surfer.path` at `../surfer/target/release/surfer` (relative to `root_config.yaml`) or install the binary on `PATH`.
+
+
+---
+
+<!-- source: index -->
+
+---
+description: RTL Buddy is a Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, Yosys synthesis flows, coverage, and YAML-based RTL automation.
+---
+
+# RTL Buddy
+
+RTL Buddy is a Python CLI for Verilog and SystemVerilog RTL workflows, including test execution, randomized regression testing, Verilator and VCS simulation, Yosys synthesis, coverage collection, and YAML-based automation.
+
+It wraps simulation, synthesis, and project scripts to provide a structured, config-driven test, regression, and synthesis system for ASIC and FPGA projects. The primary supported simulation flows are Verilator on macOS/Linux and VCS on Linux.
+
+## Features
+
+- Run individual Verilog/SystemVerilog tests or full regressions from YAML config files
+- Randomized seed testing with repeat and replay support
+- Plugin hooks for sweep generation, test pre-processing, and post-processing
+- Filelist generation from `models.yaml`
+- Yosys synthesis runs and synthesis regressions from `synth.yaml`
+- Verilator coverage collection, merge, summary, and export workflows
+- Basic Verible command integration for lint, syntax, formatting, and preprocessing
+- Machine-readable JSONL logging for use with AI agents and CI pipelines
+
+`rtl_buddy` can be adapted to different project toolchains, but the primary supported simulation flows are Verilator and VCS, and synthesis through Yosys. Broader first-class Verible and PeakRDL workflows are on the roadmap.
+
+## SystemVerilog Regression Testing
+
+RTL Buddy keeps simulator invocation, seeds, logs, result handling, and regression selection consistent across repeated verification runs. Projects describe suites, tests, platforms, builders, and models in readable YAML files instead of scattering that logic across ad hoc shell scripts.
+
+## Verilator and VCS Simulation Workflows
+
+The CLI gives RTL projects one command surface for open-source Verilator flows and Linux VCS flows, with optional hooks for project-specific compile, simulation, sweep, and post-processing behavior.
+
+## Yosys Synthesis Workflows
+
+Synthesis configs use the same YAML-driven style as tests and regressions. Projects can define technology-independent or Liberty-mapped Yosys runs, capture synthesis artefacts, and run synthesis regressions from one command surface.
+
+## Getting Started
+
+- [Installation](install.md) — how to add `rtl_buddy` to your project
+- [Quick Start](quickstart.md) — run your first test in minutes
+- [Concepts](concepts/root-config.md) — understand the config model
+
+## Reference
+
+- [CLI Reference](reference/cli.md) — all subcommands and options
+- [YAML Formats](reference/yaml.md) — full schema for all config files
+
+
+---
+
+<!-- source: install -->
+
+---
+description: How to install rtl_buddy into a project using uv, including prerequisites and verification steps.
+---
+
+# Installation
+
+`rtl_buddy` is available on PyPI and installed into your project environment with `uv`.
+
+## Prerequisites
+
+- Python 3.11 or later
+- `uv`
+- Simulation tool on `PATH`: Verilator (macOS/Linux) or VCS (Linux)
+- Optional: Verible if you want to use `uv run rb verible ...` — e.g. `brew tap chipsalliance/verible && brew install verible` on macOS, or see [Verible releases](https://github.com/chipsalliance/verible/releases) for other platforms
+- Optional system-level coverage tools:
+  - `lcov` for `.info` export and HTML reports
+  - Antmicro `coverview` for Coverview package generation
+
+`rtl_buddy` can be used with different project-specific tool setups, but the primary supported flows are Verilator and VCS. Basic Verible command integration exists; broader first-class Verible and PeakRDL workflows are on the roadmap.
+
+## Install Into A Project With `uv`
+
+Add `rtl_buddy` to your project environment:
+
+```bash
+uv add rtl_buddy
+```
+
+Then verify the install:
+
+```bash
+uv run rb --version
+```
+
+## Updating
+
+To move a project to a newer `rtl_buddy` version:
+
+```bash
+uv add rtl_buddy@latest
+uv sync
+```
+
+Commit the resulting lockfile change in your project repo.
+
+## Installing A Pre-release
+
+Pre-release versions follow PEP 440 (`2.3.0rc1`, `2.3.0rc2`, …). They are published to PyPI but excluded from the default resolver — an unqualified range like `>=2.2.0` will not pull one in.
+
+To install a specific pre-release, pin it exactly:
+
+```bash
+uv add "rtl_buddy==2.3.0rc1"
+```
+
+Or in `pyproject.toml`:
+
+```toml
+dependencies = ["rtl_buddy==2.3.0rc1"]
+```
+
+This works without any `--pre` flag because the exact version is specified.
+
+## Set Up The Agent Skill
+
+`rtl_buddy` ships an agent skill for Claude Code and Codex. After installing `rtl_buddy`, run once per machine:
+
+```bash
+uv run rb skill install
+```
+
+This writes `SKILL.md` to `~/.claude/skills/rtl_buddy/` and `~/.codex/skills/rtl_buddy/`. Agents pick it up automatically. Re-run after upgrading `rtl_buddy` to refresh the content.
+
+To install at project scope instead (overrides the user-level copy for that project):
+
+```bash
+uv run rb skill install --project
+```
+
+See [For Agents](agents.md) for scope semantics and `.gitignore` guidance.
+
+
+---
+
+<!-- source: known-issues -->
+
+---
+description: Known issues with rtl_buddy and workarounds for simulator-specific behaviors.
+---
+
+# Known Issues
+List of known issues with rtl_buddy and how it uses VCS, Verilator, etc.
+
+## Instance pRNG seeding with Verilator
+
+Random testing does not behave reliably with Verilator. While Verilator supports multiple random tests with different seeds, tests are not always reproducible even with the same seed.
+
+VCS is recommended for stable random testing due to its hierarchical instance seeding. VCS seeds instantiated modules, process threads, and classes based on their hierarchical names. For stable random seeding with VCS, name your instances explicitly.
+
+If you require reproducible randomized testing on macOS (where VCS is not available), this is a known limitation.
+
+## VCS hierarchical seed file
+
+When using VCS with hierarchical instance seeding (`-xlrm hier_inst_seed`), VCS writes a `HierInstanceSeed.txt` file in the simulation directory after the run. `rtl_buddy` looks for this file to record the seed for reproducibility.
+
+If the file is missing, a `sim.hier_seed_missing` warning is emitted in the log and the seed is not recorded, but the test result is not affected.
+
+Ensure your VCS compile-time flags include `-xlrm hier_inst_seed` and that the simulation directory is writable so VCS can write the file.
+
+
+---
+
+<!-- source: migrations/submodule-to-uv -->
+
+---
+description: How to migrate an RTL project from the legacy rtl_buddy submodule flow to a uv-managed PyPI dependency.
+---
+
+# Migrating from Submodule to uv
+
+Use this page to migrate an RTL project from the legacy `rtl_buddy` submodule flow to a `uv`-managed PyPI dependency.
+
+## Existing state before migration
+
+`rtl_buddy` is currently distributed as a git submodule under `tools/rtl_buddy` in your RTL project. Installation is via `pip install -r requirements.txt` where `requirements.txt` contains `-e tools/rtl_buddy`.
+
+## New state after migration
+
+The target distribution mechanism is a normal Python project environment managed by `uv`, with `rtl_buddy` installed from PyPI:
+
+```toml
+# pyproject.toml
+[project]
+name = "your-rtl-project"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "rtl_buddy",
+]
+```
+
+Then run `rtl_buddy` through that environment:
+
+```bash
+uv run rb --version
+uv run rb test basic
+```
+
+This eliminates the submodule and replaces it with a package dependency recorded in `pyproject.toml` and locked in `uv.lock`.
+
+## Migration guide
+
+Many legacy RTL repositories are not already Python projects. If your project does not have a `pyproject.toml`, create one first:
+
+```bash
+uv init --bare
+```
+
+Then add `rtl_buddy`:
+
+```bash
+uv add rtl_buddy
+uv run rb --version
+```
+
+After the package install is working:
+
+1. Remove the `tools/rtl_buddy` submodule from your project.
+2. Remove `requirements.txt` if you have one, migrating the entries to `pyproject.toml` under dependencies.
+3. Update local scripts and CI jobs from `tools/rtl_buddy/...` or `python -m rtl_buddy` inside the submodule checkout to `uv run rb ...`.
+4. Commit `pyproject.toml` and `uv.lock` so other users and CI resolve the same environment.
+
+If you need to hold a project on a specific release, pin the package version:
+
+```bash
+uv add "rtl_buddy==2.3.0"
+```
+
+
+---
+
+<!-- source: migrations/v2-to-v3 -->
+
+---
+description: How to migrate an rtl_buddy project from v2 to v3, covering the artifact layout change and other breaking changes.
+---
+
+# Migrating from v2 to v3
+
+## Artifact layout change
+
+v3 changes where test outputs are written. All per-test files now live under `artefacts/` in the suite directory instead of `logs/`.
+
+### Single run
+
+| v2 | v3 |
+|----|-----|
+| `logs/{test_name}.log` | `artefacts/{test_name}/test.log` |
+| `logs/{test_name}.err` | `artefacts/{test_name}/test.err` |
+| `logs/{test_name}.randseed` | `artefacts/{test_name}/test.randseed` |
+| `logs/{test_name}.coverage.dat` | `artefacts/{test_name}/coverage.dat` |
+| `logs/{test_name}.compile.log` | `artefacts/{test_name}/compile.log` |
+
+### Repeated runs (`randtest`)
+
+Each `randtest` iteration now writes into a numbered subdirectory:
+
+```
+artefacts/{test_name}/run-0001/test.log
+artefacts/{test_name}/run-0001/test.err
+artefacts/{test_name}/run-0001/test.randseed
+artefacts/{test_name}/run-0001/coverage.dat
+```
+
+Compile outputs (`compile.log`, `run.f`) remain at `artefacts/{test_name}/` — they are shared across all iterations of the same test.
+
+Hook scripts that previously relied on suite-relative file paths resolving from the simulator working directory must now resolve those paths explicitly. Use the preproc hook's `suite_dir` variable for suite-local inputs; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
+
+### Symlinks
+
+The convenience symlinks `test.log`, `test.err`, and `test.randseed` at the suite root still exist and still point to the latest run.
+
+## What to update
+
+### `.gitignore`
+
+Replace any `logs/` entry with `artefacts/`:
+
+```diff
+-logs/
++artefacts/
+```
+
+### CI scripts
+
+Update any scripts that reference `logs/{test_name}.*` paths to the new locations above.
+
+### Coverage path references
+
+Scripts that process coverage files should look for `artefacts/{test_name}/coverage.dat` (single run) or `artefacts/{test_name}/run-*/coverage.dat` (randtest).
+
+
+---
+
+<!-- source: quickstart -->
+
+---
+description: Run your first rtl_buddy test, regression, synthesis, and supporting commands in an already-installed project.
+---
+
+# Quick Start
+
+Use this guide to run your first `rtl_buddy` test, regression, synthesis, and supporting commands in an already-installed project.
+
+## Run a test
+
+Run the test named `basic` using `tests.yaml` in the current directory:
+
+```bash
+uv run rb test basic
+```
+
+Specify a different test config file:
+
+```bash
+uv run rb test basic --test-config path/to/tests.yaml
+```
+
+Run all tests in a config:
+
+```bash
+uv run rb test
+```
+
+List available tests without running them:
+
+```bash
+uv run rb test --list
+```
+
+## Run a regression
+
+```bash
+uv run rb regression
+```
+
+This uses the regression config path from `root_config.yaml`. To specify a different file:
+
+```bash
+uv run rb regression --reg-config path/to/regressions.yaml
+```
+
+## Run synthesis
+
+List synthesis entries in a config:
+
+```bash
+uv run rb synth --list --synth-config path/to/synth.yaml
+```
+
+Run a synthesis entry:
+
+```bash
+uv run rb synth smoke_synth --synth-config path/to/synth.yaml
+```
+
+See [Synthesis](concepts/synthesis.md) for `synth.yaml`, tool, and library configuration.
+
+## Run with randomization
+
+Run a test once with a new random seed:
+
+```bash
+uv run rb test basic --rnd-new
+```
+
+Run the same test 5 times with different seeds:
+
+```bash
+uv run rb randtest basic 5
+```
+
+Repeat a specific iteration from a previous `randtest` run:
+
+```bash
+uv run rb randtest basic 5 --rnd-rpt 3
+```
+
+## Check logs
+
+`rtl_buddy` writes orchestration logs to `rtl_buddy.log` in the directory where it is run.
+
+Simulation output for each test goes to `artefacts/{test_name}/`. A single run writes `test.log`, `test.err`, `test.randseed`, and (if coverage is enabled) `coverage.dat` directly there. Repeated runs (via `randtest`) write each iteration into a numbered subdirectory: `artefacts/{test_name}/run-0001/`, `run-0002/`, and so on. For convenience, the symlinks `test.log`, `test.err`, and `test.randseed` in the suite root always point to the latest run.
+
+For machine-readable output (useful with CI or AI agents):
+
+```bash
+uv run rb --machine test basic
+```
+
+In machine mode, `rtl_buddy.log` is written as JSON Lines and console output is plain text. See [For Agents](agents.md) for more on machine mode.
+
+## Next steps
+
+- [Concepts: Tests](concepts/tests.md) — understand the test config model
+- [Concepts: Regressions](concepts/regressions.md) — run multi-suite regressions
+- [Concepts: Synthesis](concepts/synthesis.md) — run Yosys synthesis flows
+- [YAML Formats](reference/yaml.md) — full config file reference
+
+
+---
+
+<!-- source: reference/cli -->
+
+---
+description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+---
+
+# CLI Reference
+
+This page is auto-generated from `rtl-buddy --help` output.
+Run `python scripts/gen_cli_reference.py` from the repo root to regenerate it.
+
+<!-- AUTO-GENERATED: do not edit below this line manually -->
+
+## rtl-buddy
+
+```text
+Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...                                           
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --debug               -D                                     Print rtl_buddy debug   │
+│                                                              details to console      │
+│ --verbose             -v                                     Print execution details │
+│                                                              to console              │
+│ --machine                                                    Emit machine-oriented   │
+│                                                              logs and plain console  │
+│                                                              output                  │
+│ --color                   --no-color                         Logs without ANSI color │
+│                                                              codes                   │
+│                                                              [default: color]        │
+│ --builder-mode        -M                TEXT                 Override default        │
+│                                                              builder_mode            │
+│ --builder             -B                TEXT                 Override platform       │
+│                                                              default builder         │
+│ --early-stop          -E                [pre|comp|sim|post]  Run step to stop early  │
+│                                                              at                      │
+│ --version                                                    Prints version          │
+│ --install-completion                                         Install completion for  │
+│                                                              the current shell.      │
+│ --show-completion                                            Show completion for the │
+│                                                              current shell, to copy  │
+│                                                              it or customize the     │
+│                                                              installation.           │
+│ --help                                                       Show this message and   │
+│                                                              exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ test               run a simple test                                                 │
+│ randtest           repeat a test with multiple random seeds                          │
+│ regression         run rtl regression                                                │
+│ filelist           generate filelists using models.yaml                              │
+│ verible            run verible cmd                                                   │
+│ wave               open waveform viewer for a test                                   │
+│ wave-install-nvim  install nvim plugin for rb wave annotation                        │
+│ synth              run synthesis                                                     │
+│ synth-regression   run synthesis regression                                          │
+│ cdc                run CDC lint                                                      │
+│ cdc-regression     run CDC lint regression                                           │
+│ skill              manage the rtl_buddy agent skill                                  │
+│ docs               browse bundled documentation                                      │
+│ spec               spec traceability commands                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## test
+
+```text
+Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
+                                                                                        
+ run a simple test                                                                      
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   test_name      [TEST_NAME]  name of test [default: (run all tests)]                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --test-config                  -c      TEXT  test_config.yaml to use                 │
+│                                              [default: tests.yaml]                   │
+│ --list                                       list tests in the selected test-config  │
+│                                              and exit                                │
+│ --coverage-merge                             merge coverage across selected tests;   │
+│                                              uses raw merge for summary/html and     │
+│                                              info-process for Coverview              │
+│ --coverage-merge-raw                         use raw Verilator merge for merged      │
+│                                              summary/html/Coverview                  │
+│ --coverage-merge-info-process                use info-process merge for merged       │
+│                                              summary/Coverview; HTML merge is not    │
+│                                              supported                               │
+│ --coverage-html                              generate merged LCOV HTML output in     │
+│                                              coverage_merge.html                     │
+│ --coverage-coverview                         generate Coverview zip output from      │
+│                                              coverage info                           │
+│ --coverage-dir-summary                 TEXT  append coverage summary lines for       │
+│                                              repo-relative directory prefixes; may   │
+│                                              be repeated                             │
+│ --coverage-dir-summary-file            TEXT  file containing repo-relative directory │
+│                                              prefixes, one per line                  │
+│ --rnd-new                      -n            use a randomly generated seed instead   │
+│                                              of root config seed                     │
+│ --rnd-last                     -l            reuse last generated seed               │
+│ --help                                       Show this message and exit.             │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## randtest
+
+```text
+Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]                                
+                                                                                        
+ repeat a test with multiple random seeds                                               
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    test_name      TEXT       name of test [default: (run all tests)] [required]    │
+│      rnd_cnt        [RND_CNT]  number of random iterations to test [default: 2]      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --test-config  -c      TEXT     test_config.yaml to use [default: tests.yaml]        │
+│ --rnd-rpt      -r      INTEGER  repeat iteration number from previous run            │
+│ --help                          Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## regression
+
+```text
+Usage: rtl-buddy regression [OPTIONS]                                                  
+                                                                                        
+ run rtl regression                                                                     
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config                   -c      TEXT     path to regressions.yaml             │
+│                                                 [default: (Use ./regression.yaml if  │
+│                                                 present, otherwise root_config.yaml  │
+│                                                 reg-cfg-path)]                       │
+│ --reg-level                    -l      INTEGER  regression level to stop at          │
+│                                                 [default: 0]                         │
+│ --start-level                  -s      INTEGER  regression level to start at         │
+│                                                 [default: 0]                         │
+│ --coverage-merge                                merge coverage across regression     │
+│                                                 tests; uses raw merge for            │
+│                                                 summary/html and info-process for    │
+│                                                 Coverview                            │
+│ --coverage-merge-raw                            use raw Verilator merge for merged   │
+│                                                 summary/html/Coverview               │
+│ --coverage-merge-info-process                   use info-process merge for merged    │
+│                                                 summary/Coverview; HTML merge is not │
+│                                                 supported                            │
+│ --coverage-html                                 generate merged LCOV HTML output in  │
+│                                                 coverage_merge.html                  │
+│ --coverage-coverview                            generate Coverview zip output from   │
+│                                                 coverage info                        │
+│ --coverage-per-test                             package one Coverview dataset per    │
+│                                                 test in regression mode              │
+│ --coverage-dir-summary                 TEXT     append coverage summary lines for    │
+│                                                 repo-relative directory prefixes;    │
+│                                                 may be repeated                      │
+│ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
+│                                                 directory prefixes, one per line     │
+│ --help                                          Show this message and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## filelist
+
+```text
+Usage: rtl-buddy filelist [OPTIONS] MODEL_NAME [OUTPUT_PATH]                           
+                                                                                        
+ generate filelists using models.yaml                                                   
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    model_name       TEXT           name of model [required]                        │
+│      output_path      [OUTPUT_PATH]  Output filename [default: run.f]                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --model-config  -c      TEXT  model_config.yaml to use [default: models.yaml]        │
+│ --unroll        -u            Recursively unroll -F in filelists                     │
+│ --flatten       -f            Remove path to a file, leaving just the filename       │
+│ --strip         -s            Remove option part of a line                           │
+│ --deduplicate   -d            Remove duplicates                                      │
+│ --help                        Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## verible
+
+```text
+Usage: rtl-buddy verible [OPTIONS] CMD [VERIBLE_ARGS]...                               
+                                                                                        
+ run verible cmd                                                                        
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    cmd               TEXT               Verible cmd [required]                     │
+│      verible_args      [VERIBLE_ARGS]...                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## wave
+
+```text
+Usage: rtl-buddy wave [OPTIONS] TEST_NAME                                              
+                                                                                        
+ open waveform viewer for a test                                                        
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    test_name      TEXT  name of test to open waveform for [required]               │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --test-config     -c      TEXT  tests.yaml to use [default: tests.yaml]              │
+│ --surfer                  TEXT  cfg-surfer entry name [default: surfer-default]      │
+│ --resim                         force re-run of debug sim even if FST exists         │
+│ --focused-signal                annotate only the signal selected via Go to          │
+│                                 declaration; default annotates all signals in scope  │
+│ --help                          Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## wave-install-nvim
+
+```text
+Usage: rtl-buddy wave-install-nvim [OPTIONS]                                           
+                                                                                        
+ install nvim plugin for rb wave annotation                                             
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --force          overwrite existing installation                                     │
+│ --help           Show this message and exit.                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## skill
+
+```text
+Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...                                     
+                                                                                        
+ manage the rtl_buddy agent skill                                                       
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ install          Install the bundled rtl_buddy skill.                                │
+│ uninstall        Remove the installed rtl_buddy skill files from the selected scope. │
+│ status           Report whether the skill is installed and whether it matches the    │
+│                  current package version.                                            │
+│ print-gitignore  Print the gitignore lines for project-level skill installs.         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## docs
+
+```text
+Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...                                      
+                                                                                        
+ browse bundled documentation                                                           
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ list  list bundled documentation pages                                               │
+│ show  show a bundled documentation page                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## spec
+
+```text
+Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...                                      
+                                                                                        
+ spec traceability commands                                                             
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ list            list all spec blocks discovered in the project                       │
+│ check-design    show which spec blocks have design models referencing them           │
+│ check-coverage  show which spec coverage items are addressed by tests                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## synth
+
+```text
+Usage: rtl-buddy synth [OPTIONS] [SYNTH_NAME]                                          
+                                                                                        
+ run synthesis                                                                          
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   synth_name      [SYNTH_NAME]  name of synthesis to run                             │
+│                                 [default: (run all syntheses)]                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --synth-config  -c      TEXT  synth.yaml to use [default: synth.yaml]                │
+│ --list                        list syntheses in the selected config and exit         │
+│ --effort                TEXT  override synthesis effort (must match                  │
+│                               cfg-synth-efforts entry)                               │
+│ --help                        Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## synth-regression
+
+```text
+Usage: rtl-buddy synth-regression [OPTIONS]                                            
+                                                                                        
+ run synthesis regression                                                               
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config  -c      TEXT     path to synth_regression.yaml                         │
+│                                [default: (Use ./synth_regression.yaml if present)]   │
+│ --reg-level   -l      INTEGER  synthesis regression level to stop at [default: 0]    │
+│ --effort              TEXT     override synthesis effort (must match                 │
+│                                cfg-synth-efforts entry)                              │
+│ --help                         Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+
+---
+
+<!-- source: reference/yaml -->
+
+---
+description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, and cdc_regression.yaml.
+---
+
+# YAML Formats
+
+This page is the canonical reference for all `rtl_buddy` configuration files. Use it when creating or updating configs for new designs, suites, and regressions.
+
+## root_config.yaml
+
+The root config lives at the project root. It defines platforms, builders, Verible, coverage, synthesis tools, synthesis libraries, and the default regression config path.
+
+**Required keys:**
+
+- `rtl-buddy-filetype: project_root_config`
+- `cfg-platforms`
+- `cfg-rtl-builder`
+- `cfg-verible`
+- `cfg-rtl-reg`
+
+**Full example:**
+
+```yaml
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "osx"
+    unames: ["Darwin"]
+    builder: "verilator"
+    verible: "verible-macos"
+
+cfg-rtl-builder:
+  - name: "verilator"
+    builder: "verilator"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 31310
+    sim-rand-seed-prefix: "+verilator+seed+"
+    builder-opts:
+      debug:
+        compile-time: "--binary -sv -o simv"
+        run-time: "+verilator+rand+reset+2"
+      reg:
+        compile-time: "--binary -sv -o simv"
+        run-time: "+verilator+rand+reset+2"
+
+cfg-verible:
+  - name: "verible-macos"
+    path: "/opt/homebrew/bin"
+    extra_args:
+      lint:
+        - "--rules=-module-filename"
+
+cfg-coverage:
+  - name: "verilator"
+    use-lcov: true
+
+cfg-coverview:
+  - name: "verilator"
+    generate-tables: "line"
+    config:
+      # inline Coverview JSON configuration values
+
+cfg-surfer:
+  - name: "surfer-default"
+    path: "surfer"              # bare name → found via PATH; or relative/absolute path
+    wcp-port: 0         # 0 = OS auto-assigns a free port
+    editor-cmd: "vim +%l %f"   # %f = file path, %l = line number
+    editor-terminal: "tmux"    # tmux | iterm2 | terminal | "" (empty = run cmd directly)
+    editor-sock: "~/.local/share/rtl-buddy/wave-nvim.sock"  # optional: nvim remote reuse
+    ctrl-sock: "~/.local/share/rtl-buddy/wave-ctrl.sock"    # optional: nvim → Surfer
+
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"
+    opts:
+      synth-args: ""
+      abc-args: ""
+  - name: "openroad"
+    tool: "openroad"
+    opts:
+      strategy: "AREA"   # AREA | TIMING | TIMING_ANNEAL | TIMING_GENETIC
+
+cfg-synth-libs:
+  - name: "sky130hd_tt"
+    path: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
+    lef-paths:           # required for OpenROAD backend
+      - "pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef"
+
+cfg-synth-efforts:
+  - name: "quick"
+    yosys:
+      synth-args: "-flatten"
+      abc-args: "-fast"
+    openroad:
+      run: false               # skip OpenROAD entirely → Yosys-only fast path
+  - name: "standard"
+    openroad:
+      run: true                # current default behaviour: STA with ideal wires
+  - name: "accurate"
+    openroad:
+      run: true
+      pre-sta-tcl: |
+        initialize_floorplan -utilization 0.7 -aspect_ratio 1.0 \
+          -core_space 2.0 -site unithd
+        global_placement -density 0.7
+        estimate_parasitics -placement
+
+cfg-cdc-tools:
+  - name: "rtl-buddy-cdc"
+    tool: "rtl-buddy-cdc"
+    opts:
+      sync-depth: 2          # forwarded as `--sync-depth N` (CDC-002 required depth)
+      extra-args: ""         # appended verbatim to every invocation
+
+cfg-rtl-reg:
+  reg-cfg-path: "design/regression.yaml"
+```
+
+**Runtime effects:**
+
+- Platform is selected by matching `uname` output against `cfg-platforms[].unames`.
+- `--builder` overrides the platform-selected builder for the current run.
+- `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
+- `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
+- `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
+- `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the bundled nvim plugin first with `rb wave-install-nvim`.
+- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the executable name on `PATH`. For the Yosys backend, `opts.synth-args` are appended to the `synth` command and `opts.abc-args` are used by the unmapped ABC step. For the OpenROAD backend, `opts.strategy` controls optional resynthesis (`AREA` = none, `TIMING`/`TIMING_ANNEAL` = `resynth_annealing`, `TIMING_GENETIC` = `resynth_genetic`).
+- `cfg-synth-libs` defines named Liberty files for technology-mapped synthesis. `path` is resolved relative to `root_config.yaml`. The optional `lef-paths` list specifies LEF files required by the OpenROAD backend for technology loading; ignored by the Yosys backend.
+- `cfg-synth-efforts` defines named synthesis effort levels referenced by `synth.yaml` `effort` fields or the `--effort` CLI flag. Each entry has optional `yosys.synth-args` / `yosys.abc-args` (merged into the Yosys stage) and an `openroad` block. When `openroad.run: false`, the runner falls back to the Yosys-only backend even if `tool: openroad` was selected — useful for a fast quick-look path that needs no LEF/STA. `openroad.pre-sta-tcl` is a raw Tcl snippet injected into `synth.tcl` between `read_sdc` and `report_checks`; use it to insert floorplan/placement/parasitic-estimation steps before timing analysis. When no `cfg-synth-efforts` entries are configured or no effort is selected, a built-in `standard` effort with all defaults is used. Precedence for the same knob: per-synthesis `tool_overrides` > `cfg-synth-efforts` > `cfg-synth-tools`.
+- `cfg-cdc-tools` defines CDC tool entries selected by `cdc.yaml` `tool` fields. `tool` is the executable name on `PATH` (or an absolute path). `opts.sync-depth` is forwarded as `--sync-depth N` and controls CDC-002's required synchronizer depth. `opts.extra-args` is appended verbatim to every analyzer invocation.
+- `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
+- `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`.
+
+---
+
+## regression.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: reg_config`
+- `test-configs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: reg_config
+
+test-configs:
+  - "design/example_block_a/verif/tests.yaml"
+  - "design/example_block_b/verif/tests.yaml"
+```
+
+**Runtime effects:**
+
+- `rtl-buddy regression` iterates each listed suite and runs tests filtered by `--start-level`/`--reg-level`.
+- `regression` changes directory into each suite directory before running.
+
+---
+
+## models.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: model_config`
+- `models`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: model_config
+
+models:
+  - name: "my_design"
+    desc: "Optional human-readable description"
+    filelist:
+      - "-F my_design.f"
+    spec: "../../spec/my_design/specs.yaml"
+```
+
+**Optional fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `desc` | string | Human-readable model description |
+| `spec` | string | Path to the block's `specs.yaml`, relative to this `models.yaml` file. Used by `rb spec check-design` to link the design model to its specification. |
+
+**Runtime effects:**
+
+- `tests.yaml` references a model by `name` using the `model` and `model_path` fields.
+- Model filelists are parsed by the filelist logic: `-F` recursion, `+incdir+`, `+libext+`, `-v`, `-y`, and plain source paths are all supported.
+- `spec` is not used at simulation time; it is only consumed by the `rb spec` traceability commands.
+
+---
+
+## tests.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: test_config`
+- `testbenches`
+- `tests`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: test_config
+
+testbenches:
+  - name: "tb_top"
+    filelist:
+      - "+incdir+../../../verif/tb"
+      - "tb_top.sv"
+
+tests:
+  - name: "smoke"
+    desc: "sanity test"
+    reglvl: 0
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    testbench: "tb_top"
+    plusargs:
+      test_cycles: "50"
+      lvm_verbosity: 1
+    plusdefines:
+      FEATURE_X: "1"
+    sim_timeout: 120
+    uvm:
+      max_warns: 0
+      max_errors: 0
+
+  - name: "sweep_case"
+    desc: "expands to many tests"
+    reglvl:
+      default: 2000
+      vcs: 3000
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    testbench: "tb_top"
+    sweep:
+      path: "example_sweep.py"
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Test identifier; used in log file names |
+| `desc` | string | Human-readable description |
+| `reglvl` | int or dict | Regression level; int for all builders, dict for per-builder with `default` |
+| `model` | string | Model name from `models.yaml` |
+| `model_path` | string | Path to `models.yaml`; resolved relative to the suite directory |
+| `testbench` | string | Testbench name from `testbenches` list |
+| `plusargs` | dict | `KEY: VALUE` → `+KEY=VALUE` at sim runtime |
+| `plusdefines` | dict | `KEY: VALUE` → `+define+KEY=VALUE` at compile time |
+| `sim_timeout` | int | Timeout in seconds (default: 60) |
+| `uvm.max_warns` | int | UVM warning threshold; exceeding it fails the test |
+| `uvm.max_errors` | int | UVM error threshold; exceeding it fails the test |
+| `sweep.path` | string | Path to sweep expansion script |
+| `preproc.path` | string | Path to pre-processing script |
+| `postproc.path` | string | Path to post-processing script (parsed but not yet fully active) |
+| `covers` | list of strings | IDs of spec coverage items this test addresses (e.g. `["BLOCK-COV-01"]`). Used by `rb spec check-coverage`; has no effect at simulation time. |
+
+### cocotb testbenches
+
+Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode (Verilator only for now). `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
+
+**Prerequisite:** `cocotb` must be installed in the active Python environment (`uv add cocotb` or `pip install cocotb`). The runner invokes `cocotb-config` at compile time; a missing binary surfaces as a `FatalRtlBuddyError` with an actionable message.
+
+```yaml
+testbenches:
+  - name: "tb_my_design"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design          # DUT top-level module name — required for cocotb
+    cocotb:
+      module: test_my_design     # Python module(s) containing @cocotb.test() coroutines
+
+  - name: "tb_multi"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design
+    cocotb:
+      module:                    # list form: all modules are loaded
+        - test_smoke
+        - test_corner_cases
+```
+
+**Pass/fail detection for cocotb testbenches:**
+
+cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/`FAIL` stdout lines. `rtl_buddy` parses this file automatically after simulation; you do not need `$display("PASS …")` in cocotb tests. The `desc` field in the result reports the first three failure messages and a `(+N more)` suffix when there are more.
+
+**Testbench field reference (cocotb-specific additions):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `toplevel` | string | Yes (cocotb only) | Top-level DUT module name passed to `COCOTB_TOPLEVEL` |
+| `cocotb.module` | string or list | Yes | Python test module(s) passed to `COCOTB_TEST_MODULES` |
+
+**Runtime effects by field:**
+
+- `testbench`: selects entry from `testbenches`; its filelist is appended to model sources for compilation.
+- `model_path`: resolved relative to the `tests.yaml` file's directory.
+- `reglvl` as dict: use `default` as the fallback for builders not listed.
+- `plusdefines`: converted to `+define+KEY` (no value) or `+define+KEY=VALUE`.
+- `plusargs`: converted to `+KEY` (no value) or `+KEY=VALUE`.
+- `sim_timeout`: applies per test run, not per iteration in `randtest`.
+- `sweep.path`: Python script that expands one test entry into a list of `TestConfig` objects. See [Plugins](../concepts/plugins.md).
+- `preproc.path`: Python script executed before compile; can mutate `test_cfg` and `root_cfg`, and receives `suite_dir` plus `artifact_dir` in its execution namespace. See [Plugins](../concepts/plugins.md).
+
+## Path semantics and cwd
+
+- `rtl_buddy.log` and the convenience symlinks (`test.log`, `test.err`, `test.randseed`) are written to the suite root (the current working directory).
+- Per-test artifacts are written to `artefacts/{test_name}/` under the suite root. Single runs write `test.log`, `test.err`, `test.randseed`, `compile.log`, `run.f`, and (if enabled) `coverage.dat` there directly. Repeated runs (`randtest`) write sim outputs into numbered subdirectories: `artefacts/{test_name}/run-0001/`, etc.
+- `test` and `randtest` do **not** automatically change into the suite directory. Run from the suite directory, or use `--test-config` with a full path.
+- `regression` does `chdir` into each suite directory before executing.
+- Preproc plusargs are passed to the simulator verbatim. Resolve suite-local input paths explicitly against `suite_dir`; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
+- For portable configs in multi-suite repos, make paths in `tests.yaml` explicit and verify they resolve correctly from the intended invocation directory.
+
+---
+
+## synth.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: synth_config`
+- `syntheses`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: synth_config
+
+syntheses:
+  - name: "smoke_synth"
+    desc: "Synthesize my_design with the default Yosys flow"
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    tool: "yosys"
+    reglvl: 0
+
+  - name: "sky130_synth"
+    desc: "Technology-mapped synthesis for SKY130 (Yosys)"
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    tool: "yosys"
+    constraints: "constraints.sdc"
+    libraries:
+      - "sky130hd_tt"
+    params:
+      WIDTH: 32
+    defines:
+      TARGET_SYNTH: 1
+    reglvl:
+      default: 0
+      dc: 1000
+    tool_overrides:
+      yosys:
+        synth_args: "-flatten"
+
+  - name: "sky130_openroad"
+    desc: "Technology-mapped synthesis with OpenROAD timing analysis"
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    tool: "openroad"
+    constraints: "constraints.sdc"
+    libraries:
+      - "sky130hd_tt"
+    effort: "accurate"     # references cfg-synth-efforts entry; overridable via --effort
+    reglvl: 0
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Synthesis identifier; used on the CLI and in `artefacts/{name}/` |
+| `desc` | string | Human-readable synthesis description |
+| `model` | string | Model name from `models.yaml`; also used as the Yosys top module |
+| `model_path` | string | Path to `models.yaml`, resolved relative to the `synth.yaml` file |
+| `tool` | string | Synthesis tool name from `root_config.yaml` `cfg-synth-tools` |
+| `constraints` | string | Optional SDC file path, resolved relative to the `synth.yaml` file |
+| `params` | dict | Optional top-level parameter overrides passed through Yosys `chparam -set` |
+| `defines` | dict | Optional Verilog defines passed to `read_verilog` as `-D KEY=VALUE` |
+| `libraries` | list of strings | Optional Liberty library names from `cfg-synth-libs`; enables technology mapping |
+| `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
+| `tool_overrides` | dict | Optional per-tool overrides for `synth_args`, `abc_args`, or `strategy`, keyed by synthesis tool name |
+| `effort` | string | Optional effort name from `cfg-synth-efforts`; controls Yosys synth/abc args and OpenROAD `pre-sta-tcl`. Overridable per invocation with `rtl-buddy synth --effort <name>`. Omitted ⇒ built-in `standard` defaults. |
+
+**Runtime effects:**
+
+- `rtl-buddy synth` loads `synth.yaml`, resolves sources via `models.yaml`, and dispatches to the backend selected by `tool`.
+- **Yosys backend** (`tool: "yosys"`): writes `synth.f` and `synth.ys`, runs Yosys, captures output in `synth.log`. Without `libraries`, emits RTLIL; with `libraries`, runs `dfflibmap` + `abc -liberty` and emits `synth_netlist.v`. Reports Gates, Area (lib-mapped only), and WNS (lib-mapped with SDC). Passes when exit code is 0 and `synth.log` has no `ERROR:` lines.
+- **OpenROAD backend** (`tool: "openroad"`): requires `libraries` with `lef-paths` configured in `cfg-synth-libs`. Stage 1 runs Yosys to produce `synth_netlist.v` (logged to `synth_yosys.log`). Stage 2 runs OpenROAD with `synth.tcl` which calls `read_lef`, `read_liberty`, `read_verilog`, `link_design`, `read_sdc` (native multi-clock), and reports area/timing; output in `synth.log`. Reports Gates, Area, WNS (from `report_checks -path_delay max`), and TNS (from `report_tns`). Passes when both stages exit with code 0 and neither log contains errors.
+- If `constraints` contains `create_clock` entries, the Yosys backend uses the minimum period as ABC's `-D` constraint (multi-clock workaround). The OpenROAD backend passes the full SDC to `read_sdc` without modification.
+- `effort` selects an entry from `root_config.yaml` `cfg-synth-efforts`. If the selected effort has `openroad.run: false`, a synthesis with `tool: openroad` falls back to the Yosys-only backend (no LEF/STA required) — this is the recommended "quick" path for iteration. The `--effort` CLI flag on `rtl-buddy synth` and `rtl-buddy synth-regression` overrides whatever is set per-synthesis.
+
+---
+
+## synth_regression.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: synth_reg_config`
+- `synth-configs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: synth_reg_config
+
+synth-configs:
+  - "design/example_block_a/synth/synth.yaml"
+  - "design/example_block_b/synth/synth.yaml"
+```
+
+**Runtime effects:**
+
+- `rtl-buddy synth-regression` iterates each listed `synth.yaml` file and filters syntheses by `--reg-level`.
+- Paths in `synth-configs` are resolved relative to the `synth_regression.yaml` file.
+- `synth-regression` changes directory into each synthesis suite directory before executing its entries.
+
+---
+
+## cdc.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: cdc_config`
+- `analyses`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: cdc_config
+
+analyses:
+  - name: "ip_cdc_handshake_lint"
+    desc: "CDC lint of the request/ack handshake IP"
+    model: "ip_cdc_handshake"
+    model_path: "../../design/common/models.yaml"
+    tool: "rtl-buddy-cdc"
+    constraints: "ip_cdc_handshake.sdc"
+    waivers: "ip_cdc_handshake.waivers"   # optional
+    reglvl: 0
+
+  - name: "alu_accel_lint"
+    desc: "CDC lint of the ALU accelerator"
+    model: "alu_accel_top"
+    model_path: "../../design/alu_accel/models.yaml"
+    tool: "rtl-buddy-cdc"
+    constraints: "alu_accel_top.sdc"
+    reglvl:
+      default: 0
+      rtl-buddy-cdc: 100
+    tool_overrides:
+      rtl-buddy-cdc:
+        sync_depth: 3
+        extra_args: "--strict"
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Analysis identifier; used on the CLI and in `artefacts/{name}/` |
+| `desc` | string | Human-readable analysis description |
+| `model` | string | Model name from `models.yaml`; also used as the top module for elaboration |
+| `model_path` | string | Path to `models.yaml`, resolved relative to the `cdc.yaml` file |
+| `tool` | string | CDC tool name from `root_config.yaml` `cfg-cdc-tools` |
+| `constraints` | string | SDC file path, resolved relative to the `cdc.yaml` file |
+| `waivers` | string | Optional waiver file path, resolved relative to the `cdc.yaml` file |
+| `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
+| `tool_overrides` | dict | Optional per-tool overrides for `sync_depth` or `extra_args`, keyed by CDC tool name |
+
+**Runtime effects:**
+
+- `rtl-buddy cdc` loads `cdc.yaml`, resolves sources via `models.yaml`, and dispatches to the backend selected by `tool`.
+- The bundled `rtl-buddy-cdc` backend invokes the standalone `rtl-buddy-cdc lint` CLI as a subprocess. The analysis receives the model's resolved filelist, the SDC, an optional waivers file, and the merged tool opts (root `cfg-cdc-tools` baseline plus any matching `tool_overrides.<tool>`).
+- Each analysis writes a text report and a machine-readable JSON report under `artefacts/{name}/`; the JSON summary is parsed to populate the pass/fail/skip result for the CLI table.
+- `rtl-buddy cdc <name> --list` lists configured analyses without running them.
+
+---
+
+## cdc_regression.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: cdc_reg_config`
+- `cdc-configs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: cdc_reg_config
+
+cdc-configs:
+  - "design/example_block_a/lint/cdc.yaml"
+  - "design/example_block_b/lint/cdc.yaml"
+```
+
+**Runtime effects:**
+
+- `rtl-buddy cdc-regression` iterates each listed `cdc.yaml` file and filters analyses by `--reg-level`.
+- Paths in `cdc-configs` are resolved relative to the `cdc_regression.yaml` file.
+- `cdc-regression` changes directory into each CDC suite directory before executing its entries.
+
+---
+
+## specs.yaml
+
+`specs.yaml` lives in `spec/<block>/` and defines the functional specification for one or more design blocks. It is consumed by the `rb spec` traceability commands and has no effect on simulation.
+
+**Required keys:**
+
+- `rtl-buddy-filetype: spec_config`
+- `blocks`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "my_design"
+    desc: "Brief description of the block"
+    docs:
+      - "README.md"
+      - "behavior.md"
+    coverage-items:
+      - id: "MY-COV-01"
+        desc: "Normal operation path"
+      - id: "MY-COV-02"
+        desc: "Error handling and recovery"
+```
+
+**Block field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Block identifier; matched against `ModelConfig.name` when resolving `spec:` links in `models.yaml`. For single-block files the name is matched unconditionally. |
+| `desc` | string | Human-readable block description |
+| `docs` | list of strings | Paths to markdown spec documents, relative to this `specs.yaml` file |
+| `coverage-items` | list | Functional coverage items for this block |
+
+**Coverage item fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique coverage item identifier, referenced by `covers` in `tests.yaml` |
+| `desc` | string | Human-readable description of what must be tested |
+
+See [Spec Traceability](../concepts/spec-traceability.md) for the end-to-end workflow.
+
+---
+
+## Authoring checklist for new suites
+
+1. Add or verify the model entry in `models.yaml`.
+2. Add a `testbench` entry and verify the filelist paths resolve correctly.
+3. Add at least one test entry with `model`, `model_path`, and `testbench`.
+4. Set `reglvl` policy: `0` for must-run sanity tests, larger values for extended tests.
+5. Add the suite path to `regression.yaml`.
+6. Run a smoke pass:
+
+   ```bash
+   rtl-buddy --machine test <name> -c <suite>/tests.yaml
+   rtl-buddy --machine regression -c <regression.yaml> -s 0 -l 0
+   ```
