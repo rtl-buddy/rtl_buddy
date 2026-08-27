@@ -315,6 +315,22 @@ def _format_artifacts(fields: Mapping[str, Any]) -> str:
     return ", ".join(artifact_paths)
 
 
+def _build_location(fields: Mapping[str, Any]) -> str:
+    """Which spelling of a build directory the compile events show (#494).
+
+    Both carry ``build_dir`` (the basename) and ``build_path`` (absolute).
+    A *shared* build lives at ``artefacts/.shared-builds/obj_dir_<key>``,
+    where the basename is the identity a reader compares against an ``ls``
+    of that directory, and a full path would bury it. An *unshared* build
+    lives at ``artefacts/<test>``, whose basename is the test name the line
+    already opens with — saying it twice tells the reader nothing and hides
+    where the build actually is, so that case shows the path.
+    """
+    if fields.get("shared", True):
+        return str(fields.get("build_dir") or fields.get("build_path"))
+    return str(fields.get("build_path") or fields.get("build_dir"))
+
+
 def _human_message(event: str, fields: Mapping[str, Any]) -> str:
     test = fields.get("test")
     run_id = fields.get("run_id")
@@ -682,7 +698,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             shared = "" if fields.get("shared", True) else "un"
             return (
                 f"{target or 'compile'}: reused {shared}shared build "
-                f"{fields.get('build_dir')} ({built}); nothing compiled"
+                f"{_build_location(fields)} ({built}); nothing compiled"
             )
         case "compile.rebuild_forced":
             # The counterpart of build_reused: with --rebuild the reader's
@@ -690,7 +706,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             # the line that answers it (once per build dir, #494).
             return (
                 f"{target or 'compile'}: --rebuild given, compiling "
-                f"{fields.get('build_dir')} even though a stamp may validate"
+                f"{_build_location(fields)} even though a stamp may validate"
             )
         case "compile.build_toolchain_changed":
             return (

@@ -78,6 +78,18 @@ _UNSET = object()
 # the exact compile inputs the simv was built from so reuse can be validated.
 SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
 
+# First line of the ``compile.log`` a *reuse* leaves (#494). Doubles as the
+# marker that tells a breadcrumb from a real compile transcript, so a reuse
+# can replace the one and preserve the other.
+_REUSE_TRANSCRIPT_MARKER = "Compile skipped: reused the build already in "
+
+# Separates a reuse breadcrumb from the compile transcript it preserves
+# below itself, and lets the next reuse carry that transcript forward
+# instead of nesting breadcrumb inside breadcrumb.
+_CARRIED_TRANSCRIPT_HEADER = (
+    "\n=== transcript of the compile that last wrote this file ===\n"
+)
+
 # Simulator families whose compile output rtl_buddy can redirect wholesale
 # into a shared build dir, and whose simv still runs from there once other
 # tests point at it. Everything else compiles inside each test's own
@@ -380,6 +392,26 @@ def _reset_rebuilt_dirs() -> None:
     """Forget every claim. Tests only — one pytest process is many runs."""
     with _REBUILT_DIRS_LOCK:
         _REBUILT_DIRS.clear()
+
+
+def _build_dir_fields(build_dir, *, shared: bool) -> dict:
+    """The directory fields ``compile.build_reused`` and
+    ``compile.rebuild_forced`` both carry (#494).
+
+    One schema for the pair: ``build_dir`` is always the basename and
+    ``build_path`` always the full path, so a consumer keying on either
+    across the two events gets the same kind of thing. Which one the human
+    line shows is :func:`logging_utils._build_location`'s decision, and it
+    needs ``shared`` to make it — a shared directory is identified by its
+    ``obj_dir_<key>`` basename, an unshared one only by its path.
+    """
+    fields = {
+        "build_dir": os.path.basename(str(build_dir).rstrip(os.sep)),
+        "build_path": str(build_dir),
+    }
+    if not shared:
+        fields["shared"] = False
+    return fields
 
 
 def _path_is_under(path: str, root: str) -> bool:
@@ -1145,14 +1177,24 @@ class VlogSim:
         return digest[:16]
 
     def _write_compile_transcript(self, run_str, result):
-        """Persist the compile command and its captured output; return the path."""
+        """Persist the compile command and its captured output; return the path.
+
+        Written on every compile that ran, pass or fail. Before #494 only a
+        failure (or a license-queued VCS build) left one, which was harmless
+        while the only other state was no file at all — but a reuse now
+        writes a breadcrumb here, and had success stayed silent the file's
+        *presence* would have come to mean "nothing compiled", inverting
+        what docs/concepts/tests.md says it is.
+        """
         transcript_path = self._get_compile_transcript_path()
-        with open(transcript_path, "w") as transcript_fp:
-            transcript_fp.write(f"Command: {run_str}\n\n")
-            transcript_fp.write("=== stderr ===\n")
-            transcript_fp.write(result.stderr or "")
-            transcript_fp.write("\n=== stdout ===\n")
-            transcript_fp.write(result.stdout or "")
+        self._replace_text(
+            transcript_path,
+            f"Command: {run_str}\n\n"
+            "=== stderr ===\n"
+            f"{result.stderr or ''}"
+            "\n=== stdout ===\n"
+            f"{result.stdout or ''}",
+        )
         return transcript_path
 
     def _compile_queued_for_license(self, result):
@@ -1762,23 +1804,32 @@ class VlogSim:
         run_cmd += ["-f", plan.filelist_path]
         return run_cmd
 
-    def _rebuild_forced(self, build_dir):
+    def _rebuild_forced(self, build_dir, *, shared=True):
         """Does ``--rebuild`` override the stamp on ``build_dir`` right now?
 
         True at most once per directory per process (invariant: a shared-key
         suite rebuilds its one directory once, not once per test), and only
         when the run asked for it.
+
+        Same field schema as its counterpart ``compile.build_reused`` —
+        basename in ``build_dir``, absolute in ``build_path`` — so a
+        consumer keying on either across the pair gets one kind of thing.
         """
         if not self.rebuild:
             return False
         if not _claim_rebuild(str(build_dir)):
             return False
-        log_event(
+        # Console, like the reuse line: between them the two answer "what
+        # produced the binary this run simulated?", and a `--rebuild` that
+        # reached a dispatched job silently is as hard to trust as a silent
+        # reuse. Fires once per build dir per process, so it cannot become
+        # chatter.
+        log_console_event(
             logger,
             logging.INFO,
             "compile.rebuild_forced",
             test=self.test_name,
-            build_dir=str(build_dir),
+            **_build_dir_fields(build_dir, shared=shared),
         )
         return True
 
@@ -1809,16 +1860,10 @@ class VlogSim:
         )
         fields = {
             "test": self.test_name,
-            # The basename: it is the identity a reader compares against
-            # `ls artefacts/.shared-builds/` (`obj_dir_<key>`), and the
-            # absolute path is one field over for anyone who needs it.
-            "build_dir": os.path.basename(str(stamp_dir).rstrip(os.sep)),
-            "build_path": str(stamp_dir),
+            **_build_dir_fields(stamp_dir, shared=shared),
             "stamp_age_sec": age_sec,
             "toolchain": toolchain,
         }
-        if not shared:
-            fields["shared"] = False
         # Console, not just the log file: the console handler sits at
         # WARNING, so a dispatched run's reuse would otherwise be invisible
         # in exactly the transcript that has to show it (#435 pattern).
@@ -1836,6 +1881,19 @@ class VlogSim:
         answer is a build made elsewhere, at a stated time, from the command
         printed here. Best-effort — a reuse must not fail because its
         breadcrumb could not be written.
+
+        A transcript a *compile* left here is kept below the breadcrumb
+        rather than dropped: under dispatch this path is written by the
+        build job's compile and then by every gated element's reuse, and
+        that first write is the run's only file-level record of, say, a VCS
+        ``-licqueue`` wait. Exactly one transcript is carried — a later
+        reuse takes over the one the breadcrumb it replaces was holding
+        rather than nesting inside it — so the file cannot grow element
+        over element.
+
+        Written temp-then-:func:`os.replace`, because a ``run_id`` fan-out
+        points N array elements at this one path at once and a truncating
+        write would let a reader see a half-file (#363's hazard class).
         """
         when = (
             "unknown"
@@ -1846,18 +1904,22 @@ class VlogSim:
             run_str = " ".join(self._compile_argv(plan, quiet=True))
         except Exception:  # noqa: BLE001 - a breadcrumb never fails a build
             run_str = "(unavailable)"
+        text = (
+            f"{_REUSE_TRANSCRIPT_MARKER}{stamp_dir}\n"
+            f"Stamp written: {when}\n"
+            f"Toolchain: {toolchain}\n"
+            "Nothing was compiled for this run. The command a rebuild "
+            "would have run:\n\n"
+            f"Command: {run_str}\n\n"
+            "Use --rebuild to compile it again, or delete the directory "
+            "above.\n"
+        )
+        path = Path(self._get_compile_transcript_path())
+        previous = self._previous_compile_transcript(path)
+        if previous:
+            text += f"{_CARRIED_TRANSCRIPT_HEADER}{previous}"
         try:
-            Path(self._get_compile_transcript_path()).write_text(
-                "Compile skipped: reused the build already in "
-                f"{stamp_dir}\n"
-                f"Stamp written: {when}\n"
-                f"Toolchain: {toolchain}\n"
-                "Nothing was compiled for this run. The command a rebuild "
-                "would have run:\n\n"
-                f"Command: {run_str}\n\n"
-                "Use --rebuild to compile it again, or delete the directory "
-                "above.\n"
-            )
+            self._replace_text(path, text)
         except OSError as e:
             log_event(
                 logger,
@@ -1866,6 +1928,35 @@ class VlogSim:
                 test=self.test_name,
                 error=str(e),
             )
+
+    @staticmethod
+    def _previous_compile_transcript(path):
+        """The compile output already at ``path``, or ``""``.
+
+        A breadcrumb is not compile output, so reusing over one keeps what
+        that breadcrumb was itself carrying rather than nesting breadcrumbs:
+        N reuses of one build preserve exactly one transcript.
+        """
+        try:
+            existing = Path(path).read_text()
+        except OSError:
+            return ""
+        if existing.startswith(_REUSE_TRANSCRIPT_MARKER):
+            _, separator, carried = existing.partition(_CARRIED_TRANSCRIPT_HEADER)
+            return carried if separator else ""
+        return existing
+
+    def _replace_text(self, path, text):
+        """Write ``text`` to ``path`` as one atomic replacement."""
+        path = Path(path)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(text)
+            os.replace(tmp, path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
 
     def compile(self):
         rtl_builder_cfg = self.rtl_builder_cfg
@@ -1924,7 +2015,7 @@ class VlogSim:
                         used=self._get_simv_path(),
                     )
             else:
-                forced = self._rebuild_forced(compile_work_dir)
+                forced = self._rebuild_forced(compile_work_dir, shared=False)
                 if not forced and self._build_stamp_is_valid(
                     compile_work_dir,
                     self._get_simv_path(),
@@ -1994,8 +2085,11 @@ class VlogSim:
         # against, and dropping it would leave the slowest builds invisible.
         self._record_compile(duration_sec=round(e_time - s_time, 2), reused=False)
         license_queued = self._compile_queued_for_license(result)
+        # Unconditional since #494 (see _write_compile_transcript): a reuse
+        # writes this file, so a compile that ran has to as well, or the
+        # file's presence would read as "nothing compiled".
+        transcript_path = self._write_compile_transcript(run_str, result)
         if result.returncode != 0:
-            transcript_path = self._write_compile_transcript(run_str, result)
             log_event(
                 logger,
                 logging.ERROR,
@@ -2024,7 +2118,7 @@ class VlogSim:
                     "compile.license_queued",
                     test=self.test_name,
                     duration_sec=round(e_time - s_time, 2),
-                    transcript=self._write_compile_transcript(run_str, result),
+                    transcript=transcript_path,
                 )
             if result.stdout:
                 logger.debug("compile stdout\n%s", result.stdout)

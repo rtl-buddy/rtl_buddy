@@ -787,14 +787,27 @@ def test_vcs_compile_license_queue_is_reported(tmp_path, monkeypatch):
     assert "Queuing for License" in transcript.read_text()
 
 
-def test_verilator_compile_never_reports_license_queue(tmp_path, monkeypatch):
+def test_verilator_compile_never_reports_license_queue(tmp_path, monkeypatch, caplog):
+    """Only VCS queues, so the marker in another family's output is text.
+
+    Asserted on the event rather than on an absent ``compile.log``: since
+    #494 every compile that runs leaves a transcript, so the file's absence
+    no longer means anything.
+    """
+    import logging as _logging
+
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, stdout="Queuing for License...\n")
 
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
-    assert sim.compile() == 0
-    assert not Path(sim._get_compile_transcript_path()).exists()
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.license_queued"
+    ]
 
 
 def test_share_build_disabled_keeps_per_test_build_dirs(tmp_path, monkeypatch):
@@ -1982,6 +1995,27 @@ def _compile_log_of(sim):
     return Path(sim._get_compile_transcript_path())
 
 
+def _console_events(monkeypatch):
+    """Collect the events that go out through ``log_console_event``.
+
+    The channel is the point, not the record: ``caplog`` captures
+    ``log_event`` and ``log_console_event`` identically, so a test that
+    only reads ``caplog`` cannot tell that a line survives a console
+    handler sitting at WARNING — which is the whole of #494's "a stale
+    reuse must be visible at default verbosity". Forwards to the real
+    function so the record is emitted as usual.
+    """
+    seen = []
+    real = vlog_sim_module.log_console_event
+
+    def _spy(spy_logger, level, event, **fields):
+        seen.append(event)
+        return real(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(vlog_sim_module, "log_console_event", _spy)
+    return seen
+
+
 def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
     tmp_path, monkeypatch, caplog
 ):
@@ -2004,9 +2038,14 @@ def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
     assert writer.compile() == 0
 
     reader = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
+    console = _console_events(monkeypatch)
     with caplog.at_level(_logging.INFO):
         assert reader.compile() == 0
     assert len(calls) == 1
+    # Through the console channel, not merely into the log file: at default
+    # verbosity the handler is at WARNING, and a dispatched run's job log is
+    # the only artifact a stale PASS can be caught in.
+    assert console == ["compile.build_reused"]
 
     record = next(
         r
@@ -2053,6 +2092,59 @@ def test_a_reuse_leaves_a_compile_log_naming_what_it_reused(tmp_path, monkeypatc
     assert "--rebuild" in text
 
 
+def test_a_compile_that_ran_leaves_a_transcript_even_when_it_passed(
+    tmp_path, monkeypatch
+):
+    """Since a reuse writes ``compile.log``, a silent success would make the
+    file's *presence* mean "nothing compiled" — the inverse of what
+    docs/concepts/tests.md says it is (#494)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, stdout="Parsing design\n")
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    text = _compile_log_of(sim).read_text()
+    assert text.startswith("Command: ")
+    assert "Parsing design" in text
+    assert "Compile skipped" not in text
+
+
+def test_a_reuse_keeps_the_compile_transcript_it_writes_over(tmp_path, monkeypatch):
+    """Under dispatch the build job's compile and then every gated element's
+    reuse write this one path in turn, and that first write is the run's only
+    file-level record of, say, a VCS ``-licqueue`` wait — so the breadcrumb
+    carries it rather than dropping it (#494)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, stdout="Queuing for License...\n")
+
+    def _vcs(test_name):
+        return _make_sim(
+            tmp_path, monkeypatch, test_name=test_name, exe="vcs", family="vcs"
+        )
+
+    builder = _vcs("test_a")
+    assert builder.compile() == 0
+    assert "Queuing for License" in _compile_log_of(builder).read_text()
+
+    # Same test name, so the same compile.log: the gated element's shape.
+    first_reuse = _vcs("test_a")
+    assert first_reuse.compile() == 0
+    assert len(calls) == 1
+    text = _compile_log_of(first_reuse).read_text()
+    assert text.startswith("Compile skipped")
+    assert "Queuing for License" in text
+
+    # And a reuse over a reuse carries that transcript forward instead of
+    # nesting breadcrumbs, so N elements leave one file of bounded size.
+    second_reuse = _vcs("test_a")
+    assert second_reuse.compile() == 0
+    text = _compile_log_of(second_reuse).read_text()
+    assert text.count("Compile skipped") == 1
+    assert "Queuing for License" in text
+
+
 def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
     tmp_path, monkeypatch, caplog
 ):
@@ -2082,6 +2174,13 @@ def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
     )
     assert record.rtl_fields["shared"] is False
     assert "unshared build" in record.getMessage()
+    # Where the build is, not the test name a second time: an unshared
+    # build's directory IS `artefacts/<test>`, so its basename is the word
+    # the line already opens with and only the path identifies it.
+    build_dir = Path(second._get_compile_work_dir())
+    assert record.rtl_fields["build_path"] == str(build_dir)
+    assert record.rtl_fields["build_dir"] == build_dir.name
+    assert str(build_dir) in record.getMessage()
     assert "Compile skipped" in _compile_log_of(second).read_text()
 
 
@@ -2123,9 +2222,56 @@ def test_rebuild_forces_one_rebuild_per_build_dir_per_process(tmp_path, monkeypa
     assert len(calls) == 2, "the shared build was rebuilt once per test"
 
 
-def test_rebuild_claims_the_directory_not_the_test_name(tmp_path, monkeypatch):
+def test_rebuild_claims_the_directory_through_a_second_spelling_of_it(
+    tmp_path, monkeypatch
+):
     """Two spellings of one directory are one build, so the claim is
-    ``realpath``'d — the same reason the compile grouping is (#495)."""
+    ``realpath``'d — the same reason the compile grouping is (#495).
+
+    Exercised with a symlinked suite dir, because that is the spelling
+    textual normalization cannot see through: the compile key excludes the
+    suite path, so both sims land in one ``obj_dir_<key>`` and a claim keyed
+    on the string would force a second rebuild of it.
+
+    The claim is read off ``compile.rebuild_forced``, which fires exactly
+    when a claim is granted. (A builder call count would not isolate it:
+    the stamp records ``simv`` by the path spelling that wrote it, so the
+    second spelling's stamp check fails on its own account — separate
+    behaviour, and not what this test is about.)
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(suite, target_is_directory=True)
+
+    direct = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", suite_dir=suite, rebuild=True
+    )
+    through_link = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", suite_dir=link, rebuild=True
+    )
+    # One directory under two names — the premise the claim has to see.
+    assert (
+        Path(through_link.compile_group_dir()).resolve()
+        == Path(direct.compile_group_dir()).resolve()
+    )
+    assert direct.compile_group_dir() != through_link.compile_group_dir()
+
+    console = _console_events(monkeypatch)
+    assert direct.compile() == 0
+    assert through_link.compile() == 0
+    assert console.count("compile.rebuild_forced") == 1, (
+        "the same directory was claimed twice under two spellings"
+    )
+
+
+def test_a_repeated_compile_on_one_instance_does_not_re_rebuild(tmp_path, monkeypatch):
+    """``compile()`` re-derives its plan every call, but the claim the first
+    call made still stands, so the second validates the stamp instead."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -2134,8 +2280,6 @@ def test_rebuild_claims_the_directory_not_the_test_name(tmp_path, monkeypatch):
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
     assert sim.compile() == 0
     assert len(calls) == 2
-    # A second compile() on the SAME instance re-derives the plan, and the
-    # claim it made the first time still stands.
     assert sim.compile() == 0
     assert len(calls) == 2
 
@@ -2199,6 +2343,7 @@ def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
     shared_dir = Path(writer._get_simv_path()).parent
 
     forced = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    console = _console_events(monkeypatch)
     with caplog.at_level(_logging.INFO):
         assert forced.compile() == 0
     assert len(calls) == 2
@@ -2208,5 +2353,13 @@ def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
         for r in caplog.records
         if getattr(r, "rtl_event", None) == "compile.rebuild_forced"
     )
-    assert record.rtl_fields["build_dir"] == str(shared_dir)
+    # The same field schema its counterpart `compile.build_reused` carries:
+    # basename in `build_dir`, absolute in `build_path`. A consumer keying
+    # on either across the pair gets one kind of thing.
+    assert record.rtl_fields["build_dir"] == shared_dir.name
+    assert record.rtl_fields["build_path"] == str(shared_dir)
     assert "--rebuild given" in record.getMessage()
+    assert shared_dir.name in record.getMessage()
+    # And on the console, like the reuse line: "did --rebuild reach this
+    # job?" is unanswerable from a job log that never printed it.
+    assert console == ["compile.rebuild_forced"]

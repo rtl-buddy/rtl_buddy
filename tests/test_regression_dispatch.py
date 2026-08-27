@@ -1710,7 +1710,9 @@ def test_ungated_jobs_are_not(
     assert not any(spec.expect_prebuilt for spec in fake_backend.submitted)
 
 
+@pytest.mark.parametrize("backend", ["slurm", "local-parallel"])
 def test_rebuild_goes_to_the_build_job_and_not_to_its_gated_elements(
+    backend: str,
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
     fake_backend: _FakeBackend,
@@ -1722,8 +1724,15 @@ def test_rebuild_goes_to_the_build_job_and_not_to_its_gated_elements(
     element. Handing the gated array ``--rebuild`` as well would defeat the
     fresh stamp that is exactly what stops the elements compiling, and put
     every one of them into that directory at once (#369).
+
+    ``local-parallel`` is the same rule and, deliberately, the same head
+    code: its jobs are separate PROCESSES gated on the build's result just
+    as Slurm's array elements are, so the per-process rebuild memo does not
+    cover them either. Parametrised rather than written twice so that the
+    duplication is visible as duplication — if the head ever grows a
+    backend-specific branch, this is where it gets caught.
     """
-    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm", "--rebuild"])
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", backend, "--rebuild"])
     assert result.exit_code == 0, result.output
 
     assert len(fake_backend.build_submitted) == 1
@@ -1746,23 +1755,6 @@ def test_rebuild_goes_to_the_sim_jobs_when_no_build_job_was_submitted(
     assert fake_backend.build_submitted == []
     assert fake_backend.submitted
     assert all(spec.rebuild for spec in fake_backend.submitted)
-
-
-def test_the_rebuild_head_rule_is_the_same_on_the_local_pool(
-    minimal_project: Path,
-    stub_build_runner: type[_StubBuildRunner],
-    fake_backend: _FakeBackend,
-):
-    """``local-parallel`` runs each job as a separate PROCESS gated on the
-    build's result, exactly like Slurm's array, so the per-process rebuild
-    memo does not cover it and the head rule has to (#494)."""
-    result, _ = _invoke(
-        ["randtest", "basic", "3", "--dispatch", "local-parallel", "--rebuild"]
-    )
-    assert result.exit_code == 0, result.output
-
-    assert fake_backend.build_submitted[0].rebuild is True
-    assert not any(spec.rebuild for spec in fake_backend.submitted)
 
 
 def test_a_suite_that_did_not_ask_carries_no_rebuild_anywhere(
