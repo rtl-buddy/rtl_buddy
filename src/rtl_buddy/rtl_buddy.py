@@ -683,6 +683,8 @@ class RtlBuddy:
         self.run_depth = RunDepth.POST
         self.share_build = False
         self.expect_prebuilt = False
+        # `--rebuild`: distrust the build stamps and compile anyway (#494).
+        self.rebuild = False
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
@@ -1279,6 +1281,14 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
         reg_level: Annotated[
             int | None,
             typer.Option("--reg-level", help="regression level to stop at"),
@@ -1416,6 +1426,7 @@ class RtlBuddy:
         elif rnd_last:
             seed_mode = SeedMode.REPLAY
         self.share_build = share_build
+        self.rebuild = rebuild
 
         # `rb test` enters the same planning path `rb regression --dispatch`
         # already uses (#440): one plan, one build job, and one gated sim job
@@ -1569,6 +1580,14 @@ class RtlBuddy:
                 show_default=False,
             ),
         ] = None,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
         dispatch: Annotated[
             str,
             typer.Option(
@@ -1591,6 +1610,7 @@ class RtlBuddy:
         """
         repeat a test with multiple random seeds
         """
+        self.rebuild = rebuild
         self.rtl_builder_mode = (
             "debug" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -1836,6 +1856,14 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
         plan: Annotated[
             str,
             typer.Option(
@@ -1861,6 +1889,7 @@ class RtlBuddy:
         )
         self.share_build = share_build
         self.expect_prebuilt = expect_prebuilt
+        self.rebuild = rebuild
         # Resolve the output path before entering the command context so
         # a relative --result-json lands where the dispatching process
         # expects it, not under the suite dir.
@@ -1985,6 +2014,14 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs",
             ),
         ] = True,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
         plan: Annotated[
             str,
             typer.Option(
@@ -2046,6 +2083,7 @@ class RtlBuddy:
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
         self.share_build = share_build
+        self.rebuild = rebuild
         # Resolve before entering the context: a relative --result-json is
         # the dispatching process's path, not the suite dir's, and the log
         # that pairs with it is derived from the resolved envelope.
@@ -2112,6 +2150,11 @@ class RtlBuddy:
                 run_depth=RunDepth.COMP,
                 suite_dir=suite_dir,
                 share_build=share_build,
+                # The build job is where `--rebuild` belongs under dispatch:
+                # it is the single writer of the shared directory, and its
+                # per-process memo makes the whole suite's shared build
+                # rebuild exactly once (#494/#369).
+                rebuild=rebuild,
             )
             try:
                 res = runner.prepare()
@@ -2579,6 +2622,7 @@ class RtlBuddy:
             suite_dir=suite_dir,
             share_build=self.share_build,
             expect_prebuilt=self.expect_prebuilt,
+            rebuild=self.rebuild,
         )
 
         if len(run_ids) == 1:
@@ -3159,6 +3203,14 @@ class RtlBuddy:
                     # the one thing that puts every sibling element back into
                     # one build directory at once (#369).
                     expect_prebuilt=build_handle is not None,
+                    # `--rebuild` reaches a SIM job only when this suite
+                    # submitted no build job — then every job compiles into
+                    # its own per-test directory and rebuilding there races
+                    # nothing (#494). With a build job it has already
+                    # rebuilt, and its fresh stamp is exactly what stops the
+                    # array from compiling; handing the elements --rebuild
+                    # would defeat that and re-run #369.
+                    rebuild=self.rebuild and build_handle is None,
                     # Named after the backend that will write it: `slurm-*`
                     # from sbatch --output, `local-parallel-*` from the pool's
                     # redirected stdout.
@@ -3361,6 +3413,11 @@ class RtlBuddy:
             test_config_path=str(suite_cfg.get_path()),
             resources=resources,
             parallel=parallel,
+            # Always, when the run asked for it: the build job is the single
+            # writer of the shared directory, so this is the one place a
+            # forced recompile costs one compile instead of one per element
+            # (#494).
+            rebuild=self.rebuild,
             reg_level=reg_level,
             start_level=start_level,
             builder_mode=self.rtl_builder_mode,
@@ -3530,6 +3587,14 @@ class RtlBuddy:
         The scheduler log is tagged with the attempt number, stripping any
         tag the previous attempt added — attempt 3 is ``…-retry3.log``, not
         ``…-retry1-retry2-retry3.log``.
+
+        Everything else is carried, ``rebuild`` included — carried, never
+        *added*: a gated element that was denied ``--rebuild`` on its first
+        attempt must not acquire it on its second, which would put the
+        array back into one build directory at once (#494/#369). A spec
+        that legitimately holds it owns its own per-test directory, and an
+        attempt killed before it compiled still needs the rebuild it asked
+        for.
         """
         log_path = spec.log_path
         if log_path is not None:
@@ -4018,6 +4083,14 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
         dispatch: Annotated[
             str,
             typer.Option(
@@ -4061,6 +4134,7 @@ class RtlBuddy:
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
         self.share_build = share_build
+        self.rebuild = rebuild
         log_event(
             logger,
             logging.INFO,

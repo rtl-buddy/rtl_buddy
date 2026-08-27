@@ -40,7 +40,7 @@ import pprint
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
-from ..logging_utils import log_event, task_status
+from ..logging_utils import log_console_event, log_event, task_status
 from ..process_utils import run_managed_process
 from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
 
@@ -348,6 +348,40 @@ def _hash_file_content(path: str, size: int, mtime_ns: int) -> str | None:
     return value
 
 
+# Build directories ``--rebuild`` has already forced in THIS process (#494).
+# The flag means "do not trust the stamp on disk", not "compile once per
+# test": a suite whose tests share one compile key meets the same directory
+# N times, and rebuilding it N times would both waste the run and put N
+# builders into one directory (#369). The first meeting rebuilds and claims
+# the directory; the rest validate the stamp that rebuild just wrote and
+# reuse it. Lock-guarded because the #495 build job compiles from worker
+# threads.
+_REBUILT_DIRS_LOCK = threading.Lock()
+_REBUILT_DIRS: set[str] = set()
+
+
+def _claim_rebuild(build_dir: str) -> bool:
+    """Is this process's first ``--rebuild`` of ``build_dir``? Claims it.
+
+    ``realpath``'d, for the reason the compile grouping is: two spellings
+    of one directory (a symlinked parent, a ``..`` that escapes the test's
+    workspace) are one build, and a textual key would let each spelling
+    rebuild it.
+    """
+    key = os.path.realpath(build_dir)
+    with _REBUILT_DIRS_LOCK:
+        if key in _REBUILT_DIRS:
+            return False
+        _REBUILT_DIRS.add(key)
+        return True
+
+
+def _reset_rebuilt_dirs() -> None:
+    """Forget every claim. Tests only — one pytest process is many runs."""
+    with _REBUILT_DIRS_LOCK:
+        _REBUILT_DIRS.clear()
+
+
 def _path_is_under(path: str, root: str) -> bool:
     """Is ``path`` inside ``root``? Both must already be canonical."""
     try:
@@ -563,6 +597,7 @@ class VlogSim:
         suite_dir=None,
         share_build=False,
         expect_prebuilt=False,
+        rebuild=False,
     ):
         """
         compile and execute sim for given test
@@ -585,6 +620,14 @@ class VlogSim:
         # with identical inputs share one simv (#293). The resolved shared
         # dir is only known once compile() has written the filelist.
         self.share_build = share_build
+        # `--rebuild`: distrust the stamp and compile anyway (#494). The
+        # escape hatch for the case no stamp can see — a source restored to
+        # byte-identical content by a tool that also changed how it is
+        # built, an obj_dir somebody edited by hand — and the answer to the
+        # issue's "dropping --share-build does not stop the reuse". It is
+        # honoured at most ONCE per build dir per process; see
+        # :func:`_claim_rebuild`.
+        self.rebuild = rebuild
         self._shared_build_dir = None
         # Filled by _compile_plan() and consumed (and cleared) by compile(),
         # so a probe and the compile that follows it share one derivation
@@ -1638,6 +1681,192 @@ class VlogSim:
         """
         return self._compile_plan().group_dir
 
+    def _compile_argv(self, plan, *, quiet=False):
+        """The builder command line ``plan`` would run.
+
+        Derived here and nowhere else, for the reason ``group_dir`` is: the
+        reuse breadcrumb (:meth:`_write_reuse_transcript`) records the
+        command that *would* have run, and a second assembly of it would
+        drift from the real one the first time somebody touches the VCS
+        output strip — leaving a ``compile.log`` that says a build was made
+        from flags no builder ever saw.
+
+        ``quiet`` drops the side effects that belong to a real compile: the
+        strip's DEBUG record, the assertions line, and the Icarus snapshot
+        directory. A reuse must not create directories or claim to have
+        enabled anything.
+        """
+        # Copied: the VCS strip below rewrites these, and the plan is the
+        # record of what was decided, not a scratch buffer.
+        builder_opts = list(plan.builder_opts)
+        extra_compile_flags = list(plan.extra_compile_flags)
+        build_dir = plan.build_dir
+        family = self._get_simulator_family()
+        shared = self._shared_build_dir is not None
+
+        run_cmd = [self.rtl_builder_cfg.get_exe()]
+        if shared and family == "vcs":
+            # Strip BOTH sources of compile flags, not just the configured
+            # opts: a `-o` reaching run_cmd from _get_extra_compile_flags()
+            # would be appended after _vcs_shared_output_argv() and so win on
+            # VCS's duplicate-option precedence. The simv would land outside
+            # the shared dir, the stamp check would never find it, and every
+            # job would recompile — silently, and forever. No subclass emits
+            # one today; this keeps that from being load-bearing.
+            builder_opts, dropped_opts = self._strip_vcs_output_opts(builder_opts)
+            extra_compile_flags, dropped_extra = self._strip_vcs_output_opts(
+                extra_compile_flags
+            )
+            dropped_opts += dropped_extra
+            if dropped_opts and not quiet:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.share_build_opts_overridden",
+                    test=self.test_name,
+                    dropped=dropped_opts,
+                    build_dir=build_dir,
+                )
+        run_cmd += builder_opts
+
+        if plan.is_verilator:
+            run_cmd += ["--Mdir", build_dir]
+        elif family == "icarus":
+            # Icarus has no -Mdir equivalent; output a single .vvp snapshot
+            # into the build dir (shared or per-test) and let our execute()
+            # path wrap it.
+            if not quiet:
+                Path(self._get_icarus_snapshot_path()).parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+            run_cmd += ["-o", self._get_icarus_snapshot_path()]
+        elif shared and family == "vcs":
+            run_cmd += self._vcs_shared_output_argv(build_dir)
+
+        run_cmd += extra_compile_flags
+
+        if plan.assertion_flags:
+            run_cmd += plan.assertion_flags
+            if not quiet:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "compile.assertions_enabled",
+                    test=self.test_name,
+                    flags=plan.assertion_flags,
+                )
+
+        # add test plus-defines
+        run_cmd += plan.plusdefines
+
+        run_cmd += ["-f", plan.filelist_path]
+        return run_cmd
+
+    def _rebuild_forced(self, build_dir):
+        """Does ``--rebuild`` override the stamp on ``build_dir`` right now?
+
+        True at most once per directory per process (invariant: a shared-key
+        suite rebuilds its one directory once, not once per test), and only
+        when the run asked for it.
+        """
+        if not self.rebuild:
+            return False
+        if not _claim_rebuild(str(build_dir)):
+            return False
+        log_event(
+            logger,
+            logging.INFO,
+            "compile.rebuild_forced",
+            test=self.test_name,
+            build_dir=str(build_dir),
+        )
+        return True
+
+    def _report_build_reused(self, plan, *, stamp_dir, shared=True):
+        """Say — on the console, and in the test's ``compile.log`` — that
+        this compile was skipped (#494).
+
+        A stale reuse used to be deducible only from an *absent*
+        ``compile.log``, which reads as "nothing to do". Both records name
+        the directory and how old its stamp is, so the run that reuses a
+        build made before an edit says so where the reader is already
+        looking.
+        """
+        fingerprint = plan.fingerprint
+        toolchain = (
+            fingerprint["toolchain"]["version"] or fingerprint["toolchain"]["exe"]
+        )
+        stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
+        try:
+            stamp_mtime = stamp_path.stat().st_mtime
+        except OSError:
+            # The stamp validated a moment ago, so this is a vanishing race
+            # rather than a state; report the reuse without an age instead
+            # of failing the compile over telemetry.
+            stamp_mtime = None
+        age_sec = (
+            None if stamp_mtime is None else max(0, round(time.time() - stamp_mtime))
+        )
+        fields = {
+            "test": self.test_name,
+            # The basename: it is the identity a reader compares against
+            # `ls artefacts/.shared-builds/` (`obj_dir_<key>`), and the
+            # absolute path is one field over for anyone who needs it.
+            "build_dir": os.path.basename(str(stamp_dir).rstrip(os.sep)),
+            "build_path": str(stamp_dir),
+            "stamp_age_sec": age_sec,
+            "toolchain": toolchain,
+        }
+        if not shared:
+            fields["shared"] = False
+        # Console, not just the log file: the console handler sits at
+        # WARNING, so a dispatched run's reuse would otherwise be invisible
+        # in exactly the transcript that has to show it (#435 pattern).
+        log_console_event(logger, logging.INFO, "compile.build_reused", **fields)
+        self._write_reuse_transcript(
+            plan, stamp_dir=stamp_dir, stamp_mtime=stamp_mtime, toolchain=toolchain
+        )
+
+    def _write_reuse_transcript(self, plan, *, stamp_dir, stamp_mtime, toolchain):
+        """Leave a ``compile.log`` for a compile that did not run.
+
+        Same path a real transcript takes, and the same per-test,
+        per-attempt overwrite semantics: the question it answers is "what
+        produced the binary this run simulated", and for a reuse the honest
+        answer is a build made elsewhere, at a stated time, from the command
+        printed here. Best-effort — a reuse must not fail because its
+        breadcrumb could not be written.
+        """
+        when = (
+            "unknown"
+            if stamp_mtime is None
+            else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp_mtime))
+        )
+        try:
+            run_str = " ".join(self._compile_argv(plan, quiet=True))
+        except Exception:  # noqa: BLE001 - a breadcrumb never fails a build
+            run_str = "(unavailable)"
+        try:
+            Path(self._get_compile_transcript_path()).write_text(
+                "Compile skipped: reused the build already in "
+                f"{stamp_dir}\n"
+                f"Stamp written: {when}\n"
+                f"Toolchain: {toolchain}\n"
+                "Nothing was compiled for this run. The command a rebuild "
+                "would have run:\n\n"
+                f"Command: {run_str}\n\n"
+                "Use --rebuild to compile it again, or delete the directory "
+                "above.\n"
+            )
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.reuse_transcript_unwritable",
+                test=self.test_name,
+                error=str(e),
+            )
+
     def compile(self):
         rtl_builder_cfg = self.rtl_builder_cfg
         log_event(
@@ -1654,31 +1883,19 @@ class VlogSim:
         self._compile_plan_cache = None
 
         compile_work_dir = plan.compile_work_dir
-        # Copied: the VCS strip below rewrites these, and the plan is the
-        # record of what was decided, not a scratch buffer.
-        builder_opts = list(plan.builder_opts)
-        extra_compile_flags = list(plan.extra_compile_flags)
-        assertion_flags = plan.assertion_flags
-        plusdefines = plan.plusdefines
-        is_verilator = plan.is_verilator
-        filelist_path = plan.filelist_path
         build_dir = plan.build_dir
         fingerprint = plan.fingerprint
 
         if self.share_build:
             if plan.unsupported_reason is None:
-                if self._shared_build_is_valid(
+                # Claimed before the check, so `--rebuild` decides it rather
+                # than the stamp — and claimed only once per directory, so
+                # the next test with this key reuses what this one builds.
+                forced = self._rebuild_forced(plan.shared_dir)
+                if not forced and self._shared_build_is_valid(
                     plan.shared_dir, fingerprint, test_name=self.test_name
                 ):
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "compile.build_reused",
-                        test=self.test_name,
-                        build_dir=build_dir,
-                        toolchain=fingerprint["toolchain"]["version"]
-                        or fingerprint["toolchain"]["exe"],
-                    )
+                    self._report_build_reused(plan, stamp_dir=plan.shared_dir)
                     # 0.0, not the stamp-check time: the number is read as
                     # "what this build cost", and a reuse cost no build.
                     # The stat cost is real but sub-millisecond and would
@@ -1707,21 +1924,15 @@ class VlogSim:
                         used=self._get_simv_path(),
                     )
             else:
-                if self._build_stamp_is_valid(
+                forced = self._rebuild_forced(compile_work_dir)
+                if not forced and self._build_stamp_is_valid(
                     compile_work_dir,
                     self._get_simv_path(),
                     fingerprint,
                     test_name=self.test_name,
                 ):
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "compile.build_reused",
-                        test=self.test_name,
-                        build_dir=compile_work_dir,
-                        shared=False,
-                        toolchain=fingerprint["toolchain"]["version"]
-                        or fingerprint["toolchain"]["exe"],
+                    self._report_build_reused(
+                        plan, stamp_dir=compile_work_dir, shared=False
                     )
                     self._record_compile(duration_sec=0.0, reused=True)
                     return 0
@@ -1729,61 +1940,7 @@ class VlogSim:
                     missing_ok=True
                 )
 
-        shared = self._shared_build_dir is not None
-        run_cmd = [rtl_builder_cfg.get_exe()]
-        if shared and self._get_simulator_family() == "vcs":
-            # Strip BOTH sources of compile flags, not just the configured
-            # opts: a `-o` reaching run_cmd from _get_extra_compile_flags()
-            # would be appended after _vcs_shared_output_argv() and so win on
-            # VCS's duplicate-option precedence. The simv would land outside
-            # the shared dir, the stamp check would never find it, and every
-            # job would recompile — silently, and forever. No subclass emits
-            # one today; this keeps that from being load-bearing.
-            builder_opts, dropped_opts = self._strip_vcs_output_opts(builder_opts)
-            extra_compile_flags, dropped_extra = self._strip_vcs_output_opts(
-                extra_compile_flags
-            )
-            dropped_opts += dropped_extra
-            if dropped_opts:
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "compile.share_build_opts_overridden",
-                    test=self.test_name,
-                    dropped=dropped_opts,
-                    build_dir=build_dir,
-                )
-        run_cmd += builder_opts
-
-        if is_verilator:
-            run_cmd += ["--Mdir", build_dir]
-        elif self._get_simulator_family() == "icarus":
-            # Icarus has no -Mdir equivalent; output a single .vvp snapshot
-            # into the build dir (shared or per-test) and let our execute()
-            # path wrap it.
-            Path(self._get_icarus_snapshot_path()).parent.mkdir(
-                parents=True, exist_ok=True
-            )
-            run_cmd += ["-o", self._get_icarus_snapshot_path()]
-        elif shared and self._get_simulator_family() == "vcs":
-            run_cmd += self._vcs_shared_output_argv(build_dir)
-
-        run_cmd += extra_compile_flags
-
-        if assertion_flags:
-            run_cmd += assertion_flags
-            log_event(
-                logger,
-                logging.INFO,
-                "compile.assertions_enabled",
-                test=self.test_name,
-                flags=assertion_flags,
-            )
-
-        # add test plus-defines
-        run_cmd += plusdefines
-
-        run_cmd += ["-f", filelist_path]
+        run_cmd = self._compile_argv(plan)
         run_str = " ".join(run_cmd)
         if self.expect_prebuilt:
             # This job was ordered after a build job precisely so it would not

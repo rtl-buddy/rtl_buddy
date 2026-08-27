@@ -1562,3 +1562,76 @@ def test_build_job_without_result_json_falls_back_to_the_suite_log(
     result = runner.invoke(rb.app, ["--machine", "_build-job", "-c", "tests.yaml"])
     assert result.exit_code == 0, result.output
     assert "command.build_job" in _events(suite_log)
+
+
+# ------------------------------------------------------- --rebuild (#494)
+
+
+def test_rebuild_reaches_the_build_jobs_test_runner(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The flag is only worth anything if it arrives at the sim that acts
+    on it, and the build job's TestRunner is the last hop before that."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "--rebuild"]
+    )
+    assert result.exit_code == 0, result.output
+    assert stub_runner.last_init["rebuild"] is True
+
+
+def test_rebuild_reaches_a_sim_jobs_test_runner(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.runner.test_results import TestPassResults
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_test-job", "basic", "--result-json", "res.json", "--rebuild"]
+    )
+    assert result.exit_code == 0, result.output
+    assert stub_runner.last_init["rebuild"] is True
+
+
+def test_rebuild_defaults_off_on_both_jobs(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Byte-parity when nothing is configured (#494)."""
+    from rtl_buddy.runner.test_results import EarlyStopResults, TestPassResults
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    assert (
+        runner.invoke(
+            rb.app, ["_test-job", "basic", "--result-json", "res.json"]
+        ).exit_code
+        == 0
+    )
+    assert stub_runner.last_init["rebuild"] is False
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+    runner, rb = _runner()
+    assert (
+        runner.invoke(rb.app, ["--machine", "_build-job", "-c", "tests.yaml"]).exit_code
+        == 0
+    )
+    assert stub_runner.last_init["rebuild"] is False
+
+
+def test_rebuild_reaches_the_test_runner_of_an_undispatched_rb_test(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """`rb test` with no dispatch compiles in-process, so the flag has to
+    land on that TestRunner too — the local path is where an edit-then-rerun
+    is most often done."""
+    from rtl_buddy.runner.test_results import TestPassResults
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["test", "basic", "-c", "tests.yaml", "--rebuild"])
+    assert result.exit_code == 0, result.output
+    assert stub_runner.last_init["rebuild"] is True

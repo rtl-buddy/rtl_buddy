@@ -53,6 +53,11 @@ class BuildJobSpec:
     # already folded in the min() against how many configs it planned, so a
     # backend may size the reservation by this number without re-capping it.
     parallel: int = 1
+    # `--rebuild`: compile even where a stamp validates (#494). The build
+    # job is where the head puts it — it is the single writer of the shared
+    # directory, and its per-process memo turns one user request into
+    # exactly one rebuild per build dir for the whole suite.
+    rebuild: bool = False
 
 
 @dataclass
@@ -81,6 +86,13 @@ class TestJobSpec:
     # that compiling means the build's stamp failed to validate and every
     # sibling element is about to compile too (#369).
     expect_prebuilt: bool = False
+    # `--rebuild` for a sim job — set ONLY when the suite submitted no build
+    # job, so this job owns the directory it would rebuild (#494). A gated
+    # job must never carry it: the build job has already rebuilt, its fresh
+    # stamp short-circuits this compile, and forcing the compile anyway
+    # would put every element of the array into one build directory at once
+    # (#369).
+    rebuild: bool = False
     log_path: Path | None = None
     # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
     # from it instead of re-running the suite's sweep hook. See BuildJobSpec.

@@ -45,6 +45,7 @@ class TestRunner:
         suite_dir=None,
         share_build=False,
         expect_prebuilt=False,
+        rebuild=False,
     ):
         """
         Run tests based on config
@@ -70,6 +71,10 @@ class TestRunner:
         self.suite_dir = suite_dir
         self.share_build = share_build
         self.expect_prebuilt = expect_prebuilt
+        # `--rebuild`: compile even when the stamp says the build is warm
+        # (#494). Threaded rather than re-derived — the sim instance is
+        # what acts on it, and this is what creates the sim instance.
+        self.rebuild = rebuild
         # Set by prepare(); the phases after it all drive this one instance,
         # because a preproc hook may mutate test_cfg and the compile key is
         # only knowable afterwards, on the sim that saw the mutation.
@@ -98,6 +103,7 @@ class TestRunner:
             suite_dir=self.suite_dir,
             share_build=self.share_build,
             expect_prebuilt=self.expect_prebuilt,
+            rebuild=self.rebuild,
         )
 
     def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):

@@ -3,10 +3,26 @@ import os
 from contextlib import nullcontext
 from pathlib import Path
 
+import pytest
+
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.artifact_paths import shared_build_dir
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
+
+
+@pytest.fixture(autouse=True)
+def _forget_rebuild_claims():
+    """``--rebuild`` is honoured once per build dir per PROCESS (#494).
+
+    pytest is one process for the whole file, so a claim left standing by
+    one test would silently turn the next test's forced rebuild into a
+    reuse — and the tmp_path spellings are close enough to collide once
+    somebody parametrises them.
+    """
+    vlog_sim_module._reset_rebuilt_dirs()
+    yield
+    vlog_sim_module._reset_rebuilt_dirs()
 
 
 class DummyBuilderCfg:
@@ -147,6 +163,7 @@ def _make_sim(
     project_root=None,
     model_path=None,
     filelist=None,
+    rebuild=False,
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
@@ -164,6 +181,7 @@ def _make_sim(
         sim_mode={"sim_to_stdout": True},
         suite_dir=str(suite_dir) if suite_dir is not None else None,
         share_build=share_build,
+        rebuild=rebuild,
     )
 
 
@@ -1732,7 +1750,7 @@ def test_reusing_a_build_names_the_toolchain_that_produced_it(
         assert reader.compile() == 0
 
     assert len(calls) == 1
-    assert "built by Verilator 5.049 devel rev vBBBB" in caplog.text
+    assert "Verilator 5.049 devel rev vBBBB" in caplog.text
 
 
 def test_an_unshareable_builder_also_rebuilds_when_the_toolchain_changes(
@@ -1955,3 +1973,240 @@ def test_identical_inputs_group_together_and_plusdefines_split_them(
 
     assert same_a.compile_group_dir() == same_b.compile_group_dir()
     assert other.compile_group_dir() != same_a.compile_group_dir()
+
+
+# ---------------------------------------------- visible reuse + --rebuild (#494)
+
+
+def _compile_log_of(sim):
+    return Path(sim._get_compile_transcript_path())
+
+
+def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
+    tmp_path, monkeypatch, caplog
+):
+    """A stale reuse used to be deducible only from an *absent*
+    ``compile.log``, which reads as "nothing to do" (#494).
+
+    So the reuse names the directory and how old its stamp is, and it goes
+    out through ``log_console_event``: the console handler sits at WARNING,
+    and a dispatched run's job log is the only artifact a stale PASS can be
+    caught in.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.049 devel rev vBBBB")
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))
+    assert writer.compile() == 0
+
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
+    with caplog.at_level(_logging.INFO):
+        assert reader.compile() == 0
+    assert len(calls) == 1
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.build_reused"
+    )
+    shared_dir = Path(writer._get_simv_path()).parent
+    # The basename, because that is what a reader compares against
+    # `ls artefacts/.shared-builds/`; the absolute path rides alongside.
+    assert record.rtl_fields["build_dir"] == shared_dir.name
+    assert record.rtl_fields["build_path"] == str(shared_dir)
+    assert record.rtl_fields["stamp_age_sec"] >= 0
+    assert record.rtl_fields["toolchain"] == "Verilator 5.049 devel rev vBBBB"
+    # The rendered line, not just the fields: it is what a human reads.
+    assert shared_dir.name in record.getMessage()
+    assert "ago" in record.getMessage()
+
+
+def test_a_reuse_leaves_a_compile_log_naming_what_it_reused(tmp_path, monkeypatch):
+    """ "The absence of compile.log reads as nothing to do" (#494).
+
+    So a skipped compile writes the same transcript a real one does, saying
+    which directory was reused, when its stamp was written, and the command
+    a rebuild would have run.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert writer.compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert reader.compile() == 0
+    assert len(calls) == 1
+
+    text = _compile_log_of(reader).read_text()
+    shared_dir = Path(writer._get_simv_path()).parent
+    assert str(shared_dir) in text
+    assert "Compile skipped" in text
+    assert "Stamp written:" in text
+    # The command that WOULD have run, derived from the same assembly the
+    # real compile uses — so it names this build's --Mdir, not a guess.
+    assert f"--Mdir {shared_dir}" in text
+    assert "--rebuild" in text
+
+
+def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
+    tmp_path, monkeypatch, caplog
+):
+    """The per-test-stamp reuse is the branch a dispatched fan-out takes for
+    every element, so it is the one most likely to hide a stale build."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert first.compile() == 0
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    with caplog.at_level(_logging.INFO):
+        assert second.compile() == 0
+    assert len(calls) == 1
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.build_reused"
+    )
+    assert record.rtl_fields["shared"] is False
+    assert "unshared build" in record.getMessage()
+    assert "Compile skipped" in _compile_log_of(second).read_text()
+
+
+def test_rebuild_recompiles_over_a_warm_valid_stamp(tmp_path, monkeypatch):
+    """The escape hatch the issue asks for: dropping ``--share-build`` does
+    not stop the reuse, so there has to be something that does (#494)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert len(calls) == 1
+    # Same key, warm stamp: without --rebuild this is the reuse proven above.
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True).compile()
+        == 0
+    )
+    assert len(calls) == 2
+
+
+def test_rebuild_forces_one_rebuild_per_build_dir_per_process(tmp_path, monkeypatch):
+    """One user request is one rebuild of the shared directory, not one per
+    test: N builders into one directory is #369 with extra steps.
+
+    The first test through claims the directory and rebuilds; the rest
+    validate the stamp that rebuild just wrote and reuse it.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert len(calls) == 1
+
+    first = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_c", rebuild=True)
+    assert first.compile() == 0
+    assert second.compile() == 0
+    assert len(calls) == 2, "the shared build was rebuilt once per test"
+
+
+def test_rebuild_claims_the_directory_not_the_test_name(tmp_path, monkeypatch):
+    """Two spellings of one directory are one build, so the claim is
+    ``realpath``'d — the same reason the compile grouping is (#495)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    assert sim.compile() == 0
+    assert len(calls) == 2
+    # A second compile() on the SAME instance re-derives the plan, and the
+    # claim it made the first time still stands.
+    assert sim.compile() == 0
+    assert len(calls) == 2
+
+
+def test_rebuild_also_overrides_an_unshareable_builders_own_stamp(
+    tmp_path, monkeypatch
+):
+    """The per-test stamp is a reuse too, so the escape hatch has to reach
+    it — otherwise `--rebuild` works for verilator and silently does not for
+    the families that cannot share."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert (
+        _make_sim(
+            tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+        ).compile()
+        == 0
+    )
+    assert len(calls) == 1
+    assert (
+        _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            exe="qrun",
+            family="questa",
+            rebuild=True,
+        ).compile()
+        == 0
+    )
+    assert len(calls) == 2
+
+
+def test_without_rebuild_a_warm_stamp_is_still_reused(tmp_path, monkeypatch):
+    """Byte-parity when nothing is configured: the flag defaults off and the
+    reuse it overrides is the one that was there before it existed."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_b").compile() == 0
+    assert len(calls) == 1
+
+
+def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
+    tmp_path, monkeypatch, caplog
+):
+    """With ``--rebuild`` the reader's question flips from "is this stale?"
+    to "did it actually recompile?", so the answer has a line of its own."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert writer.compile() == 0
+    shared_dir = Path(writer._get_simv_path()).parent
+
+    forced = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    with caplog.at_level(_logging.INFO):
+        assert forced.compile() == 0
+    assert len(calls) == 2
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.rebuild_forced"
+    )
+    assert record.rtl_fields["build_dir"] == str(shared_dir)
+    assert "--rebuild given" in record.getMessage()

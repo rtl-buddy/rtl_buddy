@@ -666,11 +666,31 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
         case "compile.build_reused":
+            # Age first, toolchain second: the question a stale reuse
+            # raises is "was this built before my edit?", and the answer is
+            # the age (#494). An unknown age says so rather than being
+            # dropped — "reused, age unknown" is a fact worth reading.
+            age = fields.get("stamp_age_sec")
+            built = (
+                f"built {_format_elapsed(age)} ago"
+                if age is not None
+                else "age unknown"
+            )
             toolchain = fields.get("toolchain")
-            built_by = "" if toolchain is None else f", built by {toolchain}"
+            if toolchain is not None:
+                built = f"{built}, {toolchain}"
+            shared = "" if fields.get("shared", True) else "un"
             return (
-                f"{target or 'compile'}: reused shared build "
-                f"{fields.get('build_dir')}{built_by} (compile skipped)"
+                f"{target or 'compile'}: reused {shared}shared build "
+                f"{fields.get('build_dir')} ({built}); nothing compiled"
+            )
+        case "compile.rebuild_forced":
+            # The counterpart of build_reused: with --rebuild the reader's
+            # question flips to "did it actually recompile?", and this is
+            # the line that answers it (once per build dir, #494).
+            return (
+                f"{target or 'compile'}: --rebuild given, compiling "
+                f"{fields.get('build_dir')} even though a stamp may validate"
             )
         case "compile.build_toolchain_changed":
             return (
