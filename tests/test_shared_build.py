@@ -1,10 +1,13 @@
+import errno
 import json
 import os
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
+from rtl_buddy import artifact_lock as artifact_lock_module
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.artifact_paths import shared_build_dir
@@ -2391,3 +2394,180 @@ def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
     # And on the console, like the reuse line: "did --rebuild reach this
     # job?" is unanswerable from a job log that never printed it.
     assert console == ["compile.rebuild_forced"]
+
+
+# ------------------------------------------- cross-process build lock (#494)
+#
+# After a manual `rm -rf .shared-builds`, the issue's suite started eight
+# tests together, three of which died with `collect2: error: ld returned 1
+# exit status`: every process found no stamp and compiled into the one
+# freshly created directory. The #495 in-job grouping serialises the
+# compiles of ONE process, so the fix is a flock the stamp check sits
+# inside. These drive VlogSim directly, which is where that lock lives —
+# the cross-PROCESS half is in tests/test_artifact_lock.py.
+
+
+def _lock_events(monkeypatch):
+    """Collect (and forward) the build lock's console events."""
+    seen = []
+    real = artifact_lock_module.log_console_event
+
+    def _spy(spy_logger, level, event, **fields):
+        seen.append((event, fields))
+        return real(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(artifact_lock_module, "log_console_event", _spy)
+    return seen
+
+
+def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
+    tmp_path, monkeypatch
+):
+    """Double-checked locking: the waiter re-decides after acquiring.
+
+    Two compiles of one shared directory, the first held inside its
+    builder until the second is provably blocked on the lock. Waiting and
+    then compiling anyway would be the same two writers with extra
+    latency, so what the second must do is validate the stamp the first
+    just wrote and reuse it — one builder invocation for both.
+
+    Threads rather than processes only because the fake builder has to
+    live in this process; flock treats descriptors from separate
+    ``open()`` calls as separate holders, so the lock is genuinely
+    contended. The cross-PROCESS half is in tests/test_artifact_lock.py.
+
+    Read off the console spies rather than ``caplog``: the first
+    ``log_console_event`` of a pytest process initialises logging, which
+    detaches pytest's capture handler — and here that first event is the
+    waiting line itself.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    compiling = threading.Event()
+    finish = threading.Event()
+    waiting = threading.Event()
+    inner_builder = vlog_sim_module.run_managed_process
+
+    def _held_open(*args, **kwargs):
+        compiling.set()
+        assert finish.wait(60), "the waiter never reached the lock"
+        return inner_builder(*args, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _held_open)
+    lock_events = _lock_events(monkeypatch)
+    forwarding_spy = artifact_lock_module.log_console_event
+
+    def _note_wait(spy_logger, level, event, **fields):
+        if event == "compile.build_lock_wait":
+            waiting.set()
+        return forwarding_spy(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(artifact_lock_module, "log_console_event", _note_wait)
+    compile_events = _console_events(monkeypatch)
+
+    first = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    results = {}
+
+    def _compile(key, sim):
+        results[key] = sim.compile()
+
+    builder = threading.Thread(target=_compile, args=("first", first))
+    builder.start()
+    assert compiling.wait(60)
+    waiter = threading.Thread(target=_compile, args=("second", second))
+    waiter.start()
+    # The wait line is emitted immediately before the blocking flock, so
+    # this is "the second compile is now queued behind the first" with no
+    # sleep to be flaky about.
+    assert waiting.wait(60), "the second compile did not queue on the lock"
+    finish.set()
+    builder.join(60)
+    waiter.join(60)
+
+    assert results == {"first": 0, "second": 0}
+    assert len(calls) == 1, "the waiter recompiled instead of reusing"
+    assert [event for event, _ in lock_events] == ["compile.build_lock_wait"]
+    # It waited, then reused — the double check paying for itself. (Only
+    # the waiter reports a reuse; the compile it waited for reports none.)
+    assert compile_events == ["compile.build_reused"]
+
+    _, fields = lock_events[0]
+    shared_dir = Path(first._get_simv_path()).parent
+    # The same directory-field schema every other compile.* build event
+    # carries, so one consumer reads the whole family.
+    assert {key: fields[key] for key in ("build_dir", "build_path")} == (
+        vlog_sim_module._build_dir_fields(shared_dir, shared=True)
+    )
+    assert fields["test"] == "test_b"
+    assert fields["holder_pid"] == os.getpid()
+    assert fields["holder_test"] == "test_a"
+
+
+def test_a_build_lock_the_filesystem_refuses_still_compiles(
+    tmp_path, monkeypatch, caplog
+):
+    """flock support varies (ENOLCK on some NFS mounts, EROFS on a
+    read-only tree). A lock that cannot be taken costs the cross-process
+    serialisation and nothing else — never a red build, because nothing on
+    this path may change a build job's exit code."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _no_locks(fd, operation):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(artifact_lock_module.fcntl, "flock", _no_locks)
+
+    with caplog.at_level(_logging.WARNING):
+        assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert len(calls) == 1
+
+    warnings = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.build_lock_unavailable"
+    ]
+    assert len(warnings) == 1
+    assert "not serialised" in warnings[0].getMessage()
+
+
+def test_an_unshared_build_takes_no_build_lock(tmp_path, monkeypatch):
+    """Per-test build directories already have one writer within a
+    dispatched run (#369), and the lock file would land in the test's
+    artefact directory for nothing."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    assert sim.compile() == 0
+    work_dir = Path(sim._get_compile_work_dir())
+    assert list(work_dir.rglob(artifact_lock_module.BUILD_LOCK_FILENAME)) == []
+
+
+def test_the_lock_lives_in_the_shared_build_directory_it_guards(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    shared_dir = Path(sim._get_simv_path()).parent
+    assert (shared_dir / artifact_lock_module.BUILD_LOCK_FILENAME).is_file()
+
+
+def test_a_wait_line_stands_up_when_the_holder_is_unknown():
+    """The holder metadata is advisory: a lock file a dead process left
+    behind, or one nobody had written yet, must still leave a sentence."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_lock_wait",
+        {"build_dir": "obj_dir_abc", "build_path": "/w/obj_dir_abc"},
+    )
+    assert "another rtl-buddy process to finish compiling obj_dir_abc" in message

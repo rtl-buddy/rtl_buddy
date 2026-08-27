@@ -708,6 +708,39 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{target or 'compile'}: --rebuild given, compiling "
                 f"{_build_location(fields)} even though a stamp may validate"
             )
+        case "compile.build_lock_wait":
+            # Named ahead of the wait, not after it: a compile can take
+            # minutes, and a job log that simply stops for them is
+            # indistinguishable from a hang (#494). The holder is whatever
+            # the lock file could tell us — advisory, possibly stale, and
+            # absent entirely when nobody had written it yet, which is why
+            # the sentence stands up without it.
+            # Deferred for the same reason as artifact_lock.contended
+            # above: artifact_lock imports log_event from this module.
+            from .artifact_lock import _describe_holder
+
+            holder = _describe_holder(
+                {
+                    "pid": fields.get("holder_pid"),
+                    "test": fields.get("holder_test"),
+                    "started": fields.get("holder_started"),
+                }
+            )
+            return (
+                f"{target or 'compile'}: waiting for another rtl-buddy "
+                f"process{holder} to finish compiling "
+                f"{_build_location(fields)}"
+            )
+        case "compile.build_lock_unavailable":
+            # A filesystem that cannot flock (read-only, ENOLCK on some NFS
+            # mounts) must not fail the build — it loses the cross-process
+            # serialisation and says which guarantee went with it.
+            return (
+                f"{target or 'compile'}: could not lock "
+                f"{_build_location(fields)} ({fields.get('error')}); "
+                "compiling without it — concurrent rtl-buddy processes "
+                "populating this build directory are not serialised"
+            )
         case "compile.build_toolchain_changed":
             return (
                 f"{target or 'compile'}: the shared build was compiled by "

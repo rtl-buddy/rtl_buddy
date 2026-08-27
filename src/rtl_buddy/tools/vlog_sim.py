@@ -39,6 +39,7 @@ import time
 import pprint
 from pathlib import Path
 
+from ..artifact_lock import build_dir_lock
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_console_event, log_event, task_status
 from ..process_utils import run_managed_process
@@ -1978,6 +1979,35 @@ class VlogSim:
         # the stamp — so the cache is consumed here rather than kept.
         self._compile_plan_cache = None
 
+        if plan.shared_dir is None:
+            # Unshared builds stay unlocked: within a dispatched run #369
+            # already gives each per-test build directory one writer. An
+            # absolute `builder-simv:` pinning two *processes* to one
+            # executable is pre-existing exposure, out of this scope.
+            return self._compile_with_plan(plan)
+        # Before the lock, because the lock file lives inside the directory
+        # it guards. (A reuse would find it there anyway; only a shared dir
+        # that never gets compiled into is newly created here.)
+        plan.shared_dir.mkdir(parents=True, exist_ok=True)
+        # Cross-process single writer (#494): several `rb` processes that
+        # start together against a cold shared tree would otherwise all
+        # compile into it at once. The stamp check lives INSIDE the lock, so
+        # a waiter re-decides after acquiring and reuses the build it waited
+        # for rather than repeating it. Lock ordering is in build_dir_lock:
+        # one build lock per thread, and never taken around the tree lock.
+        with build_dir_lock(plan.shared_dir, test=self.test_name):
+            return self._compile_with_plan(plan)
+
+    def _compile_with_plan(self, plan):
+        """Check the stamp, compile if it does not validate, stamp the result.
+
+        Split from :meth:`compile` so the shared-build case can hold
+        :func:`build_dir_lock` across the whole sequence — check, compile
+        and stamp are one critical section, and a lock released between
+        them would let a second process see the invalidated stamp and
+        start its own compile into the same directory.
+        """
+        rtl_builder_cfg = self.rtl_builder_cfg
         compile_work_dir = plan.compile_work_dir
         build_dir = plan.build_dir
         fingerprint = plan.fingerprint
@@ -1998,7 +2028,8 @@ class VlogSim:
                     # only invite someone to sum it against a compile.
                     self._record_compile(duration_sec=0.0, reused=True)
                     return 0
-                plan.shared_dir.mkdir(parents=True, exist_ok=True)
+                # (The directory itself was created by compile(), which
+                # needed it to put the build lock in.)
                 # A crashed/killed compile must never leave a stamp that
                 # validates a broken simv.
                 (plan.shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
