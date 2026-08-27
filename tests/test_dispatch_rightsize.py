@@ -56,6 +56,7 @@ def _analyze(
     reg_level=0,
     root_config_path=None,
     accounting_interval_s=None,
+    compile_origins=None,
 ):
     return analyze_suite_reservations(
         rows,
@@ -66,6 +67,7 @@ def _analyze(
         simulator_family_of=(families or {"verilator": "verilator"}).get,
         root_config_path=root_config_path,
         accounting_interval_s=accounting_interval_s,
+        compile_origins=compile_origins,
     )
 
 
@@ -432,6 +434,68 @@ def test_governance_is_per_test_not_leaked_across_tests():
     }
     assert findings["t"].edit_hint["path"] == "cfg-dispatch.compile.mem"
     assert findings["u"].edit_hint["path"] == "tests[name=u].resources.mem"
+
+
+def test_compile_governed_field_the_suite_won_hints_at_the_suite_config():
+    """cfg-dispatch is the layer a suite `compile:` block overrides (#497).
+
+    The in-job-compile case has no build job at all, so the compile
+    reservation only ever surfaces here, inside the field-wise maximum. A
+    suite that sets `compile.mem: 48G` and OOMs anyway must be sent to its
+    own tests.yaml: raising `cfg-dispatch.compile.mem` leaves the 48G in
+    place, the allocation unmoved, and the advice repeating every run.
+    """
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "compile"})],
+        root_config_path="/p/root_config.yaml",
+        compile_origins={"mem": "suite"},
+    )
+    assert [f.phase for f in findings] == ["compile+sim"]
+    assert findings[0].direction == "raise"
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "compile.mem",
+    }
+
+
+def test_suite_compile_attribution_is_per_field_within_one_run():
+    """Only the fields the suite block set move to its tests.yaml (#497)."""
+    findings = {
+        f.resource: f
+        for f in _analyze(
+            [
+                _over_reserved_row(
+                    compile_in_job=True,
+                    compile_floor={"mem": "4G", "time": "00:30:00"},
+                )
+            ],
+            root_config_path="/p/root_config.yaml",
+            compile_origins={"mem": "suite"},
+        )
+    }
+    # The suite set mem, so its own file is what holds the binding floor...
+    assert findings["mem"].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "compile.mem",
+    }
+    # ...while time still comes from cfg-dispatch, in the same run.
+    assert findings["time"].edit_hint == {
+        "file": "/p/root_config.yaml",
+        "path": "cfg-dispatch.compile.time",
+    }
+
+
+def test_suite_won_attribution_never_touches_a_sim_governed_field():
+    """An origin map is about the compile layer, not the test's resources."""
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "test"})],
+        root_config_path="/p/root_config.yaml",
+        compile_origins={"mem": "suite"},
+    )
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=t].resources.mem",
+    }
 
 
 # ------------- #358: reduce advice must be reachable under the compile floor

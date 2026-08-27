@@ -537,6 +537,7 @@ def analyze_suite_reservations(
     simulator_family_of=None,
     root_config_path=None,
     accounting_interval_s=None,
+    compile_origins=None,
 ):
     """Produce :class:`RightsizeFinding`s for one suite's dispatched rows.
 
@@ -545,13 +546,19 @@ def analyze_suite_reservations(
     ``None`` disables that suppression. ``root_config_path`` is where
     ``cfg-dispatch`` lives, needed to hint at ``cfg-dispatch.compile`` for a
     field the compile reservation governs (#358); without it those findings
-    fall back to the per-test hint. ``accounting_interval_s`` is the
+    fall back to the per-test hint. ``compile_origins`` says which of those
+    compile fields the suite's own ``compile:`` block won (#497) — a field
+    it set is named in the suite's tests.yaml instead, because
+    cfg-dispatch is the layer the suite block overrides and editing it
+    would leave the allocation exactly where it is, so the advice would
+    never retire. ``accounting_interval_s`` is the
     scheduler's usage-sampling interval, used to suppress memory advice
     derived from a peak that was never sampled (#365); ``None`` disables
     that suppression.
     """
     findings = []
     unsampled = []
+    origins = compile_origins or {}
     for test, agg in _aggregate(suite_results).items():
         governed_by = agg["governed_by"]
         # An in-job compile's allocation is max(sim, compile), so no `reduce`
@@ -575,6 +582,20 @@ def analyze_suite_reservations(
             # A field the compile reservation won is masked by the max, so
             # editing the test's resources: would not move the allocation.
             from_compile = from_compile or _governed_by.get(resource_field) == "compile"
+            # ...and of the two files that can hold the compile reservation,
+            # the suite's own `compile:` block is the layer that wins, so a
+            # field it set is edited there. Sending a project to
+            # cfg-dispatch.compile for it would move nothing and the advice
+            # would come back every run (#497).
+            if (
+                from_compile
+                and origins.get(resource_field) == "suite"
+                and suite_config_path
+            ):
+                return {
+                    "file": suite_config_path,
+                    "path": f"compile.{resource_field}",
+                }
             if from_compile and root_config_path:
                 return {
                     "file": root_config_path,

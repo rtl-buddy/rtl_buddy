@@ -3842,6 +3842,14 @@ class RtlBuddy:
         rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
         if not rightsize_cfg.report:
             return []
+        # The suite's own `compile:` block as submit resolved it, and which
+        # compile fields it won (#497). .get(), unlike `build_handle` below:
+        # an old state dict — or a caller that assembled one by hand — must
+        # degrade to root-config-only attribution rather than abort a
+        # finished run. Resolved once: both analyses attribute the same
+        # reservation, and computing it twice invites them to disagree.
+        suite_compile = (state or {}).get("suite_compile")
+        compile_origins = compile_resource_origins(suite_compile)
         findings = analyze_suite_reservations(
             suite_results,
             suite_display=suite_display,
@@ -3858,6 +3866,13 @@ class RtlBuddy:
             # attribute: analysis is advisory and runs after every job has
             # finished — it must never turn a completed run into an abort.
             root_config_path=getattr(self.root_cfg, "root_cfg_path", None),
+            # ...unless the suite's own compile block is what governs that
+            # field, in which case cfg-dispatch is the layer it overrides
+            # and the hint has to name the suite instead (#497). This
+            # reaches an in-job compile's rows — the case with no build job
+            # at all, where the compile reservation only ever shows up
+            # inside the field-wise maximum.
+            compile_origins=compile_origins,
             # How often the scheduler sampled usage, so a peak that was
             # never actually measured cannot become a mem suggestion (#365).
             accounting_interval_s=(
@@ -3870,11 +3885,6 @@ class RtlBuddy:
             # had a build handle to query, so the two travel together and a
             # missing handle here is a bug that must fail loud.
             build_spec = state["build_handle"].spec
-            # The suite's own `compile:` block as submit resolved it (#497).
-            # .get(), unlike build_handle: an old state dict — or a caller
-            # that assembled one by hand — must degrade to root-config-only
-            # attribution rather than abort a finished run.
-            suite_compile = state.get("suite_compile")
             findings.extend(
                 analyze_build_reservation(
                     build_telemetry,
@@ -3906,8 +3916,9 @@ class RtlBuddy:
                     # Per-field provenance, so a value the suite block won
                     # is pointed back at the suite's tests.yaml instead of
                     # at a cfg-dispatch key editing which would move
-                    # nothing (#497).
-                    compile_origins=compile_resource_origins(suite_compile),
+                    # nothing (#497). The same map the per-test analysis
+                    # above got: one reservation, one attribution.
+                    compile_origins=compile_origins,
                     suite_config_hint=suite_config_path or suite_display,
                 )
             )
