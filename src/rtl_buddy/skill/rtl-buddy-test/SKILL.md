@@ -63,8 +63,8 @@ VCS/Icarus may not report header dependencies. Batch compile-input edits before
 an expensive build and use independent cheap suites while it runs.
 
 Reuse is reported, not silent: when an edit seems not to take effect or a PASS
-looks suspicious after one, read the `compile.build_reused` console line and the
-test's `compile.log` breadcrumb, which name the reused build directory and its
+looks suspicious after one, read the `compile.build_reused` line (in the run's own log; on the console
+once per build directory) and the test's `compile.log` breadcrumb, which name the reused build directory and its
 stamp's age. `--rebuild` then forces a fresh compile; use it instead of deleting
 `artefacts/.shared-builds/`, and note that `--dispatch` implies `--share-build`,
 so dropping the flag there does not stop reuse. Read

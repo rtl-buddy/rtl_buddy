@@ -30,6 +30,31 @@ def _forget_rebuild_claims():
 
 
 @pytest.fixture(autouse=True)
+def _forget_content_hashes():
+    """The hash memo is keyed on (path, size, mtime_ns) per PROCESS (#494).
+
+    tmp_path spellings and restored mtimes recur across tests in this file
+    by design — the stale-stat tests fabricate exactly the collisions the
+    memo is keyed on — so a stale memo entry would validate content one
+    test rewrote for another.
+    """
+    with vlog_sim_module._CONTENT_HASH_LOCK:
+        vlog_sim_module._CONTENT_HASH_CACHE.clear()
+    yield
+    with vlog_sim_module._CONTENT_HASH_LOCK:
+        vlog_sim_module._CONTENT_HASH_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _forget_reuse_announcements():
+    """``compile.build_reused`` hits the console once per build dir per
+    PROCESS (#494 review); console-assertion tests need a fresh slate."""
+    vlog_sim_module._reset_reuse_announcements()
+    yield
+    vlog_sim_module._reset_reuse_announcements()
+
+
+@pytest.fixture(autouse=True)
 def _forget_lock_degrade_warnings():
     """``compile.build_lock_unavailable`` is emitted once per build dir per
     PROCESS (#494), which is one claim per pytest session unless reset."""

@@ -708,6 +708,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{target or 'compile'}: --rebuild given, compiling "
                 f"{_build_location(fields)} even though a stamp may validate"
             )
+        case "compile.hash_root":
+            # DEBUG, but readable when asked for: which root gates content
+            # hashing decides whether an out-of-suite edit invalidates a
+            # stamp — the silent fallback is the wrong place for a raw
+            # dict (#494 review).
+            origin = (
+                "from root_config" if fields.get("derived") else "suite-dir fallback"
+            )
+            return (
+                f"{target or 'compile'}: content-hash root "
+                f"{fields.get('project_root')} ({origin})"
+            )
         case "compile.build_lock_wait":
             # Named ahead of the wait, not after it: a compile can take
             # minutes, and a job log that simply stops for them is

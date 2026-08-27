@@ -63,8 +63,8 @@ and simulation timeout do not either. Batch compile-input changes before
 launching a large build; use independent cheap suites while it compiles.
 
 - An edit that seems not to take effect, or a suspicious PASS right after one:
-  read the `compile.build_reused` console line and the test's `compile.log`
-  breadcrumb, which name the reused build directory and its stamp's age.
+  read the `compile.build_reused` line (the run's own log; console once per
+  build directory) and the test's `compile.log` breadcrumb, which name the reused build directory and its stamp's age.
 - `--rebuild` forces a fresh compile — once per build directory per invocation,
   carried by the build job. Prefer it to deleting `artefacts/.shared-builds/`;
   dropping `--share-build` does not stop reuse.

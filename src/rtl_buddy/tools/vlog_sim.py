@@ -409,6 +409,30 @@ def _hash_file_content(path: str, size: int, mtime_ns: int) -> str | None:
 _REBUILT_DIRS_LOCK = threading.Lock()
 _REBUILT_DIRS: set[str] = set()
 
+# Build dirs whose reuse this process has already put on the CONSOLE. The
+# file log keeps every `compile.build_reused`; the console line is the
+# once-per-build signal — a 50-test local regression reusing one build must
+# not print 50 identical lines (#494 review), while under dispatch each job
+# is its own process and still prints its one line.
+_REUSE_ANNOUNCED_LOCK = threading.Lock()
+_REUSE_ANNOUNCED: set[str] = set()
+
+
+def _first_reuse_announcement(build_dir: str) -> bool:
+    """Is this the process's first console-worthy reuse of ``build_dir``?"""
+    key = os.path.realpath(build_dir)
+    with _REUSE_ANNOUNCED_LOCK:
+        if key in _REUSE_ANNOUNCED:
+            return False
+        _REUSE_ANNOUNCED.add(key)
+        return True
+
+
+def _reset_reuse_announcements() -> None:
+    """Test hook: forget which build dirs already hit the console."""
+    with _REUSE_ANNOUNCED_LOCK:
+        _REUSE_ANNOUNCED.clear()
+
 
 def _claim_rebuild(build_dir: str) -> bool:
     """Is this process's first ``--rebuild`` of ``build_dir``? Claims it.
@@ -624,6 +648,27 @@ def _entry_lists_match(stored, current) -> bool:
         _entry_matches(stored_entry, current_entry)
         for stored_entry, current_entry in zip(stored, current)
     )
+
+
+def _first_entry_mismatch(stored, current):
+    """What made :func:`_entry_lists_match` say no, for a diagnostic.
+
+    Returns the first mismatching entry's path/line, or a shape note when
+    the lists themselves are not comparable. Diagnostic only — never the
+    decision, which stays with the matchers above.
+    """
+    if not isinstance(stored, list) or not isinstance(current, list):
+        return "(stamp sources are not a list)"
+    if len(stored) != len(current):
+        return f"(entry count {len(stored)} -> {len(current)})"
+    for stored_entry, current_entry in zip(stored, current):
+        if not _entry_matches(stored_entry, current_entry):
+            if isinstance(current_entry, list) and current_entry:
+                return current_entry[0]
+            if isinstance(stored_entry, list) and stored_entry:
+                return stored_entry[0]
+            return "(malformed entry)"
+    return "(no mismatch)"
 
 
 @dataclass
@@ -1514,6 +1559,17 @@ class VlogSim:
                 )
             return False
         if not _entry_lists_match(stored_sources, current_sources):
+            # The deps path names what changed; the sources path answering
+            # "why did this rebuild" with silence made the two halves of
+            # the same question unequal (#494 review).
+            if not quiet:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_source_changed",
+                    test=test_name,
+                    entry=_first_entry_mismatch(stored_sources, current_sources),
+                )
             return False
         deps = stored["deps"]
         if deps is None:
@@ -1956,7 +2012,13 @@ class VlogSim:
         # Console, not just the log file: the console handler sits at
         # WARNING, so a dispatched run's reuse would otherwise be invisible
         # in exactly the transcript that has to show it (#435 pattern).
-        log_console_event(logger, logging.INFO, "compile.build_reused", **fields)
+        # Once per build dir per process on the console — a local regression
+        # reusing one build across N tests says so once, not N times; every
+        # reuse still lands in the file log (#494 review).
+        if _first_reuse_announcement(stamp_dir):
+            log_console_event(logger, logging.INFO, "compile.build_reused", **fields)
+        else:
+            log_event(logger, logging.INFO, "compile.build_reused", **fields)
         self._write_reuse_transcript(
             plan, stamp_dir=stamp_dir, stamp_mtime=stamp_mtime, toolchain=toolchain
         )
