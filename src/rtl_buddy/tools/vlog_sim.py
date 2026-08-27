@@ -1109,6 +1109,15 @@ class VlogSim:
         if run_id is _UNSET:
             run_id = self.run_id
 
+        # This run's stale retry transcript goes before the hook runs, not
+        # only at compile() (#498 review): a reused run directory whose PRE
+        # fails here never reaches compile(), and the fresh SetupFail
+        # envelope would be paired with the previous invocation's retry log.
+        try:
+            Path(self._get_retry_transcript_path()).unlink(missing_ok=True)
+        except OSError:
+            pass
+
         with open(script_path, "r") as file:
             code = file.read()
 

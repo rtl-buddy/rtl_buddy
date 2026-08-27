@@ -1149,6 +1149,30 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
     assert "compiling despite being gated" not in caplog.text
 
 
+def test_a_stale_retry_log_is_cleared_before_a_failing_pre(tmp_path, monkeypatch):
+    """A PRE failure must not resurrect the last invocation's retry (#498 review).
+
+    A reused run directory whose next invocation dies in `preproc` never
+    reaches compile(), so the cleanup there cannot run — the fresh
+    SetupFail envelope would be paired with the previous invocation's
+    `compile.retry.log` by the results overlay.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    stale = Path(sim._get_retry_transcript_path())
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("%Error: a previous invocation's retry\n")
+    hook = tmp_path / "boom_preproc.py"
+    hook.write_text("raise RuntimeError('pre exploded')\n")
+    monkeypatch.setattr(sim.test_cfg, "get_preproc_path", lambda: str(hook))
+
+    assert sim.pre() is not None
+    assert not stale.exists()
+
+
 def test_a_stale_retry_log_does_not_survive_the_next_compile(tmp_path, monkeypatch):
     """`compile.retry.log` describes exactly one run's retry (#498 review).
 
