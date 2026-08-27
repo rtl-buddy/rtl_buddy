@@ -494,6 +494,11 @@ def test_build_compile_failure_puts_the_real_error_in_the_summary(
     assert "\n" not in desc
     # A test the build actually built keeps its own verdict untouched.
     assert "compile failed in build job" not in rows["extra"]["desc"]
+    # The rewrite is durable, not just rendered: `rb graph results` re-reads
+    # the envelope, which would otherwise still say `Compile failed` (#498
+    # review).
+    envelope = json.loads(Path(gated["basic"].result_json).read_text())
+    assert envelope["result"]["results"]["desc"] == desc
 
 
 def test_a_sim_failure_is_not_relabelled_as_the_build_job_s_compile_error(

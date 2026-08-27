@@ -3692,12 +3692,16 @@ class RtlBuddy:
         would replace a real diagnosis with a guess — the build envelope
         listing the test under ``failed`` says a *compile* failed, not that
         this run's failure was that compile.
+
+        Returns whether the desc changed, so the caller can persist the
+        rewrite into the durable envelope — this mutation is otherwise
+        in-memory only, and ``rb graph results`` re-reads the file.
         """
         if build_handle is None:
-            return
+            return False
         desc = results.results.get("desc") or ""
         if desc != COMPILE_FAIL_DESC and not desc.startswith(BUILD_COMPILE_FAIL_PREFIX):
-            return
+            return False
         # The generic desc needs the same compiler evidence the sim job's
         # retry gate demands: bare `failed` membership can record a setup or
         # worker error, and a sim job that saw no evidence retried — so its
@@ -3709,10 +3713,11 @@ class RtlBuddy:
         if desc == COMPILE_FAIL_DESC and not (
             isinstance(returncode, int) and returncode
         ):
-            return
+            return False
         results.results["desc"] = self._build_compile_fail_desc(
             build_handle, build_failure
         )
+        return results.results["desc"] != desc
 
     def _dispatch_collect_pass(
         self, backend, state, pending, *, attempt, retry_cfg, submitted_at=None
@@ -3838,11 +3843,22 @@ class RtlBuddy:
                     # should name the build job that actually broke, so the
                     # reader goes to `build-<id>.log` instead of re-reading a
                     # `compile.log` the retry may have written over.
-                    self._enrich_compile_fail_desc(
+                    if self._enrich_compile_fail_desc(
                         results,
                         build_handle,
                         build_failures.get(handle.spec.test_name),
-                    )
+                    ):
+                        # The rewrite must outlive this pass: the summary
+                        # and machine payload render from memory, but the
+                        # durable ``dispatch/result-*.json`` still says the
+                        # generic desc and `rb graph results` re-reads it
+                        # (#498 review). Best-effort, like every collect
+                        # annotation.
+                        attach_result_key(
+                            handle.spec.result_json,
+                            "desc",
+                            results.results.get("desc"),
+                        )
             except FatalRtlBuddyError as e:
                 if handle.spec.test_name in compile_failed:
                     # The build job already knows this is a compile failure;
