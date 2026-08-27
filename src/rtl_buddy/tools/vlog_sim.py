@@ -303,6 +303,30 @@ def _stat_entry(path: str) -> list:
     return [path, stat.st_size, stat.st_mtime_ns]
 
 
+def _fingerprint_sha(fingerprint):
+    """Compact identity of one compile's inputs (#498 review).
+
+    sha256 over the canonical JSON of the fingerprint dict — the very dict
+    the stamp comparison checks (``stored_inputs``: the stamp minus its
+    ``deps``/``simv`` keys), so "same sha" means exactly what "stamp would
+    match" means: same sources (content-stat), same flags, same toolchain.
+
+    The ONE hashing used by both sides of the no-retry verdict: a build
+    job records it beside a failed compile's returncode, and the gated sim
+    job recomputes it over its own just-derived fingerprint. Equal says
+    the sim job is looking at the same compile the build failed, so
+    repeating it is pointless; different says the inputs moved since — an
+    edited source, a PRE that regenerated one — and the failure may not
+    reproduce, so the retry is earned. Factored here so the two sides
+    cannot drift. ``None`` in, ``None`` out.
+    """
+    if fingerprint is None:
+        return None
+    return hashlib.sha256(
+        json.dumps(fingerprint, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 @dataclass
 class _CompilePlan:
     """Everything about a compile that is decided *before* the builder runs.
@@ -1318,7 +1342,7 @@ class VlogSim:
             # unless a `builder-simv:` points two tests at one executable.
         return plan
 
-    def _gated_build_failure(self):
+    def _gated_build_failure(self, fingerprint=None):
         """This test's record in the build envelope, if its COMPILE failed.
 
         The envelope's ``failed`` list is not compile-only: the build job
@@ -1330,6 +1354,16 @@ class VlogSim:
         deterministic case a retry cannot fix is a builder that genuinely
         ran and exited non-zero, and the per-build record proves it by
         carrying a ``returncode``. That record is the only decisive answer.
+
+        Deterministic, that is, for the *same inputs* (#498 review). This
+        job's PRE has re-run and ``fingerprint`` is its own just-derived
+        compile fingerprint; when the record also carries the build's
+        ``fingerprint_sha`` and the two hash differently — an edited
+        source, a regenerated input, a moved toolchain since the build
+        failed — the failure may not reproduce, and suppressing the retry
+        would report a CompileFail for a compile nobody has run. The
+        verdict then falls through to the retry. A record without the sha
+        (an older build job) keeps the verdict, exactly as before.
 
         ``None`` therefore means "no proven compile failure", which covers
         every case that must keep today's retry: no build job, no envelope
@@ -1360,6 +1394,23 @@ class VlogSim:
             # describes a failure that never reached a builder.
             if entry.get("returncode") is None:
                 return None
+            recorded_sha = entry.get("fingerprint_sha")
+            if recorded_sha is not None:
+                own_sha = _fingerprint_sha(fingerprint)
+                if own_sha is not None and recorded_sha != own_sha:
+                    # The build failed a *different* compile than the one
+                    # this job would run: the inputs moved in between, so
+                    # the retry is earned rather than a repeat.
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "compile.build_failure_inputs_changed",
+                        test=self.test_name,
+                        run_id=self.run_id,
+                        recorded_sha=recorded_sha,
+                        own_sha=own_sha,
+                    )
+                    return None
             return entry
         return None
 
@@ -1546,8 +1597,9 @@ class VlogSim:
             # This job was ordered after a build job precisely so it would not
             # have to compile. Reaching here means that build's stamp did not
             # validate — but there are two reasons for that, and they want
-            # opposite answers (#498).
-            build_failure = self._gated_build_failure()
+            # opposite answers (#498). The fingerprint rules out a third:
+            # a recorded failure of a compile whose inputs have moved since.
+            build_failure = self._gated_build_failure(fingerprint)
             if build_failure is not None:
                 # The build job's compile for THIS test exited non-zero. That
                 # is deterministic: the same sources, the same flags and the
@@ -1665,6 +1717,15 @@ class VlogSim:
                 "returncode": result.returncode,
                 "transcript": transcript_path,
             }
+            failed_sha = _fingerprint_sha(fingerprint)
+            if failed_sha is not None:
+                # WHICH compile failed, not just that one did: a gated sim
+                # job compares this against its own fingerprint's sha, and
+                # honours the no-retry verdict only when they match (#498
+                # review). Recorded from the same `fingerprint` the stamp
+                # would have been written from, via the same helper the
+                # sim side hashes with.
+                self.last_compile_failure["fingerprint_sha"] = failed_sha
         else:
             log_event(
                 logger,

@@ -1442,7 +1442,16 @@ def test_build_envelope_records_why_a_compile_failed(
         else EarlyStopResults(name=f"{name}/results", desc="compiled")
     )
     stub_runner.compile_failure_of = lambda name: (
-        {"returncode": 1, "transcript": str(transcript)} if name == "basic" else None
+        {
+            "returncode": 1,
+            "transcript": str(transcript),
+            # What VlogSim records beside a real failure (#498 review): the
+            # identity of the inputs the builder failed on, which a gated
+            # sim job compares against its own before declining a retry.
+            "fingerprint_sha": "ab" * 32,
+        }
+        if name == "basic"
+        else None
     )
     runner, rb = _runner()
     result = runner.invoke(
@@ -1454,6 +1463,7 @@ def test_build_envelope_records_why_a_compile_failed(
     assert br["failed"] == ["basic"]
     by_test = {entry["test"]: entry for entry in br["builds"]}
     assert by_test["basic"]["returncode"] == 1
+    assert by_test["basic"]["fingerprint_sha"] == "ab" * 32
     # Suite-relative, for the reason `group` is: an absolute path here pins
     # the compute node's mount into an artifact the head reads.
     assert by_test["basic"]["transcript"] == os.path.join(
@@ -1471,6 +1481,7 @@ def test_build_envelope_records_why_a_compile_failed(
     # A config that BUILT gets none of them — the keys mean "this failed".
     assert "returncode" not in by_test["extra"]
     assert "error_tail" not in by_test["extra"]
+    assert "fingerprint_sha" not in by_test["extra"]
 
 
 def test_a_worker_exception_becomes_the_error_tail_when_no_builder_ran(

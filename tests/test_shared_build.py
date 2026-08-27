@@ -1350,6 +1350,79 @@ def test_a_no_evidence_retry_that_fails_writes_the_retry_log(
     assert sim.compile_fail_desc is None
 
 
+def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
+    tmp_path, monkeypatch, caplog
+):
+    """A recorded failure of a *different* compile earns the retry (#498 review).
+
+    The sim job's PRE has re-run and its fingerprint is recomputed; if the
+    sources, flags or toolchain moved since the build job's compile failed,
+    the new inputs might pass, and suppressing the recompile would report a
+    CompileFail nobody has run. The record's `fingerprint_sha` is compared
+    against the sim's own; only a match (or an older record without one)
+    keeps the verdict.
+    """
+    import logging as _logging
+
+    from rtl_buddy.tools.vlog_sim import _fingerprint_sha
+
+    _write_source(tmp_path)
+
+    # --- the build job's side: a real failing compile records the sha.
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+    build_sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert build_sim.compile() == 1
+    recorded = build_sim.last_compile_failure
+    assert recorded["fingerprint_sha"]
+
+    # --- same inputs: the gated job honours the verdict and does not retry.
+    calls2 = []
+    _install_fake_builder(monkeypatch, calls2)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[
+            {
+                "test": "test_a",
+                "returncode": 1,
+                "fingerprint_sha": recorded["fingerprint_sha"],
+            }
+        ],
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+    assert calls2 == []  # suppressed: same compile, known verdict
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    # The sim's own hash really is the same helper over the same shape.
+    assert _events(caplog, "compile.build_failure_inputs_changed") == []
+    assert _fingerprint_sha(None) is None
+
+    # --- the inputs moved: the same record with a different sha retries.
+    caplog.clear()
+    calls3 = []
+    _install_fake_builder(monkeypatch, calls3)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "returncode": 1, "fingerprint_sha": "0" * 64}],
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0  # the retry ran, and the new inputs passed
+    assert len(calls3) == 1
+    assert _events(caplog, "compile.build_failure_inputs_changed")
+    assert _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert _events(caplog, "compile.build_job_failed") == []
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert sim.compile_fail_desc is None
+
+
 def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
     tmp_path, monkeypatch, caplog
 ):
@@ -1449,11 +1522,15 @@ def test_an_ungated_compile_still_writes_compile_log(tmp_path, monkeypatch):
     assert transcript.name == "compile.log"
     assert transcript.is_file()
     assert not (transcript.parent / "compile.retry.log").exists()
-    # And the record a dispatched build job would put in its envelope.
-    assert sim.last_compile_failure == {
-        "returncode": 1,
-        "transcript": str(transcript),
-    }
+    # And the record a dispatched build job would put in its envelope —
+    # including the identity of the inputs this compile failed on, which
+    # is what lets a gated sim job tell "same compile" from "inputs moved
+    # since" (#498 review).
+    failure = sim.last_compile_failure
+    assert failure["returncode"] == 1
+    assert failure["transcript"] == str(transcript)
+    sha = failure["fingerprint_sha"]
+    assert len(sha) == 64 and set(sha) <= set("0123456789abcdef")
 
 
 def test_a_gated_build_failure_becomes_the_compile_fail_desc(tmp_path, monkeypatch):

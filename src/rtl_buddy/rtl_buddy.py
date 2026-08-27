@@ -248,8 +248,9 @@ def _summarize_compile_work(build_entries) -> dict:
 def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
     """Add the failure keys to one ``builds`` record, in place (#498).
 
-    ``returncode``/``transcript``/``error_tail``: the builder's exit status,
-    the file that holds its output, and enough of that output to read the
+    ``returncode``/``fingerprint_sha``/``transcript``/``error_tail``: the
+    builder's exit status, the identity of the inputs it failed on, the
+    file that holds its output, and enough of that output to read the
     error without opening the file. Written only for a build that failed,
     and only for the fields this failure actually has — a config that never
     reached a builder has no returncode to report, and its worker's
@@ -264,6 +265,13 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
     returncode = failure.get("returncode")
     if returncode is not None:
         entry["returncode"] = returncode
+    fingerprint_sha = failure.get("fingerprint_sha")
+    if fingerprint_sha is not None:
+        # Identity of the inputs the builder failed on (#498 review):
+        # additive like the rest, and what lets a gated sim job tell "the
+        # same compile" from "a compile whose inputs moved since" before
+        # honouring the no-retry verdict. schema_version stays 1.
+        entry["fingerprint_sha"] = fingerprint_sha
     transcript = failure.get("transcript")
     if transcript:
         entry["transcript"] = os.path.relpath(transcript, suite_dir)
