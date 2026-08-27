@@ -99,6 +99,51 @@ def _unregister_live_process(token: int) -> None:
         _live_processes.pop(token, None)
 
 
+# ---- the cancellation latch.
+#
+# The registry can only reach what is already in it, and the sweep is a
+# snapshot: a process between ``Popen`` and its registration is invisible to
+# it, and so is a pool worker that has already been handed its next unit of
+# work and is about to spawn. Left at that, a cancelled parallel build job
+# sweeps what it can see, re-raises, and the executor's
+# ``shutdown(wait=True)`` then lets that worker start a *new* compiler — in
+# its own session, so nothing left kills it, and the local backend's grace
+# period expires on the job while that compiler runs on, orphaned (#496
+# review).
+#
+# So cancellation is also a process-wide latch, set BEFORE the sweep takes
+# its snapshot. That ordering is what closes the register-race: a process
+# either registers before the snapshot (and is swept) or registers after the
+# latch is visible (and terminates itself below). One-way per process —
+# nothing resumes a cancelled process — so there is no reset outside tests.
+_cancellation_started = threading.Event()
+
+
+def cancellation_has_started() -> bool:
+    """True once :func:`terminate_live_managed_processes` has been entered.
+
+    Callers that launch work in a pool check this before starting anything
+    new: a queued worker that wakes after the sweep must not spawn a tool
+    process the sweep can no longer see.
+    """
+    return _cancellation_started.is_set()
+
+
+def _reset_cancellation_latch() -> None:
+    """Clear the latch. Tests only — cancellation is one-way in a real run."""
+    _cancellation_started.clear()
+
+
+def _cancelled_result() -> ManagedProcessResult:
+    """The shape a process killed by the sweep would have reported.
+
+    Consistent whether the child was never spawned or was terminated a
+    moment after ``Popen``: the caller cannot tell the two apart and must
+    not have to, because which side of the race it landed on is timing.
+    """
+    return ManagedProcessResult(returncode=-signal.SIGTERM)
+
+
 def terminate_live_managed_processes(
     *,
     terminate_signal: int = signal.SIGTERM,
@@ -113,7 +158,12 @@ def terminate_live_managed_processes(
     past an interruption point unsignalled — the orphans this exists to
     prevent. Tolerates a process that is already gone (the owning thread may
     be reaping it concurrently) and returns how many were signalled.
+
+    Latches cancellation first, so nothing new can be spawned behind the
+    snapshot this takes; see the latch comment above.
     """
+    _cancellation_started.set()
+
     with _live_processes_lock:
         victims = list(_live_processes.values())
 
@@ -215,6 +265,14 @@ def run_managed_process(
             "pipes during the poll loop"
         )
 
+    # Checked after the argument validation above (a programming error is
+    # still a programming error while a process is being cancelled) and
+    # before the spawn: once the sweep has run, a process started here is one
+    # nothing can reach — the sweep's snapshot is already taken and, from a
+    # worker thread, no handler of our own will ever be installed.
+    if _cancellation_started.is_set():
+        return _cancelled_result()
+
     proc = subprocess.Popen(
         cmd,
         stdout=stdout,
@@ -229,6 +287,24 @@ def run_managed_process(
     # where the registry is the *only* way a cancelling main thread can
     # reach this process (see the registry comment above).
     live_token = _register_live_process(proc)
+
+    # The other half of the register-race. The check above can pass a moment
+    # before a concurrent sweep sets the latch, and that sweep's snapshot can
+    # be taken a moment before the registration above — a window in which the
+    # child is live and in nobody's hands. Re-reading the latch after
+    # registering makes the two orders exhaustive: register-then-sweep is
+    # swept, sweep-then-register is terminated right here.
+    if _cancellation_started.is_set():
+        _unregister_live_process(live_token)
+        terminate_process_group(
+            proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
+        )
+        # Drains and closes the pipes of the process just reaped (the
+        # ``_timeout_result`` precedent); the bytes are dropped because the
+        # result is defined by the cancellation, not by whatever the child
+        # managed to emit in its first milliseconds.
+        proc.communicate()
+        return _cancelled_result()
 
     previous_handlers = {}
 

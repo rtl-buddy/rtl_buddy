@@ -741,6 +741,85 @@ def test_a_parallel_build_job_owns_the_interrupt_signals_while_it_compiles(
     assert (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)) == before
 
 
+def test_a_cancelled_build_job_stops_compiling_the_rest_of_a_group(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Once cancellation has started, no further member is compiled (#496 review).
+
+    Sweeping the live compilers is only half a cancellation: the sweep is a
+    snapshot, so a member whose compile has not started yet would launch a
+    compiler *behind* it — in its own session, unreachable, and still running
+    when the local backend's grace period kills the job. Three configs in one
+    group, the first latching cancellation the way the sweeper does.
+    """
+    from rtl_buddy import process_utils
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    _add_third_test(minimal_project)
+    compiled: list[str] = []
+
+    def cancel_after_the_first(name):
+        compiled.append(name)
+        process_utils.terminate_live_managed_processes()  # what the handler does
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.group_of = lambda _name: "one-shared-build-dir"
+    stub_runner.compile_hook = cancel_after_the_first
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    # The exit-0 contract is untouched by cancellation.
+    assert result.exit_code == 0, result.output
+    assert compiled == ["basic"], compiled
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["basic"], payload
+    # Failed in the envelope's sense: they never reached a builder, and one
+    # row per planned config is the contract. In a real cancellation the
+    # handler re-raises and this envelope is never written at all.
+    assert payload["failed"] == ["extra", "gamma"], payload
+
+
+def test_a_cancelled_build_job_never_starts_a_queued_group(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The next-group case, which the sweep alone cannot cover (#496 review).
+
+    Three groups, two pool slots. Cancellation begins inside group 1's
+    compile — on a worker thread, while the main thread is still collecting
+    results — so the worker returns and immediately takes group 3 off the
+    queue. ``Executor.map``'s late cancel of pending futures cannot reach a
+    future a worker already took, and ``__exit__``'s ``shutdown(wait=True)``
+    waits for it: nothing but the worker's own latch check stops it
+    compiling. Deterministic without a sleep, because group 3 can only be
+    picked up after group 1 latched.
+    """
+    from rtl_buddy import process_utils
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    _add_third_test(minimal_project)
+    compiled: list[str] = []
+
+    def cancel_on_basic(name):
+        compiled.append(name)
+        if name == "basic":  # plan 0, so the first group the pool is handed
+            process_utils.terminate_live_managed_processes()
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.compile_hook = cancel_on_basic  # group_of default: one each
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    # "extra" fills the second slot concurrently and may or may not get in
+    # before the latch; "gamma" is queued behind both and never can.
+    assert "gamma" not in compiled, compiled
+    assert "gamma" in _build_payload(result.output)["failed"]
+
+
 def test_the_streaming_build_job_leaves_the_interrupt_signals_alone(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):

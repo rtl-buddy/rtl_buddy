@@ -38,6 +38,24 @@ def clean_environ():
 
 
 @pytest.fixture(autouse=True)
+def reset_cancellation_latch():
+    """Un-latch ``process_utils`` cancellation between tests.
+
+    The latch is one-way *per process* by design — nothing resumes a
+    cancelled run — so a test that sets it (directly, or by calling
+    ``terminate_live_managed_processes``) would otherwise stop every later
+    test in the session from spawning a tool process at all. Autouse for the
+    same reason as the fixtures above: the state belongs to the module, not
+    to the tests that know about it.
+    """
+    from rtl_buddy import process_utils
+
+    process_utils._reset_cancellation_latch()
+    yield
+    process_utils._reset_cancellation_latch()
+
+
+@pytest.fixture(autouse=True)
 def reset_tool_path_warning_dedupe():
     """Forget the process-global "already warned" sets between tests.
 

@@ -204,6 +204,37 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _recorded_compiler_pids(pids_file: Path) -> list[int]:
+    if not pids_file.exists():
+        return []
+    return [int(tok) for tok in pids_file.read_text().split() if tok.strip().isdigit()]
+
+
+def _start_hanging_build_job(project: Path, pids_file: Path, parallel: str):
+    env = dict(os.environ)
+    env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
+    # Long enough that "it died" cannot be confused with "it finished".
+    env["RB_SHIM_HANG"] = "60"
+    env["RB_SHIM_PIDS"] = str(pids_file)
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "rtl_buddy",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "--parallel",
+            parallel,
+        ],
+        cwd=project / "verif" / "blk",
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+
 def test_cancelling_a_parallel_build_job_kills_its_compilers(tmp_path_factory):
     """SIGTERM to the build job must take the compilers with it (#496 review).
 
@@ -220,42 +251,16 @@ def test_cancelling_a_parallel_build_job_kills_its_compilers(tmp_path_factory):
     project = work / "proj"
     shutil.copytree(_PARALLEL_FIXTURE, project)
     pids_file = work / "compiler_pids.txt"
-    env = dict(os.environ)
-    env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
-    # Long enough that "it died" cannot be confused with "it finished".
-    env["RB_SHIM_HANG"] = "60"
-    env["RB_SHIM_PIDS"] = str(pids_file)
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "rtl_buddy",
-            "_build-job",
-            "-c",
-            "tests.yaml",
-            "--parallel",
-            "2",
-        ],
-        cwd=project / "verif" / "blk",
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    proc = _start_hanging_build_job(project, pids_file, "2")
     compilers: list[int] = []
     try:
         # Both compilers in flight: the pool is what is being cancelled, so
         # cancelling before it filled would prove nothing.
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            if pids_file.exists():
-                compilers = [
-                    int(tok)
-                    for tok in pids_file.read_text().split()
-                    if tok.strip().isdigit()
-                ]
-                if len(compilers) >= 2:
-                    break
+            compilers = _recorded_compiler_pids(pids_file)
+            if len(compilers) >= 2:
+                break
             time.sleep(0.1)
         assert len(compilers) >= 2, f"compilers never started: {compilers}"
 
@@ -277,6 +282,89 @@ def test_cancelling_a_parallel_build_job_kills_its_compilers(tmp_path_factory):
             proc.kill()
             proc.communicate()
         for pid in compilers:  # pragma: no cover - only on a failed run
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def _append_third_compile_key(project: Path) -> None:
+    """A third test with its own plusdefine, i.e. a third distinct build."""
+    tests_yaml = project / "verif" / "blk" / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text()
+        + """  - name: gamma
+    desc: dispatch ci test gamma, a third compile key queued behind the pool
+    model: m
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+      WIDTH: 16
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb_blk
+    sim_timeout:
+"""
+    )
+
+
+def test_cancelling_a_parallel_build_job_starts_no_queued_compiler(tmp_path_factory):
+    """No compiler may start after cancellation began (#496 review).
+
+    Three compile keys, two pool slots, so group 3 is still queued when the
+    SIGTERM arrives; the fake verilator's pid file records everything that
+    ever launched, and a third pid in it is a compiler started after the
+    sweep — in its own session, with the job already on its way out, so the
+    local backend's 5 s grace kills the wrapper and leaves it running.
+
+    The end-to-end guard, not the regression proof: whether that third
+    compiler starts is a race between the swept worker taking group 3 and
+    the main thread unwinding (``Executor.map``'s result generator cancels
+    what is still pending as it closes), and on an idle machine the unwind
+    usually wins even without the latch. The deterministic version of this
+    is ``test_a_cancelled_build_job_never_starts_a_queued_group`` in
+    ``test_test_job.py``, which puts the worker on the losing side of that
+    race by construction.
+    """
+    work = tmp_path_factory.mktemp("build_job_cancel_queued")
+    project = work / "proj"
+    shutil.copytree(_PARALLEL_FIXTURE, project)
+    _append_third_compile_key(project)
+    pids_file = work / "compiler_pids.txt"
+    proc = _start_hanging_build_job(project, pids_file, "2")
+    compilers: list[int] = []
+    try:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            compilers = _recorded_compiler_pids(pids_file)
+            if len(compilers) >= 2:
+                break
+            time.sleep(0.1)
+        assert len(compilers) >= 2, f"compilers never started: {compilers}"
+
+        proc.send_signal(signal.SIGTERM)
+        out = proc.communicate(timeout=60)[0]
+        assert proc.returncode == 128 + signal.SIGTERM, out
+
+        # The pool slots were two, so a third pid here is a compiler that was
+        # launched *after* cancellation began — the orphan this closes. The
+        # job has exited by now, so the file is final.
+        after = _recorded_compiler_pids(pids_file)
+        assert len(after) == 2, f"a queued worker launched a compiler: {after}\n{out}"
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and any(_pid_alive(pid) for pid in after):
+            time.sleep(0.1)
+        assert [pid for pid in after if _pid_alive(pid)] == [], out
+        assert "survived" not in pids_file.read_text(), out
+    finally:
+        if proc.poll() is None:  # pragma: no cover - only on a failed run
+            proc.kill()
+            proc.communicate()
+        for pid in _recorded_compiler_pids(pids_file):  # pragma: no cover
             try:
                 os.killpg(pid, signal.SIGKILL)
             except OSError:
