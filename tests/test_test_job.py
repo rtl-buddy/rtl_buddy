@@ -1656,6 +1656,30 @@ def test_the_build_fail_desc_stays_one_line_for_a_multi_line_tail_element():
     assert "detail one" not in desc
 
 
+def test_the_echoed_compile_command_is_never_the_chosen_diagnostic():
+    """A command carrying `error` must not displace the real error (#498 review).
+
+    A short transcript's first line is `Command: …`; with `--error-limit`
+    (or an `ERROR_*` define, or a path named `errors`) in the command, the
+    loose scan would pick that echo and the summary would show a truncated
+    command instead of the compiler's diagnostic below it.
+    """
+    from rtl_buddy.runner.result_io import build_compile_fail_desc
+
+    desc = build_compile_fail_desc(
+        job_id="4242",
+        returncode=1,
+        error_tail=[
+            "Command: verilator --error-limit 5 +define+ERROR_INJECT tb.sv",
+            "=== stderr ===",
+            "%Error: tb.sv:3:7: Signal is not driven: 'q'",
+        ],
+        logs="build-4242.log",
+    )
+    assert "Signal is not driven" in desc
+    assert "--error-limit" not in desc
+
+
 def test_failure_detail_warning_has_a_dedicated_human_message():
     """A WARNING must not fall through to the generic event-name fallback."""
     from rtl_buddy.logging_utils import _human_message

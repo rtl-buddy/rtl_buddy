@@ -88,8 +88,16 @@ def _first_error_line(error_tail):
     ]
     if not lines:
         return None
+    # The transcript's echoed compile command must not be mistaken for the
+    # diagnostic: a command carrying ``--error-limit``, an ``ERROR_*``
+    # define, or a path named ``errors`` matches the scan and would put a
+    # truncated ``Command: …`` in the summary cell (#498 review).
     chosen = next(
-        (line for line in lines if "error" in line.lower()),
+        (
+            line
+            for line in lines
+            if "error" in line.lower() and not line.startswith("Command: ")
+        ),
         lines[-1],
     )
     if len(chosen) > _ERROR_LINE_BUDGET:
