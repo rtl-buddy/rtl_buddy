@@ -664,6 +664,45 @@ def test_configs_pinned_to_one_absolute_simv_land_in_one_group(tmp_path, monkeyp
     assert unshared.compile_group_dir() == pinned
 
 
+def test_a_relative_simv_escaping_the_workspace_lands_in_one_group(
+    tmp_path, monkeypatch
+):
+    """`builder-simv: ../shared/simv` collides exactly like an absolute pin.
+
+    A relative spelling is joined to each test's own compile dir, so with
+    enough `..` two tests' paths meet at one suite-level file — the same
+    single-output collision the absolute case has (#496 review), it just
+    spells the path differently. The group is therefore the NORMALIZED
+    resolved output, not the raw config value: syntactic absoluteness is a
+    sharing question, never the collision predicate.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    def _sim(name, simv):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=name,
+            exe="qrun",
+            family="questa",
+            simv=simv,
+        )
+
+    # artefacts/<test>/../shared/simv collapses to artefacts/shared/simv
+    # for every test in the suite: one file, one group.
+    sim_a = _sim("test_a", "../shared/simv")
+    sim_b = _sim("test_b", "../shared/simv")
+    meeting_point = sim_a.compile_group_dir()
+    assert ".." not in meeting_point
+    assert sim_b.compile_group_dir() == meeting_point
+
+    # A relative path that stays inside the workspace resolves per test.
+    inside_a = _sim("test_c", "sub/simv")
+    inside_b = _sim("test_d", "sub/simv")
+    assert inside_a.compile_group_dir() != inside_b.compile_group_dir()
+
+
 def test_verilator_ignores_an_absolute_builder_simv_for_grouping(tmp_path, monkeypatch):
     """Verilator's output comes from `--Mdir`, so nothing is pinned.
 
@@ -1406,10 +1445,13 @@ def test_compile_group_dir_is_the_shared_build_dir_when_sharing_applies(
 def test_compile_group_dir_is_the_test_dir_when_sharing_is_unsupported(
     tmp_path, monkeypatch
 ):
-    """An unshared build owns a per-test directory, so it is its own group.
+    """An unshared build's output stays in its per-test workspace: own group.
 
     #369 already guarantees a single writer there, which is what makes it
-    safe for every unshared config to compile at once.
+    safe for every unshared config to compile at once. The group is the
+    resolved OUTPUT path (not the directory), so a `builder-simv:` that
+    lands two tests on one file serializes them — see the pinned/escaping
+    tests above.
     """
     _write_source(tmp_path)
     calls = []
@@ -1421,7 +1463,7 @@ def test_compile_group_dir_is_the_test_dir_when_sharing_is_unsupported(
     sim_b = _make_sim(
         tmp_path, monkeypatch, test_name="test_b", exe="qverilog", family="questa"
     )
-    assert sim_a.compile_group_dir() == sim_a._get_compile_work_dir()
+    assert sim_a.compile_group_dir().startswith(sim_a._get_compile_work_dir())
     assert sim_a.compile_group_dir() != sim_b.compile_group_dir()
 
 
@@ -1430,7 +1472,7 @@ def test_compile_group_dir_without_share_build_is_the_test_dir(tmp_path, monkeyp
     _install_fake_builder(monkeypatch, [])
 
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
-    assert sim.compile_group_dir() == sim._get_compile_work_dir()
+    assert sim.compile_group_dir().startswith(sim._get_compile_work_dir())
 
 
 def test_probe_and_compile_derive_the_plan_once(tmp_path, monkeypatch):

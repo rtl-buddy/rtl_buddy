@@ -214,14 +214,14 @@ def pinned_simv_path(builder_cfg):
 
     Verilator and Icarus derive their output from the build dir, so
     ``builder-simv:`` cannot move it; every other family honours an absolute
-    one verbatim (see :meth:`VlogSim._get_simv_path`). That makes one
-    predicate answer two questions, which is why it is factored out here
-    rather than spelled twice: it is why such a builder cannot share a build
-    (above), and — since #495 — it is the *grouping key* those unshareable
-    configs must be grouped by. Two configs pinned to one path have distinct
-    per-test compile dirs but write the same executable, so a pool that
-    grouped them by their compile dirs would run two builders onto one
-    output (#369 through another door, reported in the #496 review).
+    one verbatim (see :meth:`VlogSim._get_simv_path`). An absolute pin is
+    why such a builder cannot share a build (above): a per-compile-key
+    shared dir cannot honour one exact user-chosen path. Note this is a
+    *sharing* predicate only — the #495 compile-pool grouping key is the
+    resolved output path from ``_get_simv_path()`` itself, because a
+    RELATIVE ``builder-simv:`` whose ``..`` escapes the per-test workspace
+    collides on one file just as an absolute one does (#496 review), while
+    never being a reason to decline sharing.
     """
     if builder_cfg.get_simulator_family() in ("verilator", "icarus"):
         return None
@@ -1184,21 +1184,24 @@ class VlogSim:
             assertion_flags=assertion_flags,
             plusdefines=plusdefines,
             is_verilator=is_verilator,
-            # Unshared builds each own a per-test directory, so every one of
-            # them is its own group: #369 already guarantees a single writer
-            # there, and they may all compile at once.
-            #
-            # Unless an absolute `builder-simv:` pins the executable — then
-            # the per-test dirs differ but the OUTPUT does not, and grouping
-            # on the dirs would run two builders onto one binary under
-            # `compile.parallel > 1`, attributing a compile failure or a
-            # simulation to another config's build (#496 review). The pinned
-            # path is the group instead, which serializes them; it does not
-            # make them share (each still stamps and rebuilds in its own
-            # dir), and serializing is the whole fix. Decided here rather
-            # than in the share-build branch below because the collision is
-            # not about sharing: `--no-share-build` pins the same path.
-            group_dir=pinned_simv_path(rtl_builder_cfg) or compile_work_dir,
+            # The group is the OUTPUT the compile writes, normalized — that
+            # is the single-writer resource the pool must not hand to two
+            # workers at once (#369). For verilator/icarus the output lives
+            # under the per-test compile dir, so every test is its own group
+            # and they may all compile at once. For a family that honours
+            # `builder-simv:`, two configs can name one executable — an
+            # absolute pin, or a relative spelling whose `..` escapes the
+            # per-test workspace (`../../shared/simv` from two tests meets
+            # at one file) — and grouping on the compile DIRS would run two
+            # builders onto one binary under `compile.parallel > 1`,
+            # attributing a compile failure or a simulation to another
+            # config's build (#496 review, twice). Grouping on the resolved
+            # path serializes them; it does not make them share (each still
+            # stamps and rebuilds in its own dir), and serializing is the
+            # whole fix. Resolved here, where `_shared_build_dir` is still
+            # unset, so this is always the UNSHARED output; the share-build
+            # branch below overrides the group with the shared dir.
+            group_dir=os.path.normpath(os.path.abspath(self._get_simv_path())),
         )
         if not self.share_build:
             return plan
@@ -1259,8 +1262,8 @@ class VlogSim:
             # other into one directory (#369). Same fingerprint, same
             # stamp file; only the scope differs, so the stamp lives in
             # the test's own compile work dir. `group_dir` also stays as it
-            # was built above — the test's dir, or the pinned executable
-            # when an absolute `builder-simv:` is what declined sharing.
+            # was built above — the resolved output path, which is per-test
+            # unless a `builder-simv:` points two tests at one executable.
         return plan
 
     def _compile_plan(self):
