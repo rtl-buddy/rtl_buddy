@@ -50,8 +50,14 @@ class DummyBuilderCfg:
 
 
 class DummyRootCfg:
-    def __init__(self, builder_cfg):
+    def __init__(self, builder_cfg, project_root=None):
         self.builder_cfg = builder_cfg
+        if project_root is not None:
+            # Only a root config that really has one gets the accessor: the
+            # absent-accessor fallback (VlogSim built straight from tests,
+            # older config objects) is a live path too, and the rest of this
+            # file exercises it.
+            self.get_project_rootdir = lambda: str(project_root)
 
     def get_rtl_builder_cfg(self):
         return self.builder_cfg
@@ -137,19 +143,26 @@ def _make_sim(
     family="verilator",
     simv="simv",
     compile_opts=None,
+    suite_dir=None,
+    project_root=None,
+    model_path=None,
+    filelist=None,
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
         exe=exe, simulator_family=family, simv=simv, compile_opts=compile_opts
     )
-    model_cfg = DummyModelCfg(tmp_path / "models.yaml", filelist=["src/top.sv"])
+    model_cfg = DummyModelCfg(
+        model_path or (tmp_path / "models.yaml"), filelist=filelist or ["src/top.sv"]
+    )
     test_cfg = DummyTestCfg(test_name, model_cfg, pd=pd)
     return vlog_sim_module.VlogSim(
         name="rtl_buddy/vlog_sim",
-        root_cfg=DummyRootCfg(builder_cfg),
+        root_cfg=DummyRootCfg(builder_cfg, project_root=project_root),
         test_cfg=test_cfg,
         rtl_builder_mode="sim",
         sim_mode={"sim_to_stdout": True},
+        suite_dir=str(suite_dir) if suite_dir is not None else None,
         share_build=share_build,
     )
 
@@ -1220,6 +1233,176 @@ def test_a_file_is_hashed_once_per_process(tmp_path, monkeypatch):
     assert _make_sim(tmp_path, monkeypatch, test_name="test_c").compile() == 0
     assert len(calls) == 1  # one build, two reuses
     assert len(reads) == 1, f"the source was read {len(reads)} times, not memoised"
+
+
+def test_rtl_above_the_suite_is_hashed_because_the_root_is_the_project_root(
+    tmp_path, monkeypatch
+):
+    """The scope that makes this fix work is the PROJECT root, not the suite.
+
+    The reporter's layout is the ordinary one: the suite lives at
+    ``verif/<blk>/`` and owns ``artefacts/.shared-builds``, while the RTL it
+    compiles lives *above* it. Scoped to the suite dir, every one of those
+    sources falls outside the hashing policy and stays stat-only — which is
+    #494, still open, for exactly the projects that reported it. So this
+    test builds from a source outside the suite and asserts both halves:
+    the stamp carries a hash for it, and an edit a stale ``stat`` would hide
+    still invalidates the build.
+    """
+    suite = tmp_path / "verif" / "blk"
+    suite.mkdir(parents=True)
+    rtl = tmp_path / "rtl" / "a.sv"
+    rtl.parent.mkdir(parents=True)
+    rtl.write_text("module top; /* aaa */ endmodule\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            suite_dir=suite,
+            project_root=tmp_path,
+            model_path=suite / "models.yaml",
+            filelist=["../../rtl/a.sv"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a._project_root == os.path.realpath(tmp_path)
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    sources = json.loads(_stamp_of(sim_a).read_text())["sources"]
+    hashed = [entry for entry in sources if entry[0].endswith("a.sv")]
+    assert hashed, f"the source never reached the stamp: {sources}"
+    assert all(entry[3] is not None for entry in hashed), (
+        "RTL above the suite was recorded stat-only, so a stale NFS stat "
+        "still validates a stale build"
+    )
+
+    _edit_behind_a_stale_stat(rtl, "module top; /* bbb */ endmodule\n")
+    _as_a_fresh_process()
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2, "the stamp validated against a stale stat"
+
+
+def test_a_vendored_toolchain_under_the_project_root_is_still_not_hashed(
+    tmp_path, monkeypatch
+):
+    """ "Under the project root" is the implementation; "the project's files,
+    not the toolchain's" is the policy. A vendored install puts the two in
+    tension: ``verilator_bin`` and ``verilated.h`` land *inside* the root and
+    would be content-hashed, which is tens of megabytes read once per process
+    per node — the exact cost the policy exists to avoid.
+    """
+    src = _write_source(tmp_path)
+    install = tmp_path / "tools" / "verilator"
+    bindir = install / "bin"
+    bindir.mkdir(parents=True)
+    exe = bindir / "vendored-verilator"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    header = install / "share" / "verilator" / "include" / "verilated.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("// toolchain-owned\n")
+    monkeypatch.setenv("PATH", str(bindir))
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vendored-verilator")
+    assert sim._get_toolchain_prefix() == os.path.realpath(install)
+    assert sim._tracked_entry(str(header))[3] is None
+    assert sim._tracked_entry(str(src))[3] is not None
+
+
+def test_a_toolchain_at_the_project_root_itself_excludes_nothing(tmp_path, monkeypatch):
+    """The exclusion is only taken when it is a *proper* subdirectory.
+
+    A project that keeps its simulator in ``<root>/bin`` would otherwise
+    derive ``<root>`` as the install prefix and exclude the entire design —
+    turning the fix off everywhere, silently, for the projects most likely
+    to vendor a toolchain in the first place.
+    """
+    src = _write_source(tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / "rooted-verilator"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="rooted-verilator")
+    assert sim._get_toolchain_prefix() is None
+    assert sim._tracked_entry(str(src))[3] is not None
+
+
+def test_deps_validation_fails_closed_on_every_shape_it_cannot_read(
+    tmp_path, monkeypatch
+):
+    """A stamp is data from another machine and possibly another version.
+
+    Under dispatch the stamp is written on whichever node built and read on
+    whichever node reuses, and a mixed-version cluster (submit host upgraded,
+    compute nodes not) is the ordinary way the two disagree. Every shape
+    this version cannot read has to answer "rebuild" — not raise, which
+    under the build job's exit-0 contract would be a failed build instead of
+    a slow one.
+    """
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    def _refuse(path, **kwargs):
+        raise AssertionError(f"an unreadable stamp shape reached os.stat: {path!r}")
+
+    # The guards have to decide *before* anything is stat'd — the point of
+    # rejecting an int path is that `os.stat` would take it for a file
+    # *descriptor* and answer about whatever unrelated file is open on it,
+    # so "returns False anyway" is not the property being asserted here.
+    monkeypatch.setattr(vlog_sim_module, "_hashed_stat_entry", _refuse)
+
+    # Entries from before content hashing: three elements, no hash.
+    assert sim._deps_unchanged("test_a", [["/x", 1, 2]]) is False
+    assert sim._deps_unchanged("test_a", [[5, 1, 2, "abcd"]]) is False
+    assert sim._deps_unchanged("test_a", ["not-an-entry"]) is False
+    # `deps` itself in a container this version was never taught.
+    assert sim._deps_unchanged("test_a", 5) is False
+    assert sim._deps_unchanged("test_a", {"/x": [1, 2, "abcd"]}) is False
+    assert sim._deps_unchanged("test_a", None) is False
+
+
+def test_nothing_but_a_regular_file_is_ever_opened_for_hashing(tmp_path, monkeypatch):
+    """Stats decide *whether* to read, before anything is opened.
+
+    ``_collect_build_deps`` records whatever the builder's ``.d`` names, and
+    it does not gate on ``isfile`` the way the filelist fingerprint does. A
+    directory there is ordinary and merely raises on open; a FIFO is the case
+    that decides the shape of the guard, because opening one blocks forever —
+    a build job that never returns rather than one that fails closed. The
+    ``st_mode`` is already in hand, so the question is asked before the open.
+    """
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    a_directory = tmp_path / "src"
+
+    opened = []
+    real_open = open
+
+    def _recording_open(path, *args, **kwargs):
+        opened.append(os.path.realpath(str(path)))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "open", _recording_open, raising=False)
+
+    entry = sim._tracked_entry(str(a_directory))
+    assert entry[1] is not None, "still tracked, still stat'd"
+    assert entry[3] is None, "no content hash for something that is not a file"
+    assert os.path.realpath(a_directory) not in opened
+
+
+def test_entry_comparison_fails_closed_on_empty_entries():
+    """Two empty entries are the same length and index into nothing."""
+    assert vlog_sim_module._entry_lists_match([[]], [[]]) is False
+    assert vlog_sim_module._entry_matches([], []) is False
 
 
 def test_shared_build_dir_helper_layout():

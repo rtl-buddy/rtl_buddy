@@ -23,6 +23,7 @@ import threading
 import types
 import uuid
 from dataclasses import dataclass, field
+from stat import S_ISREG
 
 logger = logging.getLogger(__name__)
 from ..hooks import exec_hook_script
@@ -139,7 +140,7 @@ def _probe_toolchain_version(exe_path, simulator_family, mtime_ns):
     return version
 
 
-def _log_stale_stamp_toolchain(stored_inputs, fingerprint, *, test_name=None):
+def _log_stale_stamp_toolchain(stored_inputs, current_inputs, *, test_name=None):
     """Say so when a rebuild is the toolchain's doing, not the RTL's.
 
     A recompile after a source edit explains itself. A recompile because
@@ -148,13 +149,17 @@ def _log_stale_stamp_toolchain(stored_inputs, fingerprint, *, test_name=None):
     should have to do — this is the case that used to be missed entirely.
     Silent on a stamp predating the toolchain entry: that is an rtl_buddy
     upgrade, not a toolchain change, and it happens exactly once.
+
+    Both sides are the *same* dict shape — the caller's comparison operands,
+    not one of them and the raw fingerprint — so that this stays right if it
+    ever diffs more than ``toolchain``.
     """
     if "toolchain" not in stored_inputs:
         return
     was = stored_inputs.get("toolchain")
     # A caller may hand in no fingerprint at all to assert a stamp is stale;
     # that is not a toolchain change either.
-    now = (fingerprint or {}).get("toolchain") or {}
+    now = (current_inputs or {}).get("toolchain") or {}
     if not isinstance(was, dict) or was == now:
         return
     log_event(
@@ -312,9 +317,13 @@ _CONTENT_HASH_CHUNK = 1 << 20
 def _hash_file_content(path: str, size: int, mtime_ns: int) -> str | None:
     """``sha256`` hexdigest[:16] of ``path``'s bytes, or None if unreadable.
 
-    Memoised on ``(path, size, mtime_ns)``: within one process a file whose
-    stats have not moved has not been rewritten, and re-reading it per
-    validated stamp is the cost this whole check has to stay under.
+    Memoised on ``(path, size, mtime_ns)``. The memo is a cost bound, not a
+    correctness claim about stats: it stops one process re-reading a file
+    once per validated stamp, which is the cost this whole check has to stay
+    under. The value it returns came from a real ``open()``, so it is
+    close-to-open-fresh as of when it was taken — and the boundary that
+    matters for #494, a *later* run on another node, is a different process
+    with an empty memo, where the re-read is guaranteed.
     """
     key = (path, size, mtime_ns)
     with _CONTENT_HASH_LOCK:
@@ -339,7 +348,23 @@ def _hash_file_content(path: str, size: int, mtime_ns: int) -> str | None:
     return value
 
 
-def _content_sha(path: str, stat: os.stat_result, project_root: str | None):
+def _path_is_under(path: str, root: str) -> bool:
+    """Is ``path`` inside ``root``? Both must already be canonical."""
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        # Different drives on Windows: not under the root by definition.
+        return False
+
+
+def _content_sha(
+    path: str,
+    stat: os.stat_result,
+    project_root: str | None,
+    *,
+    resolved: bool = False,
+    toolchain_prefix: str | None = None,
+) -> str | None:
     """Hash ``path``'s content when policy allows, else None.
 
     **Why content and not just stats (#494).** ``size``/``mtime_ns`` answer
@@ -353,35 +378,56 @@ def _content_sha(path: str, stat: os.stat_result, project_root: str | None):
     while its cached stats are not. That is the difference between a rebuild
     and a false PASS on a design that was never simulated.
 
-    **Policy: nothing outside the project root is hashed** (brief invariant
-    4). Verilator's dependency file names the toolchain's own std includes
-    and, for some installs, ``verilator_bin`` itself; hashing tens of
-    megabytes of unchanging install per validation is not a trade worth
+    **Policy: hash the project's own files, never the toolchain's** (brief
+    invariant 4). Verilator's dependency file names the toolchain's own std
+    includes and, for some installs, ``verilator_bin`` itself; hashing tens
+    of megabytes of unchanging install per validation is not a trade worth
     making, and the toolchain fingerprint's version probe already catches an
-    install swapped underneath a build. Those entries stay stat-only.
+    install swapped underneath a build. So an entry qualifies only if it is
+    under ``project_root`` *and* outside ``toolchain_prefix`` — the install
+    tree of the resolved simulator executable, which a vendored
+    ``tools/verilator/`` or an in-repo venv puts under the project root.
+    Everything else stays stat-only.
+
+    ``resolved`` says ``path`` is already a ``realpath`` (the dependency
+    list is; the filelist's ``normpath``\\ ed entries are not), which saves
+    a second walk of one ``lstat`` per component on the NFS mount this
+    check exists for.
+
+    Only regular files are hashed: a directory or a FIFO named among the
+    prerequisites would otherwise reach ``open()``, and a FIFO blocks there
+    forever rather than failing closed.
     """
     if not project_root:
         return None
-    resolved = os.path.realpath(path)
-    try:
-        if os.path.commonpath([resolved, project_root]) != project_root:
-            return None
-    except ValueError:
-        # Different drives on Windows: not under the root by definition.
+    if not S_ISREG(stat.st_mode):
         return None
     # Hash under the realpath so two spellings of one file (the filelist
     # normpaths, the dependency file realpaths) share a memo entry.
-    return _hash_file_content(resolved, stat.st_size, stat.st_mtime_ns)
+    if not resolved:
+        path = os.path.realpath(path)
+    if not _path_is_under(path, project_root):
+        return None
+    if toolchain_prefix and _path_is_under(path, toolchain_prefix):
+        return None
+    return _hash_file_content(path, stat.st_size, stat.st_mtime_ns)
 
 
-def _hashed_stat_entry(path: str, *, project_root: str | None) -> list:
+def _hashed_stat_entry(
+    path: str,
+    *,
+    project_root: str | None,
+    resolved: bool = False,
+    toolchain_prefix: str | None = None,
+) -> list:
     """``[path, size, mtime_ns, sha]`` for a tracked *input*.
 
-    ``sha`` is :func:`_content_sha` — a short content hash for files under
-    the project root, None for anything else (and for an existing file that
-    cannot be read, which :func:`_entry_matches` then treats as changed). A
-    vanished file records as ``[path, None, None, None]`` rather than being
-    dropped, so its later reappearance still invalidates the stamp.
+    ``sha`` is :func:`_content_sha` — a short content hash for the project's
+    own files, None for anything the hashing policy excludes (and for an
+    existing file that cannot be read, which :func:`_entry_matches` then
+    treats as changed). A vanished file records as ``[path, None, None,
+    None]`` rather than being dropped, so its later reappearance still
+    invalidates the stamp.
     """
     try:
         stat = os.stat(path)
@@ -391,7 +437,13 @@ def _hashed_stat_entry(path: str, *, project_root: str | None) -> list:
         path,
         stat.st_size,
         stat.st_mtime_ns,
-        _content_sha(path, stat, project_root),
+        _content_sha(
+            path,
+            stat,
+            project_root,
+            resolved=resolved,
+            toolchain_prefix=toolchain_prefix,
+        ),
     ]
 
 
@@ -416,6 +468,11 @@ def _entry_matches(stored, current: list) -> bool:
     the only honest reading of that is one rebuild.
     """
     if not isinstance(stored, list) or len(stored) != len(current):
+        return False
+    if not stored or not current:
+        # Two empty entries are the same length and index into nothing.
+        # Unreachable while every `current` comes from _hashed_stat_entry,
+        # but this is the general comparator and it fails closed.
         return False
     if stored[0] != current[0]:
         return False
@@ -575,11 +632,26 @@ class VlogSim:
             project_root = None
         # The cwd fallback matches suite_work_dir's, for the same
         # directly-constructed callers.
+        derived = isinstance(project_root, str) and bool(project_root)
         self._project_root = os.path.realpath(
-            project_root
-            if isinstance(project_root, str) and project_root
-            else self.suite_work_dir
+            project_root if derived else self.suite_work_dir
         )
+        # Falling back narrows hashing to the suite dir, which turns the fix
+        # off for out-of-suite RTL — the thing #494 is about. Silent is the
+        # wrong way for that to happen, so the root actually in force (and
+        # where it came from) is readable off a build-job log.
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.hash_root",
+            test=self.test_name,
+            project_root=self._project_root,
+            derived=derived,
+        )
+        # Resolved lazily and once: an install prefix under the project root
+        # (a vendored toolchain, an in-repo venv) is excluded from hashing,
+        # and finding it costs a PATH walk that most instances never need.
+        self._toolchain_prefix = _UNSET
 
         output_dir = Path(self.suite_work_dir) / "artefacts"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -835,9 +907,58 @@ class VlogSim:
                     pd_list += [f"+define+{plusdefine}"]
         return pd_list
 
-    def _hashed_stat_entry(self, path):
-        """:func:`_hashed_stat_entry` under this instance's hashing policy."""
-        return _hashed_stat_entry(path, project_root=self._project_root)
+    def _get_toolchain_prefix(self):
+        """Install tree of the resolved simulator exe, if it is worth excluding.
+
+        The hashing policy is "the project's files, not the toolchain's"
+        (brief invariant 4), and "under the project root" only implements
+        that while the toolchain is installed elsewhere. A vendored
+        ``tools/verilator/bin/verilator`` or an in-repo venv puts
+        ``verilator_bin`` and ``verilated.h`` inside the root, where they
+        would be content-hashed — tens of megabytes read once per process
+        per node, the exact cost the policy exists to avoid.
+
+        The prefix is the exe's directory, or its parent when that
+        directory is ``bin`` (``<prefix>/bin/verilator`` alongside
+        ``<prefix>/share/verilator/include``). It is used only when it is a
+        *proper* subdirectory of the project root: a project that keeps its
+        simulator in ``<root>/bin`` would otherwise derive ``<root>`` and
+        silently exclude everything, turning the whole check off.
+        """
+        if self._toolchain_prefix is not _UNSET:
+            return self._toolchain_prefix
+        self._toolchain_prefix = None
+        try:
+            resolved = shutil.which(self.rtl_builder_cfg.get_exe())
+            if resolved is not None:
+                exe_dir = os.path.dirname(os.path.realpath(resolved))
+                prefix = (
+                    os.path.dirname(exe_dir)
+                    if os.path.basename(exe_dir) == "bin"
+                    else exe_dir
+                )
+                if prefix != self._project_root and _path_is_under(
+                    prefix, self._project_root
+                ):
+                    self._toolchain_prefix = prefix
+        except Exception:
+            # Never the thing that fails a build (exit-0 contract): an
+            # underivable prefix just means nothing is excluded.
+            self._toolchain_prefix = None
+        return self._toolchain_prefix
+
+    def _tracked_entry(self, path, *, resolved=False):
+        """:func:`_hashed_stat_entry` under this instance's hashing policy.
+
+        ``resolved`` says ``path`` is already a ``realpath`` and the
+        containment tests can skip re-walking it.
+        """
+        return _hashed_stat_entry(
+            path,
+            project_root=self._project_root,
+            resolved=resolved,
+            toolchain_prefix=self._get_toolchain_prefix(),
+        )
 
     def _fingerprint_filelist_sources(self, filelist_path):
         """Per-entry (line, size, mtime_ns, sha) stamps for the generated run.f.
@@ -885,7 +1006,7 @@ class VlogSim:
                     # The raw line, not the resolved path, stays entry[0]:
                     # it is what run.f contains and what the compile key
                     # hashes.
-                    stamps.append([line] + self._hashed_stat_entry(resolved)[1:])
+                    stamps.append([line] + self._tracked_entry(resolved)[1:])
                 else:
                     stamps.append([line, None, None, None])
         return stamps
@@ -1107,7 +1228,9 @@ class VlogSim:
                 resolved = os.path.realpath(os.path.join(compile_cwd, prerequisite))
                 if resolved != filelist_path:
                     seen.setdefault(resolved, None)
-        return [self._hashed_stat_entry(path) for path in sorted(seen)]
+        # Already realpath'd above, and again on the validating side out of
+        # the stamp: the containment tests can take them as canonical.
+        return [self._tracked_entry(path, resolved=True) for path in sorted(seen)]
 
     def _deps_unchanged(self, test_name, deps):
         """Have any of the stamp's recorded inputs changed on disk?
@@ -1116,7 +1239,15 @@ class VlogSim:
         the project root is decided by its content and one outside it (a
         toolchain header) by its stats — and a stamp written before #494,
         whose entries are 3 elements long, fails closed into one rebuild.
+
+        Every shape this version does not recognise answers False rather
+        than raising, all the way up to ``deps`` not being a list at all: a
+        mixed-version cluster (submit host upgraded, compute nodes not) can
+        hand an older node a container type it was never taught, and the
+        answer to that is a rebuild, not an exception out of a build job.
         """
+        if not isinstance(deps, list):
+            return False  # not a stamp this version wrote
         for entry in deps:
             if not isinstance(entry, list) or len(entry) != 4:
                 return False  # not a stamp this version wrote
@@ -1124,7 +1255,7 @@ class VlogSim:
                 # `os.stat` takes a file *descriptor* for an int, so a
                 # corrupt stamp must never reach it.
                 return False
-            if not _entry_matches(entry, self._hashed_stat_entry(entry[0])):
+            if not _entry_matches(entry, self._tracked_entry(entry[0], resolved=True)):
                 # The one question worth answering when a warm run
                 # unexpectedly recompiles.
                 log_event(
@@ -1204,7 +1335,9 @@ class VlogSim:
         current_inputs = dict(fingerprint)
         current_sources = current_inputs.pop("sources", None)
         if stored_inputs != current_inputs:
-            _log_stale_stamp_toolchain(stored_inputs, fingerprint, test_name=test_name)
+            _log_stale_stamp_toolchain(
+                stored_inputs, current_inputs, test_name=test_name
+            )
             return False
         if not _entry_lists_match(stored_sources, current_sources):
             return False
