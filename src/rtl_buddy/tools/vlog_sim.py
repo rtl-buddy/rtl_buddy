@@ -1184,9 +1184,9 @@ class VlogSim:
             assertion_flags=assertion_flags,
             plusdefines=plusdefines,
             is_verilator=is_verilator,
-            # The group is the OUTPUT the compile writes, normalized — that
-            # is the single-writer resource the pool must not hand to two
-            # workers at once (#369). For verilator/icarus the output lives
+            # The group is the OUTPUT the compile writes, canonicalized —
+            # that is the single-writer resource the pool must not hand to
+            # two workers at once (#369). For verilator/icarus the output lives
             # under the per-test compile dir, so every test is its own group
             # and they may all compile at once. For a family that honours
             # `builder-simv:`, two configs can name one executable — an
@@ -1198,10 +1198,16 @@ class VlogSim:
             # config's build (#496 review, twice). Grouping on the resolved
             # path serializes them; it does not make them share (each still
             # stamps and rebuilds in its own dir), and serializing is the
-            # whole fix. Resolved here, where `_shared_build_dir` is still
-            # unset, so this is always the UNSHARED output; the share-build
-            # branch below overrides the group with the shared dir.
-            group_dir=os.path.normpath(os.path.abspath(self._get_simv_path())),
+            # whole fix. `realpath`, not `normpath(abspath(...))`: two
+            # spellings can also meet at one file through a symlinked
+            # parent, which textual normalization cannot see — and it keeps
+            # the group consistent with the suite dir the head `resolve()`d
+            # (macOS's /tmp is itself a symlink). A nonexistent tail is
+            # normalized textually, so the output need not exist yet.
+            # Resolved here, where `_shared_build_dir` is still unset, so
+            # this is always the UNSHARED output; the share-build branch
+            # below overrides the group with the shared dir.
+            group_dir=os.path.realpath(self._get_simv_path()),
         )
         if not self.share_build:
             return plan

@@ -702,6 +702,13 @@ def test_a_relative_simv_escaping_the_workspace_lands_in_one_group(
     inside_b = _sim("test_d", "sub/simv")
     assert inside_a.compile_group_dir() != inside_b.compile_group_dir()
 
+    # Two spellings can also meet at one file through a symlinked parent,
+    # which textual normalization cannot see: the group is the CANONICAL
+    # output (`realpath`), so an aliased pin and the real one serialize.
+    (tmp_path / "alias").symlink_to(tmp_path / "artefacts" / "shared")
+    via_link = _sim("test_e", str(tmp_path / "alias" / "simv"))
+    assert via_link.compile_group_dir() == meeting_point
+
 
 def test_verilator_ignores_an_absolute_builder_simv_for_grouping(tmp_path, monkeypatch):
     """Verilator's output comes from `--Mdir`, so nothing is pinned.
