@@ -5,6 +5,11 @@
 db="${RB_SHIM_DB:-$PWD/.rb_shim_jobs}"
 log="${RB_SHIM_LOG:-$db.log}"
 jobid=$(( 1000 + $( [ -f "$db" ] && wc -l < "$db" || echo 0 ) ))
+# The reservation flags below are consumed and discarded, so a test that
+# wants to assert one (e.g. the build job's scaled --cpus-per-task, #495)
+# needs the argv recorded before the loop eats it. Opt-in, one line per
+# submission, so the shim's default behaviour is unchanged.
+[ -n "${RB_SHIM_ARGV:-}" ] && printf '%s\n' "$*" >> "$RB_SHIM_ARGV"
 array="" ; wrap="" ; chdir="" ; script="" ; manifest=""
 args=("$@")
 i=0

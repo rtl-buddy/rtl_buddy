@@ -49,6 +49,10 @@ class BuildJobSpec:
     # Where the build job records its compile outcome (built/failed test
     # names); the head loads it at collect for compile-fail parity.
     result_json: Path | None = None
+    # Distinct builds the job compiles concurrently (#495). The head has
+    # already folded in the min() against how many configs it planned, so a
+    # backend may size the reservation by this number without re-capping it.
+    parallel: int = 1
 
 
 @dataclass

@@ -10,12 +10,15 @@ import pytest
 from rtl_buddy.config.dispatch import (
     DEFAULT_JOB_CPUS,
     DEFAULT_JOB_TIME,
+    DispatchCompileFile,
     DispatchConfigFile,
     DispatchResourcesFile,
     JobResources,
     RetryConfigFile,
     combine_for_in_job_compile,
+    compile_parallel,
     mem_to_bytes,
+    resolve_compile_resources,
     resolve_resources,
     time_to_seconds,
 )
@@ -451,3 +454,125 @@ def test_root_config_without_retry_block_leaves_it_off(minimal_project: Path):
     cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
     assert cfg.retry is None
     assert cfg.effective_retry().enabled is False
+
+
+# --------------------------------- #495: cfg-dispatch.compile.parallel
+
+
+def test_root_config_parses_compile_parallel(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text()
+        + "\n"
+        + "\n".join(
+            [
+                "cfg-dispatch:",
+                "  compile:",
+                "    cpus: 4",
+                "    mem: 16G",
+                '    time: "02:00:00"',
+                "    parallel: 3",
+            ]
+        )
+        + "\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.compile.parallel == 3
+    assert compile_parallel(cfg) == 3
+    # The reservation fields still layer exactly as they did.
+    assert resolve_compile_resources(cfg) == JobResources(
+        cpus=4, mem="16G", time="02:00:00"
+    )
+
+
+def test_compile_parallel_defaults_to_one_with_and_without_the_block():
+    absent = DispatchConfigFile().initialise()
+    assert absent.compile is None
+    assert compile_parallel(absent) == 1
+
+    present = DispatchConfigFile(compile=DispatchCompileFile(cpus=8)).initialise()
+    assert present.compile.parallel == 1
+    assert compile_parallel(present) == 1
+
+
+def test_compile_parallel_survives_the_mem_and_time_validators():
+    """`parallel` rides through `_validated()`, which rebuilds the block."""
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(mem=16, time="02:00:00", parallel=4)
+    ).initialise()
+    assert (cfg.compile.mem, cfg.compile.time, cfg.compile.parallel) == (
+        "16",
+        "02:00:00",
+        4,
+    )
+
+
+def test_compile_block_still_rejects_the_sexagesimal_time_trap():
+    with pytest.raises(FatalRtlBuddyError, match="parsed as an integer"):
+        DispatchConfigFile(
+            compile=DispatchCompileFile(time=14400, parallel=2)
+        ).initialise()
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_compile_parallel_below_one_rejected(value):
+    with pytest.raises(FatalRtlBuddyError, match="compile parallel must be >= 1"):
+        DispatchConfigFile(compile=DispatchCompileFile(parallel=value)).initialise()
+
+
+def test_parallel_never_reaches_the_resolved_compile_reservation():
+    """Only the build job's own spec is scaled — never this (#495).
+
+    The same resolved reservation sizes an in-job compile's sim job and the
+    right-sizing compile floor, and both of those are one serial build.
+    """
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(cpus=4, mem="16G", time="02:00:00", parallel=4)
+    ).initialise()
+    resolved = resolve_compile_resources(cfg)
+    assert (resolved.cpus, resolved.mem, resolved.time) == (4, "16G", "02:00:00")
+
+    combined, _ = combine_for_in_job_compile(
+        JobResources(cpus=1, mem="2G", time="00:20:00"), resolved
+    )
+    assert combined.cpus == 4  # not 16: one in-job compile is one build
+
+
+def test_parallel_is_not_a_field_of_a_cfg_dispatch_resources_block(
+    minimal_project: Path,
+):
+    """`parallel` on `resources:` is an unknown key, not a knob (#495).
+
+    ``resources:`` is the per-job reservation shape tests.yaml reuses at
+    testbench and test level, where "compile N builds at once" means
+    nothing. serde drops unknown keys, so the field simply does not exist —
+    and the compile concurrency stays at its default.
+    """
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text()
+        + "\ncfg-dispatch:\n  resources:\n    cpus: 2\n    parallel: 4\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.resources.cpus == 2
+    assert not hasattr(cfg.resources, "parallel")
+    assert compile_parallel(cfg) == 1
+    assert not hasattr(resolve_resources(cfg), "parallel")
+
+
+def test_parallel_is_not_a_field_of_a_test_level_resources_block(
+    minimal_project: Path,
+):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: basic\n",
+            "  - name: basic\n    resources: { cpus: 2, parallel: 4 }\n",
+        )
+    )
+    basic = SuiteConfig(path=str(tests_yaml)).get_tests("basic")[0]
+    assert basic.resources.cpus == 2
+    assert not hasattr(basic.resources, "parallel")
+    resolved = resolve_resources(DispatchConfigFile(), basic)
+    assert resolved.cpus == 2
+    assert not hasattr(resolved, "parallel")

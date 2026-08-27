@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 # Fake Verilator for CI dispatch tests: emit a simv that prints a PASS log.
+#
+# With $RB_SHIM_SPANS set it also records one `<mdir-basename> <start> <end>`
+# line per invocation, so a test can prove the build job really compiled two
+# distinct builds at the same time (#495). The sleep is what makes the spans
+# wide enough to be compared at all: a serial build job produces disjoint
+# spans, a parallel one overlapping ones. Off by default, so every other
+# shim test keeps the instantaneous fake it had.
+#
+# With $RB_SHIM_HANG set it records its own pid in $RB_SHIM_PIDS and then
+# sleeps that many seconds before doing any work, so a test can cancel the
+# build job mid-compile and check that this process died with it rather than
+# being orphaned (#495). Also off by default.
 mdir=""
 prev=""
 for a in "$@"; do
@@ -7,10 +19,26 @@ for a in "$@"; do
   prev="$a"
 done
 [ -z "$mdir" ] && { echo "no --Mdir" >&2; exit 1; }
+if [ -n "${RB_SHIM_HANG:-}" ]; then
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "$$" >> "$RB_SHIM_PIDS"
+  sleep "$RB_SHIM_HANG"
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "survived $$" >> "$RB_SHIM_PIDS"
+fi
+start=""
+if [ -n "${RB_SHIM_SPANS:-}" ]; then
+  start=$(python3 -c 'import time; print("%.6f" % time.time())')
+  sleep 0.5
+fi
 mkdir -p "$mdir"
 cat > "$mdir/simv" <<'SIMV'
 #!/usr/bin/env bash
 echo "PASS (nwrn=  0)"
 SIMV
 chmod +x "$mdir/simv"
+if [ -n "$start" ]; then
+  end=$(python3 -c 'import time; print("%.6f" % time.time())')
+  # One append per line: concurrent writers of a short line to an O_APPEND
+  # fd do not interleave.
+  echo "$(basename "$mdir") $start $end" >> "$RB_SHIM_SPANS"
+fi
 echo "fake-verilator: wrote $mdir/simv"

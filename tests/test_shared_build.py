@@ -235,6 +235,88 @@ def test_share_build_reuses_simv_across_tests_with_identical_inputs(
     cmd = calls[0]["cmd"]
     assert cmd[cmd.index("--Mdir") + 1] == str(Path(sim_a._get_simv_path()).parent)
 
+    # The compile record the build envelope and the results overlay are
+    # built from (#495). The producer is here, on the sim instance: a real
+    # compile times itself, a reuse costs 0.0 and says so, and both name
+    # the builder that (would have) run.
+    assert sim_a.last_compile["reused"] is False
+    # A real number, timed around the builder (0.0 here only because the
+    # fake builder returns instantly); the reuse below is 0.0 by decision.
+    assert isinstance(sim_a.last_compile["duration_sec"], float)
+    assert sim_a.last_compile["builder"] == "verilator"
+    assert sim_b.last_compile == {
+        "duration_sec": 0.0,
+        "builder": "verilator",
+        "reused": True,
+    }
+
+
+def test_an_unshareable_builder_also_records_its_reuse(tmp_path, monkeypatch):
+    """The per-test-stamp reuse path stamps the same record (#495).
+
+    A builder that cannot share still short-circuits on its own stamp, and
+    that branch is the one a dispatched re-run of an unchanged suite takes
+    for every test — the reuse it reports is what stops right-sizing from
+    reading "nothing compiled" as "the compile is fast".
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert first.compile() == 0
+    assert first.last_compile["reused"] is False
+    assert first.last_compile["builder"] == "questa"
+
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert second.compile() == 0
+    assert len(calls) == 1  # reused, not recompiled
+    assert second.last_compile == {
+        "duration_sec": 0.0,
+        "builder": "questa",
+        "reused": True,
+    }
+
+
+def test_a_probe_records_the_builder_without_claiming_a_compile(tmp_path, monkeypatch):
+    """Probing settles the builder; it does not compile anything (#495).
+
+    So a config that never reaches a builder still names one, with the
+    duration and the reuse flag left unknown rather than guessed at 0.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.last_compile is None
+    sim.compile_group_dir()
+    assert sim.last_compile == {
+        "duration_sec": None,
+        "builder": "verilator",
+        "reused": None,
+    }
+
+
+def test_a_failed_compile_still_records_what_it_cost(tmp_path, monkeypatch):
+    """A failure is an observation too — the record is not gated on success.
+
+    A compile that failed after 14 minutes is exactly the number the build
+    job's reservation has to cover, so it counts as work that ran: the
+    record is stamped before the pass/fail branch.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [], returncode=1)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() != 0
+    assert sim.last_compile["builder"] == "verilator"
+    assert sim.last_compile["reused"] is False
+    assert sim.last_compile["duration_sec"] is not None
+
 
 def test_share_build_recompiles_when_plusdefines_differ(tmp_path, monkeypatch):
     _write_source(tmp_path)
@@ -526,6 +608,128 @@ def test_a_pinned_simv_overwritten_by_another_test_invalidates_the_stamp(
     # test_a must not inherit it.
     assert _sim("test_a").compile() == 0
     assert len(calls) == 3
+
+
+def test_configs_pinned_to_one_absolute_simv_land_in_one_group(tmp_path, monkeypatch):
+    """One executable, one group — even though the compile dirs differ.
+
+    An absolute `builder-simv:` cannot be shared, so each test keeps its own
+    compile work dir and its own stamp; what it cannot keep to itself is the
+    binary, which is the one path every test on that builder writes. Group
+    on the compile dirs and `compile.parallel > 1` runs two builders onto
+    one output (#496 review), so the pinned path is the grouping key. The
+    fix is serialization, not sharing: the second member still rebuilds.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+    pinned = str(tmp_path / "pinned" / "simv")
+
+    def _sim(name, simv):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=name,
+            exe="qrun",
+            family="questa",
+            simv=simv,
+        )
+
+    sim_a = _sim("test_a", pinned)
+    sim_b = _sim("test_b", pinned)
+    assert sim_a.compile_group_dir() == pinned
+    assert sim_b.compile_group_dir() == pinned
+
+    # A different pinned path is a different output, so it may compile at
+    # the same time — over-serializing a fleet is a real cost too.
+    other = _sim("test_c", str(tmp_path / "elsewhere" / "simv"))
+    assert other.compile_group_dir() != pinned
+
+    # A relative builder-simv resolves inside the test's own compile dir,
+    # which is already one writer per #369: still one group per test.
+    rel_a = _sim("test_d", "simv")
+    rel_b = _sim("test_e", "simv")
+    assert rel_a.compile_group_dir() != rel_b.compile_group_dir()
+
+    # The collision is not about sharing — `--no-share-build` writes the
+    # same pinned path — so the grouping does not depend on it either.
+    unshared = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_f",
+        exe="qrun",
+        family="questa",
+        simv=pinned,
+        share_build=False,
+    )
+    assert unshared.compile_group_dir() == pinned
+
+
+def test_a_relative_simv_escaping_the_workspace_lands_in_one_group(
+    tmp_path, monkeypatch
+):
+    """`builder-simv: ../shared/simv` collides exactly like an absolute pin.
+
+    A relative spelling is joined to each test's own compile dir, so with
+    enough `..` two tests' paths meet at one suite-level file — the same
+    single-output collision the absolute case has (#496 review), it just
+    spells the path differently. The group is therefore the NORMALIZED
+    resolved output, not the raw config value: syntactic absoluteness is a
+    sharing question, never the collision predicate.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    def _sim(name, simv):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=name,
+            exe="qrun",
+            family="questa",
+            simv=simv,
+        )
+
+    # artefacts/<test>/../shared/simv collapses to artefacts/shared/simv
+    # for every test in the suite: one file, one group.
+    sim_a = _sim("test_a", "../shared/simv")
+    sim_b = _sim("test_b", "../shared/simv")
+    meeting_point = sim_a.compile_group_dir()
+    assert ".." not in meeting_point
+    assert sim_b.compile_group_dir() == meeting_point
+
+    # A relative path that stays inside the workspace resolves per test.
+    inside_a = _sim("test_c", "sub/simv")
+    inside_b = _sim("test_d", "sub/simv")
+    assert inside_a.compile_group_dir() != inside_b.compile_group_dir()
+
+    # Two spellings can also meet at one file through a symlinked parent,
+    # which textual normalization cannot see: the group is the CANONICAL
+    # output (`realpath`), so an aliased pin and the real one serialize.
+    (tmp_path / "alias").symlink_to(tmp_path / "artefacts" / "shared")
+    via_link = _sim("test_e", str(tmp_path / "alias" / "simv"))
+    assert via_link.compile_group_dir() == meeting_point
+
+
+def test_verilator_ignores_an_absolute_builder_simv_for_grouping(tmp_path, monkeypatch):
+    """Verilator's output comes from `--Mdir`, so nothing is pinned.
+
+    The grouping predicate is the *same* one that declines sharing, and it
+    excuses verilator/icarus for the same reason: `builder-simv:` cannot
+    move their output, so two such configs write two build dirs and are two
+    groups. Grouping them together would serialize builds that never
+    collide.
+    """
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+    pinned = str(tmp_path / "pinned" / "simv")
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a", simv=pinned)
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", simv=pinned, pd={"WIDTH": 8}
+    )
+    assert sim_a.compile_group_dir() != pinned
+    assert sim_a.compile_group_dir() != sim_b.compile_group_dir()
+    assert vlog_sim_module.pinned_simv_path(DummyBuilderCfg(simv=pinned)) is None
 
 
 def test_share_build_supported_is_the_single_capability_source():
@@ -1217,3 +1421,122 @@ def test_a_stamp_predating_the_toolchain_entry_does_not_warn(
         assert reader.compile() == 0
     assert len(calls) == 2  # rebuilt, as it must be
     assert "rebuilding rather than reusing it" not in caplog.text
+
+
+# --- the compile-key probe (#495) ------------------------------------------
+#
+# The dispatched build job groups its configs by the directory each compile
+# will write, then compiles the groups concurrently. The grouping value has
+# to be the one the compile itself uses, so these pin that it is derived in
+# exactly one place and asked for without compiling.
+
+
+def test_compile_group_dir_is_the_shared_build_dir_when_sharing_applies(
+    tmp_path, monkeypatch
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    group_dir = sim.compile_group_dir()
+
+    # Probing compiles nothing...
+    assert calls == []
+    # ...and names the shared dir the compile then writes into.
+    assert Path(group_dir).parent == tmp_path / "artefacts" / ".shared-builds"
+    assert sim.compile() == 0
+    assert Path(sim._get_simv_path()).parent == Path(group_dir)
+
+
+def test_compile_group_dir_is_the_test_dir_when_sharing_is_unsupported(
+    tmp_path, monkeypatch
+):
+    """An unshared build's output stays in its per-test workspace: own group.
+
+    #369 already guarantees a single writer there, which is what makes it
+    safe for every unshared config to compile at once. The group is the
+    resolved OUTPUT path (not the directory), so a `builder-simv:` that
+    lands two tests on one file serializes them — see the pinned/escaping
+    tests above.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qverilog", family="questa"
+    )
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="qverilog", family="questa"
+    )
+    assert sim_a.compile_group_dir().startswith(sim_a._get_compile_work_dir())
+    assert sim_a.compile_group_dir() != sim_b.compile_group_dir()
+
+
+def test_compile_group_dir_without_share_build_is_the_test_dir(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    assert sim.compile_group_dir().startswith(sim._get_compile_work_dir())
+
+
+def test_probe_and_compile_derive_the_plan_once(tmp_path, monkeypatch):
+    """Probe then compile is ONE derivation, not two.
+
+    Two derivations is how the group key and the build dir drift apart, and
+    the symptom of that drift is two builders in one directory. Counting
+    ``_write_filelist`` counts derivations: it is the plan's side effect.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    writes = []
+    real_write = sim._write_filelist
+    monkeypatch.setattr(
+        sim, "_write_filelist", lambda path: (writes.append(path), real_write(path))[1]
+    )
+
+    group_dir = sim.compile_group_dir()
+    assert len(writes) == 1
+    assert sim.compile() == 0
+    assert len(writes) == 1, "compile() re-derived the plan the probe already made"
+    assert len(calls) == 1
+    assert Path(sim._get_simv_path()).parent == Path(group_dir)
+
+
+def test_a_second_compile_re_derives_the_plan(tmp_path, monkeypatch):
+    """The cached plan serves one compile, not the instance's lifetime.
+
+    A source edited between two compiles has to invalidate the stamp, and
+    it can only do that if the second compile re-stats its inputs.
+    """
+    src = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    assert len(calls) == 1
+
+    src.write_text("module top; wire w; endmodule\n")
+    os.utime(src, (0, 0))
+    assert sim.compile() == 0
+    assert len(calls) == 2, "the second compile reused a stale fingerprint"
+
+
+def test_identical_inputs_group_together_and_plusdefines_split_them(
+    tmp_path, monkeypatch
+):
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+
+    same_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    same_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    other = _make_sim(tmp_path, monkeypatch, test_name="test_c", pd={"WIDTH": 8})
+
+    assert same_a.compile_group_dir() == same_b.compile_group_dir()
+    assert other.compile_group_dir() != same_a.compile_group_dir()

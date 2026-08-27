@@ -69,6 +69,28 @@ def test_extra_sim_timeout_is_forwarded_to_a_build_job():
     assert _flag_value(argv, "--extra-sim-timeout") == "900"
 
 
+def test_compile_parallel_is_forwarded_to_a_build_job():
+    """The head's concurrency decision reaches the job through argv (#495)."""
+    argv = build_job_argv(_build_spec(parallel=4))
+    assert _flag_value(argv, "--parallel") == "4"
+    assert argv.index("--parallel") > argv.index("_build-job")
+
+
+def test_compile_parallel_is_absent_at_the_default():
+    """At 1 the argv must be byte-identical to a pre-#495 head's.
+
+    Every project that never asks for concurrency keeps today's job script,
+    so a plan/manifest diff stays quiet on upgrade.
+    """
+    assert "--parallel" not in build_job_argv(_build_spec())
+    assert "--parallel" not in build_job_argv(_build_spec(parallel=1))
+
+
+def test_compile_parallel_is_not_a_sim_job_flag():
+    """A sim job compiles one thing at most; the flag has no meaning there."""
+    assert "--parallel" not in sim_job_argv(_test_spec())
+
+
 def test_builder_globals_precede_the_subcommand():
     """Globals must sit before ``_test-job`` or Typer rejects them."""
     argv = sim_job_argv(

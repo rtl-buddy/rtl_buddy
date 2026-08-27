@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from rtl_buddy.config.dispatch import RightsizeConfigFile
 from rtl_buddy.dispatch.rightsize import (
+    RightsizeFinding,
+    analyze_build_reservation,
     analyze_suite_reservations,
     format_mem,
     format_time,
@@ -669,3 +671,478 @@ def test_the_omission_is_logged_rather_than_left_silent(caplog):
     assert "memory advice omitted" in caplog.text
     assert "fast" in caplog.text
     assert "slow" not in caplog.text
+
+
+# ------------------------------------ the build job's own row (#495)
+
+
+class _Res:
+    """Stand-in for the resolved per-build JobResources."""
+
+    def __init__(self, cpus):
+        self.cpus = cpus
+
+
+# What the build envelope says the job did. The default is one real
+# compile, because that is the case every reduce/raise assertion below is
+# about; the "nothing compiled" cases pass their own.
+_COMPILED = {"records": 2, "compiled": 1, "compiled_sec": 55.0}
+
+
+def _build_advice(
+    telemetry,
+    *,
+    parallel=1,
+    cpus=4,
+    cfg=_CFG,
+    root="root_config.yaml",
+    compile_work=_COMPILED,
+    accounting_interval_s=None,
+):
+    return analyze_build_reservation(
+        telemetry,
+        _Res(cpus),
+        parallel,
+        cfg,
+        "verif/blk/tests.yaml",
+        root,
+        compile_work=compile_work,
+        accounting_interval_s=accounting_interval_s,
+    )
+
+
+def test_no_build_telemetry_means_no_build_advice():
+    """local-parallel reports none, and a verdict from nothing is a guess."""
+    assert _build_advice(None) == []
+    assert _build_advice({}) == []
+
+
+def test_an_over_reserved_build_job_gets_a_compile_phase_row():
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200}
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.phase == "compile"
+    assert time_a.test == "(build job)"
+    assert time_a.direction == "reduce"
+    assert time_a.reserved == "02:00:00"
+    # 60s x 1.5 is under the 5-minute floor.
+    assert time_a.suggested == "00:05:00"
+    assert time_a.edit_hint == {
+        "path": "cfg-dispatch.compile.time",
+        "file": "root_config.yaml",
+    }
+
+
+def test_a_timed_out_build_job_raises_its_limit():
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 7200, "timelimit_s": 7200}
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+    assert time_a.suggested == "03:00:00"
+    assert time_a.states == ["TIMEOUT"]
+
+
+def test_a_serial_build_job_gets_per_build_cpus_advice():
+    """One slot, so the whole-job ratio IS the per-build one."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,  # 0.25 efficiency
+        },
+        parallel=1,
+        cpus=8,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    # ceil(8 x 0.25 x 1.5) = 3, and with one build in flight that is the
+    # per-build figure — no division, nothing to decompose.
+    assert cpus_a.reserved == "8"
+    assert cpus_a.suggested == "3"
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.compile.cpus"
+    assert "the build job reserved 8." in cpus_a.edit_hint["note"]
+    # The `parallel` lever has nothing to say to a job that is already at 1.
+    assert "compile.parallel" not in cpus_a.edit_hint["note"]
+
+
+def test_a_parallel_build_job_withholds_its_cpus_advice(caplog):
+    """Whole-job utilization does not decompose into per-build cpus (#496).
+
+    With N slots the ratio also carries the tail — builds of unequal length,
+    and a plan with fewer distinct compile keys than slots, both leave
+    reserved cpus idle while the longest compile saturates the ones it has.
+    Dividing by `parallel` would then advise shrinking exactly the cpus that
+    compile needed. sacct accounts the job, not the thread group, so nothing
+    here can tell the causes apart: the row is withheld, and time advice —
+    wall clock, which N concurrent builds do not inflate — is untouched.
+    """
+    import logging
+
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "alloc_cpus": 16,
+        "total_cpu_s": 200,  # 0.125 efficiency
+    }
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(telemetry, parallel=4, cpus=4)
+
+    assert [f for f in findings if f.resource == "cpus"] == []
+    assert [f.resource for f in findings] == ["time"]
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "parallel-utilization-ambiguous"
+    assert record.rtl_fields["parallel"] == 4
+    assert record.rtl_fields["efficiency"] == 0.125
+    assert "no cpus advice for the build job" in caplog.text
+    assert "cfg-dispatch.compile.parallel" in caplog.text
+
+
+def test_a_single_build_is_advised_even_at_a_wide_parallel():
+    """One build cannot have a tail, so its ratio is still its own.
+
+    `parallel` caps at the planned config count, so the head cannot really
+    produce this pair — but the gate is on the builds that ran, not on the
+    flag, and it is the builds that decide whether the ratio decomposes.
+    """
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,  # 0.25 efficiency
+        },
+        parallel=4,
+        cpus=8,
+        compile_work={"records": 1, "compiled": 1, "compiled_sec": 90.0},
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    # ceil(8 x 0.25 x 1.5) = 3 -> not divided again by the four idle slots.
+    assert cpus_a.suggested == "3"
+    # ...but 3 > the 2 already configured, so the note explains the lever
+    # that is actually oversized here.
+    assert "compile.parallel 4" in cpus_a.edit_hint["note"]
+
+
+def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
+    """AllocCPUS is what the site gave, not what the YAML asked for.
+
+    Under CR_CPU with threads-per-core, or core-granularity rounding, or a
+    site `sbatch-args` override, sacct reports more cpus than the head
+    requested. Dividing that by `parallel` names a per-build figure the
+    project never wrote — and it can round the current value up far enough
+    that the suggestion looks like a reduction from a number that is
+    already there, which is advice that never retires. The decomposition
+    is therefore stated from the resolved `cfg-dispatch.compile.cpus`, with
+    the allocated figure named separately so `sacct` still reconciles.
+    """
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,  # the site rounded 3 up to a whole node's core count
+            "total_cpu_s": 100,  # 0.125 efficiency
+        },
+        parallel=1,
+        cpus=3,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    note = cpus_a.edit_hint["note"]
+    assert "the build job reserved 3" not in note
+    assert "asked for 3 = 3 x compile.parallel 1" in note
+    assert "reported 8 allocated" in note
+    # 8 would have been the sacct-derived per-build figure.
+    assert "= 8 x" not in note
+    # The allocated figure is still what `squeue`/`sacct` shows.
+    assert cpus_a.reserved == "8"
+
+
+def test_a_saturated_build_job_gets_no_cpus_advice(caplog):
+    """Efficiency only ever argues for fewer cpus, and only when it is low."""
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 200,
+                "alloc_cpus": 8,
+                "total_cpu_s": 760,  # 0.95 efficiency
+            },
+            parallel=1,
+        )
+    assert [f for f in findings if f.resource == "cpus"] == []
+    # Nothing was withheld: there was nothing to withhold. "No advice" and
+    # "advice withheld" stay different answers.
+    assert "build_advice_withheld" not in caplog.text
+
+
+def test_a_cpus_reduction_that_cannot_retire_is_dropped():
+    """Suggesting the reservation it already has is churn, not advice."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 2,
+            "total_cpu_s": 60,  # 0.3 efficiency, but 1 cpu per build already
+        },
+        parallel=1,
+        cpus=1,
+    )
+    assert [f for f in findings if f.resource == "cpus"] == []
+
+
+def test_build_cpus_fall_back_to_what_the_head_asked_for(caplog):
+    """A backend that reports usage but not the allocation still ratios."""
+    import logging
+
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "total_cpu_s": 100,
+    }
+    findings = _build_advice(telemetry, parallel=1, cpus=4)
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert cpus_a.reserved == "4"
+
+    # The fallback is the *scaled* reservation, which the withheld row is
+    # still measured against: at parallel 2 the head asked for 4 x 2, so the
+    # ratio is 100 / (100 x 8) and not 100 / (100 x 4). Drop the scaling and
+    # a job's efficiency doubles on paper.
+    with caplog.at_level(logging.INFO):
+        scaled = _build_advice(telemetry, parallel=2, cpus=4)
+    assert [f for f in scaled if f.resource == "cpus"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["efficiency"] == 0.125
+
+
+def test_a_build_job_never_gets_memory_advice():
+    """MaxRSS is sampled, and a too-small compile mem is an OOM kill."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 7200,
+            "req_mem_bytes": 8 * 2**30,
+            "max_rss_bytes": 2**20,
+        }
+    )
+    assert [f for f in findings if f.resource == "mem"] == []
+
+
+def test_build_advice_without_a_root_config_path_still_names_the_field():
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200}, root=None
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {"path": "cfg-dispatch.compile.time"}
+
+
+# --------------------- "nothing to compile" is not "compiled fast" (#495)
+
+_ALL_REUSED = {"records": 8, "compiled": 0, "compiled_sec": 0.0}
+# A job that short-circuited every build: seconds of wall clock, no cpu.
+_REUSE_RUN = {
+    "state": "COMPLETED",
+    "elapsed_s": 60,
+    "timelimit_s": 7200,
+    "alloc_cpus": 16,
+    "total_cpu_s": 4,
+}
+
+
+def test_a_build_job_that_compiled_nothing_gets_no_reduce_advice():
+    """The re-run trap: every build reused its stamp, so the job is seconds
+    long against a 2 h limit. Reading that as "the compile is fast" advises
+    a 5-minute limit, and the next real RTL change TIMEOUTs against it —
+    which afterok turns into a cancelled sim fan-out."""
+    assert _build_advice(_REUSE_RUN, compile_work=_ALL_REUSED) == []
+
+
+def test_an_envelope_that_cannot_say_yields_no_reduce_advice():
+    """A build job that left no envelope, or one written before the records
+    existed (a mixed-version fleet), is *unknown*, not "nothing ran"."""
+    assert _build_advice(_REUSE_RUN, compile_work=None) == []
+    assert _build_advice(_REUSE_RUN, compile_work={"records": 0, "compiled": 0}) == []
+
+
+def test_a_timed_out_build_job_raises_even_with_nothing_recorded():
+    """A kill is a fact about the reservation, not a measurement of work."""
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 7200, "timelimit_s": 7200},
+        compile_work=_ALL_REUSED,
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+
+
+def test_a_build_job_shorter_than_one_accounting_interval_gets_no_reduce():
+    """TotalCPU is accumulated from usage samples, so a job that finished
+    inside one interval was measured at most once — the same reason memory
+    advice is withheld for a short test (#365)."""
+    assert _build_advice(_REUSE_RUN, accounting_interval_s=300) == []
+    # ...and the same job, once the interval says it was sampled, advises.
+    assert _build_advice(_REUSE_RUN, accounting_interval_s=30) != []
+
+
+def test_withheld_build_advice_is_logged_rather_than_left_silent(caplog):
+    """ "No advice" and "advice withheld" are different answers."""
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work=_ALL_REUSED)
+
+    assert "no reduce advice for the build job" in caplog.text
+    assert "reused their stamps" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, accounting_interval_s=300)
+
+    assert "accounting interval" in caplog.text
+
+
+def test_withheld_build_advice_carries_the_seconds_actually_spent_compiling(caplog):
+    """The machine payload says build time next to the job's wall clock.
+
+    "The job spent 55s of its 2 h reservation actually compiling" is the
+    number a reader wants beside the sim durations, and sacct cannot
+    produce it — only the envelope's per-build records can. It rides the
+    same event as `builds`/`compiled` and keeps their three-state rule:
+    absent, not zero, when there was no envelope to measure.
+    """
+    import logging
+
+    def _withheld():
+        return [
+            r
+            for r in caplog.records
+            if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+        ]
+
+    with caplog.at_level(logging.INFO):
+        _build_advice(
+            _REUSE_RUN,
+            compile_work={"records": 4, "compiled": 1, "compiled_sec": 55.0},
+            accounting_interval_s=300,
+        )
+    (record,) = _withheld()
+    assert record.rtl_fields["builds"] == 4
+    assert record.rtl_fields["compiled_sec"] == 55.0
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work=None)
+    (record,) = _withheld()
+    assert "compiled_sec" not in record.rtl_fields
+
+
+def test_an_unknown_build_job_is_not_reported_as_one_that_reused_stamps(caplog):
+    """Could not tell is its own reason, and the line has to say so.
+
+    A build job OOM-killed or TIMEOUTed leaves an sacct row but no
+    envelope, which is exactly the diagnostic case worth reading back.
+    Rendering it as "none of its None build(s) actually compiled" both
+    lies about the cause and prints a null."""
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work=None)
+
+    assert "no reduce advice for the build job" in caplog.text
+    assert "no record of what it built" in caplog.text
+    assert "reused their stamps" not in caplog.text
+    assert "None build(s)" not in caplog.text
+
+    # A pre-#495 envelope reads the same way: records, not compiles, is
+    # what separates "nothing to do" from "nothing recorded".
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _build_advice(_REUSE_RUN, compile_work={"records": 0, "compiled": 0})
+
+    assert "no record of what it built" in caplog.text
+    assert "0 build(s)" not in caplog.text
+
+
+# ------------------------------------------ the advice table's own notes
+
+
+def _rendered_metadata(findings, monkeypatch):
+    """The metadata lines `_render_reservation_advice` puts under the table."""
+    import rtl_buddy.rtl_buddy as rbmod
+
+    captured = {}
+    monkeypatch.setattr(rbmod, "render_summary", lambda **kw: captured.update(kw))
+    rbmod.RtlBuddy._render_reservation_advice(object(), findings)
+    return captured["metadata"]
+
+
+def _finding(phase, resource="time"):
+    return RightsizeFinding(
+        suite="verif/blk/tests.yaml",
+        test="(build job)" if phase == "compile" else "t_basic",
+        resource=resource,
+        reserved="02:00:00",
+        peak="00:01:00",
+        utilization=0.01,
+        direction="reduce",
+        suggested="00:05:00",
+        runs=1,
+        reg_level=None,
+        phase=phase,
+    )
+
+
+def test_the_compile_sim_note_only_appears_under_a_compile_sim_row(monkeypatch):
+    """A note explaining a row the table does not contain is noise.
+
+    The build job's row is `compile`, not `compile+sim`: it is a job that
+    compiled and nothing else, so the "the peak spans both phases" line
+    would be describing something absent.
+    """
+    build_only = _rendered_metadata([_finding("compile")], monkeypatch)
+    assert not any("spans both phases" in line for line in build_only)
+    assert any(
+        "the compile row is the suite's build job" in line for line in build_only
+    )
+
+    in_job = _rendered_metadata([_finding("compile+sim")], monkeypatch)
+    assert any("spans both phases" in line for line in in_job)
+    assert not any("build job" in line for line in in_job)
+
+    sim_only = _rendered_metadata([_finding("sim")], monkeypatch)
+    assert len(sim_only) == 1
+
+
+def test_the_per_build_clause_only_appears_under_a_build_cpus_row(monkeypatch):
+    """The cpus row is gated independently of the build-job row itself.
+
+    A `reduce` on cpus needs low efficiency *and* evidence that a compile
+    ran, so a build job routinely produces a `time` row and no `cpus` row.
+    Explaining that the cpus suggestion is per-build under a table with no
+    cpus column sends the reader looking for a number that is not there.
+    """
+    time_only = _rendered_metadata([_finding("compile")], monkeypatch)
+    assert any("the compile row is the suite's build job" in line for line in time_only)
+    assert not any("per-build" in line for line in time_only)
+
+    with_cpus = _rendered_metadata(
+        [_finding("compile"), _finding("compile", resource="cpus")], monkeypatch
+    )
+    assert any("cpus suggestion is per-build" in line for line in with_cpus)

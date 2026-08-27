@@ -13,12 +13,16 @@ shared filesystem can produce collectable results.
 """
 
 import json
+import logging
 import os
 from importlib.metadata import version
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event
 from .test_results import TestResults
+
+logger = logging.getLogger(__name__)
 
 RESULT_JSON_FILETYPE = "test_result"
 RESULT_JSON_SCHEMA_VERSION = 1
@@ -63,16 +67,99 @@ def attach_telemetry_json(path, telemetry: dict):
     Called by the collecting head after the job finished (the job cannot
     know its own final accounting numbers). Atomic like the writer. A
     missing envelope is the caller's DispatchFail case — not raised here.
+
+    Envelope-shape-agnostic on purpose: a *build* envelope gets its sacct
+    row folded in by this very function (#495), which is why nothing here
+    validates the filetype.
+    """
+
+    def _fold(raw):
+        raw["telemetry"] = telemetry
+        return True
+
+    _rewrite_envelope(path, _fold)
+
+
+def attach_result_key(path, key: str, value):
+    """Fold one key into a result envelope's nested ``result.results`` dict.
+
+    The sibling of :func:`attach_telemetry_json` for facts that belong to
+    the *run's result* rather than to the envelope around it — the
+    per-test compile record the build job observed (#495). ``result`` is
+    where `rb graph results` reads a run's payload from, so a top-level
+    key would travel with the artifact and still be invisible to the
+    overlay.
+
+    Best-effort and atomic, exactly like the telemetry attach: a missing,
+    unreadable or differently-shaped envelope is a no-op, never a raise —
+    a collected run must not be re-scored because an annotation failed.
+    """
+
+    def _fold(raw):
+        result = raw.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get("results"), dict):
+            return False
+        result["results"][key] = value
+        return True
+
+    _rewrite_envelope(path, _fold)
+
+
+def _write_envelope_best_effort(path, raw, *, what):
+    """Atomically write ``raw`` to ``path``; report failure, never raise.
+
+    The write half of every *annotating* rewrite in this module. The read
+    half was always guarded, but the serialize-and-write half was not, and
+    the collector now performs one of these per collected row: a full or
+    read-only shared filesystem (ENOSPC/EROFS/EACCES) at collect time would
+    otherwise turn a fully finished fleet into a traceback and lose every
+    result it had already gathered. A value the caller could not serialise
+    (``TypeError``) is the same class of problem — the annotation is
+    advisory, the run's verdict is not. Returns whether the write landed;
+    on failure the envelope is left exactly as it was found.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:
+        log_event(
+            logger,
+            logging.WARNING,
+            "result_io.annotate_failed",
+            path=str(path),
+            what=what,
+            error=str(e),
+        )
+        # A half-written sibling would be read by nothing (only `path` is
+        # ever loaded), but leaving one behind on a full filesystem is
+        # gratuitous.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _rewrite_envelope(path, fold):
+    """Read-modify-write one JSON envelope through a temp file + replace.
+
+    ``fold`` mutates the parsed envelope in place and returns whether the
+    write is still wanted; False abandons it (the envelope was not the
+    shape the caller expected). Unreadable, missing and non-object files
+    are no-ops, and so is a write that fails — every caller here is
+    annotating a finished run, and an annotation must never be the thing
+    that raises.
     """
     path = Path(path)
     try:
         raw = json.loads(path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return
-    raw["telemetry"] = telemetry
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
-    os.replace(tmp, path)
+    if not isinstance(raw, dict) or not fold(raw):
+        return
+    _write_envelope_best_effort(path, raw, what="annotation")
 
 
 def refresh_result_json(path, results):
@@ -87,8 +174,14 @@ def refresh_result_json(path, results):
 
     Only ``result`` is replaced; ``run_token``, ``run_id`` and the
     filetype header are the identity of the envelope and are preserved.
-    Atomic like the writer, and silent on a missing or unreadable
-    envelope — this is a best-effort side-car, never a run's verdict.
+
+    Degrades, never raises. A missing or unreadable envelope, and a write
+    that cannot land (ENOSPC/EROFS on a shared filesystem, an
+    unserialisable value), both return ``None`` and leave the file exactly
+    as found; only the returned ``path`` says the refresh happened. The
+    envelope is a best-effort side-car and this runs after the run's
+    verdict is decided — losing the coverage paths is a worse artefact,
+    not a failed run.
     """
     path = Path(path)
     try:
@@ -96,9 +189,8 @@ def refresh_result_json(path, results):
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
     raw["result"] = results.to_json_dict()
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
-    os.replace(tmp, path)
+    if not _write_envelope_best_effort(path, raw, what="coverage refresh"):
+        return None
     return path
 
 
@@ -151,7 +243,7 @@ def load_result_json(path, *, expected_run_token=None):
     return raw
 
 
-def write_build_result_json(path, *, built, failed):
+def write_build_result_json(path, *, built, failed, builds=None):
     """Atomically write a build job's compile outcome to ``path``.
 
     ``built``/``failed`` are lists of expanded test names whose shared
@@ -160,6 +252,16 @@ def write_build_result_json(path, *, built, failed):
     with the in-process path) instead of the sim job's downstream
     DispatchFail. Best-effort on the head — a missing/unreadable file just
     means no compile-fail annotation.
+
+    ``builds`` is the optional per-config compile record (#495), in plan
+    order: ``{test, builder, duration_sec, reused, group}``. It is
+    *additive* and the schema version deliberately does not move — an old
+    head reading a new envelope ignores the key and keeps its
+    compile-fail parity, and a new head reading an old one sees an empty
+    list. The key is written whenever a caller passes records — including
+    at ``parallel: 1``, where a real build job still reports one record
+    per planned config — and omitted only when a caller passes none (the
+    telemetry-drop retry in ``do_cmd_build_job``, and tests).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +272,8 @@ def write_build_result_json(path, *, built, failed):
         "built": list(built),
         "failed": list(failed),
     }
+    if builds is not None:
+        envelope["builds"] = [dict(entry) for entry in builds]
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(envelope, ensure_ascii=True, indent=2) + "\n")
     os.replace(tmp, path)
@@ -179,10 +283,14 @@ def write_build_result_json(path, *, built, failed):
 def load_build_result_json(path):
     """Load a build-result file, or ``None`` if absent/unusable.
 
-    Returns ``{"built": [...], "failed": [...]}``. Unlike
+    Returns ``{"built": [...], "failed": [...], "builds": [...]}``. Unlike
     :func:`load_result_json` this never raises: the annotation it feeds is
     advisory, so a build job that died before writing simply yields no
     compile-fail mapping.
+
+    ``builds`` is the per-config compile record (#495) and is empty for an
+    envelope written before it existed — the key is additive, so a mixed
+    version fleet degrades to today's behaviour instead of failing.
     """
     path = Path(path)
     try:
@@ -198,4 +306,7 @@ def load_build_result_json(path):
     return {
         "built": list(raw.get("built") or []),
         "failed": list(raw.get("failed") or []),
+        "builds": [
+            entry for entry in (raw.get("builds") or []) if isinstance(entry, dict)
+        ],
     }

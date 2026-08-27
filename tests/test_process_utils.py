@@ -167,6 +167,77 @@ def test_run_managed_process_works_from_worker_thread(monkeypatch):
     assert result["value"].returncode == 0
 
 
+def test_sweeper_kills_a_process_started_from_a_worker_thread(tmp_path):
+    """The registry is the main thread's only handle on a worker's child (#495).
+
+    A worker thread installs no signal handler (``signal.signal`` is
+    main-thread-only) and the child is in its own session, so a signal aimed
+    at this process group never reaches it. Without the sweeper a cancelled
+    parallel build job dies and leaves its compilers running.
+    """
+    import threading
+
+    out_path = tmp_path / "out.log"
+    started = threading.Event()
+    result: dict = {}
+
+    def runner() -> None:
+        with open(out_path, "w") as out_fp:
+            try:
+                started.set()
+                result["value"] = process_utils.run_managed_process(
+                    ["sleep", "30"], stdout=out_fp, stderr=out_fp
+                )
+            except Exception as exc:  # pragma: no cover - failure path
+                result["error"] = exc
+
+    t = threading.Thread(target=runner)
+    t.start()
+    assert started.wait(timeout=5.0)
+    # The registration happens right after Popen, which is a moment after the
+    # event above; poll rather than sleep a fixed amount.
+    deadline = time.monotonic() + 5.0
+    while not process_utils._live_processes and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert process_utils._live_processes
+
+    start = time.perf_counter()
+    assert process_utils.terminate_live_managed_processes() == 1
+    t.join(timeout=10.0)
+    elapsed = time.perf_counter() - start
+
+    assert not t.is_alive()
+    assert "error" not in result, result.get("error")
+    assert result["value"].returncode != 0  # signalled, not a clean exit
+    assert elapsed < 9.0  # nowhere near the 30s sleep
+    assert process_utils._live_processes == {}
+
+
+def test_sweeper_is_a_no_op_for_an_already_exited_process(monkeypatch):
+    """An exited process is skipped, not signalled, and never counted."""
+    proc = FakeProcess()
+    proc.completed = True
+    signals_sent = []
+    monkeypatch.setattr(
+        process_utils.os, "killpg", lambda pid, sig: signals_sent.append((pid, sig))
+    )
+    monkeypatch.setattr(process_utils, "_live_processes", {0: proc})
+
+    assert process_utils.terminate_live_managed_processes() == 0
+    assert signals_sent == []
+
+
+def test_registry_is_empty_after_a_normal_run(tmp_path):
+    """Registration is scoped to the call, on every exit path."""
+    out_path = tmp_path / "out.log"
+    with open(out_path, "w") as out_fp:
+        result = process_utils.run_managed_process(
+            ["true"], stdout=out_fp, stderr=out_fp
+        )
+    assert result.returncode == 0
+    assert process_utils._live_processes == {}
+
+
 def test_timeout_pauser_true_lets_process_finish(tmp_path):
     out_path = tmp_path / "out.log"
     with open(out_path, "w") as out_fp:

@@ -6,11 +6,13 @@
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 import typer
@@ -59,6 +61,7 @@ from .logging_utils import (
     render_summary,
     setup_logging,
 )
+from .process_utils import terminate_live_managed_processes
 from .runner.cdc_runner import CdcRunner
 from .runner.lint_runner import LintRunner
 from .runner.cdc_results import CdcSkipResults
@@ -68,7 +71,9 @@ from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
 from .config.dispatch import (
+    JobResources,
     combine_for_in_job_compile,
+    compile_parallel,
     resolve_compile_resources,
     resolve_resources,
 )
@@ -87,8 +92,12 @@ from .dispatch.plan import (
 )
 from .dispatch.progress import group_job_ids
 from .dispatch.retry import backoff_delay, classify_missing_result
-from .dispatch.rightsize import analyze_suite_reservations
+from .dispatch.rightsize import (
+    analyze_build_reservation,
+    analyze_suite_reservations,
+)
 from .runner.result_io import (
+    attach_result_key,
     attach_telemetry_json,
     load_build_result_json,
     load_result_json,
@@ -195,6 +204,39 @@ def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
     if manifest:
         lines.append(f"  from:   {manifest}")
     return lines
+
+
+def _summarize_compile_work(build_entries) -> dict:
+    """How much real compiling a build envelope's ``builds`` list describes.
+
+    ``{"records": n, "compiled": n, "compiled_sec": float}`` (#495). A
+    record counts as *compiled* on ``reused is False`` and nothing else:
+    the three states of that field are the whole answer — ``True`` is a
+    stamp short-circuit, ``None`` is a config that never reached a builder,
+    and only ``False`` is a builder that actually ran. Duration is a
+    measurement, not the predicate: a fast compile is still a compile.
+    This is the one thing that separates a build job with nothing to do
+    from one that compiled quickly, which sacct alone cannot see. Tolerant
+    of a foreign or hand-edited envelope: a non-numeric duration simply
+    contributes nothing to the total.
+    """
+    records = 0
+    compiled = 0
+    compiled_sec = 0.0
+    for entry in build_entries:
+        records += 1
+        if entry.get("reused") is not False:
+            continue
+        compiled += 1
+        duration = entry.get("duration_sec")
+        # bool is an int in Python; a flag is not a time.
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            compiled_sec += float(duration)
+    return {
+        "records": records,
+        "compiled": compiled,
+        "compiled_sec": round(compiled_sec, 2),
+    }
 
 
 class RtlBuddy:
@@ -1446,6 +1488,7 @@ class RtlBuddy:
                 suite_config_path=str(Path(ctx.primary_config).resolve()),
                 reg_level=reg_level,
                 backend=dispatch_backend,
+                state=state,
             )
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
@@ -1616,6 +1659,7 @@ class RtlBuddy:
                 ),
                 suite_config_path=str(Path(ctx.primary_config).resolve()),
                 backend=dispatch_backend,
+                state=state,
             )
             if not self.machine:
                 self._render_test_summary(
@@ -1956,6 +2000,14 @@ class RtlBuddy:
                 help="path to write the build outcome (built/failed test names)",
             ),
         ] = None,
+        parallel: Annotated[
+            int,
+            typer.Option(
+                "--parallel",
+                help="compile up to N distinct builds concurrently "
+                "(grouped by compile key)",
+            ),
+        ] = 1,
     ):
         """
         internal: compile a suite's runnable tests on a compute node (#351)
@@ -1968,11 +2020,28 @@ class RtlBuddy:
         run (a test with no shared build just recompiles in its own sim
         job). Exit code is always 0 unless the setup itself is fatal.
 
+        Two loop shapes, one program. A job that can only run one build at
+        a time (``--parallel 1``, or a plan with one config) streams
+        PRE → COMPILE per config, which is what a preproc hook that
+        regenerates a suite-level input has always been able to rely on.
+        Above that, every PRE runs first and the distinct builds compile
+        concurrently — which asks of preproc hooks exactly what the sim
+        fan-out already asks, that one config's hook not mutate another
+        config's inputs.
+
         With ``--result-json`` (how dispatch always invokes it) the job
         logs beside that envelope instead of the head's
         ``<suite>/rtl_buddy.log``; run by hand without it there is no head
         to collide with, so it falls back to the suite log (#437).
         """
+        if parallel < 1:
+            # Rejected before anything is entered or written: a job allowed
+            # zero concurrent builds would compile nothing, and a fatal here
+            # costs the fan-out nothing (no compile has succeeded yet).
+            raise FatalRtlBuddyError(
+                f"--parallel must be >= 1 (got {parallel}); a build job "
+                "allowed zero concurrent builds would compile nothing."
+            )
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2000,6 +2069,7 @@ class RtlBuddy:
             reg_level=reg_level,
             start_level=start_level,
             plan=plan,
+            parallel=parallel,
         )
 
         if plan is not None:
@@ -2023,8 +2093,15 @@ class RtlBuddy:
                 )
             )
 
-        built, failed = [], []
-        for cfg in configs:
+        def _prepare_config(index, cfg):
+            """Construct, PRE and probe one config.
+
+            Returns ``(outcome row, group dir, member)``: either a terminal
+            outcome row (and no member), or a member for the group its
+            compile will write into. Shared by both loop shapes below, so
+            the streaming path and the batched one cannot disagree about
+            what PRE did or how a failure is reported.
+            """
             runner = TestRunner(
                 name=self.name + "/build-job",
                 root_cfg=self.root_cfg,
@@ -2036,28 +2113,333 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 share_build=share_build,
             )
-            res = runner.run()
-            if isinstance(res, EarlyStopResults):
-                built.append(cfg.get_name())
+            try:
+                res = runner.prepare()
+                group_dir = None
+                if res is None:
+                    group_dir, res = runner.compile_group_dir()
+            except Exception as exc:  # noqa: BLE001 - see exit-0 contract
+                # The exit-0 contract covers this phase too, and the probe
+                # made that matter: pulling the compile-flag assembly ahead
+                # of the builder moved fatals like SystemCSim's missing
+                # `cfg-systemc` out of a protected worker and onto the main
+                # thread. One config's broken setup must not cancel the
+                # afterok fan-out for the seven that were fine — the config
+                # is reported failed and its own sim job says why.
+                return (
+                    (index, cfg.get_name(), False, str(exc), runner, None),
+                    None,
+                    None,
+                )
+            if res is not None:
+                # A setup or filelist failure never reaches a builder, so it
+                # is reported exactly as the serial loop reported it: failed,
+                # and the job still exits 0.
+                return (
+                    (index, cfg.get_name(), False, None, runner, group_dir),
+                    None,
+                    None,
+                )
+            return None, group_dir, (index, cfg.get_name(), runner)
+
+        def _compile_group(group):
+            """Compile one group's configs serially; rows for the caller."""
+            group_dir, members = group
+            rows = []
+            for index, name, runner in members:
+                try:
+                    res = runner.compile_prepared()
+                except Exception as exc:  # noqa: BLE001 - see exit-0 contract
+                    # A worker exception must never escape: an unhandled one
+                    # takes the job's exit status with it, and a build job
+                    # that exits non-zero makes Slurm cancel every afterok
+                    # sim job behind it. The group's remaining members still
+                    # get their attempt — a crashed config says nothing
+                    # about its siblings.
+                    rows.append((index, name, False, str(exc), runner, group_dir))
+                    continue
+                rows.append(
+                    (
+                        index,
+                        name,
+                        isinstance(res, EarlyStopResults),
+                        None,
+                        runner,
+                        group_dir,
+                    )
+                )
+            return rows
+
+        # ---- serial phase: construct, PRE, and probe the compile key.
+        #
+        # PRE stays on the main thread whatever --parallel says. Hook
+        # execution is process-global-serial by declared contract (one
+        # sys.modules registration slot and a process-wide redirect_stdout,
+        # see hooks.py), and arbitrary preproc code may write suite-level
+        # files that two configs would then race on. It is also the phase
+        # that makes the key knowable at all: a preproc script may mutate
+        # test_cfg, so the compile key exists only after pre() ran, on the
+        # sim instance that saw the mutation.
+        #
+        # Outcome rows are (plan index, test name, built?, worker error,
+        # runner, group dir) so both the envelope and the WARNINGs can be
+        # replayed in plan order below — a pool that reported in completion
+        # order would make two identical runs produce different logs. The
+        # runner rides along because the compile record it observed
+        # (duration/builder/reused) is only readable off the instance that
+        # ran the compile (#495).
+        #
+        # `streaming` is the default job, and it is the pre-#495 program
+        # exactly: PRE → COMPILE per config, one config at a time. Batching
+        # every PRE ahead of every compile is a semantic change for the
+        # documented generator pattern — a preproc hook that rewrites a
+        # suite-level generated input would, batched, clobber an earlier
+        # config's input before that config compiled, and the earlier
+        # config's probed fingerprint would no longer describe what its
+        # builder consumed. A job that can only ever run one build at a time
+        # buys nothing from batching, so it does not pay that (#496 review).
+        # `parallel > 1` opts into the same assumption the sim fan-out
+        # already makes — every `rb _test-job` re-runs its own pre()
+        # concurrently across nodes — and docs/known-issues.md says so.
+        streaming = min(parallel, len(configs)) <= 1
+        outcomes = []
+        groups = {}
+        for index, cfg in enumerate(configs):
+            row, group_dir, member = _prepare_config(index, cfg)
+            if row is not None:
+                outcomes.append(row)
+                continue
+            # Group by the directory the compile will WRITE, not by the
+            # config: two configs with the same compile key share one build
+            # dir, and two builders in one directory is #369. Members of a
+            # group run serially, and the second short-circuits on the
+            # first's stamp. First-seen group order preserves plan order.
+            #
+            # This assumes what a plan already promises: test names in it are
+            # unique. Two configs answering to one name share a per-test
+            # `run.f` whatever the grouping does, because the serial phase
+            # writes every filelist before any compile reads one — grouping
+            # cannot repair that, only the sweep hook that emitted the
+            # duplicate can.
+            groups.setdefault(group_dir, []).append(member)
+            if streaming:
+                # Compile it now, before the next config's hook runs. The
+                # group still records the membership so the telemetry
+                # (`groups`, the envelope's per-build `group`) reads the
+                # same in both shapes; a same-key sibling later in the plan
+                # simply short-circuits on the stamp this compile leaves,
+                # which is what the serial loop always did.
+                outcomes.extend(_compile_group((group_dir, [member])))
+
+        # ---- parallel phase: one worker per distinct build.
+        pool_size = max(1, min(parallel, len(groups)))
+        if pool_size > 1 or parallel > pool_size:
+            # Liveness on a CI console, which shows INFO only under -v: a
+            # build job that sits silent for 20 minutes is indistinguishable
+            # from a hung one, and this line is what says how many compiles
+            # that silence is covering.
+            #
+            # The second half of the condition is the over-reservation case
+            # (#495): the head scaled the job's cpus by `parallel`, but the
+            # plan collapsed to fewer distinct compile keys than that, so
+            # part of the reservation can never be used. It is not an error
+            # — `parallel` is a per-suite budget and a suite that reuses one
+            # build is the normal shape of a re-run — so it stays INFO on
+            # the same event rather than becoming a warning; without it the
+            # only record of the mismatch is `build_job.done` in the job
+            # log, which nothing prints at default verbosity.
+            log_console_event(
+                logger,
+                logging.INFO,
+                "build_job.pool_configured",
+                groups=len(groups),
+                parallel=pool_size,
+                parallel_requested=parallel,
+            )
+
+        # Nothing left to do in the streaming shape: every group was compiled
+        # as it was prepared.
+        if not streaming:
+            if pool_size > 1:
+                # Threads, not processes: the work is a subprocess wait, and
+                # the prepared TestRunners (with their hook-mutated configs)
+                # would not survive a fork/spawn boundary.
+                #
+                # Cancelling this shape needs a handler the streaming one
+                # does not (#496 review). A worker thread's
+                # run_managed_process installs no signal handler —
+                # signal.signal only works on the main thread — and each
+                # compiler runs in its own session (start_new_session), so a
+                # SIGTERM aimed at this job's process group reaches the job
+                # and nothing it spawned. Left alone, `local-parallel`'s
+                # cancel_all (Ctrl-C, or --max-wait) would kill the job and
+                # orphan every in-flight Verilation on the node. So while the
+                # pool runs, the main thread owns SIGINT/SIGTERM and sweeps
+                # the live compilers by hand; the workers' communicate()
+                # calls then return promptly and the pool's exit does not
+                # hang. Slurm still kills the whole job-tree cgroup on its
+                # own — this makes the build job clean up after itself, which
+                # is what a backend with no cgroup requires. The streaming
+                # shape needs none of it: there run_managed_process is on the
+                # main thread and installs its own forwarding handlers.
+                #
+                # The handler convention is run_managed_process's, exactly:
+                # chain to the previous handler, then KeyboardInterrupt for
+                # SIGINT and SystemExit(128+signum) otherwise. It does no
+                # logging — a handler runs between bytecodes and the logging
+                # lock may already be held by a worker.
+                previous_handlers = {}
+
+                def _sweep_compilers_and_reraise(signum, frame):
+                    terminate_live_managed_processes()
+                    previous = previous_handlers.get(signum)
+                    if callable(previous):
+                        previous(signum, frame)
+                    if signum == signal.SIGINT:
+                        raise KeyboardInterrupt
+                    raise SystemExit(128 + signum)
+
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        previous_handlers[signum] = signal.getsignal(signum)
+                        signal.signal(signum, _sweep_compilers_and_reraise)
+                    except ValueError:
+                        # Only reachable if this command is ever driven off
+                        # the main thread, and the exit-0 contract outranks
+                        # the cleanup: an escaping ValueError here would fail
+                        # the build job and cancel the afterok fan-out for
+                        # compiles that had not even started.
+                        previous_handlers.pop(signum, None)
+                try:
+                    with ThreadPoolExecutor(max_workers=pool_size) as pool:
+                        for rows in pool.map(_compile_group, list(groups.items())):
+                            outcomes.extend(rows)
+                finally:
+                    # Restored on every exit, including the re-raise above:
+                    # the envelope-writing tail below runs on the main thread
+                    # with no pool to protect, and leaving the handler armed
+                    # would have it sweep processes it does not own.
+                    for signum, handler in previous_handlers.items():
+                        signal.signal(signum, handler)
             else:
-                failed.append(cfg.get_name())
+                # `parallel` exceeded the group count: one group, but the
+                # plan held more than one config, so the batched shape was
+                # already chosen above.
+                for group in groups.items():
+                    outcomes.extend(_compile_group(group))
+
+        built, failed, builds = [], [], []
+        for _, name, ok, worker_error, runner, group_dir in sorted(
+            outcomes, key=lambda row: row[0]
+        ):
+            # Plan order, and one row per planned config whatever happened to
+            # it — a config that never reached a builder still names the
+            # builder it would have used, so a gap in the envelope means "the
+            # build job never saw this test", not "it compiled instantly".
+            record = runner.last_compile or {}
+            builds.append(
+                {
+                    "test": name,
+                    # The runner's own resolved builder when no compile plan
+                    # was ever derived (a config whose PRE failed): the
+                    # builder is settled once the sim exists, and naming it
+                    # is the difference between "never compiled" and "no idea
+                    # what would have compiled it".
+                    "builder": record.get("builder")
+                    or getattr(runner, "builder_name", None),
+                    "duration_sec": record.get("duration_sec"),
+                    "reused": record.get("reused"),
+                    # Suite-relative, not absolute and not a basename: the
+                    # suite prefix would pin the compute node's mount into
+                    # an artifact the head reads, and a basename collides —
+                    # every unshared build's output is literally `simv`, so
+                    # unrelated concurrent builds would record one `group`
+                    # and a consumer would merge their timings (#496
+                    # review). Relative to the suite the value is bijective
+                    # with the output path: equal means one single-writer
+                    # output (a shared dir, or one pinned executable),
+                    # distinct means two.
+                    "group": (
+                        os.path.relpath(group_dir, suite_dir) if group_dir else None
+                    ),
+                }
+            )
+            if ok:
+                built.append(name)
+                continue
+            failed.append(name)
+            if worker_error is not None:
                 log_event(
                     logger,
                     logging.WARNING,
-                    "build_job.compile_failed",
-                    test=cfg.get_name(),
+                    "build_job.compile_worker_error",
+                    test=name,
+                    error=worker_error,
                 )
+            log_event(
+                logger,
+                logging.WARNING,
+                "build_job.compile_failed",
+                test=name,
+            )
         log_event(
             logger,
             logging.INFO,
             "build_job.done",
             built=len(built),
             failed=len(failed),
+            # Both numbers, because they answer different questions. The
+            # budget the head reserved CPUs for is `parallel_requested`;
+            # what the job could actually use, once the plan collapsed to
+            # its distinct builds, is `parallel`. A reservation that looks
+            # over-provisioned in the right-sizing report is explained by
+            # the gap between them, so neither can stand in for the other.
+            parallel=pool_size,
+            parallel_requested=parallel,
+            groups=len(groups),
         )
         if result_json_path is not None:
             # Persist the outcome so the head can map a compile failure to a
             # CompileFail row (parity with the in-process path).
-            write_build_result_json(result_json_path, built=built, failed=failed)
+            try:
+                write_build_result_json(
+                    result_json_path, built=built, failed=failed, builds=builds
+                )
+            except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
+                # The compile records are additive telemetry; built/failed is
+                # the load-bearing half (it is what maps a compile failure to
+                # a CompileFail row). Rather than let an unserialisable record
+                # cost the head that mapping — and the fan-out its exit
+                # status — drop the telemetry and write the envelope that
+                # always existed.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "build_job.build_records_failed",
+                    error=str(exc),
+                )
+                try:
+                    write_build_result_json(
+                        result_json_path, built=built, failed=failed
+                    )
+                except Exception as exc2:  # noqa: BLE001 - never fatal here
+                    # The retry can fail for the reason the first write did
+                    # (ENOSPC, EROFS, a permission change) and nothing above
+                    # catches a bare exception: run() handles only click
+                    # exits, FatalRtlBuddyError and FilelistError, so an
+                    # escape here exits the build job non-zero and afterok
+                    # cancels the whole sim fan-out — the 2026-08-19 ECP CI
+                    # failure the guard above exists to prevent. Losing the
+                    # envelope costs the head its compile-failure mapping;
+                    # each affected sim job then recompiles and reports the
+                    # failure itself, which is a worse report, not a lost run.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.result_json_failed",
+                        path=str(result_json_path),
+                        error=str(exc2),
+                    )
         if self.machine:
             # Reporting only, so it is not allowed to change the exit status
             # below. A build job that exits non-zero makes the scheduler cancel
@@ -2182,6 +2564,15 @@ class RtlBuddy:
             # so a known-failing test can live in a suite/regression.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
+        compile_record = test_runner.last_compile
+        if compile_record is not None:
+            # Same key the dispatch path folds in from the build envelope
+            # (#495), so `rb graph results` reads one shape whether the
+            # compile happened in a build job or right here. Recorded before
+            # the envelope is written — this is the only chance; the sim
+            # instance goes out of scope with the runner.
+            for res in results:
+                res.results["compile"] = dict(compile_record)
         self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
 
@@ -2659,6 +3050,7 @@ class RtlBuddy:
                 reg_level=reg_level,
                 start_level=start_level,
                 plan_path=plan_path,
+                planned=len(entries),
             )
         else:
             build_handle = None
@@ -2897,14 +3289,52 @@ class RtlBuddy:
         reg_level,
         start_level,
         plan_path,
+        planned,
     ):
-        """Submit the suite's compile as a Slurm build job (compute node)."""
+        """Submit the suite's compile as a Slurm build job (compute node).
+
+        ``planned`` is how many configs the plan holds. It caps the
+        configured ``cfg-dispatch.compile.parallel``: a suite with two
+        planned configs cannot keep four build slots busy, and reserving
+        cpus for slots that will idle is the failure mode the scaling below
+        would otherwise introduce. Planned configs, not distinct compile
+        keys — the head cannot know the keys without writing filelists on
+        the submit host, which is the build job's job (#458), so the cap is
+        an upper bound on the concurrency, never a promise of it.
+        """
         dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
         dispatch_root.mkdir(parents=True, exist_ok=True)
+        parallel = max(1, min(compile_parallel(dispatch_cfg), planned))
+        resources = resolve_compile_resources(dispatch_cfg)
+        if parallel > 1:
+            # Scale ONLY this job's reservation, and only here: the very
+            # same resolved compile resources size an in-job compile's sim
+            # reservation and the right-sizing compile floor, where one
+            # compile is still one serial build. A fresh JobResources, so
+            # scaling cannot reach those callers through a shared object.
+            resources = JobResources(
+                cpus=resources.cpus * parallel,
+                # mem/time are NOT scaled: N concurrent Verilations need
+                # roughly N times the memory but the same wall clock as the
+                # longest one, and guessing either for a project is worse
+                # than making it size cfg-dispatch.compile deliberately.
+                mem=resources.mem,
+                time=resources.time,
+            )
+            # Deliberately unbounded above: the only ceiling that matters is
+            # the widest node in the target partition, and the head is a
+            # login node whose own cpu_count says nothing about it. A guessed
+            # threshold would fire on correct configs on a fat-node cluster
+            # and stay silent on a thin one, so an oversized `parallel` is
+            # caught where it is real — sbatch rejects the submission and
+            # SlurmDispatchBackend.submit_build raises. Sizing `parallel`
+            # against the partition is a docs obligation instead — see
+            # docs/concepts/dispatch.md and docs/known-issues.md.
         spec = BuildJobSpec(
             suite_dir=suite_dir,
             test_config_path=str(suite_cfg.get_path()),
-            resources=resolve_compile_resources(dispatch_cfg),
+            resources=resources,
+            parallel=parallel,
             reg_level=reg_level,
             start_level=start_level,
             builder_mode=self.rtl_builder_mode,
@@ -3113,6 +3543,20 @@ class RtlBuddy:
             else None
         )
         compile_failed = set(build_result["failed"]) if build_result else set()
+        # What the build job observed each config's compile to cost (#495),
+        # keyed by test so a sim row can carry its own compile back to the
+        # summary and the results overlay. Empty for an envelope written by
+        # a build job that predates the records.
+        build_entries = build_result["builds"] if build_result else []
+        compile_records = {
+            entry["test"]: {
+                "duration_sec": entry.get("duration_sec"),
+                "builder": entry.get("builder"),
+                "reused": entry.get("reused"),
+            }
+            for entry in build_entries
+            if entry.get("test")
+        }
         # Did this suite's build gate open? A build job that left no result
         # did not finish: every sim it gated was cancelled by `afterok` (or
         # skipped by the pool) and never started, so nothing in its
@@ -3131,7 +3575,42 @@ class RtlBuddy:
         # below walks; the first attempt's full fleet lives in
         # ``state["pending"]`` and is not what this pass collects (#405 review).
         run_token = state["run_token"] if pending else None
-        telemetry = backend.collect_telemetry([h for _, h in pending])
+        # The build handle joins the query on the first pass only. It costs
+        # nothing (Slurm's collect_telemetry is one `sacct --jobs a,b,c`) and
+        # the build job is guaranteed finished by then — the fleet-wide
+        # wait_all includes it. Later passes collect a resubmitted sim
+        # subset; the build job is never resubmitted, so re-querying it would
+        # buy a second identical row and a second identical write (#495).
+        query_handles = [h for _, h in pending]
+        if attempt == 0 and build_handle is not None:
+            query_handles = [build_handle, *query_handles]
+        telemetry = backend.collect_telemetry(query_handles)
+        if attempt == 0 and build_handle is not None:
+            build_tele = telemetry.get(build_handle.job_id)
+            if build_tele:
+                # (a) travels with the artifact, the way a sim job's does —
+                # attach_telemetry_json validates no filetype, so the build
+                # envelope takes the same top-level block; (b) stays in
+                # `state` for the compile-reservation advice, which is the
+                # only consumer that needs the build job's own numbers.
+                # Best-effort: a build job that died left no envelope, and
+                # that is already reported as a missing build result.
+                if build_handle.spec.result_json is not None:
+                    attach_telemetry_json(build_handle.spec.result_json, build_tele)
+                state["build_telemetry"] = build_tele
+            # What the job's wall clock actually covered. sacct cannot tell
+            # "nothing to compile" from "compiled fast", and a re-run of an
+            # unchanged suite is the first of those: every build
+            # short-circuits on its stamp, so a 2 h reservation shows
+            # seconds of elapsed and near-zero cpu time. Right-sizing needs
+            # to know that before it advises shrinking anything (#495).
+            # None (not a zeroed dict) when the build job left no envelope
+            # or wrote one predating the records — "unknown", not "nothing".
+            state["build_compile_work"] = (
+                _summarize_compile_work(build_entries)
+                if build_result is not None
+                else None
+            )
         for idx, handle in pending:
             tele = telemetry.get(handle.job_id)
             try:
@@ -3257,6 +3736,24 @@ class RtlBuddy:
                 # into the envelope so telemetry travels with the artifact.
                 results.results["telemetry"] = tele
                 attach_telemetry_json(handle.spec.result_json, tele)
+            compile_record = compile_records.get(handle.spec.test_name)
+            if compile_record is not None:
+                # The build job's own observation of this test's compile.
+                # The row already carries a head-side `builder` (what the
+                # head resolved before submitting); where the two disagree —
+                # a preproc hook that overrode the builder — the envelope
+                # wins, because it is what actually ran.
+                #
+                # Folded into `result.results`, not onto the envelope's top
+                # level: that nested dict is what `rb graph results` reads a
+                # run's payload from, so a top-level key would travel with
+                # the artifact and still be invisible to the overlay.
+                #
+                # A copy per row: one record backs every run_id of a test and
+                # every envelope written for it, and a shared dict is an
+                # aliasing invariant nothing here needs to hold.
+                results.results["compile"] = dict(compile_record)
+                attach_result_key(handle.spec.result_json, "compile", compile_record)
             suite_results[idx]["results"] = results
         return retryable
 
@@ -3283,8 +3780,15 @@ class RtlBuddy:
         suite_config_path=None,
         reg_level=None,
         backend=None,
+        state=None,
     ):
-        """Right-size one dispatched suite's rows into advice findings."""
+        """Right-size one dispatched suite's rows into advice findings.
+
+        ``state`` is the suite's dispatch state, carrying the build job's
+        own telemetry when collect saw any (#495) — the build job has no
+        ``suite_results`` row, so its reservation can only be judged from
+        there.
+        """
         rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
         if not rightsize_cfg.report:
             return []
@@ -3310,6 +3814,40 @@ class RtlBuddy:
                 backend.accounting_interval_s() if backend is not None else None
             ),
         )
+        build_telemetry = (state or {}).get("build_telemetry")
+        if build_telemetry:
+            # Keyed, not .get(): collect only stashes build telemetry when it
+            # had a build handle to query, so the two travel together and a
+            # missing handle here is a bug that must fail loud.
+            build_spec = state["build_handle"].spec
+            findings.extend(
+                analyze_build_reservation(
+                    build_telemetry,
+                    # The per-build reservation, NOT the scaled one the build
+                    # spec carries: the advice names
+                    # cfg-dispatch.compile.cpus, which is per-build.
+                    resolve_compile_resources(self.root_cfg.get_dispatch_cfg()),
+                    build_spec.parallel,
+                    rightsize_cfg,
+                    suite_display,
+                    # cfg-dispatch lives in root_config.yaml; getattr, not the
+                    # attribute, for the same reason the per-test analysis
+                    # uses it — advice runs after every job finished and must
+                    # never turn a completed run into an abort.
+                    getattr(self.root_cfg, "root_cfg_path", None),
+                    # Whether anything actually compiled: without it a re-run
+                    # whose builds all short-circuited on their stamps reads
+                    # as a fast compile and advises a limit the next real RTL
+                    # change times out against (#495).
+                    compile_work=state.get("build_compile_work"),
+                    # TotalCPU is accumulated from usage samples, so a build
+                    # job shorter than one interval was measured at most once
+                    # — the same reason memory advice is gated (#365).
+                    accounting_interval_s=(
+                        backend.accounting_interval_s() if backend is not None else None
+                    ),
+                )
+            )
         for finding in findings:
             fields = {k: v for k, v in finding.as_event().items() if k != "event"}
             log_event(logger, logging.INFO, "rightsize.advice", **fields)
@@ -3333,13 +3871,28 @@ class RtlBuddy:
         metadata = [
             "rtl-buddy suggests; apply by editing the named Field",
         ]
-        if any(f.phase != "sim" for f in findings):
+        if any(f.phase == "compile+sim" for f in findings):
             # Without this the numbers read as sim-only and a compile-sized
-            # reservation looks wildly over-reserved.
+            # reservation looks wildly over-reserved. Gated on the phase it
+            # describes: a table whose only non-sim row is the build job
+            # would otherwise explain a row it does not contain.
             metadata.append(
                 "compile+sim rows measure a job that also compiled (its "
                 "builder cannot share a build), so the peak spans both phases"
             )
+        compile_rows = [f for f in findings if f.phase == "compile"]
+        if compile_rows:
+            note = (
+                "the compile row is the suite's build job: one allocation "
+                "running up to cfg-dispatch.compile.parallel builds at once"
+            )
+            # The cpus row is gated independently (efficiency threshold, and
+            # a reduce needs evidence a compile ran), so a table whose only
+            # build-job row is `time` would otherwise carry a footnote
+            # explaining a column that is not there.
+            if any(f.resource == "cpus" for f in compile_rows):
+                note += ", so its cpus suggestion is per-build"
+            metadata.append(note)
         render_summary(
             title="Reservation Advice (reserved vs used)",
             columns=[
@@ -3637,6 +4190,7 @@ class RtlBuddy:
                         suite_config_path=str(Path(suite_cfg.get_path()).resolve()),
                         reg_level=reg_level,
                         backend=dispatch_backend,
+                        state=state,
                     )
                 )
                 reg_results.append(

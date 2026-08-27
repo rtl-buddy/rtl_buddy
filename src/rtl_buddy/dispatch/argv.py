@@ -81,6 +81,11 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
     """The ``rb _build-job`` invocation for one suite's shared compile."""
     argv = _rb_argv(spec)
     argv += ["_build-job", "-c", spec.test_config_path, "--share-build"]
+    if spec.parallel > 1:
+        # Omitted at the default: an argv byte-identical to a pre-#495
+        # head's keeps plan/manifest and job-script diffs quiet for every
+        # project that never asks for concurrency.
+        argv += ["--parallel", str(spec.parallel)]
     if spec.plan_path is not None:
         # Compile exactly the head's planned configs — no sweep re-run.
         argv += ["--plan", str(spec.plan_path)]

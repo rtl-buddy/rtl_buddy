@@ -1,7 +1,9 @@
+import itertools
 import os
 import signal
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from typing import IO, Callable
 
@@ -63,6 +65,89 @@ def terminate_process_group(
     except subprocess.TimeoutExpired:
         signal_process_group(proc, signal.SIGKILL)
         proc.wait()
+
+
+# ---- the live-process registry.
+#
+# Every process :func:`run_managed_process` starts is registered here for the
+# duration of the call, whatever thread started it. It exists for one caller
+# shape: a main thread that must take down tool processes it did not launch
+# itself, because worker threads launched them and ``signal.signal`` only
+# works on the main thread — so those workers installed no handler and their
+# children are in their own sessions (``start_new_session``), out of reach of
+# a signal aimed at this process group. The parallel build job (#495) is that
+# caller: cancel it (Ctrl-C, or the local-parallel pool's ``cancel_all``) and
+# without this the job dies while its Verilations keep burning the node.
+#
+# Keyed by a monotonic token rather than the pid, so a recycled pid or a
+# repeated Popen object can never make one entry evict another's, and both
+# halves are O(1) under one short-held lock.
+_live_processes: dict[int, subprocess.Popen] = {}
+_live_processes_lock = threading.Lock()
+_live_process_tokens = itertools.count()
+
+
+def _register_live_process(proc: subprocess.Popen) -> int:
+    token = next(_live_process_tokens)
+    with _live_processes_lock:
+        _live_processes[token] = proc
+    return token
+
+
+def _unregister_live_process(token: int) -> None:
+    with _live_processes_lock:
+        _live_processes.pop(token, None)
+
+
+def terminate_live_managed_processes(
+    *,
+    terminate_signal: int = signal.SIGTERM,
+    kill_timeout: float = DEFAULT_KILL_TIMEOUT,
+) -> int:
+    """Stop every process :func:`run_managed_process` currently owns.
+
+    A fleet-kill, so it is two-phase for the reason
+    :func:`signal_process_group` documents: signal everything first, then
+    reap on one shared deadline. Signalling and waiting per process would
+    make the grace period scale with the fleet and would leave everything
+    past an interruption point unsignalled — the orphans this exists to
+    prevent. Tolerates a process that is already gone (the owning thread may
+    be reaping it concurrently) and returns how many were signalled.
+    """
+    with _live_processes_lock:
+        victims = list(_live_processes.values())
+
+    # Phase 1 — signal every live group.
+    signalled = []
+    for proc in victims:
+        try:
+            if proc.poll() is not None:
+                continue
+            signal_process_group(proc, terminate_signal)
+        except Exception:  # noqa: BLE001 - a fleet-kill must not stop early
+            # Whatever one process does on the way out, the rest still have
+            # to be signalled: this is the last line of defence against an
+            # orphaned fleet.
+            continue
+        signalled.append(proc)
+
+    # Phase 2 — one grace period for the whole fleet, then SIGKILL the
+    # stragglers. The owning thread is inside ``communicate()`` on the same
+    # Popen, which is why every wait here is best-effort: whichever of the
+    # two reaps it first, the other simply reads the code back.
+    deadline = time.monotonic() + kill_timeout
+    for proc in signalled:
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            signal_process_group(proc, signal.SIGKILL)
+            try:
+                proc.wait()
+            except Exception:  # noqa: BLE001 - reaped elsewhere; nothing to do
+                pass
+        except Exception:  # noqa: BLE001 - see above
+            pass
+    return len(signalled)
 
 
 _TIMEOUT_PAUSER_POLL_SEC = 0.5
@@ -139,6 +224,11 @@ def run_managed_process(
         env=env,
         start_new_session=(os.name != "nt"),
     )
+    # Registered before anything else can fail, and released in the
+    # ``finally`` below whatever happens — including the worker-thread case,
+    # where the registry is the *only* way a cancelling main thread can
+    # reach this process (see the registry comment above).
+    live_token = _register_live_process(proc)
 
     previous_handlers = {}
 
@@ -204,6 +294,11 @@ def run_managed_process(
                 kill_timeout=kill_timeout,
             )
     finally:
+        # Unregistered first: this process is about to be terminated by its
+        # owner, so a concurrent sweeper has nothing left to do with it, and
+        # deregistering ahead of the termination keeps a hung terminate from
+        # leaving a dead entry in the registry.
+        _unregister_live_process(live_token)
         terminate_process_group(
             proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
         )

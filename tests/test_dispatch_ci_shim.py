@@ -29,6 +29,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _SHIMS = _REPO / "tests" / "dispatch_shims"
 _FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_project"
 _SWEEP_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_sweep_project"
+_PARALLEL_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_parallel_project"
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
@@ -36,13 +37,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run_regression(work_dir: Path, extra_args=()):
+def _run_regression(work_dir: Path, extra_args=(), fixture=_FIXTURE, extra_env=None):
     project = work_dir / "proj"
-    shutil.copytree(_FIXTURE, project)
+    shutil.copytree(fixture, project)
     env = dict(os.environ)
     env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
     env["RB_SHIM_DB"] = str(work_dir / "jobs.db")
     env["RB_SHIM_LOG"] = str(work_dir / "jobs.log")
+    env.update(extra_env or {})
     proc = subprocess.run(
         [
             sys.executable,
@@ -201,3 +203,110 @@ def test_shim_sweep_hook_runs_once_across_builds_and_arrays(tmp_path_factory):
     results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
     for name in ("wide_v0", "wide_v1", "wide_v2", "solo"):
         assert results.get(name) == "PASS", (name, results, diag)
+
+
+@pytest.fixture(scope="module")
+def parallel_shim_run(tmp_path_factory):
+    """One regression over the two-compile-key fixture, spans recorded.
+
+    Its own fixture directory and its own run: the ``shim_run`` above is
+    shared by assertions that would all change meaning if the project it
+    ran on grew a second compile key and a concurrency knob.
+    """
+    work = tmp_path_factory.mktemp("dispatch_parallel")
+    spans = work / "compile_spans.txt"
+    argv = work / "sbatch_argv.txt"
+    proc, envelope, project, diag = _run_regression(
+        work,
+        fixture=_PARALLEL_FIXTURE,
+        extra_env={"RB_SHIM_SPANS": str(spans), "RB_SHIM_ARGV": str(argv)},
+    )
+    return proc, envelope, project, diag, spans, argv
+
+
+def test_shim_parallel_build_job_compiles_two_distinct_builds_at_once(
+    parallel_shim_run,
+):
+    """The concurrency claim, end to end through the real backend (#495).
+
+    The shim ``sbatch`` runs each submission synchronously, so nothing
+    *between* Slurm jobs can overlap here — but the build job's compile pool
+    lives inside one ``--wrap`` invocation, so this is the one place the
+    whole path (config knob → scaled reservation → ``--parallel`` argv →
+    grouping by compile key → the pool) is observable at once.
+    """
+    proc, envelope, project, diag, spans, _argv = parallel_shim_run
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
+    assert results == {"alpha": "PASS", "beta": "PASS"}, diag
+
+    rows = [line.split() for line in spans.read_text().splitlines() if line.strip()]
+    # First span per build dir: the build job's. A sim job that had to
+    # recompile would append a later one, which is not what is being timed.
+    first = {}
+    for tag, start, end in rows:
+        first.setdefault(tag, (float(start), float(end)))
+    assert len(first) == 2, f"expected two distinct builds, got {first}\n{diag}"
+
+    (a_start, a_end), (b_start, b_end) = first.values()
+    overlap = min(a_end, b_end) - max(a_start, b_start)
+    assert overlap > 0, f"the two distinct builds did not overlap: {first}\n{diag}"
+
+
+def test_shim_parallel_build_job_reservation_is_scaled(parallel_shim_run):
+    """The build job asks for parallel x the per-build cpus, and says so.
+
+    The fixture reserves 1 cpu per job and no compile block of its own, so
+    a build job at ``parallel: 2`` is the one submission asking for 2 —
+    everything else on this run asks for 1.
+    """
+    proc, _envelope, _project, diag, _spans, argv = parallel_shim_run
+    assert proc.returncode == 0, diag
+
+    lines = [line for line in argv.read_text().splitlines() if line.strip()]
+    wrapped = [line for line in lines if "--wrap" in line]
+    assert len(wrapped) == 1, f"expected exactly one build job\n{lines}\n{diag}"
+    assert "--cpus-per-task=2" in wrapped[0], wrapped[0]
+    # And the job it wrapped was told the budget it is paying for.
+    assert "--parallel 2" in wrapped[0], wrapped[0]
+    # The sim array is untouched: scaling is the build job's alone.
+    arrays = [line for line in lines if "--array=" in line]
+    assert arrays and all("--cpus-per-task=1" in line for line in arrays), arrays
+
+
+def test_shim_build_job_envelope_gains_telemetry_and_compile_records(
+    parallel_shim_run,
+):
+    """The build job's own accounting reaches its artifact (#495).
+
+    The sacct shim already knows the wrap job's id, so this is the whole
+    round trip: build job writes `builds`, head collects the build handle's
+    sacct row, attaches it, and folds each compile back onto its sim.
+    """
+    proc, _envelope, project, diag, _spans, _argv = parallel_shim_run
+    assert proc.returncode == 0, diag
+
+    build_envelopes = list(
+        project.glob("verif/*/artefacts/.dispatch/build-result-*.json")
+    )
+    assert len(build_envelopes) == 1, f"{build_envelopes}\n{diag}"
+    raw = json.loads(build_envelopes[0].read_text())
+    assert raw["telemetry"]["state"] == "COMPLETED"
+    assert raw["telemetry"]["timelimit_s"] == 3600
+
+    by_test = {entry["test"]: entry for entry in raw["builds"]}
+    assert set(by_test) == {"alpha", "beta"}, raw["builds"]
+    for entry in by_test.values():
+        assert entry["builder"], entry
+        assert entry["duration_sec"] is not None, entry
+    # Two distinct compile keys in this fixture -> two distinct group dirs.
+    assert len({entry["group"] for entry in by_test.values()}) == 2, raw["builds"]
+
+    # And each sim envelope carries the compile the build job ran for it.
+    sim_envelopes = list(project.glob("verif/*/artefacts/*/dispatch/result-*.json"))
+    assert sim_envelopes, diag
+    for path in sim_envelopes:
+        compile_block = json.loads(path.read_text())["result"]["results"]["compile"]
+        assert compile_block["builder"], (path, compile_block)
+        assert compile_block["reused"] in (True, False), compile_block

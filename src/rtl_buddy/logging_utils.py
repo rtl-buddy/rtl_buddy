@@ -1,6 +1,7 @@
 import json
 import logging
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -246,10 +247,20 @@ def emit_console_text(
 
 @contextmanager
 def task_status(message: str, *, spinner: str = "dots"):
-    if _should_use_rich_console():
-        with get_stderr_console().status(message, spinner=spinner) as status:
-            yield status
-        return
+    """A spinner for a long phase, degrading to one plain line.
+
+    The spinner is a Rich ``Live``, and a console allows exactly one of
+    those at a time — a second raises ``LiveError``. Since #495 a build job
+    compiles distinct builds on worker threads, so the spinner is confined
+    to the main thread; a worker announces its phase the way a non-terminal
+    run already does. The check lives here rather than at the call sites so
+    every future threaded caller inherits it.
+    """
+    if threading.current_thread() is threading.main_thread():
+        if _should_use_rich_console():
+            with get_stderr_console().status(message, spinner=spinner) as status:
+                yield status
+            return
 
     emit_console_text(message)
     yield None
@@ -356,6 +367,48 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: compile failed in the dispatch build "
                 "job (its sim job will retry the compile and fail there)"
             )
+        case "build_job.pool_configured":
+            parallel = fields.get("parallel")
+            requested = fields.get("parallel_requested")
+            msg = (
+                f"Compiling {fields.get('groups')} distinct build(s), up to "
+                f"{parallel} at a time"
+            )
+            if isinstance(requested, int) and isinstance(parallel, int):
+                if requested > parallel:
+                    # The head reserved cpus for `requested` concurrent
+                    # builds; the suite has fewer distinct compile keys than
+                    # that, so the surplus is deliberate over-provisioning
+                    # and not a number to read off the right-sizing table.
+                    msg += (
+                        f" (cfg-dispatch.compile.parallel is {requested}, so "
+                        "the build job's cpus reservation is sized for "
+                        f"{requested} — effective parallelism here is "
+                        f"{parallel})"
+                    )
+            return msg
+        case "build_job.compile_worker_error":
+            return (
+                f"{fields.get('test')}: the build job's compile raised "
+                f"({fields.get('error')}) — counted as a compile failure so "
+                "the job still exits 0 and its afterok dependents run; the "
+                "test's own sim job will retry the compile"
+            )
+        case "build_job.build_records_failed":
+            return (
+                "build job: could not record per-compile telemetry in the "
+                f"build result ({fields.get('error')}) — the built/failed "
+                "outcome was written without it, so compile failures still "
+                "map correctly; only the compile durations are missing"
+            )
+        case "build_job.result_json_failed":
+            return (
+                "build job: could not write the build result "
+                f"{fields.get('path')} ({fields.get('error')}) — the job "
+                "still exits 0 so its afterok dependents run, but the head "
+                "cannot map a compile failure to its test; each affected "
+                "simulation job recompiles and reports the failure itself"
+            )
         case "build_job.machine_result_failed":
             return (
                 "build job: could not emit the machine-result envelope "
@@ -377,6 +430,50 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"{fields.get('test')}: compile failed in build job "
                 f"{fields.get('build_job')} — counting it as a compile failure"
+            )
+        case "rightsize.build_advice_withheld":
+            # INFO, but the fallback renderer would drop the reason — and the
+            # reason is the entire content of the event.
+            reason = fields.get("reason")
+            if reason == "undersampled":
+                why = (
+                    f"it ran for {fields.get('elapsed_s')}s, inside one "
+                    f"{fields.get('interval_s')}s accounting interval, so its "
+                    "cpu time was sampled at most once"
+                )
+            elif reason == "parallel-utilization-ambiguous":
+                # Narrower than the others: only the cpus row is withheld,
+                # and only because a whole-job ratio is not a per-build one
+                # once slots can idle in the tail.
+                return (
+                    f"{fields.get('suite')}: no cpus advice for the build "
+                    f"job: it ran up to {fields.get('parallel')} builds at "
+                    f"once at {fields.get('efficiency')} cpu efficiency, and "
+                    "an idle slot and an under-used compile look the same "
+                    "from outside — size cfg-dispatch.compile.parallel "
+                    "against the suite's distinct compile keys first"
+                )
+            elif reason == "no-build-records":
+                # Distinct from "nothing compiled": the job was accounted for
+                # (that is how we got here) but left no envelope to say what
+                # it did — the shape of a build job killed mid-compile.
+                why = (
+                    "it left no record of what it built, so its elapsed time "
+                    "cannot be read as the cost of a compile"
+                )
+            else:
+                why = (
+                    f"none of its {fields.get('builds')} build(s) actually "
+                    "compiled — they reused their stamps, so its elapsed time "
+                    "says nothing about what a real compile costs"
+                )
+            return f"{fields.get('suite')}: no reduce advice for the build job: {why}"
+        case "result_io.annotate_failed":
+            return (
+                f"could not write the {fields.get('what')} into "
+                f"{fields.get('path')} ({fields.get('error')}); the result "
+                "itself is unaffected — the envelope keeps the content it "
+                "already had"
             )
         case "rightsize.advice":
             return (
@@ -600,9 +697,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"queued and need cancelling by hand: {fields.get('error')}"
             )
         case "dispatch.build_submitted":
+            # `parallel` is only mentioned when it is doing something: at the
+            # default of 1 the line must read exactly as it did pre-#495.
+            parallel = fields.get("parallel") or 1
+            concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
             return (
                 f"Submitted shared-build job {fields.get('job_id')} for "
-                f"{fields.get('suite_dir')}"
+                f"{fields.get('suite_dir')}{concurrency}"
             )
         case "dispatch.submitted":
             gate = fields.get("dependency")

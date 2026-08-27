@@ -498,6 +498,73 @@ def test_submit_build_builds_argv(monkeypatch):
     assert "--share-build" in wrapped
     assert wrapped[wrapped.index("-l") + 1] == "1000"
     assert "_test-job" not in wrapped  # it's a build, not a sim
+    # Default concurrency leaves both the reservation and the argv as they
+    # were before #495.
+    assert "--parallel" not in wrapped
+
+
+def test_submit_build_reserves_the_head_scaled_cpus(monkeypatch):
+    """The backend submits what the head sized; it never re-scales (#495).
+
+    The head folded `cfg-dispatch.compile.parallel` into `resources.cpus`
+    (and capped it against the planned configs) before the spec got here,
+    so the backend's only job is to emit both numbers: the reservation the
+    job holds, and the concurrency it is allowed to spend it on.
+    """
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="901\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    spec = BuildJobSpec(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=16, mem="16G", time="02:00:00"),
+        parallel=4,
+    )
+    backend.submit_build(spec)
+
+    (argv,) = calls
+    assert "--cpus-per-task=16" in argv
+    # mem/time are NOT multiplied by the head, so they arrive as configured.
+    assert "--mem=16G" in argv and "--time=02:00:00" in argv
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--parallel") + 1] == "4"
+
+
+def test_build_submitted_event_records_the_concurrency(monkeypatch, caplog):
+    """cpus alone cannot explain a 16-CPU build job; the pair can (#495)."""
+    import logging
+
+    from rtl_buddy.dispatch.base import BuildJobSpec
+    from rtl_buddy.logging_utils import _human_message
+
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="902\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(
+            BuildJobSpec(
+                suite_dir="/proj/verif/blk",
+                test_config_path="/proj/verif/blk/tests.yaml",
+                resources=JobResources(cpus=16),
+                parallel=4,
+            )
+        )
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_submitted"
+    ]
+    fields = record.__dict__["rtl_fields"]
+    assert (fields["cpus"], fields["parallel"]) == (16, 4)
+    assert "4 builds at a time" in _human_message("dispatch.build_submitted", fields)
+    # ...and the default reads exactly as it did before the knob existed.
+    assert _human_message(
+        "dispatch.build_submitted", {"job_id": "902", "suite_dir": "s", "parallel": 1}
+    ) == ("Submitted shared-build job 902 for s")
 
 
 def test_submit_sim_with_dependency_adds_afterok(monkeypatch):

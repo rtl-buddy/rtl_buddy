@@ -18,8 +18,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _SHIMS = _REPO / "tests" / "dispatch_shims"
 _FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_project"
 _SWEEP_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_sweep_project"
+_PARALLEL_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_parallel_project"
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
@@ -189,3 +192,92 @@ def test_pool_runs_a_single_test_from_its_suite_dir(tmp_path_factory):
     assert list(project.glob("verif/blk/artefacts/.dispatch/build-*.log")) != [], diag
     # No scheduler was involved on this backend.
     assert not (work / "jobs.db").exists(), "a Slurm CLI was invoked"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - reparented and not ours
+        return True
+    return True
+
+
+def test_cancelling_a_parallel_build_job_kills_its_compilers(tmp_path_factory):
+    """SIGTERM to the build job must take the compilers with it (#496 review).
+
+    This is what ``local-parallel``'s ``cancel_all`` does on Ctrl-C or
+    ``--max-wait``: it signals the ``rb _build-job`` process group and nothing
+    else. The compilers are not in that group — a worker thread started them
+    and ``run_managed_process`` gives every child its own session — so before
+    #495's sweeper this killed the job and left two Verilations burning the
+    node until they finished. A real ``rb _build-job`` subprocess over the
+    two-compile-key fixture, with the fake verilator parked in a 60 s sleep,
+    is the only place that is observable end to end.
+    """
+    work = tmp_path_factory.mktemp("build_job_cancel")
+    project = work / "proj"
+    shutil.copytree(_PARALLEL_FIXTURE, project)
+    pids_file = work / "compiler_pids.txt"
+    env = dict(os.environ)
+    env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
+    # Long enough that "it died" cannot be confused with "it finished".
+    env["RB_SHIM_HANG"] = "60"
+    env["RB_SHIM_PIDS"] = str(pids_file)
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "rtl_buddy",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "--parallel",
+            "2",
+        ],
+        cwd=project / "verif" / "blk",
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    compilers: list[int] = []
+    try:
+        # Both compilers in flight: the pool is what is being cancelled, so
+        # cancelling before it filled would prove nothing.
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            if pids_file.exists():
+                compilers = [
+                    int(tok)
+                    for tok in pids_file.read_text().split()
+                    if tok.strip().isdigit()
+                ]
+                if len(compilers) >= 2:
+                    break
+            time.sleep(0.1)
+        assert len(compilers) >= 2, f"compilers never started: {compilers}"
+
+        proc.send_signal(signal.SIGTERM)
+        out = proc.communicate(timeout=60)[0]
+        # The handler's re-raise convention, straight from run_managed_process.
+        assert proc.returncode == 128 + signal.SIGTERM, out
+
+        # ...and the grandchildren are gone. Polled, because they are reaped
+        # by init after the job exits, not by this process.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and any(_pid_alive(pid) for pid in compilers):
+            time.sleep(0.1)
+        assert [pid for pid in compilers if _pid_alive(pid)] == [], out
+        # None of them reached the far side of its sleep.
+        assert "survived" not in pids_file.read_text(), out
+    finally:
+        if proc.poll() is None:  # pragma: no cover - only on a failed run
+            proc.kill()
+            proc.communicate()
+        for pid in compilers:  # pragma: no cover - only on a failed run
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass

@@ -436,6 +436,10 @@ def test_suite_dir_for_test_runner_comes_from_suite_cfg_path(tmp_path, monkeypat
     captured = {}
 
     class CapturingRunner:
+        # A runner whose PRE never reached a sim has no compile to report
+        # (#495); None is the shape TestRunner.last_compile returns there.
+        last_compile = None
+
         def __init__(self, **kwargs):
             captured["suite_dir"] = kwargs["suite_dir"]
 

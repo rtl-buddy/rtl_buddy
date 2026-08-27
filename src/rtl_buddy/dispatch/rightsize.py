@@ -47,6 +47,18 @@ Semantics:
   ``resources:`` would change nothing — so the hint points at
   ``cfg-dispatch.compile`` instead, and the finding is labeled
   ``compile+sim`` to say the measurement spans both.
+- The suite's *build job* gets one row of its own, labeled ``compile``
+  (rtl-buddy/rtl_buddy#495). It owns no per-test row, so
+  :func:`analyze_build_reservation` reads its ``sacct`` entry directly and
+  asks the same two questions of it — wall clock against the limit, cpu
+  time against the allocation. Its cpus suggestion is divided back down by
+  ``cfg-dispatch.compile.parallel``, because the field a project edits is
+  per-build while the reservation the head submitted was the product. Its
+  ``reduce`` needs the build envelope to say a compile actually ran: a
+  re-run of an unchanged suite short-circuits every build on its stamp, and
+  reading those seconds as "the compile is fast" would advise a limit the
+  next real RTL change times out against — which cancels the whole afterok
+  fan-out, the failure the build job's exit-0 contract exists to prevent.
 - Every suggestion for such a job is *reachable*: a ``reduce`` is clamped
   up to the compile reservation, because the ``max`` will not let the
   allocation go below it however far the test's own ``resources:`` are
@@ -173,6 +185,325 @@ def _aggregate(rows):
             eff = cpu_time / (elapsed * cpus)
             agg["cpu_efficiency"] = max(agg.get("cpu_efficiency", 0.0), eff)
     return per_test
+
+
+# The build job is not a test, but every finding needs a row label. A
+# parenthesised name cannot collide with a real test name.
+BUILD_JOB_ROW = "(build job)"
+
+
+def analyze_build_reservation(
+    build_telemetry,
+    compile_resources,
+    parallel,
+    rightsize_cfg,
+    suite_display,
+    root_config_hint,
+    *,
+    compile_work=None,
+    accounting_interval_s=None,
+):
+    """Right-size the *build job's* own reservation (#495).
+
+    A suite's build job is one allocation running up to ``parallel``
+    concurrent Verilations, so it is the one job in a dispatched fleet that
+    ``analyze_suite_reservations`` cannot see: it owns no ``suite_results``
+    row, no test name, and no per-run peak. Its numbers still come from the
+    same ``sacct`` fields, so the advice is the same two questions asked of
+    one job — did it use its wall clock, and did it use its cpus.
+
+    Two things are deliberately absent. There is no memory advice: MaxRSS
+    is a sampled high-water mark and a build job is exactly the kind of
+    short job #365 showed it under-reports, and a too-small ``mem`` gets
+    the compile OOM-killed. And there is no ``raise`` on cpus: cpu
+    efficiency below 1 means slots idled, never that more were needed.
+
+    ``compile_resources`` is the *per-build* reservation
+    (``cfg-dispatch.compile``); the head multiplied its cpus by
+    ``parallel`` before submitting, and the field a project edits is
+    per-build — so cpus advice is only offered for a job that ran an
+    effective ``parallel`` of 1 (one slot, or one build record), where the
+    whole-job ratio and the per-build one are the same number. Above that
+    the ratio also carries the tail (unequal builds; a plan with fewer
+    distinct keys than slots), so dividing it by ``parallel`` can advise
+    shrinking the cpus the longest compile saturated, and there is no
+    per-compile cpu telemetry to tell the causes apart — the row is
+    withheld with reason ``parallel-utilization-ambiguous`` (#496 review).
+    Its resolved ``cpus`` is what the advice *names* as the current
+    per-build value, in preference to dividing AllocCPUS: a site where the
+    scheduler reports more cpus than were requested would otherwise be
+    shown a decomposition that does not match its YAML. Empty telemetry (a
+    local-parallel backend reports none) yields no advice at all.
+
+    ``compile_work`` is what the build envelope says the job actually did:
+    ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
+    when the head could not tell (no envelope, or one written before the
+    records existed). It is what separates *nothing to compile* from
+    *compiled fast* — on any re-run of an unchanged suite every build
+    short-circuits on its stamp, so the job is seconds long with near-zero
+    cpu time, and a naive reading advises a five-minute limit that the
+    next real RTL change TIMEOUTs against, taking the whole afterok
+    fan-out with it. So a ``reduce`` needs evidence that a compile ran;
+    ``raise`` is unconditional, being a fact about the reservation rather
+    than a measurement of the work. ``accounting_interval_s`` withholds
+    ``reduce`` for the same reason ``analyze_suite_reservations`` withholds
+    memory advice: ``TotalCPU`` is accumulated from usage samples, so a job
+    that finished inside one interval was measured at most once.
+    """
+    if not build_telemetry:
+        return []
+    findings = []
+    elapsed = build_telemetry.get("elapsed_s")
+    # Only a `reduce` is gated: it is the direction that can shrink a
+    # reservation below what the next run needs.
+    compiled = (compile_work or {}).get("compiled") or 0
+    # Three answers, not two. No records at all means the head could not
+    # tell — the build job left no envelope (an OOM kill or a TIMEOUT still
+    # leaves the sacct row that got us here), or wrote one predating them.
+    # The gating treats unknown as no-reduce either way, but the recorded
+    # reason must not claim every build reused a stamp it never saw.
+    records = (compile_work or {}).get("records") or 0
+    undersampled = (
+        accounting_interval_s is not None
+        and elapsed is not None
+        and elapsed < accounting_interval_s
+    )
+    may_reduce = bool(compiled) and not undersampled
+    if not may_reduce:
+        # INFO, not WARNING: an all-reused build job is the normal shape of
+        # every re-run, and a warning per re-run is noise. It is still
+        # recorded, because "no advice" and "advice withheld" are different
+        # answers to look back at.
+        log_event(
+            logger,
+            logging.INFO,
+            "rightsize.build_advice_withheld",
+            suite=suite_display,
+            reason=(
+                "undersampled"
+                if undersampled
+                else ("no-compile-observed" if records else "no-build-records")
+            ),
+            # None, not 0, when there was no envelope: the field keeps the
+            # same three-state meaning `compile_work` has.
+            builds=(compile_work or {}).get("records"),
+            compiled=compiled,
+            # How much of the reservation's wall clock was real compiling —
+            # the number that says "the job spent 55s of its 2h building",
+            # which sacct's elapsed alone cannot separate from queueing and
+            # stamp checks. Same three-state rule as `builds`: None when
+            # there was no envelope to measure.
+            compiled_sec=(compile_work or {}).get("compiled_sec"),
+            elapsed_s=elapsed,
+            interval_s=accounting_interval_s,
+        )
+    # BuildJobSpec's typed field (>= 1); clamped anyway because every
+    # cpus number below divides by it.
+    parallel = max(1, parallel)
+    state = build_telemetry.get("state")
+    states = [state] if state else []
+
+    def hint(resource_field, note=None):
+        # cfg-dispatch lives in root_config.yaml, so without a path to it
+        # there is nothing honest to point at — the suite's tests.yaml does
+        # not govern a build job at all.
+        edit = {"path": f"cfg-dispatch.compile.{resource_field}"}
+        if root_config_hint:
+            edit["file"] = root_config_hint
+        if note:
+            edit["note"] = note
+        return edit
+
+    common = {
+        "suite": suite_display,
+        "test": BUILD_JOB_ROW,
+        "runs": 1,
+        "reg_level": None,
+        "states": states,
+        "phase": "compile",
+    }
+
+    # --- time -------------------------------------------------------
+    limit = build_telemetry.get("timelimit_s")
+    if limit and state == "TIMEOUT":
+        findings.append(
+            RightsizeFinding(
+                resource="time",
+                reserved=format_time(limit),
+                peak=f">{format_time(limit)}",
+                utilization=1.0,
+                direction="raise",
+                suggested=format_time(limit * rightsize_cfg.margin),
+                edit_hint=hint("time"),
+                **common,
+            )
+        )
+    elif limit and elapsed is not None:
+        util = elapsed / limit
+        # `time` is NOT scaled by parallel — N concurrent builds take the
+        # wall clock of the longest, not of their sum — so this suggestion
+        # needs no division and says so by carrying no note.
+        suggested_s = max(elapsed * rightsize_cfg.margin, _TIME_FLOOR_S)
+        if util > rightsize_cfg.near_limit:
+            findings.append(
+                RightsizeFinding(
+                    resource="time",
+                    reserved=format_time(limit),
+                    peak=format_time(elapsed),
+                    utilization=util,
+                    direction="raise",
+                    suggested=format_time(suggested_s),
+                    edit_hint=hint("time"),
+                    **common,
+                )
+            )
+        elif (
+            may_reduce
+            and util < rightsize_cfg.over_threshold
+            and suggested_s <= limit * _REDUCE_KEEP_RATIO
+        ):
+            findings.append(
+                RightsizeFinding(
+                    resource="time",
+                    reserved=format_time(limit),
+                    peak=format_time(elapsed),
+                    utilization=util,
+                    direction="reduce",
+                    suggested=format_time(suggested_s),
+                    edit_hint=hint("time"),
+                    **common,
+                )
+            )
+
+    # --- cpus (efficiency; only ever suggests reducing) --------------
+    cpus = build_telemetry.get("alloc_cpus")
+    if not cpus and compile_resources is not None:
+        # No allocation reported: fall back to what the head asked for, so
+        # a backend that reports usage but not the reservation still gets
+        # the ratio right.
+        cpus = (compile_resources.cpus or 0) * parallel
+    cpu_time = build_telemetry.get("total_cpu_s")
+    # Whole-job cpu efficiency is a *per-build* number only when the job ran
+    # one build at a time. Above that it also carries the tail — builds of
+    # unequal length, and a plan with fewer distinct keys than slots, both
+    # leave reserved cpus idle while the longest compile saturates the ones
+    # it has — so dividing it by `parallel` can advise shrinking exactly the
+    # cpus that compile needed (#496 review). There is no per-compile cpu
+    # telemetry to separate the causes with (sacct accounts the job, not the
+    # thread group), so the advice is withheld rather than guessed at.
+    effective_parallel = min(parallel, records) if records else parallel
+    if may_reduce and cpus and cpus > 1 and cpu_time is not None and elapsed:
+        # TotalCPU is summed over the job's steps, and elapsed is the wall
+        # clock of the whole parallel batch — which is exactly the ratio
+        # that says whether the scaled reservation was worth it.
+        efficiency = cpu_time / (elapsed * cpus)
+        if efficiency < rightsize_cfg.over_threshold and effective_parallel > 1:
+            # Same event as the reduce gating above, because it is the same
+            # question a reader asks of an empty row: nothing to say, or
+            # something withheld? Time advice is unaffected — N concurrent
+            # builds take the wall clock of the longest, so `elapsed`
+            # against `timelimit` means what it always did.
+            log_event(
+                logger,
+                logging.INFO,
+                "rightsize.build_advice_withheld",
+                suite=suite_display,
+                reason="parallel-utilization-ambiguous",
+                builds=(compile_work or {}).get("records"),
+                compiled=compiled,
+                compiled_sec=(compile_work or {}).get("compiled_sec"),
+                elapsed_s=elapsed,
+                interval_s=accounting_interval_s,
+                parallel=parallel,
+                efficiency=round(efficiency, 3),
+            )
+        elif efficiency < rightsize_cfg.over_threshold:
+            suggested_total = max(
+                1, math.ceil(cpus * efficiency * rightsize_cfg.margin)
+            )
+            # `effective_parallel` is 1 here by the branch above, so this is
+            # the identity — kept as the division it is because that is what
+            # makes the invariant legible: the per-build figure is the
+            # whole-job one divided by the builds that were actually in
+            # flight, and the only case where those are knowably equal is
+            # one build at a time.
+            suggested_per_build = max(
+                1, math.ceil(suggested_total / effective_parallel)
+            )
+            # The decomposition is stated in terms of the value the project
+            # would edit, so it has to come from the head's own resolved
+            # `cfg-dispatch.compile.cpus` and not from AllocCPUS: a site
+            # whose sbatch-args or CR_CPU rounding makes Slurm report more
+            # cpus than were asked for would otherwise be told it reserved a
+            # per-build number it never wrote, and `suggested_per_build`
+            # could land on the value already in the YAML — advice that
+            # never retires. sacct is the fallback for a head that could not
+            # resolve the block at all.
+            resolved_per_build = (
+                getattr(compile_resources, "cpus", None)
+                if compile_resources is not None
+                else None
+            )
+            per_build_now = resolved_per_build or math.ceil(cpus / parallel)
+            requested_total = per_build_now * parallel
+            if requested_total == cpus and parallel == 1:
+                # One build slot, so there is no product to decompose: the
+                # reservation IS the per-build figure.
+                decomposition = f"the build job reserved {per_build_now}"
+            elif requested_total == cpus:
+                decomposition = (
+                    f"the build job reserved {cpus} = {per_build_now} "
+                    f"x compile.parallel {parallel}"
+                )
+            else:
+                # Say both numbers rather than pick one: the reader needs
+                # the per-build figure to edit and the allocated figure to
+                # reconcile with `squeue`/`sacct`.
+                decomposition = (
+                    f"the build job asked for {requested_total} = "
+                    f"{per_build_now} x compile.parallel {parallel} "
+                    f"(the scheduler reported {cpus} allocated)"
+                )
+            # The `parallel` lever only exists when it is above 1, and this
+            # advice is only reachable at an effective 1 — so the sentence
+            # is here for the one shape that has both: slots reserved for
+            # builds the plan never produced.
+            lever = (
+                ""
+                if parallel == 1
+                else (
+                    " `parallel` is the other lever: it is capped by the "
+                    "suite's planned configs, not by its distinct compile "
+                    "keys, so configs that share one key reserve cpus for "
+                    "builds that never run — lower "
+                    "cfg-dispatch.compile.parallel instead when the key "
+                    "count is the smaller number."
+                )
+            )
+            if suggested_per_build < per_build_now:
+                findings.append(
+                    RightsizeFinding(
+                        resource="cpus",
+                        # The scaled number the head actually asked for: it
+                        # is what sacct reports and what a person sees in
+                        # `squeue`, so reporting the per-build figure here
+                        # would not match anything they can look up.
+                        reserved=str(cpus),
+                        peak=f"{efficiency:.2f} eff",
+                        utilization=efficiency,
+                        direction="reduce",
+                        suggested=str(suggested_per_build),
+                        edit_hint=hint(
+                            "cpus",
+                            note=(
+                                f"per-build; {decomposition}. "
+                                f"Suggested value is per-build.{lever}"
+                            ),
+                        ),
+                        **common,
+                    )
+                )
+    return findings
 
 
 def analyze_suite_reservations(
