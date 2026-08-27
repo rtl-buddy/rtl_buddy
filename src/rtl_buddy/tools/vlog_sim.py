@@ -1936,10 +1936,15 @@ class VlogSim:
         A breadcrumb is not compile output, so reusing over one keeps what
         that breadcrumb was itself carrying rather than nesting breadcrumbs:
         N reuses of one build preserve exactly one transcript.
+
+        ``errors="replace"``, and ``ValueError`` caught beside ``OSError``:
+        a real transcript carries raw simulator output that owes nobody
+        valid UTF-8, and a breadcrumb helper must degrade — never raise —
+        on the exit-0 path (the same contract as the write side).
         """
         try:
-            existing = Path(path).read_text()
-        except OSError:
+            existing = Path(path).read_text(errors="replace")
+        except (OSError, ValueError):
             return ""
         if existing.startswith(_REUSE_TRANSCRIPT_MARKER):
             _, separator, carried = existing.partition(_CARRIED_TRANSCRIPT_HEADER)

@@ -2092,6 +2092,34 @@ def test_a_reuse_leaves_a_compile_log_naming_what_it_reused(tmp_path, monkeypatc
     assert "--rebuild" in text
 
 
+def test_a_reuse_over_a_non_utf8_transcript_degrades_instead_of_raising(
+    tmp_path, monkeypatch
+):
+    """A carried transcript owes nobody valid UTF-8 (#494 review).
+
+    Real compile output is raw simulator bytes; a breadcrumb helper that
+    read it strictly would raise UnicodeDecodeError on the exit-0 path of
+    a build job. The reuse must still write its breadcrumb, carrying the
+    old transcript with undecodable bytes replaced.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert writer.compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    # A prior transcript with bytes no ambient encoding decodes.
+    log = _compile_log_of(reader)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_bytes(b"Command: x\n\xff\xfe raw sim bytes\n")
+    assert reader.compile() == 0
+
+    text = _compile_log_of(reader).read_text()
+    assert "Compile skipped" in text
+    assert "raw sim bytes" in text  # carried, with bad bytes replaced
+
+
 def test_a_compile_that_ran_leaves_a_transcript_even_when_it_passed(
     tmp_path, monkeypatch
 ):
