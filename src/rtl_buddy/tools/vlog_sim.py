@@ -1319,16 +1319,26 @@ class VlogSim:
         return plan
 
     def _gated_build_failure(self):
-        """This test's record in the gating build job's envelope, if it FAILED.
+        """This test's record in the build envelope, if its COMPILE failed.
 
-        ``{}`` when the envelope lists the test as failed but carries no
-        per-build record for it (an older build job, or one whose telemetry
-        could not be serialised) — still an answer, and a decisive one: the
-        compile is known to have failed, only its detail is missing.
-        ``None`` means "no reason to think this build failed", which covers
-        every case that must behave exactly as it did before #498: no build
-        job, no envelope path, an unreadable or stale envelope, or a test
-        the build actually built.
+        The envelope's ``failed`` list is not compile-only: the build job
+        also records PRE/setup failures, filelist-probe errors and worker
+        exceptions there, and none of those proves the *builder* would fail
+        again here — a sim job re-runs its own preproc, so a transient
+        setup failure can succeed on this side, and suppressing its retry
+        would turn that run into a false CompileFail (#498 review). The one
+        deterministic case a retry cannot fix is a builder that genuinely
+        ran and exited non-zero, and the per-build record proves it by
+        carrying a ``returncode``. That record is the only decisive answer.
+
+        ``None`` therefore means "no proven compile failure", which covers
+        every case that must keep today's retry: no build job, no envelope
+        path, an unreadable or stale envelope, a test the build actually
+        built — and a test listed as failed with no per-build record (an
+        older build job) or a record without a ``returncode`` (a setup
+        failure or worker exception). The retry those take writes
+        ``compile.retry.log``, so the build job's transcript stays safe
+        either way.
 
         Best-effort by construction. A sim job that cannot read the
         envelope falls back to today's retry rather than inventing a
@@ -1344,9 +1354,14 @@ class VlogSim:
         if not envelope or self.test_name not in set(envelope.get("failed") or ()):
             return None
         for entry in envelope.get("builds") or ():
-            if entry.get("test") == self.test_name:
-                return entry
-        return {}
+            if entry.get("test") != self.test_name:
+                continue
+            # Compiler evidence or nothing: a record without a returncode
+            # describes a failure that never reached a builder.
+            if entry.get("returncode") is None:
+                return None
+            return entry
+        return None
 
     def _compile_plan(self):
         """The cached :class:`_CompilePlan`, deriving it on first ask."""
@@ -1553,8 +1568,11 @@ class VlogSim:
                     "transcript": build_transcript,
                 }
                 # A non-zero status is the contract with _compile_outcome;
-                # the build's own is preferred so the two records agree, and
-                # 1 stands in for a build job too old to have recorded one.
+                # the build's own is used so the two records agree.
+                # _gated_build_failure guarantees a returncode is present,
+                # so the guard only keeps a malformed record (0, or a
+                # non-int from a hand-edited envelope) from turning this
+                # failure into a success.
                 return returncode if isinstance(returncode, int) and returncode else 1
             # The stamp is merely absent or stale — a toolchain moved, a
             # clock skewed, the build job never got to this config. The

@@ -73,8 +73,19 @@ def _first_error_line(error_tail):
     diagnostic *before* its "exiting due to N errors" tail and the summary
     has room for one of them. Falls back to the last line when nothing
     matches — an unrecognised builder still says something.
+
+    Each element is flattened to its physical non-blank lines first: an
+    element can carry embedded newlines (a ``str(exception)`` recorded by
+    an older build job predates the producer-side flattening), and the
+    returned line feeds a one-line desc contract — ``render_summary`` puts
+    it in a table cell (#498 review).
     """
-    lines = [str(line).strip() for line in (error_tail or []) if str(line).strip()]
+    lines = [
+        part.strip()
+        for line in (error_tail or [])
+        for part in str(line).splitlines()
+        if part.strip()
+    ]
     if not lines:
         return None
     chosen = next(

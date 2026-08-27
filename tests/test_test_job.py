@@ -1499,6 +1499,42 @@ def test_a_worker_exception_becomes_the_error_tail_when_no_builder_ran(
     assert "transcript" not in by_test["basic"]
 
 
+def test_a_multi_line_worker_exception_is_recorded_as_physical_lines(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """str() of an exception can embed newlines (#498 review).
+
+    An `error_tail` element is one physical line by contract:
+    `build_compile_fail_desc` selects one element for a one-line summary
+    cell, and an element with embedded newlines would break that row.
+    """
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    def boom_for_basic(name):
+        if name == "basic":
+            raise RuntimeError(
+                "serde error:\n  field 'cpus'\n\n  expected int, got str"
+            )
+        return EarlyStopResults(name=f"{name}/results", desc="compiled")
+
+    stub_runner.compile_hook = boom_for_basic
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    by_test = {entry["test"]: entry for entry in br["builds"]}
+    assert by_test["basic"]["error_tail"] == [
+        "serde error:",
+        "field 'cpus'",
+        "expected int, got str",
+    ]
+    assert all("\n" not in line for line in by_test["basic"]["error_tail"])
+
+
 def test_an_unreadable_transcript_does_not_cost_the_build_job_its_envelope(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
@@ -1597,6 +1633,27 @@ def test_compile_error_tail_reads_the_whole_transcript_not_its_last_lines():
         # Never raises: a build job that cannot read back its own
         # transcript must still write its envelope and exit 0.
         assert compile_error_tail(Path(tmp) / "gone.log") == []
+
+
+def test_the_build_fail_desc_stays_one_line_for_a_multi_line_tail_element():
+    """The one-line desc contract survives a legacy envelope (#498 review).
+
+    An envelope written before the producer flattened worker exceptions can
+    still carry an `error_tail` element with embedded newlines; the desc
+    goes into a summary table cell, so the selector flattens each element
+    to physical lines before choosing one.
+    """
+    from rtl_buddy.runner.result_io import build_compile_fail_desc
+
+    desc = build_compile_fail_desc(
+        job_id="4242",
+        returncode=1,
+        error_tail=["%Error: bad thing\n  detail one\n  detail two"],
+        logs="build-4242.log",
+    )
+    assert "\n" not in desc
+    assert "%Error: bad thing" in desc
+    assert "detail one" not in desc
 
 
 def test_failure_detail_warning_has_a_dedicated_human_message():

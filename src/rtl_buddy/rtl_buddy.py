@@ -99,6 +99,7 @@ from .dispatch.rightsize import (
 )
 from .runner.result_io import (
     BUILD_COMPILE_FAIL_PREFIX,
+    COMPILE_ERROR_TAIL_LINES,
     attach_result_key,
     attach_telemetry_json,
     build_compile_fail_desc,
@@ -272,7 +273,17 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
     elif worker_error:
         # No builder ran, so there is no transcript — but the exception that
         # replaced it is exactly the "why" this field exists to carry.
-        entry["error_tail"] = [str(worker_error)]
+        # Physical non-blank lines, not one string: str() of an exception
+        # can embed newlines (a serde validation error, a wrapped
+        # subprocess error), and every consumer treats an `error_tail`
+        # element as one line of a summary cell (#498 review). Tail-capped
+        # like the transcript path, so a long traceback cannot turn the
+        # envelope into a log file.
+        lines = [
+            line.strip() for line in str(worker_error).splitlines() if line.strip()
+        ]
+        if lines:
+            entry["error_tail"] = lines[-COMPILE_ERROR_TAIL_LINES:]
     return entry
 
 

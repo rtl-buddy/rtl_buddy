@@ -1243,28 +1243,89 @@ def test_a_gated_job_does_not_retry_a_compile_the_build_job_already_failed(
     assert _events(caplog, "compile.build_job_failed")[0]["returncode"] == 1
 
 
-def test_a_gated_job_reports_a_failed_build_without_its_error_detail(
-    tmp_path, monkeypatch
+def test_a_gated_job_retries_a_failure_recorded_without_compiler_evidence(
+    tmp_path, monkeypatch, caplog
 ):
-    """An envelope from a build job too old to record the detail still decides.
+    """`failed` alone is not a compile verdict (#498 review).
 
-    `failed` alone is the load-bearing half. Missing `returncode`/
-    `error_tail` costs the row its error text, never its verdict — and the
-    compile still must not be retried.
+    The envelope's `failed` list also carries PRE/setup failures, filelist
+    errors and worker exceptions, and a sim job re-runs its own preproc —
+    so a transient setup failure on the build side can pass here, and
+    suppressing the retry would turn that run into a false CompileFail.
+    Only a per-build record with a `returncode` — a builder that genuinely
+    ran and exited non-zero — is deterministic enough to stop the retry.
     """
+    import logging as _logging
+
+    cases = (
+        # An older build job: listed as failed, no builds records at all.
+        ("no builds record", {"failed": ["test_a"]}),
+        # A worker exception / setup failure: a record, but no returncode
+        # because no builder ever ran.
+        (
+            "record without returncode",
+            {
+                "failed": ["test_a"],
+                "builds": [{"test": "test_a", "error_tail": ["hook exploded"]}],
+            },
+        ),
+    )
+    _write_source(tmp_path)
+    for case_i, (label, shape) in enumerate(cases):
+        calls = []
+        _install_fake_builder(monkeypatch, calls)
+        # A distinct define per case, so no case short-circuits on the
+        # shared build stamp an earlier one left.
+        sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", pd={"CASE": case_i})
+        compile_log = _seed_build_transcript(sim)
+        sim.expect_prebuilt = True
+        sim.build_result_json = _write_build_envelope(tmp_path, **shape)
+
+        caplog.clear()
+        with caplog.at_level(_logging.DEBUG):
+            assert sim.compile() == 0, label  # the retry ran, and passed
+
+        assert len(calls) == 1, label
+        assert _events(caplog, "compile.prebuilt_stamp_invalid"), label
+        assert _events(caplog, "compile.build_job_failed") == [], label
+        # The build job's transcript is untouched by the successful retry.
+        assert compile_log.read_text() == _BUILD_TRANSCRIPT, label
+        assert sim.compile_fail_desc is None, label
+
+
+def test_a_no_evidence_retry_that_fails_writes_the_retry_log(
+    tmp_path, monkeypatch, caplog
+):
+    """The evidence-less retry is a gated retry like any other (#498 review).
+
+    Its transcript goes to `compile.retry.log` beside the build job's
+    `compile.log`, never over it — and its failure is the sim job's own
+    story (the generic desc), not the build job's verdict.
+    """
+    import logging as _logging
+
     _write_source(tmp_path)
     calls = []
-    _install_fake_builder(monkeypatch, calls)
+    _install_fake_builder(monkeypatch, calls, returncode=1)
 
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
     compile_log = _seed_build_transcript(sim)
     sim.expect_prebuilt = True
-    sim.build_result_json = _write_build_envelope(tmp_path, failed=["test_a"])
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "error_tail": ["hook exploded"]}],
+    )
 
-    assert sim.compile() == 1  # no recorded returncode -> the generic 1
-    assert calls == []
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert len(calls) == 1  # the retry really ran
     assert compile_log.read_text() == _BUILD_TRANSCRIPT
-    assert sim.compile_fail_desc.startswith("compile failed in build job")
+    retry_log = compile_log.parent / "compile.retry.log"
+    assert retry_log.is_file()
+    assert _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert sim.compile_fail_desc is None
 
 
 def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
