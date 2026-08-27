@@ -1147,6 +1147,28 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
     assert "compiling despite being gated" not in caplog.text
 
 
+def test_a_stale_retry_log_does_not_survive_the_next_compile(tmp_path, monkeypatch):
+    """`compile.retry.log` describes exactly one run's retry (#498 review).
+
+    Left behind, a later run that reused the build (or never retried at
+    all) would keep advertising the old transcript through `rb graph
+    results`' existence check, implying this run retried compilation.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    reader.expect_prebuilt = True
+    stale = Path(reader._get_compile_work_dir()) / "compile.retry.log"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("%Error: a previous run's retry\n")
+
+    assert reader.compile() == 0
+    assert not stale.exists()
+
+
 # ------------------------------- a gated job vs. a failed build (#498)
 
 # What the build job left in artefacts/<test>/compile.log. Every test below

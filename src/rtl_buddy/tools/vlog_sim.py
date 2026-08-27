@@ -1386,6 +1386,17 @@ class VlogSim:
         self.last_compile_failure = None
         self.compile_fail_desc = None
         self._compile_transcript_name = COMPILE_TRANSCRIPT_NAME
+        # A retry transcript describes exactly one run's retry. Left behind,
+        # `rb graph results` would keep advertising it as this run's (#498
+        # review) — remove it up front so it exists only when this compile's
+        # own gated retry writes it. The same discipline as the stale stamp
+        # unlink; best-effort like every artefact-dir touch.
+        try:
+            (Path(self._get_compile_work_dir()) / COMPILE_RETRY_TRANSCRIPT_NAME).unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
         log_event(
             logger,
             logging.DEBUG,
