@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -697,6 +698,128 @@ def test_a_parallel_build_job_batches_every_pre_before_any_compile(
     assert events[:2] == ["pre:basic", "pre:extra"]
     assert sorted(events[2:]) == ["compile:basic", "compile:extra"]
     assert sorted(_build_payload(result.output)["built"]) == ["basic", "extra"]
+
+
+def test_a_parallel_build_job_owns_the_interrupt_signals_while_it_compiles(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The batched shape must be able to take its own compilers down (#496 review).
+
+    Cancelling this job (Ctrl-C, or the local-parallel pool's ``cancel_all``)
+    sends SIGTERM to the job's process group only, and the compilers a worker
+    thread started are in their own sessions with no handler of their own —
+    ``signal.signal`` is main-thread-only. So the main thread has to hold the
+    two signals for the length of the pool phase, and give them back after.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    before = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    during: list[tuple] = []
+
+    def note_compile(name):
+        during.append(
+            (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+        )
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.compile_hook = note_compile  # group_of default: two groups
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(during) == 2
+    for handlers in during:
+        for installed, previous in zip(handlers, before):
+            assert callable(installed)
+            assert installed is not previous
+            assert installed not in (signal.SIG_DFL, signal.SIG_IGN)
+    # ...and handed back, so the envelope-writing tail (and everything after
+    # this command) is not left with a handler that sweeps processes it does
+    # not own.
+    assert (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)) == before
+
+
+def test_the_streaming_build_job_leaves_the_interrupt_signals_alone(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Invariant 8, and the reason the handler is scoped to the pool.
+
+    The streaming shape compiles on the main thread, where
+    ``run_managed_process`` installs its own forwarding handlers for the
+    length of each compile — there is nothing for the build job to add, and
+    a handler installed here would only widen the window in which the job
+    answers for processes it does not own.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    before = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    during: list[tuple] = []
+
+    def note_compile(name):
+        during.append(
+            (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+        )
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.compile_hook = note_compile
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    assert during == [before, before]
+    assert (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)) == before
+
+
+@pytest.mark.parametrize(
+    "signum, expected",
+    [(signal.SIGINT, KeyboardInterrupt), (signal.SIGTERM, SystemExit)],
+)
+def test_the_pool_handler_sweeps_live_compilers_then_re_raises(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    signum: int,
+    expected: type[BaseException],
+):
+    """What the installed handler actually does, without sending a signal.
+
+    The sweep is the point: the workers' ``communicate()`` calls only return
+    once their compiler groups are dead. The re-raise follows
+    ``run_managed_process``'s convention exactly — KeyboardInterrupt for
+    SIGINT, ``SystemExit(128 + signum)`` otherwise — so a cancelled build job
+    exits the way every other interrupted rb command does.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    swept: list[int] = []
+    monkeypatch.setattr(
+        rtl_buddy_module,
+        "terminate_live_managed_processes",
+        lambda: swept.append(1),
+    )
+    captured: list = []
+
+    def note_compile(name):
+        captured.append(signal.getsignal(signum))
+        return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+
+    stub_runner.compile_hook = note_compile
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
+    )
+    assert result.exit_code == 0, result.output
+
+    handler = captured[0]
+    with pytest.raises(expected) as excinfo:
+        handler(signum, None)
+    assert swept == [1]
+    if expected is SystemExit:
+        assert excinfo.value.code == 128 + signum
 
 
 def test_a_one_config_plan_streams_however_wide_the_budget_is(

@@ -7,6 +7,11 @@
 # wide enough to be compared at all: a serial build job produces disjoint
 # spans, a parallel one overlapping ones. Off by default, so every other
 # shim test keeps the instantaneous fake it had.
+#
+# With $RB_SHIM_HANG set it records its own pid in $RB_SHIM_PIDS and then
+# sleeps that many seconds before doing any work, so a test can cancel the
+# build job mid-compile and check that this process died with it rather than
+# being orphaned (#495). Also off by default.
 mdir=""
 prev=""
 for a in "$@"; do
@@ -14,6 +19,11 @@ for a in "$@"; do
   prev="$a"
 done
 [ -z "$mdir" ] && { echo "no --Mdir" >&2; exit 1; }
+if [ -n "${RB_SHIM_HANG:-}" ]; then
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "$$" >> "$RB_SHIM_PIDS"
+  sleep "$RB_SHIM_HANG"
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "survived $$" >> "$RB_SHIM_PIDS"
+fi
 start=""
 if [ -n "${RB_SHIM_SPANS:-}" ]; then
   start=$(python3 -c 'import time; print("%.6f" % time.time())')

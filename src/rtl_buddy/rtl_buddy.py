@@ -6,6 +6,7 @@
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -60,6 +61,7 @@ from .logging_utils import (
     render_summary,
     setup_logging,
 )
+from .process_utils import terminate_live_managed_processes
 from .runner.cdc_runner import CdcRunner
 from .runner.lint_runner import LintRunner
 from .runner.cdc_results import CdcSkipResults
@@ -2261,20 +2263,64 @@ class RtlBuddy:
             if pool_size > 1:
                 # Threads, not processes: the work is a subprocess wait, and
                 # the prepared TestRunners (with their hook-mutated configs)
-                # would not survive a fork/spawn boundary. On SIGTERM the
-                # workers' builders are left to the scheduler's job-tree kill
-                # — Slurm kills the whole cgroup — which is why there is no
-                # fleet-kill here; run_managed_process already declines to
-                # install signal handlers off the main thread. The
-                # interactive price of that, for the rare hand-run
-                # `rb _build-job --parallel N`: Ctrl+C is not acted on until
-                # every in-flight compile has finished, because the workers
-                # install no handler and the pool's exit waits for them.
-                # Accepted deliberately — the alternative is a fleet-kill
-                # that would also fire under Slurm.
-                with ThreadPoolExecutor(max_workers=pool_size) as pool:
-                    for rows in pool.map(_compile_group, list(groups.items())):
-                        outcomes.extend(rows)
+                # would not survive a fork/spawn boundary.
+                #
+                # Cancelling this shape needs a handler the streaming one
+                # does not (#496 review). A worker thread's
+                # run_managed_process installs no signal handler —
+                # signal.signal only works on the main thread — and each
+                # compiler runs in its own session (start_new_session), so a
+                # SIGTERM aimed at this job's process group reaches the job
+                # and nothing it spawned. Left alone, `local-parallel`'s
+                # cancel_all (Ctrl-C, or --max-wait) would kill the job and
+                # orphan every in-flight Verilation on the node. So while the
+                # pool runs, the main thread owns SIGINT/SIGTERM and sweeps
+                # the live compilers by hand; the workers' communicate()
+                # calls then return promptly and the pool's exit does not
+                # hang. Slurm still kills the whole job-tree cgroup on its
+                # own — this makes the build job clean up after itself, which
+                # is what a backend with no cgroup requires. The streaming
+                # shape needs none of it: there run_managed_process is on the
+                # main thread and installs its own forwarding handlers.
+                #
+                # The handler convention is run_managed_process's, exactly:
+                # chain to the previous handler, then KeyboardInterrupt for
+                # SIGINT and SystemExit(128+signum) otherwise. It does no
+                # logging — a handler runs between bytecodes and the logging
+                # lock may already be held by a worker.
+                previous_handlers = {}
+
+                def _sweep_compilers_and_reraise(signum, frame):
+                    terminate_live_managed_processes()
+                    previous = previous_handlers.get(signum)
+                    if callable(previous):
+                        previous(signum, frame)
+                    if signum == signal.SIGINT:
+                        raise KeyboardInterrupt
+                    raise SystemExit(128 + signum)
+
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        previous_handlers[signum] = signal.getsignal(signum)
+                        signal.signal(signum, _sweep_compilers_and_reraise)
+                    except ValueError:
+                        # Only reachable if this command is ever driven off
+                        # the main thread, and the exit-0 contract outranks
+                        # the cleanup: an escaping ValueError here would fail
+                        # the build job and cancel the afterok fan-out for
+                        # compiles that had not even started.
+                        previous_handlers.pop(signum, None)
+                try:
+                    with ThreadPoolExecutor(max_workers=pool_size) as pool:
+                        for rows in pool.map(_compile_group, list(groups.items())):
+                            outcomes.extend(rows)
+                finally:
+                    # Restored on every exit, including the re-raise above:
+                    # the envelope-writing tail below runs on the main thread
+                    # with no pool to protect, and leaving the handler armed
+                    # would have it sweep processes it does not own.
+                    for signum, handler in previous_handlers.items():
+                        signal.signal(signum, handler)
             else:
                 # `parallel` exceeded the group count: one group, but the
                 # plan held more than one config, so the batched shape was
