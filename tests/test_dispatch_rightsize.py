@@ -56,6 +56,7 @@ def _analyze(
     reg_level=0,
     root_config_path=None,
     accounting_interval_s=None,
+    compile_origins=None,
 ):
     return analyze_suite_reservations(
         rows,
@@ -66,6 +67,7 @@ def _analyze(
         simulator_family_of=(families or {"verilator": "verilator"}).get,
         root_config_path=root_config_path,
         accounting_interval_s=accounting_interval_s,
+        compile_origins=compile_origins,
     )
 
 
@@ -434,6 +436,68 @@ def test_governance_is_per_test_not_leaked_across_tests():
     assert findings["u"].edit_hint["path"] == "tests[name=u].resources.mem"
 
 
+def test_compile_governed_field_the_suite_won_hints_at_the_suite_config():
+    """cfg-dispatch is the layer a suite `compile:` block overrides (#497).
+
+    The in-job-compile case has no build job at all, so the compile
+    reservation only ever surfaces here, inside the field-wise maximum. A
+    suite that sets `compile.mem: 48G` and OOMs anyway must be sent to its
+    own tests.yaml: raising `cfg-dispatch.compile.mem` leaves the 48G in
+    place, the allocation unmoved, and the advice repeating every run.
+    """
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "compile"})],
+        root_config_path="/p/root_config.yaml",
+        compile_origins={"mem": "suite"},
+    )
+    assert [f.phase for f in findings] == ["compile+sim"]
+    assert findings[0].direction == "raise"
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "compile.mem",
+    }
+
+
+def test_suite_compile_attribution_is_per_field_within_one_run():
+    """Only the fields the suite block set move to its tests.yaml (#497)."""
+    findings = {
+        f.resource: f
+        for f in _analyze(
+            [
+                _over_reserved_row(
+                    compile_in_job=True,
+                    compile_floor={"mem": "4G", "time": "00:30:00"},
+                )
+            ],
+            root_config_path="/p/root_config.yaml",
+            compile_origins={"mem": "suite"},
+        )
+    }
+    # The suite set mem, so its own file is what holds the binding floor...
+    assert findings["mem"].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "compile.mem",
+    }
+    # ...while time still comes from cfg-dispatch, in the same run.
+    assert findings["time"].edit_hint == {
+        "file": "/p/root_config.yaml",
+        "path": "cfg-dispatch.compile.time",
+    }
+
+
+def test_suite_won_attribution_never_touches_a_sim_governed_field():
+    """An origin map is about the compile layer, not the test's resources."""
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "test"})],
+        root_config_path="/p/root_config.yaml",
+        compile_origins={"mem": "suite"},
+    )
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=t].resources.mem",
+    }
+
+
 # ------------- #358: reduce advice must be reachable under the compile floor
 
 
@@ -698,6 +762,8 @@ def _build_advice(
     root="root_config.yaml",
     compile_work=_COMPILED,
     accounting_interval_s=None,
+    compile_origins=None,
+    suite_config_hint=None,
 ):
     return analyze_build_reservation(
         telemetry,
@@ -708,6 +774,8 @@ def _build_advice(
         root,
         compile_work=compile_work,
         accounting_interval_s=accounting_interval_s,
+        compile_origins=compile_origins,
+        suite_config_hint=suite_config_hint,
     )
 
 
@@ -952,6 +1020,84 @@ def test_build_advice_without_a_root_config_path_still_names_the_field():
     )
     (time_a,) = [f for f in findings if f.resource == "time"]
     assert time_a.edit_hint == {"path": "cfg-dispatch.compile.time"}
+
+
+# ------------- build-advice attribution when a suite overrides a field (#497)
+
+
+def test_build_advice_points_at_the_root_config_when_no_suite_block_won():
+    """The pre-#497 shape, unchanged: cfg-dispatch owns every field."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {
+        "path": "cfg-dispatch.compile.time",
+        "file": "root_config.yaml",
+    }
+
+
+def test_build_advice_points_at_the_suite_for_a_field_it_overrode():
+    """Editing cfg-dispatch.compile.time would move nothing here (#497)."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={"time": "suite"},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {
+        "file": "/abs/verif/blk/tests.yaml",
+        "path": "compile.time",
+    }
+
+
+def test_build_advice_attribution_is_per_field():
+    """A suite that overrides only `mem` still gets root-level time advice.
+
+    `mem` gets no build-job advice at all, so the point is that an origin
+    for one field never leaks onto another's hint.
+    """
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,
+        },
+        parallel=1,
+        cpus=8,
+        compile_origins={"mem": "suite", "cpus": "suite"},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert time_a.edit_hint["path"] == "cfg-dispatch.compile.time"
+    assert time_a.edit_hint["file"] == "root_config.yaml"
+    assert cpus_a.edit_hint["file"] == "/abs/verif/blk/tests.yaml"
+    assert cpus_a.edit_hint["path"] == "compile.cpus"
+    # The note that explains the decomposition survives the branch.
+    assert "the build job reserved 8." in cpus_a.edit_hint["note"]
+
+
+def test_build_advice_falls_back_to_the_root_config_with_no_suite_path():
+    """No honest suite path to name: keep the cfg-dispatch hint (#497).
+
+    Advice is advisory and runs after every job finished — a missing path
+    must degrade, never abort.
+    """
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={"time": "suite"},
+        suite_config_hint=None,
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {
+        "path": "cfg-dispatch.compile.time",
+        "file": "root_config.yaml",
+    }
 
 
 # --------------------- "nothing to compile" is not "compiled fast" (#495)

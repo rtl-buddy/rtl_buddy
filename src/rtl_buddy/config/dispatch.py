@@ -38,6 +38,22 @@ execution backend for regression test runs:
 Per-test reservation overrides use the same ``resources`` shape in
 tests.yaml at testbench and test level; :func:`resolve_resources` layers
 them field-by-field (test over testbench over ``cfg-dispatch`` defaults).
+
+The compile phase has the same escape hatch one level up, at the top of
+tests.yaml — the dispatched build job is per suite, so the suite is the
+right owner (#497):
+
+.. code-block:: yaml
+
+    rtl-buddy-filetype: test_config
+    compile:                 # THIS suite's build job only
+      mem: 48G               # a big top-level TB; cpus/time inherited
+    testbenches: ...
+
+:func:`resolve_compile_resources` layers it field-by-field over
+``cfg-dispatch.compile`` over ``cfg-dispatch.resources``. ``parallel`` is
+not accepted there: it sizes the build job against the partition, which is
+a cluster fact and not a suite one.
 """
 
 import logging
@@ -137,6 +153,26 @@ def _validate_mem(value):
     if value is None:
         return None
     return str(value)
+
+
+def validate_resources_block(res):
+    """Validate a raw ``{cpus, mem, time}`` block; return a fresh copy.
+
+    The public entry point for any *other* config file that carries a
+    reservation block — today the suite-level ``compile:`` in tests.yaml
+    (#497). It exists so the YAML 1.1 sexagesimal trap (``4:00:00`` read as
+    the integer 14400) is rejected in exactly one place, at load, rather
+    than being re-derived by every loader that grows a reservation.
+
+    ``None`` in, ``None`` out.
+    """
+    if res is None:
+        return None
+    return DispatchResourcesFile(
+        cpus=res.cpus,
+        mem=_validate_mem(res.mem),
+        time=_validate_time(res.time),
+    )
 
 
 @serde
@@ -546,17 +582,32 @@ def combine_for_in_job_compile(
     return combined, governed_by
 
 
-def resolve_compile_resources(dispatch_cfg) -> JobResources:
+def resolve_compile_resources(dispatch_cfg, suite_compile=None) -> JobResources:
     """Resolve the reservation for the dispatched build job.
 
-    ``cfg-dispatch.compile`` over ``cfg-dispatch.resources`` over the
-    built-in defaults, field by field — so the build inherits the sim
-    defaults unless the compile is called out separately.
+    The suite's own ``compile:`` block over ``cfg-dispatch.compile`` over
+    ``cfg-dispatch.resources`` over the built-in defaults, field by field —
+    so the build inherits the sim defaults unless the compile is called out
+    separately, and a suite whose verilation is nothing like the rest of the
+    repo's sizes only the fields it actually needs (#497).
+
+    ``suite_compile`` is the suite-level block (a
+    :class:`DispatchResourcesFile`, from ``SuiteConfig.get_compile()``);
+    ``None`` where there is no suite in hand or the suite declared none. It
+    is the MOST specific layer because the dispatched build job is per
+    suite — there is no allocation a suite block could be sharing with
+    another suite's compile.
+
+    Note this is a *scheduling* fact only: nothing here reaches the compile
+    fingerprint or the shared-build key, so writing a ``compile:`` block
+    never invalidates a stamp.
     """
     resolved = JobResources()
-    if dispatch_cfg is None:
-        return resolved
-    for layer in [dispatch_cfg.resources, dispatch_cfg.compile]:
+    layers = []
+    if dispatch_cfg is not None:
+        layers += [dispatch_cfg.resources, dispatch_cfg.compile]
+    layers.append(suite_compile)
+    for layer in layers:
         if layer is None:
             continue
         if layer.cpus is not None:
@@ -566,3 +617,22 @@ def resolve_compile_resources(dispatch_cfg) -> JobResources:
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)
     return resolved
+
+
+def compile_resource_origins(suite_compile) -> dict:
+    """Which resolved compile fields the suite's ``compile:`` block won.
+
+    ``{field: "suite"}`` for every field the suite block set; fields it
+    left ``None`` are simply absent, meaning cfg-dispatch (or the built-in
+    default) still governs them. Reservation advice reads this to point an
+    edit hint at the file that actually holds the winning value (#497) —
+    computed here, beside the layering it mirrors, so the two can never
+    drift apart.
+    """
+    origins = {}
+    if suite_compile is None:
+        return origins
+    for name in ("cpus", "mem", "time"):
+        if getattr(suite_compile, name, None) is not None:
+            origins[name] = "suite"
+    return origins
