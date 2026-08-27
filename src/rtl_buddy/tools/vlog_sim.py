@@ -326,6 +326,43 @@ _CONTENT_HASH_LOCK = threading.Lock()
 _CONTENT_HASH_CACHE: dict[tuple[str, int, int], str] = {}
 _CONTENT_HASH_CHUNK = 1 << 20
 
+# Above this, an input keeps the old size+mtime comparison instead of being
+# read. The hashing policy is locational, not by kind, so a memory-init
+# `.hex`, a vendored blob or a generated database named in run.f or in the
+# dependency file qualifies exactly as a `.sv` does — and would then be read
+# in full on every stamp validation, on every node. The cap is the same
+# trade as excluding the toolchain (brief invariant 4), drawn well above any
+# hand-written source so that what #494 is actually about is never affected;
+# what it does cost is that an edit to a file this large is only noticed by
+# its stats again. `compile.hash_skipped_large` says when that happens.
+_CONTENT_HASH_MAX_BYTES = 64 << 20
+
+# Paths this process has already reported as too large to hash. The DEBUG
+# line is worth having once per file; once per file per validated stamp is
+# noise. Guarded by _CONTENT_HASH_LOCK, like the memo beside it.
+_HASH_SKIPPED_LARGE: set[str] = set()
+
+
+def _log_hash_skipped_large(path: str, size: int) -> None:
+    """Name a tracked input the size cap left on the stat-only path.
+
+    The cap is invisible otherwise — the entry looks like any other
+    stat-only one — and "why did this file not get content-hashed" is the
+    question a second #494 would start from. Once per path per process.
+    """
+    with _CONTENT_HASH_LOCK:
+        if path in _HASH_SKIPPED_LARGE:
+            return
+        _HASH_SKIPPED_LARGE.add(path)
+    log_event(
+        logger,
+        logging.DEBUG,
+        "compile.hash_skipped_large",
+        path=path,
+        size=size,
+        limit=_CONTENT_HASH_MAX_BYTES,
+    )
+
 
 def _hash_file_content(path: str, size: int, mtime_ns: int) -> str | None:
     """``sha256`` hexdigest[:16] of ``path``'s bytes, or None if unreadable.
@@ -454,12 +491,28 @@ def _content_sha(
     under ``project_root`` *and* outside ``toolchain_prefix`` — the install
     tree of the resolved simulator executable, which a vendored
     ``tools/verilator/`` or an in-repo venv puts under the project root.
-    Everything else stays stat-only.
+    Everything else stays stat-only, as is anything over
+    ``_CONTENT_HASH_MAX_BYTES``.
+
+    **Containment is decided on the name the build used, not only on where
+    that name lands.** Symlinking an IP or RTL tree into the project is a
+    common hardware-repo layout, and resolving first would put such a source
+    outside the root and leave it stat-only — turning the fix off for
+    exactly the files a shared IP mount holds. So the declared path counts
+    too, while the *exclusion* still tests the realpath, which is what
+    catches a symlink into the toolchain install.
 
     ``resolved`` says ``path`` is already a ``realpath`` (the dependency
     list is; the filelist's ``normpath``\\ ed entries are not), which saves
     a second walk of one ``lstat`` per component on the NFS mount this
-    check exists for.
+    check exists for. A resolved entry has no declared path left to
+    consult, and none is stored either — :meth:`VlogSim._collect_build_deps`
+    keys on the realpath so that both sides of the comparison and the
+    ``run.f`` exclusion agree — so the record and validate sides decide
+    containment identically. What that costs is the deps-only case: a
+    *header* reached through ``+incdir+`` from a symlinked-in tree is judged
+    by where it resolves and stays stat-only, while the same tree's sources,
+    which ``run.f`` names by their in-project path, are hashed.
 
     Only regular files are hashed: a directory or a FIFO named among the
     prerequisites would otherwise reach ``open()``, and a FIFO blocks there
@@ -471,13 +524,18 @@ def _content_sha(
         return None
     # Hash under the realpath so two spellings of one file (the filelist
     # normpaths, the dependency file realpaths) share a memo entry.
-    if not resolved:
-        path = os.path.realpath(path)
-    if not _path_is_under(path, project_root):
+    real_path = path if resolved else os.path.realpath(path)
+    under_root = _path_is_under(real_path, project_root) or (
+        not resolved and _path_is_under(os.path.abspath(path), project_root)
+    )
+    if not under_root:
         return None
-    if toolchain_prefix and _path_is_under(path, toolchain_prefix):
+    if toolchain_prefix and _path_is_under(real_path, toolchain_prefix):
         return None
-    return _hash_file_content(path, stat.st_size, stat.st_mtime_ns)
+    if stat.st_size > _CONTENT_HASH_MAX_BYTES:
+        _log_hash_skipped_large(real_path, stat.st_size)
+        return None
+    return _hash_file_content(real_path, stat.st_size, stat.st_mtime_ns)
 
 
 def _hashed_stat_entry(
@@ -1186,16 +1244,32 @@ class VlogSim:
         writes a breadcrumb here, and had success stayed silent the file's
         *presence* would have come to mean "nothing compiled", inverting
         what docs/concepts/tests.md says it is.
+
+        Best-effort, like the reuse breadcrumb it is now paired with: this
+        runs on the SUCCESS path too since #494, and a builder that exited 0
+        must not be turned into a failed compile because its transcript
+        could not be written. Returns ``None`` when nothing was written, so
+        the events below simply carry no transcript path.
         """
         transcript_path = self._get_compile_transcript_path()
-        self._replace_text(
-            transcript_path,
-            f"Command: {run_str}\n\n"
-            "=== stderr ===\n"
-            f"{result.stderr or ''}"
-            "\n=== stdout ===\n"
-            f"{result.stdout or ''}",
-        )
+        try:
+            self._replace_text(
+                transcript_path,
+                f"Command: {run_str}\n\n"
+                "=== stderr ===\n"
+                f"{result.stderr or ''}"
+                "\n=== stdout ===\n"
+                f"{result.stdout or ''}",
+            )
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.transcript_unwritable",
+                test=self.test_name,
+                error=str(e),
+            )
+            return None
         return transcript_path
 
     def _compile_queued_for_license(self, result):

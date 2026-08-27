@@ -844,10 +844,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"the executable is {fields.get('used')}"
             )
         case "compile.license_queued":
+            # The transcript is the evidence, but it is best-effort since
+            # #494 (an unwritable artefact tree must not fail a compile that
+            # passed), so an absent one drops the clause instead of printing
+            # "transcript: None".
+            transcript = fields.get("transcript")
             return (
                 f"{fields.get('test')}: compile waited in the VCS license queue — "
                 f"its {_format_duration(fields.get('duration_sec'))} is not all "
-                f"compile work; transcript: {fields.get('transcript')}"
+                "compile work" + (f"; transcript: {transcript}" if transcript else "")
             )
         case "sim.start":
             return f"{target or 'sim'}: simulation started"

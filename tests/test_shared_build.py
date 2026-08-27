@@ -1380,6 +1380,101 @@ def test_a_toolchain_at_the_project_root_itself_excludes_nothing(tmp_path, monke
     assert sim._tracked_entry(str(src))[3] is not None
 
 
+def test_a_source_symlinked_in_from_outside_the_project_is_still_hashed(
+    tmp_path, monkeypatch
+):
+    """Symlinking a shared IP or RTL tree into the checkout is an ordinary
+    hardware-repo layout, and it is served off the same NFS mount #494 is
+    about. Deciding containment on where the name *resolves* would leave
+    exactly those files stat-only — the fix off for the case it exists
+    for — so the name ``run.f`` declares counts too.
+    """
+    external = tmp_path.parent / f"{tmp_path.name}-ip"
+    external.mkdir(exist_ok=True)
+    ip = external / "ip.sv"
+    ip.write_text("module top; /* aaa */ endmodule\n")
+    (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+    link = tmp_path / "src" / "ip.sv"
+    link.symlink_to(ip)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path, monkeypatch, test_name=test_name, filelist=["src/ip.sv"]
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    sources = json.loads(_stamp_of(sim_a).read_text())["sources"]
+    hashed = [entry for entry in sources if entry[0].endswith("ip.sv")]
+    assert hashed, f"the source never reached the stamp: {sources}"
+    assert all(entry[3] is not None for entry in hashed), (
+        "a symlinked-in source was recorded stat-only, so a stale NFS stat "
+        "still validates a stale build"
+    )
+
+    _edit_behind_a_stale_stat(ip, "module top; /* bbb */ endmodule\n")
+    _as_a_fresh_process()
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2, "the stamp validated against a stale stat"
+
+
+def test_a_symlinked_in_dependency_is_judged_where_it_resolves(tmp_path, monkeypatch):
+    """The boundary of the rule above, stated so it is a decision and not a
+    surprise: the dependency list is keyed on realpaths — that is what makes
+    both sides of the comparison and the ``run.f`` exclusion agree — so an
+    entry that only ever appears there carries no declared path to consult.
+    A header reached through ``+incdir+`` from a symlinked-in tree is
+    therefore stat-only, while that same tree's sources, which ``run.f``
+    names, are hashed by the test above.
+    """
+    external = tmp_path.parent / f"{tmp_path.name}-inc"
+    external.mkdir(exist_ok=True)
+    header = external / "w.svh"
+    header.write_text("`define W 8\n")
+    (tmp_path / "inc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "inc" / "w.svh").symlink_to(header)
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    assert sim._tracked_entry(os.path.realpath(header), resolved=True)[3] is None
+
+
+def test_an_oversized_input_stays_stat_only_and_says_which(
+    tmp_path, monkeypatch, caplog
+):
+    """The hashing policy is locational, so a memory-init ``.hex`` or a
+    vendored blob named in ``run.f`` qualifies exactly as a ``.sv`` does —
+    and would be read in full on every validation, on every node. Over the
+    cap it keeps the old stat comparison, and says so once so that "why was
+    this not hashed" has an answer in the log.
+    """
+    import logging as _logging
+
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+    monkeypatch.setattr(vlog_sim_module, "_HASH_SKIPPED_LARGE", set())
+    src = _write_source(tmp_path)
+    small = tmp_path / "src" / "tiny.sv"
+    small.write_text("//\n")
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim._tracked_entry(str(src))[3] is None
+        assert sim._tracked_entry(str(src))[3] is None
+    assert sim._tracked_entry(str(small))[3] is not None
+
+    skipped = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.hash_skipped_large"
+    ]
+    assert len(skipped) == 1, "once per path per process, not once per validation"
+    assert os.path.realpath(src) in caplog.text
+
+
 def test_deps_validation_fails_closed_on_every_shape_it_cannot_read(
     tmp_path, monkeypatch
 ):
@@ -2168,6 +2263,35 @@ def test_a_compile_that_ran_leaves_a_transcript_even_when_it_passed(
     assert text.startswith("Command: ")
     assert "Parsing design" in text
     assert "Compile skipped" not in text
+
+
+def test_a_transcript_that_cannot_be_written_does_not_fail_a_passing_compile(
+    tmp_path, monkeypatch, caplog
+):
+    """The compile transcript is written on the SUCCESS path since #494, so
+    it has to degrade the way the reuse breadcrumb already does: a builder
+    that exited 0 must not become a failed compile — a failed row in the
+    build job, a traceback in-process — because its breadcrumb could not be
+    written."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    def _refuse(path, text):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(type(sim), "_replace_text", staticmethod(_refuse))
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert len(calls) == 1
+    assert [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.transcript_unwritable"
+    ]
 
 
 def test_a_reuse_keeps_the_compile_transcript_it_writes_over(tmp_path, monkeypatch):
