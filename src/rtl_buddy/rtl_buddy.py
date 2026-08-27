@@ -3722,6 +3722,14 @@ class RtlBuddy:
             isinstance(returncode, int) and returncode
         ):
             return False
+        # A record that carries a fingerprint digest was written by a build
+        # job whose sim-side twin suppresses the retry on matching inputs
+        # and stamps the build prefix into its own desc. A still-generic
+        # desc therefore means that sim job *did* retry — its inputs had
+        # drifted from the failed build — and this failure is the retry's
+        # own, not the build's stale verdict.
+        if desc == COMPILE_FAIL_DESC and (build_failure or {}).get("fingerprint_sha"):
+            return False
         results.results["desc"] = self._build_compile_fail_desc(
             build_handle, build_failure
         )

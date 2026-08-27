@@ -597,6 +597,59 @@ def test_an_evidence_less_build_failure_keeps_the_retry_s_own_compile_fail(
     assert rows["basic"]["desc"] == "Compile failed"
 
 
+def test_an_inputs_changed_retry_s_own_failure_is_not_relabelled(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A sha-bearing record plus a generic desc means the sim retried.
+
+    A current-generation sim job suppresses the retry on matching inputs
+    and stamps the build prefix into its own desc — so a desc still saying
+    `Compile failed` beside a `fingerprint_sha` record is the retry's own
+    failure after input drift, not the build's stale verdict (#498 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _DriftedBuildFail(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "fingerprint_sha": "0" * 64,
+                        "error_tail": ["%Error: the OLD sources' error"],
+                    }
+                ],
+            )
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _DriftedBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"] == "Compile failed"
+    assert "the OLD sources' error" not in rows["basic"]["desc"]
+
+
 def test_empty_suite_submits_no_build_job(
     minimal_project: Path,
     fake_backend: _FakeBackend,
