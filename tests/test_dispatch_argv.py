@@ -91,6 +91,37 @@ def test_compile_parallel_is_not_a_sim_job_flag():
     assert "--parallel" not in sim_job_argv(_test_spec())
 
 
+def test_build_result_json_is_forwarded_to_a_gated_sim_job():
+    """A gated job is told where the build recorded its verdict (#498).
+
+    Without it the job cannot tell "the build's compile FAILED for me"
+    from "the stamp is stale", and retries both — burning the sim
+    reservation on a compile that will fail the same way, and writing its
+    own failure over the build job's compile.log.
+    """
+    argv = sim_job_argv(
+        _test_spec(
+            expect_prebuilt=True,
+            build_result_json=Path("/proj/verif/blk/artefacts/.dispatch/b.json"),
+        )
+    )
+    assert _flag_value(argv, "--build-result-json") == (
+        "/proj/verif/blk/artefacts/.dispatch/b.json"
+    )
+    assert argv.index("--build-result-json") > argv.index("_test-job")
+
+
+def test_build_result_json_is_absent_for_an_ungated_job():
+    """No build job, no envelope — and an argv unchanged from before #498."""
+    assert "--build-result-json" not in sim_job_argv(_test_spec())
+    assert "--build-result-json" not in sim_job_argv(_test_spec(expect_prebuilt=True))
+
+
+def test_build_result_json_is_not_a_build_job_flag():
+    """The build job WRITES the envelope; it has none to consult."""
+    assert "--build-result-json" not in build_job_argv(_build_spec())
+
+
 def test_builder_globals_precede_the_subcommand():
     """Globals must sit before ``_test-job`` or Typer rejects them."""
     argv = sim_job_argv(

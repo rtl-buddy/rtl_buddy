@@ -416,6 +416,26 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "unaffected and the job still exits 0 so its afterok "
                 "dependents run, but the head sees no envelope from it"
             )
+        case "build_job.failure_detail_failed":
+            return (
+                f"{fields.get('test')}: the build job could not record why "
+                f"its compile failed ({fields.get('error')}) — the failure "
+                "itself is still reported, so the test's sim job still "
+                "declines to recompile; only the error text is missing from "
+                "the build result"
+            )
+        case "compile.build_job_failed":
+            run = fields.get("run_id")
+            run_note = "" if run is None else f" (run {run})"
+            rc = fields.get("returncode")
+            rc_note = "" if rc is None else f" with exit {rc}"
+            return (
+                f"{fields.get('test')}{run_note}: not compiling — the build "
+                f"job's compile for this test already failed{rc_note}. "
+                "Recompiling here would fail the same way under the "
+                "simulation reservation and overwrite the build's own "
+                f"{fields.get('transcript')}, which is where the error is."
+            )
         case "compile.prebuilt_stamp_invalid":
             run = fields.get("run_id")
             run_note = "" if run is None else f" (run {run})"
@@ -424,7 +444,9 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "on a build job — that build's stamp did not validate, so every "
                 "element of this fan-out is compiling into "
                 f"{fields.get('build_dir')} at once. A compile failure below is "
-                "most likely that collision, not a design error."
+                "most likely that collision, not a design error. This retry "
+                "writes compile.retry.log, leaving the build job's compile.log "
+                "intact."
             )
         case "dispatch.compile_failed_in_build":
             return (

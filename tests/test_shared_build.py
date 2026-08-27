@@ -1147,6 +1147,281 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
     assert "compiling despite being gated" not in caplog.text
 
 
+# ------------------------------- a gated job vs. a failed build (#498)
+
+# What the build job left in artefacts/<test>/compile.log. Every test below
+# asserts it byte-for-byte afterwards: the whole bug was a sim-side retry
+# writing its own `%Error: Verilator threw signal 9` over this text, so the
+# only visible failure became an OOM that read as a resource problem.
+_BUILD_TRANSCRIPT = (
+    "Command: verilator --Mdir obj_dir -f run.f\n\n"
+    "=== stderr ===\n"
+    "%Error: src/top.sv:3:7: Signal is not driven: 'q'\n"
+    "%Error: Exiting due to 1 error(s)\n"
+    "\n=== stdout ===\n"
+)
+
+
+def _seed_build_transcript(sim):
+    """Put the build job's compile.log where this sim would look for it."""
+    path = Path(sim._get_compile_transcript_path())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_BUILD_TRANSCRIPT)
+    return path
+
+
+def _write_build_envelope(tmp_path, *, failed, builds=None):
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    return write_build_result_json(
+        tmp_path / "artefacts" / ".dispatch" / "build-result-1.json",
+        built=[name for name in ("test_a",) if name not in failed],
+        failed=failed,
+        builds=builds,
+    )
+
+
+def _events(caplog, name):
+    return [
+        record.rtl_fields
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == name
+    ]
+
+
+def test_a_gated_job_does_not_retry_a_compile_the_build_job_already_failed(
+    tmp_path, monkeypatch, caplog
+):
+    """A deterministic compile error will not pass on retry (#498).
+
+    Retrying it in the sim job runs the same elaboration under the *sim*
+    reservation, so a big design is OOM-killed and writes `signal 9` over
+    the build job's real error. Refuse the retry, report the build's exit
+    status and error lines, and leave that transcript alone.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[
+            {
+                "test": "test_a",
+                "returncode": 1,
+                "transcript": os.path.join("artefacts", "test_a", "compile.log"),
+                "error_tail": [
+                    "%Error: src/top.sv:3:7: Signal is not driven: 'q'",
+                    "%Error: Exiting due to 1 error(s)",
+                ],
+            }
+        ],
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    # No builder ran, and neither transcript was touched.
+    assert calls == []
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert not (compile_log.parent / "compile.retry.log").exists()
+    # The real error reaches the summary row, in one line.
+    desc = sim.compile_fail_desc
+    assert "Signal is not driven" in desc
+    assert "(exit 1)" in desc
+    assert str(compile_log) in desc
+    assert "\n" not in desc
+    # ...and the retry WARNING must not fire: nothing is compiling here, so
+    # the "every sibling is compiling into one dir" advice would be wrong.
+    assert _events(caplog, "compile.prebuilt_stamp_invalid") == []
+    assert _events(caplog, "compile.build_job_failed")[0]["returncode"] == 1
+
+
+def test_a_gated_job_reports_a_failed_build_without_its_error_detail(
+    tmp_path, monkeypatch
+):
+    """An envelope from a build job too old to record the detail still decides.
+
+    `failed` alone is the load-bearing half. Missing `returncode`/
+    `error_tail` costs the row its error text, never its verdict — and the
+    compile still must not be retried.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=["test_a"])
+
+    assert sim.compile() == 1  # no recorded returncode -> the generic 1
+    assert calls == []
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert sim.compile_fail_desc.startswith("compile failed in build job")
+
+
+def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
+    tmp_path, monkeypatch, caplog
+):
+    """A stamp invalid for some *other* reason still earns its retry (#498).
+
+    Toolchain drift, a clock skew, a config the build job never reached:
+    the recompile is right. What it may not do is truncate the build job's
+    compile.log, so its transcript goes to compile.retry.log — and the
+    compile.failed event names whichever file was actually written, because
+    that is what every reader is pointed at.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    # The build job says this test BUILT; the stamp simply did not validate.
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=[])
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert len(calls) == 1  # the retry really ran
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    retry_log = compile_log.parent / "compile.retry.log"
+    assert retry_log.is_file()
+    assert "Command: " in retry_log.read_text()
+    assert _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert _events(caplog, "compile.failed")[0]["transcript"] == str(retry_log)
+    # No build-side verdict to report, so the generic desc still applies.
+    assert sim.compile_fail_desc is None
+
+
+def test_a_gated_retry_falls_back_to_todays_behaviour_without_an_envelope(
+    tmp_path, monkeypatch, caplog
+):
+    """Missing, corrupt, or simply not passed: retry, exactly as before.
+
+    Declining to compile on a guess would turn an unreadable file into a
+    lost run, so only an envelope that positively names this test as failed
+    stops the retry.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json")
+    cases = (
+        ("absent", tmp_path / "nope.json"),
+        ("corrupt", corrupt),
+        ("not passed at all", None),
+    )
+    for case_i, (label, envelope) in enumerate(cases):
+        calls = []
+        _install_fake_builder(monkeypatch, calls)
+        # A distinct define per case, so no case short-circuits on the
+        # shared build stamp an earlier one left.
+        sim = _make_sim(
+            tmp_path, monkeypatch, test_name=f"test_{case_i}", pd={"CASE": case_i}
+        )
+        compile_log = _seed_build_transcript(sim)
+        sim.expect_prebuilt = True
+        sim.build_result_json = envelope
+
+        caplog.clear()
+        with caplog.at_level(_logging.DEBUG):
+            assert sim.compile() == 0, label
+
+        assert len(calls) == 1, label
+        assert _events(caplog, "compile.prebuilt_stamp_invalid"), label
+        assert _events(caplog, "compile.build_job_failed") == [], label
+        # A successful compile writes no transcript at all, so the build
+        # job's stays exactly as it was.
+        assert compile_log.read_text() == _BUILD_TRANSCRIPT, label
+
+
+def test_an_ungated_compile_still_writes_compile_log(tmp_path, monkeypatch):
+    """The `.retry.` name is for gated retries and nothing else (#498).
+
+    Every local run, and every dispatched job with no build job behind it,
+    must keep writing the file the docs, `rb graph results` and a decade of
+    muscle memory look for.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 1
+
+    transcript = Path(sim._get_compile_transcript_path())
+    assert transcript.name == "compile.log"
+    assert transcript.is_file()
+    assert not (transcript.parent / "compile.retry.log").exists()
+    # And the record a dispatched build job would put in its envelope.
+    assert sim.last_compile_failure == {
+        "returncode": 1,
+        "transcript": str(transcript),
+    }
+
+
+def test_a_gated_build_failure_becomes_the_compile_fail_desc(tmp_path, monkeypatch):
+    """The desc reaches the run summary through TestRunner, not just VlogSim.
+
+    `_compile_outcome` maps a non-zero compile to CompileFailResults, and
+    that mapping is where a bare "Compile failed" used to erase everything
+    the sim had just learned (#498).
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[
+            {
+                "test": "test_a",
+                "returncode": 2,
+                "error_tail": ["%Error: src/top.sv:3:7: Signal is not driven: 'q'"],
+            }
+        ],
+    )
+
+    runner = RtlBuddyTestRunner(
+        name="rtl_buddy/testrunner",
+        root_cfg=sim.root_cfg,
+        test_cfg=sim.test_cfg,
+        rtl_builder_mode="sim",
+        test_runner_mode={"sim_to_stdout": False},
+        share_build=True,
+        expect_prebuilt=True,
+        build_result_json=sim.build_result_json,
+        suite_dir=str(tmp_path),
+    )
+    monkeypatch.setattr(runner, "_run_pre", lambda **_kwargs: None)
+    runner._vlog_sim = sim
+
+    results = runner.compile_prepared()
+    assert results.results["result"] == "FAIL"
+    assert "Signal is not driven" in results.results["desc"]
+    assert "(exit 2)" in results.results["desc"]
+    # The runner's own view of the failure, which the build job records.
+    assert runner.last_compile_failure["returncode"] == 2
+    assert calls == []
+
+
 def test_share_build_unsupported_reason_is_the_predicate_the_head_uses():
     """The head plans reservations and gating from this, and the job takes
     the unshared path from it. Family alone is not enough: an absolute

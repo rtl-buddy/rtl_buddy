@@ -39,6 +39,7 @@ from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
+from ..runner.result_io import build_compile_fail_desc, load_build_result_json
 from ..process_utils import run_managed_process
 from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
 
@@ -75,6 +76,16 @@ _UNSET = object()
 # Stamp written into a shared build dir after a successful compile; records
 # the exact compile inputs the simv was built from so reuse can be validated.
 SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+
+# Where a compile's command + captured output is kept, in the test's compile
+# work dir. The `.retry.` variant is used by exactly one caller: a
+# dispatched sim job that was gated on a build job and found that build's
+# stamp invalid. Its recompile runs under the SIM reservation, so its
+# failure mode is not the build job's — writing it to `compile.log` would
+# replace the build's real compile error with the retry's, which is how a
+# one-line lint error became three rounds of "raise compile memory" (#498).
+COMPILE_TRANSCRIPT_NAME = "compile.log"
+COMPILE_RETRY_TRANSCRIPT_NAME = "compile.retry.log"
 
 # Simulator families whose compile output rtl_buddy can redirect wholesale
 # into a shared build dir, and whose simv still runs from there once other
@@ -354,6 +365,7 @@ class VlogSim:
         suite_dir=None,
         share_build=False,
         expect_prebuilt=False,
+        build_result_json=None,
     ):
         """
         compile and execute sim for given test
@@ -395,6 +407,31 @@ class VlogSim:
         # validate — worth a WARNING, because the whole serialization
         # guarantee rests on it (#369).
         self.expect_prebuilt = expect_prebuilt
+        # That build job's envelope, when the head knew one (#498). It is
+        # what separates the two reasons a stamp fails to validate: the
+        # build's compile FAILED for this test (deterministic — retrying it
+        # here only burns the sim reservation and overwrites the real
+        # error), or the stamp is merely absent/stale (toolchain drift, a
+        # clock skew) and a retry is the right answer. None everywhere else,
+        # including every local run, where there is no build job at all.
+        self.build_result_json = build_result_json
+        # What a failed compile *this instance* ran cost the caller in
+        # diagnostics: {returncode, transcript}. Read by a dispatched build
+        # job to record the failure in its envelope (#498); None until a
+        # compile actually fails, and reset by each compile() so a second
+        # one on this instance cannot inherit the first's verdict.
+        self.last_compile_failure = None
+        # A one-line desc that replaces the generic "Compile failed" when
+        # this compile failed for a reason the sim itself already knows
+        # (#498). Set only on the gated-build-failed path.
+        self.compile_fail_desc = None
+        # Which file the next compile transcript is written to. The retry a
+        # gated sim job runs when the build's stamp did not validate must
+        # NOT truncate `compile.log`: that file is the build job's, and
+        # overwriting it replaces a real compile error with whatever the
+        # retry hit under the sim's (smaller) reservation — an 8G OOM
+        # reading as "signal 9" in the ECP report that filed #498.
+        self._compile_transcript_name = COMPILE_TRANSCRIPT_NAME
         # CLI commands always pass suite_dir resolved from the test
         # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
         # is tests-only — `tests/test_setup_failures.py`,
@@ -497,7 +534,16 @@ class VlogSim:
         return str(artifact_dir)
 
     def _get_compile_transcript_path(self):
-        return str(Path(self._get_compile_work_dir()) / "compile.log")
+        return str(Path(self._get_compile_work_dir()) / self._compile_transcript_name)
+
+    def _get_build_compile_transcript_path(self):
+        """Where the *build job* wrote this test's transcript.
+
+        Always ``compile.log``, whatever this instance is about to write:
+        the gated sim job names the build's file when it declines to retry,
+        and it must not accidentally name its own retry log (#498).
+        """
+        return str(Path(self._get_compile_work_dir()) / COMPILE_TRANSCRIPT_NAME)
 
     def _get_filelist_path(self):
         return str(Path(self._get_compile_work_dir()) / "run.f")
@@ -1272,6 +1318,36 @@ class VlogSim:
             # unless a `builder-simv:` points two tests at one executable.
         return plan
 
+    def _gated_build_failure(self):
+        """This test's record in the gating build job's envelope, if it FAILED.
+
+        ``{}`` when the envelope lists the test as failed but carries no
+        per-build record for it (an older build job, or one whose telemetry
+        could not be serialised) — still an answer, and a decisive one: the
+        compile is known to have failed, only its detail is missing.
+        ``None`` means "no reason to think this build failed", which covers
+        every case that must behave exactly as it did before #498: no build
+        job, no envelope path, an unreadable or stale envelope, or a test
+        the build actually built.
+
+        Best-effort by construction. A sim job that cannot read the
+        envelope falls back to today's retry rather than inventing a
+        failure — declining to compile on a guess would turn a readable
+        file into a lost run.
+        """
+        if not self.expect_prebuilt or self.build_result_json is None:
+            return None
+        try:
+            envelope = load_build_result_json(self.build_result_json)
+        except Exception:  # noqa: BLE001 - advisory; never costs a run
+            return None
+        if not envelope or self.test_name not in set(envelope.get("failed") or ()):
+            return None
+        for entry in envelope.get("builds") or ():
+            if entry.get("test") == self.test_name:
+                return entry
+        return {}
+
     def _compile_plan(self):
         """The cached :class:`_CompilePlan`, deriving it on first ask."""
         if self._compile_plan_cache is None:
@@ -1290,6 +1366,11 @@ class VlogSim:
 
     def compile(self):
         rtl_builder_cfg = self.rtl_builder_cfg
+        # One compile, one verdict: a second compile() on this instance must
+        # not inherit the first's failure record, desc, or transcript name.
+        self.last_compile_failure = None
+        self.compile_fail_desc = None
+        self._compile_transcript_name = COMPILE_TRANSCRIPT_NAME
         log_event(
             logger,
             logging.DEBUG,
@@ -1438,11 +1519,51 @@ class VlogSim:
         if self.expect_prebuilt:
             # This job was ordered after a build job precisely so it would not
             # have to compile. Reaching here means that build's stamp did not
-            # validate, and the dependency only *orders* the elements — it does
-            # not exclude them — so every sibling element is about to do the
-            # same thing into the same directory. That is #369 resurrected, and
-            # this is the one line that says so; a `Compile failed` further
-            # down otherwise looks like a design error.
+            # validate — but there are two reasons for that, and they want
+            # opposite answers (#498).
+            build_failure = self._gated_build_failure()
+            if build_failure is not None:
+                # The build job's compile for THIS test exited non-zero. That
+                # is deterministic: the same sources, the same flags and the
+                # same toolchain will fail again here, only now under the sim
+                # reservation — which is how a 40-character lint error became
+                # `%Error: Verilator threw signal 9` written over the build's
+                # own `compile.log`, and three rounds of raising compile
+                # memory chasing it. Fail immediately, carrying the build's
+                # verdict, and leave that transcript exactly as it is.
+                returncode = build_failure.get("returncode")
+                build_transcript = self._get_build_compile_transcript_path()
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "compile.build_job_failed",
+                    test=self.test_name,
+                    run_id=self.run_id,
+                    returncode=returncode,
+                    transcript=build_transcript,
+                    build_result=str(self.build_result_json),
+                )
+                self.compile_fail_desc = build_compile_fail_desc(
+                    returncode=returncode,
+                    error_tail=build_failure.get("error_tail"),
+                    logs=build_transcript,
+                )
+                self.last_compile_failure = {
+                    "returncode": returncode,
+                    "transcript": build_transcript,
+                }
+                # A non-zero status is the contract with _compile_outcome;
+                # the build's own is preferred so the two records agree, and
+                # 1 stands in for a build job too old to have recorded one.
+                return returncode if isinstance(returncode, int) and returncode else 1
+            # The stamp is merely absent or stale — a toolchain moved, a
+            # clock skewed, the build job never got to this config. The
+            # retry is right, but the dependency only *orders* the elements
+            # (it does not exclude them), so every sibling element is about
+            # to do the same thing into the same directory. That is #369
+            # resurrected, and this is the one line that says so; a
+            # `Compile failed` further down otherwise looks like a design
+            # error.
             log_event(
                 logger,
                 logging.WARNING,
@@ -1451,6 +1572,11 @@ class VlogSim:
                 run_id=self.run_id,
                 build_dir=build_dir,
             )
+            # Beside the build's transcript, never over it: whatever this
+            # retry hits is the *sim job's* story, told under the sim job's
+            # reservation, and the build's compile.log is the only record of
+            # what the build job saw.
+            self._compile_transcript_name = COMPILE_RETRY_TRANSCRIPT_NAME
         log_event(
             logger,
             logging.INFO,
@@ -1489,6 +1615,10 @@ class VlogSim:
         license_queued = self._compile_queued_for_license(result)
         if result.returncode != 0:
             transcript_path = self._write_compile_transcript(run_str, result)
+            # Whichever file was actually written — `compile.log`, or the
+            # `compile.retry.log` a gated retry writes so it does not
+            # truncate the build job's (#498). Every consumer that points a
+            # reader at "the transcript" reads it off this event.
             log_event(
                 logger,
                 logging.ERROR,
@@ -1499,6 +1629,13 @@ class VlogSim:
                 transcript=transcript_path,
                 license_queued=license_queued,
             )
+            # What a dispatched build job records in its envelope for this
+            # config (#498): the status its own sim jobs would otherwise
+            # have to rediscover, and the file that says why.
+            self.last_compile_failure = {
+                "returncode": result.returncode,
+                "transcript": transcript_path,
+            }
         else:
             log_event(
                 logger,

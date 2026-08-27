@@ -366,6 +366,38 @@ def test_sanitized_directory_maps_back_to_the_declared_test_name(
     assert "test:verif/blk_a#t_odd/name" in entries
 
 
+def test_a_gated_retry_log_is_listed_beside_the_build_s_compile_log(
+    results_project: Path,
+):
+    """Two compile transcripts, two keys (#498).
+
+    `compile.log` is the build job's; `compile.retry.log` is the recompile
+    a gated sim job ran after finding that build's stamp invalid. They fail
+    for different reasons under different reservations, so collapsing them
+    into one key would hand a reader the wrong file.
+    """
+    _seed_run(results_project, "t_basic")
+    test_dir = _artefact_dir(results_project, "t_basic")
+    (test_dir / "compile.log").write_text("the build job's compile\n")
+
+    artefacts = collect_results(results_project).entries["test:verif/blk_a#t_basic"][
+        "artefacts"
+    ]
+    assert artefacts["compile_log"] == "verif/blk_a/artefacts/t_basic/compile.log"
+    # Absent until the retry actually happened — a key that is never null.
+    assert "compile_retry_log" not in artefacts
+
+    (test_dir / "compile.retry.log").write_text("the sim job's recompile\n")
+    artefacts = collect_results(results_project).entries["test:verif/blk_a#t_basic"][
+        "artefacts"
+    ]
+    assert artefacts["compile_log"] == "verif/blk_a/artefacts/t_basic/compile.log"
+    assert (
+        artefacts["compile_retry_log"]
+        == "verif/blk_a/artefacts/t_basic/compile.retry.log"
+    )
+
+
 def test_non_test_directories_are_not_mistaken_for_tests(results_project: Path):
     artefacts = results_project / "verif" / "blk_a" / "artefacts"
     for name in ("hier", "axi", ".dispatch", ".shared-builds", "obj_dir_t_basic"):

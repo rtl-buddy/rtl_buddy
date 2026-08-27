@@ -66,15 +66,33 @@ class TestPassResults(TestResults):
         )
 
 
+# The desc a compile failure carries when nothing more specific is known.
+# A module constant because it is also a *predicate* on the collecting head
+# (#498): a dispatched sim job's envelope saying exactly this is what marks
+# the row as "the compile failed, and nobody said why yet", which is the row
+# the build job's real error gets folded into.
+COMPILE_FAIL_DESC = "Compile failed"
+
+
 class CompileFailResults(TestResults):
     """
     Compilation failed
+
+    ``desc`` overrides the generic wording when the caller knows the real
+    error — a dispatched sim job gated on a build job whose compile already
+    failed carries that build's exit status and error lines here, so the run
+    summary shows the design error instead of a bare ``Compile failed``
+    (#498). Keep it to ONE line: the summary tables render it in a cell.
     """
 
-    def __init__(self, name):
+    def __init__(self, name, desc=None):
         super().__init__(
             name=name,
-            results={"result": "FAIL", "name": name, "desc": "Compile failed"},
+            results={
+                "result": "FAIL",
+                "name": name,
+                "desc": desc or COMPILE_FAIL_DESC,
+            },
         )
 
 

@@ -98,8 +98,11 @@ from .dispatch.rightsize import (
     analyze_suite_reservations,
 )
 from .runner.result_io import (
+    BUILD_COMPILE_FAIL_PREFIX,
     attach_result_key,
     attach_telemetry_json,
+    build_compile_fail_desc,
+    compile_error_tail,
     load_build_result_json,
     load_result_json,
     refresh_result_json,
@@ -107,6 +110,7 @@ from .runner.result_io import (
     write_result_json,
 )
 from .runner.test_results import (
+    COMPILE_FAIL_DESC,
     CompileFailResults,
     DispatchFailResults,
     EarlyStopResults,
@@ -238,6 +242,38 @@ def _summarize_compile_work(build_entries) -> dict:
         "compiled": compiled,
         "compiled_sec": round(compiled_sec, 2),
     }
+
+
+def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
+    """Add the failure keys to one ``builds`` record, in place (#498).
+
+    ``returncode``/``transcript``/``error_tail``: the builder's exit status,
+    the file that holds its output, and enough of that output to read the
+    error without opening the file. Written only for a build that failed,
+    and only for the fields this failure actually has — a config that never
+    reached a builder has no returncode to report, and its worker's
+    exception is the whole story instead.
+
+    ``transcript`` is suite-relative for the reason ``group`` is: an
+    absolute path here would pin the compute node's mount into an artifact
+    the head reads. ``error_tail`` is read from the *absolute* path, on the
+    node that just wrote it, because the head may not be able to.
+    """
+    failure = failure or {}
+    returncode = failure.get("returncode")
+    if returncode is not None:
+        entry["returncode"] = returncode
+    transcript = failure.get("transcript")
+    if transcript:
+        entry["transcript"] = os.path.relpath(transcript, suite_dir)
+        tail = compile_error_tail(transcript)
+        if tail:
+            entry["error_tail"] = tail
+    elif worker_error:
+        # No builder ran, so there is no transcript — but the exception that
+        # replaced it is exactly the "why" this field exists to carry.
+        entry["error_tail"] = [str(worker_error)]
+    return entry
 
 
 class RtlBuddy:
@@ -684,6 +720,7 @@ class RtlBuddy:
         self.run_depth = RunDepth.POST
         self.share_build = False
         self.expect_prebuilt = False
+        self.build_result_json = None
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
@@ -1853,6 +1890,14 @@ class RtlBuddy:
                 "means that build's stamp did not validate (warns)",
             ),
         ] = False,
+        build_result_json: Annotated[
+            str,
+            typer.Option(
+                "--build-result-json",
+                help="the gating build job's result envelope; a test it "
+                "records as failed is reported without recompiling here",
+            ),
+        ] = None,
     ):
         """
         internal: run one (test, run_id) and write its result JSON (#351)
@@ -1862,6 +1907,15 @@ class RtlBuddy:
         )
         self.share_build = share_build
         self.expect_prebuilt = expect_prebuilt
+        # Resolved against the invocation cwd for the reason --result-json is:
+        # the head writes the path it sees, and this job's cwd is the suite
+        # dir. Absent for an ungated job, and for a head too old to pass it —
+        # both then behave exactly as before #498 (compile, and report).
+        self.build_result_json = (
+            self._abs_invocation_path(build_result_json)
+            if build_result_json is not None
+            else None
+        )
         # Resolve the output path before entering the command context so
         # a relative --result-json lands where the dispatching process
         # expects it, not under the suite dir.
@@ -2364,33 +2418,52 @@ class RtlBuddy:
             # builder it would have used, so a gap in the envelope means "the
             # build job never saw this test", not "it compiled instantly".
             record = runner.last_compile or {}
-            builds.append(
-                {
-                    "test": name,
-                    # The runner's own resolved builder when no compile plan
-                    # was ever derived (a config whose PRE failed): the
-                    # builder is settled once the sim exists, and naming it
-                    # is the difference between "never compiled" and "no idea
-                    # what would have compiled it".
-                    "builder": record.get("builder")
-                    or getattr(runner, "builder_name", None),
-                    "duration_sec": record.get("duration_sec"),
-                    "reused": record.get("reused"),
-                    # Suite-relative, not absolute and not a basename: the
-                    # suite prefix would pin the compute node's mount into
-                    # an artifact the head reads, and a basename collides —
-                    # every unshared build's output is literally `simv`, so
-                    # unrelated concurrent builds would record one `group`
-                    # and a consumer would merge their timings (#496
-                    # review). Relative to the suite the value is bijective
-                    # with the output path: equal means one single-writer
-                    # output (a shared dir, or one pinned executable),
-                    # distinct means two.
-                    "group": (
-                        os.path.relpath(group_dir, suite_dir) if group_dir else None
-                    ),
-                }
-            )
+            build_entry = {
+                "test": name,
+                # The runner's own resolved builder when no compile plan
+                # was ever derived (a config whose PRE failed): the
+                # builder is settled once the sim exists, and naming it
+                # is the difference between "never compiled" and "no idea
+                # what would have compiled it".
+                "builder": record.get("builder")
+                or getattr(runner, "builder_name", None),
+                "duration_sec": record.get("duration_sec"),
+                "reused": record.get("reused"),
+                # Suite-relative, not absolute and not a basename: the
+                # suite prefix would pin the compute node's mount into
+                # an artifact the head reads, and a basename collides —
+                # every unshared build's output is literally `simv`, so
+                # unrelated concurrent builds would record one `group`
+                # and a consumer would merge their timings (#496
+                # review). Relative to the suite the value is bijective
+                # with the output path: equal means one single-writer
+                # output (a shared dir, or one pinned executable),
+                # distinct means two.
+                "group": (os.path.relpath(group_dir, suite_dir) if group_dir else None),
+            }
+            if not ok:
+                # Why it failed, carried in the envelope rather than left in
+                # this job's log for someone to find (#498). Everything here
+                # is additive and best-effort under the same exit-0 contract
+                # the rest of the loop runs under: a failure to describe a
+                # failure must not cost the fan-out its `afterok`, and a
+                # record without these keys still means what it always did.
+                try:
+                    _annotate_build_failure(
+                        build_entry,
+                        failure=getattr(runner, "last_compile_failure", None),
+                        worker_error=worker_error,
+                        suite_dir=suite_dir,
+                    )
+                except Exception as exc:  # noqa: BLE001 - never fatal here
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.failure_detail_failed",
+                        test=name,
+                        error=str(exc),
+                    )
+            builds.append(build_entry)
             if ok:
                 built.append(name)
                 continue
@@ -2580,6 +2653,7 @@ class RtlBuddy:
             suite_dir=suite_dir,
             share_build=self.share_build,
             expect_prebuilt=self.expect_prebuilt,
+            build_result_json=self.build_result_json,
         )
 
         if len(run_ids) == 1:
@@ -3170,6 +3244,16 @@ class RtlBuddy:
                     # the one thing that puts every sibling element back into
                     # one build directory at once (#369).
                     expect_prebuilt=build_handle is not None,
+                    # ...and told where that build job records its verdict,
+                    # so "the stamp did not validate" can be split into "the
+                    # compile FAILED, deterministically" (report it, do not
+                    # recompile under the sim reservation) and "the stamp is
+                    # stale" (recompile, into compile.retry.log) — #498.
+                    build_result_json=(
+                        build_handle.spec.result_json
+                        if build_handle is not None
+                        else None
+                    ),
                     # Named after the backend that will write it: `slurm-*`
                     # from sbatch --output, `local-parallel-*` from the pool's
                     # redirected stdout.
@@ -3562,6 +3646,51 @@ class RtlBuddy:
             log_path = log_path.with_name(f"{stem}-retry{attempt}{log_path.suffix}")
         return replace(spec, log_path=log_path)
 
+    @staticmethod
+    def _build_compile_fail_desc(build_handle, build_failure):
+        """One summary line for a row the suite's build job failed to compile.
+
+        The head's spelling of the desc the gated sim job writes for itself
+        (#498) — same formatter, plus the two things only the head knows:
+        the scheduler's job id, and where that job's logs are. The error
+        line comes from the build envelope's ``error_tail``, so the row
+        shows the design error rather than whatever a recompile hit.
+        """
+        # BuildJobSpec.result_json is optional on the type (a build job can
+        # be launched without one, and then has no rtl_buddy log of its own
+        # to name); dispatch always sets it, but an error branch must not be
+        # where that assumption turns into a TypeError.
+        build_logs = str(build_handle.spec.log_path)
+        if build_handle.spec.result_json is not None:
+            build_logs += f" and {job_log_path(build_handle.spec.result_json)}"
+        entry = build_failure or {}
+        return build_compile_fail_desc(
+            job_id=build_handle.job_id,
+            returncode=entry.get("returncode"),
+            error_tail=entry.get("error_tail"),
+            logs=build_logs,
+        )
+
+    def _enrich_compile_fail_desc(self, results, build_handle, build_failure):
+        """Point a collected compile-fail row at the build job that broke.
+
+        Only a row that *is* a compile failure, recognised by the two descs
+        rtl_buddy itself writes: the generic ``Compile failed``, and the
+        gated sim job's own build-failure line. A row saying anything else
+        failed in simulation, not in compilation, and rewriting its desc
+        would replace a real diagnosis with a guess — the build envelope
+        listing the test under ``failed`` says a *compile* failed, not that
+        this run's failure was that compile.
+        """
+        if build_handle is None:
+            return
+        desc = results.results.get("desc") or ""
+        if desc != COMPILE_FAIL_DESC and not desc.startswith(BUILD_COMPILE_FAIL_PREFIX):
+            return
+        results.results["desc"] = self._build_compile_fail_desc(
+            build_handle, build_failure
+        )
+
     def _dispatch_collect_pass(
         self, backend, state, pending, *, attempt, retry_cfg, submitted_at=None
     ):
@@ -3593,6 +3722,15 @@ class RtlBuddy:
             else None
         )
         compile_failed = set(build_result["failed"]) if build_result else set()
+        # Why each of those failed (#498), keyed by test. The record the sim
+        # job read for itself, read again here — the head has the one thing
+        # the sim job lacked, the scheduler's build job id, and it is what
+        # takes a reader from a summary row to `build-<id>.log`.
+        build_failures = {
+            entry["test"]: entry
+            for entry in (build_result["builds"] if build_result else [])
+            if entry.get("test") in compile_failed
+        }
         # What the build job observed each config's compile to cost (#495),
         # keyed by test so a sim row can carry its own compile back to the
         # summary and the results overlay. Empty for an envelope written by
@@ -3668,6 +3806,20 @@ class RtlBuddy:
                     handle.spec.result_json, expected_run_token=run_token
                 )
                 results = envelope["result"]
+                if handle.spec.test_name in compile_failed:
+                    # The complementary case to the branch below: the sim job
+                    # DID leave an envelope, and it says the compile failed —
+                    # either because it declined the retry and reported the
+                    # build's verdict (#498), or, from an older job, because
+                    # its own retry failed too. Either way the summary row
+                    # should name the build job that actually broke, so the
+                    # reader goes to `build-<id>.log` instead of re-reading a
+                    # `compile.log` the retry may have written over.
+                    self._enrich_compile_fail_desc(
+                        results,
+                        build_handle,
+                        build_failures.get(handle.spec.test_name),
+                    )
             except FatalRtlBuddyError as e:
                 if handle.spec.test_name in compile_failed:
                     # The build job already knows this is a compile failure;
@@ -3682,21 +3834,10 @@ class RtlBuddy:
                         build_job=build_handle.job_id,
                     )
                     results = CompileFailResults(
-                        name=handle.spec.test_name + "/results"
-                    )
-                    # BuildJobSpec.result_json is optional on the type (a
-                    # build job can be launched without one, and then has no
-                    # rtl_buddy log of its own to name); dispatch always sets
-                    # it, but an error branch must not be where that
-                    # assumption turns into a TypeError.
-                    build_logs = str(build_handle.spec.log_path)
-                    if build_handle.spec.result_json is not None:
-                        build_logs += (
-                            f" and {job_log_path(build_handle.spec.result_json)}"
-                        )
-                    results.results["desc"] = (
-                        f"compile failed in build job {build_handle.job_id} "
-                        f"(see {build_logs})"
+                        name=handle.spec.test_name + "/results",
+                        desc=self._build_compile_fail_desc(
+                            build_handle, build_failures.get(handle.spec.test_name)
+                        ),
                     )
                 else:
                     sched_state = tele.get("state") if tele else None
