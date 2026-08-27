@@ -61,7 +61,7 @@ from .logging_utils import (
     render_summary,
     setup_logging,
 )
-from .process_utils import terminate_live_managed_processes
+from .process_utils import cancellation_has_started, terminate_live_managed_processes
 from .runner.cdc_runner import CdcRunner
 from .runner.lint_runner import LintRunner
 from .runner.cdc_results import CdcSkipResults
@@ -2143,10 +2143,36 @@ class RtlBuddy:
             return None, group_dir, (index, cfg.get_name(), runner)
 
         def _compile_group(group):
-            """Compile one group's configs serially; rows for the caller."""
+            """Compile one group's configs serially; rows for the caller.
+
+            Re-checks the cancellation latch before every member, which is
+            also the check a worker makes when the pool hands it the next
+            group. ``Executor.map``'s result generator cancels the futures
+            still *pending* when the main thread unwinds, but a worker that
+            has already taken the next group is past that point, and
+            ``ThreadPoolExecutor.__exit__`` then waits for it
+            (``shutdown(wait=True)``, no ``cancel_futures``) — long enough
+            to start a compiler the sweep below can no longer see, in its
+            own session, after the job has begun exiting (#496 review). The
+            latch is what turns that worker into a no-op instead;
+            cancelling from the handler is not an option, since it runs
+            between bytecodes on the main thread with the pool's internals
+            mid-flight.
+            """
             group_dir, members = group
             rows = []
             for index, name, runner in members:
+                if cancellation_has_started():
+                    # Reported failed, like anything else that never reached
+                    # a builder: the envelope has one row per planned config
+                    # and `failed` is the only thing it can honestly say
+                    # about a compile that did not happen. In practice the
+                    # envelope is never written — the handler re-raises out
+                    # of the pool — and the head then reports these tests as
+                    # "produced no result", which is the pre-existing
+                    # cancellation story.
+                    rows.append((index, name, False, None, runner, group_dir))
+                    continue
                 try:
                     res = runner.compile_prepared()
                 except Exception as exc:  # noqa: BLE001 - see exit-0 contract
