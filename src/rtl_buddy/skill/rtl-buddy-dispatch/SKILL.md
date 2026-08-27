@@ -32,7 +32,11 @@ missing, stale, or invalid, and 2 for a fatal orchestration/configuration error.
 
 In machine mode, inspect `payload.reservation_advice`. Apply its `edit_hint.file`
 and `edit_hint.path` exactly: the governing field may be a test/testbench
-`resources:` entry or `cfg-dispatch.compile` in `root_config.yaml`.
+`resources:` entry, a suite-level `compile:` block at the top of that suite's
+`tests.yaml`, or `cfg-dispatch.compile` in `root_config.yaml`. The suite block
+overrides `cfg-dispatch.compile` field by field, so one big suite can carry its
+own `compile: {mem: ...}` instead of every suite's build job inheriting a raise
+of the global reservation.
 
 - Slurm `OUT_OF_MEMORY`, or a local Verilator/compiler SIGKILL/`Killed`, means
   raise the governing `mem`; increasing `sim_timeout` cannot fix it.
