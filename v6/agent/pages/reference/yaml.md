@@ -238,7 +238,7 @@ cfg-dispatch:
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
 | `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`; an integer from YAML sexagesimal parsing is fatal |
-| `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. It is the only reservation block that takes `parallel`; the key is meaningless in a per-test or per-testbench `resources:` block and is discarded there |
+| `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field. It is the only reservation block that takes `parallel`; the key is meaningless in a per-test or per-testbench `resources:` block, or in a suite-level `compile:`, and is discarded there |
 | `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
 | `sbatch-args` | Empty list; appended verbatim and therefore overrides duplicate generated flags |
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
@@ -317,10 +317,13 @@ Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`
 
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build job.
 
 ```yaml
 rtl-buddy-filetype: test_config
+
+compile:
+  mem: 48G
 
 testbenches:
   - name: tb_top
@@ -334,6 +337,16 @@ tests:
     testbench: tb_top
     reglvl: 0
 ```
+
+Top-level fields:
+
+| Field | Requirement | Meaning |
+|---|---|---|
+| `rtl-buddy-filetype` | Required | Must be `test_config` |
+| `testbenches` | Required | Testbench definitions |
+| `tests` | Required | Test definitions |
+| `builder` | Optional | Suite default builder name |
+| `compile` | Optional | This suite's dispatch compile reservation: `cpus`, `mem`, and quoted `time`. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`; an omitted field inherits. Sizes the suite's build job, and the compile half of a simulation job that compiles for itself. `parallel` is not accepted here and is discarded. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
 
 Testbench fields:
 

@@ -287,6 +287,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/dispatch/set-per-test-resources.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#set-per-suite-compile-resources",
+          "slug": "set-per-suite-compile-resources",
+          "title": "Set per-suite compile resources",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/dispatch/set-per-suite-compile-resources.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#retry-license-queue-timeouts",
           "slug": "retry-license-queue-timeouts",
           "title": "Retry license-queue timeouts",
