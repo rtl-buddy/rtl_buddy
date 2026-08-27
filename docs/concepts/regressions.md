@@ -54,7 +54,7 @@ When tests share compile inputs, reuse a compiled build:
 rb regression --share-build
 ```
 
-Verilator, VCS, and Icarus support cross-test sharing. Reuse is reported per test on the console and in `compile.log`; add `--rebuild` to compile even when the stamp says the build is current. See [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and backend limitations.
+Verilator, VCS, and Icarus support cross-test sharing. Reuse is reported once per build directory per process on the console, and every test's `compile.log` (and the log file) records its own reuse; add `--rebuild` to compile even when the stamp says the build is current. See [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and backend limitations.
 
 ## Run in parallel
 
