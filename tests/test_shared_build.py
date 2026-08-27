@@ -2738,3 +2738,46 @@ def test_a_repeated_wait_line_says_how_long_it_has_been():
         {"build_dir": "obj_dir_abc", "build_path": "/w/obj_dir_abc", "waited_sec": 600},
     )
     assert "(600s so far)" in message
+
+
+def test_a_reuse_line_reports_the_stamp_age_before_the_toolchain():
+    """The question a stale reuse raises is "was this built before my
+    edit?", so the age leads and is written the way a reader reads a
+    wall clock rather than as a raw second count (#494)."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_reused",
+        {
+            "test": "test_a",
+            "build_dir": "obj_dir_abc",
+            "build_path": "/w/obj_dir_abc",
+            "stamp_age_sec": 3723,
+            "toolchain": "Verilator 5.049 devel rev vBBBB",
+        },
+    )
+    assert message == (
+        "test_a: reused shared build obj_dir_abc "
+        "(built 1h02m03s ago, Verilator 5.049 devel rev vBBBB); nothing compiled"
+    )
+
+
+def test_an_unknown_stamp_age_says_so_rather_than_going_quiet():
+    """The stamp can vanish between validating and being stat-ed, and a
+    reuse must not fail over telemetry. "Age unknown" is still a fact a
+    reader wants, so the line states it instead of dropping the clause."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_reused",
+        {
+            "test": "test_a",
+            "build_dir": "obj_dir_abc",
+            "build_path": "/w/obj_dir_abc",
+            "stamp_age_sec": None,
+            "toolchain": None,
+        },
+    )
+    assert message == (
+        "test_a: reused shared build obj_dir_abc (age unknown); nothing compiled"
+    )

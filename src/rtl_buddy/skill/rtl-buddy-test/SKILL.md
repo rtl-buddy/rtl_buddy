@@ -62,4 +62,9 @@ environment, builder, or toolchain changes rebuild; runtime plusargs, seeds, and
 VCS/Icarus may not report header dependencies. Batch compile-input edits before
 an expensive build and use independent cheap suites while it runs.
 
-Read `rb --machine docs show known-issues` before forcing cache deletion.
+Reuse is reported, not silent: when an edit seems not to take effect or a PASS
+looks suspicious after one, read the `compile.build_reused` console line and the
+test's `compile.log` breadcrumb, which name the reused build directory and its
+stamp's age. `--rebuild` then forces a fresh compile; use it instead of deleting
+`artefacts/.shared-builds/`, and note that dropping `--share-build` does not stop
+reuse. Read `rb --machine docs show known-issues` for the remaining limits.
