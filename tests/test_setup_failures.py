@@ -18,13 +18,22 @@ class DummyTestCfg:
 
 
 class DummySim:
+    def __init__(self):
+        self.cleared_retry_runs = None
+
     def pre(self, **_kwargs):
         return "Setup failed in preproc: boom"
+
+    def clear_retry_transcripts(self, run_ids):
+        self.cleared_retry_runs = list(run_ids)
 
 
 class DummyPassingSim:
     def pre(self, **_kwargs):
         return None
+
+    def clear_retry_transcripts(self, run_ids):
+        pass
 
     def compile(self):
         return 0
@@ -41,6 +50,9 @@ class DummyFilelistFailSim:
 
     def pre(self, **_kwargs):
         return None
+
+    def clear_retry_transcripts(self, run_ids):
+        pass
 
     def compile(self):
         raise FilelistError("missing file: src/foo.sv")
@@ -133,12 +145,17 @@ def test_test_runner_returns_setup_fail_for_all_runs_on_preproc_error(
         run_id=1,
         run_depth=RunDepth.POST,
     )
-    monkeypatch.setattr(runner, "_create_vlog_sim", lambda: DummySim())
+    sim = DummySim()
+    monkeypatch.setattr(runner, "_create_vlog_sim", lambda: sim)
 
     results = runner.run_multiple([1, 2, 3])
 
     assert len(results) == 3
     assert all(isinstance(result, SetupFailResults) for result in results)
+    # Every run this invocation reports on sheds its stale retry
+    # transcript, even when PRE failed — the sim's own cleanup reaches
+    # only run_ids[0] (#498 review).
+    assert sim.cleared_retry_runs == [1, 2, 3]
 
 
 def test_sweep_failure_becomes_setup_fail_result(tmp_path):

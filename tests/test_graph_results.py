@@ -366,6 +366,75 @@ def test_sanitized_directory_maps_back_to_the_declared_test_name(
     assert "test:verif/blk_a#t_odd/name" in entries
 
 
+def test_a_gated_retry_log_is_listed_beside_the_build_s_compile_log(
+    results_project: Path,
+):
+    """Two compile transcripts, two keys (#498).
+
+    `compile.log` is the build job's; `compile.retry.log` is the recompile
+    a gated sim job ran after finding that build's stamp invalid. They fail
+    for different reasons under different reservations, so collapsing them
+    into one key would hand a reader the wrong file.
+    """
+    _seed_run(results_project, "t_basic")
+    test_dir = _artefact_dir(results_project, "t_basic")
+    (test_dir / "compile.log").write_text("the build job's compile\n")
+
+    artefacts = collect_results(results_project).entries["test:verif/blk_a#t_basic"][
+        "artefacts"
+    ]
+    assert artefacts["compile_log"] == "verif/blk_a/artefacts/t_basic/compile.log"
+    # Absent until the retry actually happened — a key that is never null.
+    assert "compile_retry_log" not in artefacts
+
+    (test_dir / "compile.retry.log").write_text("the sim job's recompile\n")
+    artefacts = collect_results(results_project).entries["test:verif/blk_a#t_basic"][
+        "artefacts"
+    ]
+    assert artefacts["compile_log"] == "verif/blk_a/artefacts/t_basic/compile.log"
+    assert (
+        artefacts["compile_retry_log"]
+        == "verif/blk_a/artefacts/t_basic/compile.retry.log"
+    )
+
+
+def test_a_retry_log_is_attributed_only_to_the_run_that_wrote_it(
+    results_project: Path,
+):
+    """Run-specific existence is run-specific evidence (#498 review round 6).
+
+    The retry transcript is run-scoped: only the run whose gated retry
+    failed wrote one. A test-scoped lookup attached the same file to EVERY
+    run-NNNN entry, telling a reader that runs which never retried did.
+    `compile.log` stays test-scoped — one compile feeds every iteration.
+    """
+    _seed_run(results_project, "t_basic", run_id=1, status="FAIL", when=_T_FIRST)
+    _seed_run(results_project, "t_basic", run_id=2, status="PASS", when=_T_SECOND)
+    test_dir = _artefact_dir(results_project, "t_basic")
+    (test_dir / "compile.log").write_text("the build job's compile\n")
+    (_artefact_dir(results_project, "t_basic", 1) / "compile.retry.log").write_text(
+        "%Error: run 1's failed retry\n"
+    )
+
+    entry = collect_results(results_project).entries["test:verif/blk_a#t_basic"]
+    # .get: the test-scoped compile.log also gives the bare test dir a
+    # record, whose absent run_id is dropped by the None filter.
+    runs = {r.get("run_id"): r for r in entry["runs"]}
+    assert (
+        runs[1]["artefacts"]["compile_retry_log"]
+        == "verif/blk_a/artefacts/t_basic/run-0001/compile.retry.log"
+    )
+    assert "compile_retry_log" not in runs[2]["artefacts"]
+    # The base (test-dir) scope holds no retry log either — it is not a
+    # run, and the file is not test-scoped any more.
+    assert "compile_retry_log" not in runs[None]["artefacts"]
+    # The test-scoped compile record is still every run's.
+    assert (
+        runs[2]["artefacts"]["compile_log"]
+        == "verif/blk_a/artefacts/t_basic/compile.log"
+    )
+
+
 def test_non_test_directories_are_not_mistaken_for_tests(results_project: Path):
     artefacts = results_project / "verif" / "blk_a" / "artefacts"
     for name in ("hier", "axi", ".dispatch", ".shared-builds", "obj_dir_t_basic"):

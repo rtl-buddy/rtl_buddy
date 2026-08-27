@@ -45,6 +45,7 @@ class TestRunner:
         suite_dir=None,
         share_build=False,
         expect_prebuilt=False,
+        build_result_json=None,
     ):
         """
         Run tests based on config
@@ -70,6 +71,7 @@ class TestRunner:
         self.suite_dir = suite_dir
         self.share_build = share_build
         self.expect_prebuilt = expect_prebuilt
+        self.build_result_json = build_result_json
         # Set by prepare(); the phases after it all drive this one instance,
         # because a preproc hook may mutate test_cfg and the compile key is
         # only knowable afterwards, on the sim that saw the mutation.
@@ -98,6 +100,7 @@ class TestRunner:
             suite_dir=self.suite_dir,
             share_build=self.share_build,
             expect_prebuilt=self.expect_prebuilt,
+            build_result_json=self.build_result_json,
         )
 
     def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):
@@ -147,6 +150,23 @@ class TestRunner:
         return None if self._vlog_sim is None else self._vlog_sim.last_compile
 
     @property
+    def last_compile_failure(self):
+        """This runner's sim's failed-compile record, or ``None`` (#498).
+
+        ``{returncode, transcript}`` — the builder's exit status and the
+        file holding its output. A dispatched build job records this in its
+        envelope so the sim jobs it gates can decline a retry that would
+        only fail the same way, and so the head can put the real error in
+        the run summary. Telemetry, and telemetry must never raise: a sim
+        that never existed, and a sim class that does not report one, both
+        read as "nothing to record".
+        """
+        try:
+            return getattr(self._vlog_sim, "last_compile_failure", None)
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return None
+
+    @property
     def builder_name(self):
         """The resolved builder's name, or ``None`` (#495).
 
@@ -191,7 +211,14 @@ class TestRunner:
             desc = str(e)
             return lambda: FilelistFailResults(name=self.name + "/results", desc=desc)
         if compile_returncode != 0:
-            return lambda: CompileFailResults(name=self.name + "/results")
+            # The sim may already know *why*, and say so in one line — a
+            # gated job whose build job's compile had failed carries that
+            # build's exit status and error there (#498). Read through
+            # getattr: the returncode is the contract, the explanation is
+            # optional, and a sim class that offers none keeps the generic
+            # "Compile failed" it always had.
+            desc = getattr(self._vlog_sim, "compile_fail_desc", None)
+            return lambda: CompileFailResults(name=self.name + "/results", desc=desc)
 
         if self.run_depth == RunDepth.COMP:
             if run_ids is None:
@@ -301,6 +328,14 @@ class TestRunner:
         # directory for output that runs 2..N also read (#415).
         pre_error = self._run_pre(pre_run_id=None)
         vlog_sim = self._vlog_sim
+        # Every run this invocation is about to produce results for sheds
+        # its stale retry transcript — the sim's own per-run cleanup
+        # reaches only run_ids[0], and it is skipped without a preproc
+        # hook, so a local rerun after a dispatched fan-out would pair
+        # runs 2..N's fresh results with the dispatch's old retry logs
+        # (#498 review). Before the SetupFail return, deliberately: a
+        # failed PRE must not resurrect them either.
+        vlog_sim.clear_retry_transcripts(run_ids)
         if pre_error is not None:
             return [
                 SetupFailResults(name=self.name + "/results", desc=pre_error)

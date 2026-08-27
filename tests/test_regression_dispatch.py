@@ -25,6 +25,7 @@ from rtl_buddy.runner.result_io import write_build_result_json, write_result_jso
 from rtl_buddy.runner.test_results import (
     CompileFailResults,
     EarlyStopResults,
+    SimTimeoutResults,
     TestPassResults,
 )
 from rtl_buddy.seed_mode import SeedMode
@@ -419,6 +420,234 @@ def test_build_compile_failure_surfaces_as_compile_fail(
     assert rows["basic"]["result"] == "FAIL"
     assert "compile failed in build job" in rows["basic"]["desc"]
     assert "produced no result" not in rows["basic"]["desc"]
+
+
+def test_build_compile_failure_puts_the_real_error_in_the_summary(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The row names the build job, its exit status and its error (#498).
+
+    The failure this replaces: the sim job retried the compile under its
+    own reservation, was OOM-killed, wrote `%Error: Verilator threw signal
+    9` over the build's compile.log, and the summary said `Compile failed`
+    pointing at that file. Three rounds of raising compile memory went by
+    before anyone opened `.dispatch/build-<id>.log` and found a one-line
+    lint error.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _CompileFailBuild(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "transcript": os.path.join("artefacts", "basic", "compile.log"),
+                        "error_tail": [
+                            "=== stderr ===",
+                            "%Error: src/top.sv:3:7: Signal is not driven: 'q'",
+                            "%Error: Exiting due to 1 error(s)",
+                        ],
+                    }
+                ],
+            )
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            # The real gated job declines to recompile and reports the
+            # build's verdict; its envelope is a CompileFail with the
+            # generic desc when it predates #498, which is the case the
+            # head still has to enrich.
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _CompileFailBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    # Every gated job was handed the envelope it needs to make that call.
+    gated = {spec.test_name: spec for spec in backend.submitted}
+    assert gated["basic"].expect_prebuilt is True
+    assert gated["basic"].build_result_json == backend.build_submitted[0].result_json
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    desc = rows["basic"]["desc"]
+    assert rows["basic"]["result"] == "FAIL"
+    assert desc.startswith("compile failed in build job fake-build (exit 1)")
+    assert "Signal is not driven" in desc
+    assert desc != "Compile failed"
+    # One line: the summary renders it in a table cell.
+    assert "\n" not in desc
+    # A test the build actually built keeps its own verdict untouched.
+    assert "compile failed in build job" not in rows["extra"]["desc"]
+    # The rewrite is durable, not just rendered: `rb graph results` re-reads
+    # the envelope, which would otherwise still say `Compile failed` (#498
+    # review).
+    envelope = json.loads(Path(gated["basic"].result_json).read_text())
+    assert envelope["result"]["results"]["desc"] == desc
+
+
+def test_a_sim_failure_is_not_relabelled_as_the_build_job_s_compile_error(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`failed` says a compile failed, not that THIS row's failure was it.
+
+    A config the build job failed to compile can still have a sim job that
+    recompiled successfully (the stamp path is per-key) and then failed in
+    simulation. Rewriting that row's desc would replace a real diagnosis
+    with a guess (#498).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _SimFailAfterBuildFail(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(spec.result_json, built=[], failed=["basic"])
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            handle = super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+            if spec.test_name == "basic":
+                write_result_json(
+                    spec.result_json,
+                    test_name=spec.test_name,
+                    run_id=spec.run_id,
+                    results=SimTimeoutResults(name=spec.test_name + "/results"),
+                    run_token=read_plan_token(spec.plan_path),
+                )
+            return handle
+
+    backend = _SimFailAfterBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["desc"] == "Sim hit timeout"
+
+
+def test_an_evidence_less_build_failure_keeps_the_retry_s_own_compile_fail(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head's rewrite demands the same compiler evidence as the sim's gate.
+
+    A `failed` entry whose record carries no returncode is a setup or worker
+    error; the sim job saw no evidence, retried, and here failed its *own*
+    compile. Rewriting that generic desc would attribute the retry's genuine
+    compile failure to a build job whose compiler never ran (#498 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _EvidencelessBuildFail(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "error_tail": ["PRE hook raised: OSError: license server"],
+                    }
+                ],
+            )
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _EvidencelessBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"] == "Compile failed"
+
+
+def test_an_inputs_changed_retry_s_own_failure_is_not_relabelled(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A sha-bearing record plus a generic desc means the sim retried.
+
+    A current-generation sim job suppresses the retry on matching inputs
+    and stamps the build prefix into its own desc — so a desc still saying
+    `Compile failed` beside a `fingerprint_sha` record is the retry's own
+    failure after input drift, not the build's stale verdict (#498 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _DriftedBuildFail(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "fingerprint_sha": "0" * 64,
+                        "error_tail": ["%Error: the OLD sources' error"],
+                    }
+                ],
+            )
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _DriftedBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"] == "Compile failed"
+    assert "the OLD sources' error" not in rows["basic"]["desc"]
 
 
 def test_empty_suite_submits_no_build_job(
