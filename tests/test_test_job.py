@@ -9,6 +9,7 @@ needed; the ``minimal_project`` fixture provides the config surface.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -1101,7 +1102,8 @@ def test_build_envelope_carries_per_compile_records(
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
-    stub_runner.group_of = lambda name: "/w/.shared-builds/obj_dir_cafe"
+    shared = minimal_project.resolve() / "artefacts" / ".shared-builds" / "obj_dir_cafe"
+    stub_runner.group_of = lambda name: str(shared)
     stub_runner.compile_record_of = lambda name: {
         "duration_sec": 12.5 if name == "basic" else 0.0,
         "builder": "stub-builder",
@@ -1120,8 +1122,10 @@ def test_build_envelope_carries_per_compile_records(
         "builder": "stub-builder",
         "duration_sec": 12.5,
         "reused": False,
-        # The basename, never the compute node's absolute path.
-        "group": "obj_dir_cafe",
+        # Suite-relative, never the compute node's absolute path — and not
+        # a basename, which is `simv` for every unshared build and would
+        # merge unrelated builds under one id (#496 review).
+        "group": os.path.join("artefacts", ".shared-builds", "obj_dir_cafe"),
     }
     assert br["builds"][1]["reused"] is True
     assert br["builds"][1]["duration_sec"] == 0.0

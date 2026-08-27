@@ -2303,10 +2303,19 @@ class RtlBuddy:
                     or getattr(runner, "builder_name", None),
                     "duration_sec": record.get("duration_sec"),
                     "reused": record.get("reused"),
-                    # The basename, not the path: it identifies the shared
-                    # build (obj_dir_<compile key>) without pinning the
-                    # compute node's mount into an artifact the head reads.
-                    "group": os.path.basename(group_dir) if group_dir else None,
+                    # Suite-relative, not absolute and not a basename: the
+                    # suite prefix would pin the compute node's mount into
+                    # an artifact the head reads, and a basename collides —
+                    # every unshared build's output is literally `simv`, so
+                    # unrelated concurrent builds would record one `group`
+                    # and a consumer would merge their timings (#496
+                    # review). Relative to the suite the value is bijective
+                    # with the output path: equal means one single-writer
+                    # output (a shared dir, or one pinned executable),
+                    # distinct means two.
+                    "group": (
+                        os.path.relpath(group_dir, suite_dir) if group_dir else None
+                    ),
                 }
             )
             if ok:
