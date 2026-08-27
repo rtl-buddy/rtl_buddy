@@ -3698,6 +3698,18 @@ class RtlBuddy:
         desc = results.results.get("desc") or ""
         if desc != COMPILE_FAIL_DESC and not desc.startswith(BUILD_COMPILE_FAIL_PREFIX):
             return
+        # The generic desc needs the same compiler evidence the sim job's
+        # retry gate demands: bare `failed` membership can record a setup or
+        # worker error, and a sim job that saw no evidence retried — so its
+        # generic "Compile failed" may be the retry's own, genuine compile
+        # failure, which must not be re-attributed to a build job whose
+        # compiler never ran. A desc already carrying the build prefix was
+        # written by a sim job that read a recorded returncode itself.
+        returncode = (build_failure or {}).get("returncode")
+        if desc == COMPILE_FAIL_DESC and not (
+            isinstance(returncode, int) and returncode
+        ):
+            return
         results.results["desc"] = self._build_compile_fail_desc(
             build_handle, build_failure
         )
