@@ -328,6 +328,14 @@ class TestRunner:
         # directory for output that runs 2..N also read (#415).
         pre_error = self._run_pre(pre_run_id=None)
         vlog_sim = self._vlog_sim
+        # Every run this invocation is about to produce results for sheds
+        # its stale retry transcript — the sim's own per-run cleanup
+        # reaches only run_ids[0], and it is skipped without a preproc
+        # hook, so a local rerun after a dispatched fan-out would pair
+        # runs 2..N's fresh results with the dispatch's old retry logs
+        # (#498 review). Before the SetupFail return, deliberately: a
+        # failed PRE must not resurrect them either.
+        vlog_sim.clear_retry_transcripts(run_ids)
         if pre_error is not None:
             return [
                 SetupFailResults(name=self.name + "/results", desc=pre_error)

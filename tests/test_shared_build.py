@@ -1149,6 +1149,29 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
     assert "compiling despite being gated" not in caplog.text
 
 
+def test_clear_retry_transcripts_unlinks_every_named_run(tmp_path, monkeypatch):
+    """`run_multiple`'s one compile serves runs 1..N (#498 review).
+
+    The per-run cleanup in pre()/compile() reaches only the sim's own
+    run_id, so a local rerun after a dispatched fan-out relies on this to
+    stop runs 2..N advertising the dispatch's retry transcripts.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    stale = []
+    for run_id in (1, 2, 3):
+        p = Path(sim._get_artifact_dir(run_id=run_id)) / "compile.retry.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("%Error: an old dispatch's retry\n")
+        stale.append(p)
+
+    sim.clear_retry_transcripts([1, 2, 3])
+    assert not any(p.exists() for p in stale)
+
+
 def test_a_stale_retry_log_is_cleared_before_a_failing_pre(tmp_path, monkeypatch):
     """A PRE failure must not resurrect the last invocation's retry (#498 review).
 

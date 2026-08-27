@@ -582,6 +582,25 @@ class VlogSim:
             / COMPILE_RETRY_TRANSCRIPT_NAME
         )
 
+    def clear_retry_transcripts(self, run_ids):
+        """Unlink the stale retry transcript of every run in ``run_ids``.
+
+        For a caller whose one compile serves several runs
+        (:meth:`TestRunner.run_multiple`): the per-run cleanup in
+        :meth:`pre`/:meth:`compile` reaches only ``self.run_id``, so a
+        local rerun after a dispatched fan-out would leave runs 2..N
+        advertising the dispatch's retry transcripts beside their fresh
+        results (#498 review). Best-effort, like every artefact-dir touch.
+        """
+        for run_id in run_ids:
+            try:
+                (
+                    Path(self._get_artifact_dir(run_id=run_id))
+                    / COMPILE_RETRY_TRANSCRIPT_NAME
+                ).unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def _get_build_compile_transcript_path(self):
         """Where the *build job* wrote this test's transcript.
 
