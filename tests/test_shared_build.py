@@ -1,4 +1,5 @@
 import errno
+import fcntl
 import json
 import os
 import threading
@@ -26,6 +27,15 @@ def _forget_rebuild_claims():
     vlog_sim_module._reset_rebuilt_dirs()
     yield
     vlog_sim_module._reset_rebuilt_dirs()
+
+
+@pytest.fixture(autouse=True)
+def _forget_lock_degrade_warnings():
+    """``compile.build_lock_unavailable`` is emitted once per build dir per
+    PROCESS (#494), which is one claim per pytest session unless reset."""
+    artifact_lock_module._reset_degrade_warnings()
+    yield
+    artifact_lock_module._reset_degrade_warnings()
 
 
 class DummyBuilderCfg:
@@ -2019,6 +2029,25 @@ def _console_events(monkeypatch):
     return seen
 
 
+def _logged_events(monkeypatch):
+    """Collect the events that go out through ``log_event``.
+
+    A spy rather than ``caplog`` for the reason above turned inside out:
+    the first ``log_console_event`` of a pytest process detaches pytest's
+    capture handler, so what a test sees in ``caplog`` depends on which
+    tests ran before it. The call is the observable either way.
+    """
+    seen = []
+    real = vlog_sim_module.log_event
+
+    def _spy(spy_logger, level, event, **fields):
+        seen.append(event)
+        return real(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(vlog_sim_module, "log_event", _spy)
+    return seen
+
+
 def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
     tmp_path, monkeypatch, caplog
 ):
@@ -2505,6 +2534,129 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
     assert fields["holder_test"] == "test_a"
 
 
+def test_a_warm_shared_build_is_reused_without_taking_the_lock(tmp_path, monkeypatch):
+    """The reuse fast path never queues.
+
+    A dispatched suite's gated sim elements all call ``compile()`` against
+    one already-valid shared build. Serialising those on the lock would
+    put N stamp validations on the critical path back to back and leave
+    every reuser hostage to whatever compile happened to hold it — for a
+    guarantee the reuse path does not get anyway, since the lock is
+    released before the simulation runs.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+
+    locked = []
+    real_lock = vlog_sim_module.build_dir_lock
+
+    def _spy(build_dir, **kwargs):
+        locked.append(str(build_dir))
+        return real_lock(build_dir, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _spy)
+    events = _console_events(monkeypatch)
+
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert second.compile() == 0
+    assert len(calls) == 1, "the warm build was recompiled"
+    assert events == ["compile.build_reused"]
+    assert locked == [], "a reuse took the build lock"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="flock(2) is POSIX")
+def test_a_reuse_does_not_wait_for_a_process_holding_the_lock(tmp_path, monkeypatch):
+    """The same claim, made against a lock somebody really holds.
+
+    Held from a separate file description, which flock counts as another
+    holder even in this process, so a reuse that took the lock would
+    block here forever — the timeout is what the assertion is made of.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert first.compile() == 0
+    shared_dir = Path(first._get_simv_path()).parent
+
+    fd = os.open(
+        shared_dir / artifact_lock_module.BUILD_LOCK_FILENAME,
+        os.O_RDWR | os.O_CREAT,
+        0o644,
+    )
+    result = {}
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+        reuse = threading.Thread(target=lambda: result.update(rc=second.compile()))
+        reuse.start()
+        reuse.join(60)
+        assert not reuse.is_alive(), "the reuse queued behind the lock holder"
+    finally:
+        os.close(fd)
+    assert result == {"rc": 0}
+    assert len(calls) == 1
+
+
+def test_a_forced_rebuild_still_takes_the_lock(tmp_path, monkeypatch):
+    """``--rebuild`` skips the fast path, not the serialisation.
+
+    The claim ``_rebuild_forced`` makes is the decision to compile, so it
+    belongs inside the lock next to the compile it forces — a rebuild
+    racing another process into one directory is the very thing the lock
+    is for.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+
+    locked = []
+    real_lock = vlog_sim_module.build_dir_lock
+
+    def _spy(build_dir, **kwargs):
+        locked.append(str(build_dir))
+        return real_lock(build_dir, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _spy)
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    assert second.compile() == 0
+    assert len(calls) == 2, "--rebuild reused the warm build"
+    assert locked == [str(Path(second._get_simv_path()).parent)]
+
+
+def test_a_stale_stamp_explains_itself_once_across_both_checks(tmp_path, monkeypatch):
+    """The pre-check is advisory; the in-lock check owns the diagnostics.
+
+    Asking twice must not say everything twice.
+    ``compile.build_toolchain_changed`` is a WARNING that names an
+    upgrade a reader is meant to act on, and hearing it twice for one
+    rebuild reads as two upgrades.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.048 2024-01-01")
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe)).compile()
+        == 0
+    )
+    _touch(exe, '#!/bin/sh\necho "Verilator 5.049 devel rev vBBBB"\n')
+
+    events = _logged_events(monkeypatch)
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe)).compile()
+        == 0
+    )
+    assert len(calls) == 2, "the upgraded toolchain reused the old build"
+    changed = [e for e in events if e == "compile.build_toolchain_changed"]
+    assert len(changed) == 1, f"the stale-stamp diagnostics fired {len(changed)} times"
+
+
 def test_a_build_lock_the_filesystem_refuses_still_compiles(
     tmp_path, monkeypatch, caplog
 ):
@@ -2571,3 +2723,18 @@ def test_a_wait_line_stands_up_when_the_holder_is_unknown():
         {"build_dir": "obj_dir_abc", "build_path": "/w/obj_dir_abc"},
     )
     assert "another rtl-buddy process to finish compiling obj_dir_abc" in message
+    # The first line of a wait says nothing about elapsed time, because
+    # none has elapsed.
+    assert "so far" not in message
+
+
+def test_a_repeated_wait_line_says_how_long_it_has_been():
+    """A wait re-announced every few minutes has to distinguish itself
+    from the line that started it, or a job log reads as a stutter."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_lock_wait",
+        {"build_dir": "obj_dir_abc", "build_path": "/w/obj_dir_abc", "waited_sec": 600},
+    )
+    assert "(600s so far)" in message

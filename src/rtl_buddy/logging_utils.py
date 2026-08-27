@@ -726,10 +726,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "started": fields.get("holder_started"),
                 }
             )
+            # Repeated every few minutes while the wait lasts, with the
+            # elapsed time appended from the second line on — the first
+            # says "this is a wait", the rest say "it is still a wait".
+            waited = fields.get("waited_sec") or 0
             return (
                 f"{target or 'compile'}: waiting for another rtl-buddy "
                 f"process{holder} to finish compiling "
                 f"{_build_location(fields)}"
+                + (f" ({waited}s so far)" if waited else "")
             )
         case "compile.build_lock_unavailable":
             # A filesystem that cannot flock (read-only, ENOLCK on some NFS

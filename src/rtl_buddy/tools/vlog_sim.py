@@ -1318,7 +1318,7 @@ class VlogSim:
         # the stamp: the containment tests can take them as canonical.
         return [self._tracked_entry(path, resolved=True) for path in sorted(seen)]
 
-    def _deps_unchanged(self, test_name, deps):
+    def _deps_unchanged(self, test_name, deps, *, quiet=False):
         """Have any of the stamp's recorded inputs changed on disk?
 
         Entry-wise through :func:`_entry_matches`, so a dependency inside
@@ -1344,23 +1344,30 @@ class VlogSim:
             if not _entry_matches(entry, self._tracked_entry(entry[0], resolved=True)):
                 # The one question worth answering when a warm run
                 # unexpectedly recompiles.
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "compile.build_dep_changed",
-                    test=test_name,
-                    dependency=entry[0],
-                )
+                if not quiet:
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "compile.build_dep_changed",
+                        test=test_name,
+                        dependency=entry[0],
+                    )
                 return False
         return True
 
-    def _shared_build_is_valid(self, build_dir, fingerprint, *, test_name=None):
+    def _shared_build_is_valid(
+        self, build_dir, fingerprint, *, test_name=None, quiet=False
+    ):
         return self._build_stamp_is_valid(
-            build_dir, Path(build_dir) / "simv", fingerprint, test_name=test_name
+            build_dir,
+            Path(build_dir) / "simv",
+            fingerprint,
+            test_name=test_name,
+            quiet=quiet,
         )
 
     def _build_stamp_is_valid(
-        self, stamp_dir, simv_path, fingerprint, *, test_name=None
+        self, stamp_dir, simv_path, fingerprint, *, test_name=None, quiet=False
     ):
         """Does the stamp in ``stamp_dir`` still describe ``simv_path``?
 
@@ -1373,6 +1380,11 @@ class VlogSim:
         two tracked-input lists (``sources`` and ``deps``) go entry-wise
         through :func:`_entry_matches`, which lets a content hash outvote a
         moved mtime and a moved mtime outvote nothing at all (#494).
+
+        ``quiet`` suppresses the "why this stamp lost" diagnostics for the
+        one caller that asks the question twice — :meth:`compile`'s
+        unlocked reuse pre-check, whose in-lock repeat is the authority
+        and owns those lines. Whether the stamp validates is not affected.
         """
         simv_path = Path(simv_path)
         stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
@@ -1397,13 +1409,14 @@ class VlogSim:
         # they both point at, and test_a silently simulates test_b's build
         # (#369).
         if stored.get("simv") != _stat_entry(str(simv_path)):
-            log_event(
-                logger,
-                logging.DEBUG,
-                "compile.build_dep_changed",
-                test=test_name,
-                dependency=str(simv_path),
-            )
+            if not quiet:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_dep_changed",
+                    test=test_name,
+                    dependency=str(simv_path),
+                )
             return False
         if not isinstance(fingerprint, dict):
             # A caller asserting a stamp is stale hands in no fingerprint;
@@ -1421,9 +1434,10 @@ class VlogSim:
         current_inputs = dict(fingerprint)
         current_sources = current_inputs.pop("sources", None)
         if stored_inputs != current_inputs:
-            _log_stale_stamp_toolchain(
-                stored_inputs, current_inputs, test_name=test_name
-            )
+            if not quiet:
+                _log_stale_stamp_toolchain(
+                    stored_inputs, current_inputs, test_name=test_name
+                )
             return False
         if not _entry_lists_match(stored_sources, current_sources):
             return False
@@ -1432,7 +1446,7 @@ class VlogSim:
             # The builder emitted no dependency file, so include-dir
             # contents stay untracked for it (docs/known-issues.md).
             return True
-        return self._deps_unchanged(test_name, deps)
+        return self._deps_unchanged(test_name, deps, quiet=quiet)
 
     def pre(self, run_id=_UNSET):
         """Run the test's ``preproc`` hook; return a setup-failure string or None.
@@ -1985,6 +1999,22 @@ class VlogSim:
             # absolute `builder-simv:` pinning two *processes* to one
             # executable is pre-existing exposure, out of this scope.
             return self._compile_with_plan(plan)
+        # The reuse fast path takes NO lock. A dispatched suite's gated sim
+        # elements all call compile() against one already-valid shared
+        # build; serialising those on a cross-node flock would put N stamp
+        # validations (each content-hashing every tracked input, on a node
+        # with a cold page cache) on the critical path one after another,
+        # and would leave a reuser hostage to any compile that happened to
+        # hold the lock — a VCS licence queue, say. The lock buys the reuse
+        # path nothing durable anyway: it is released before execute() runs
+        # the simulation, so a reuser is exposed to a later concurrent
+        # relink either way.
+        #
+        # `--rebuild` is not decided here: `_rebuild_forced` CLAIMS the one
+        # rebuild this process owes the directory, and that claim belongs
+        # next to the compile it forces, inside the lock.
+        if not self.rebuild and self._reuse_shared_build(plan, quiet=True):
+            return 0
         # Before the lock, because the lock file lives inside the directory
         # it guards. (A reuse would find it there anyway; only a shared dir
         # that never gets compiled into is newly created here.)
@@ -1998,6 +2028,28 @@ class VlogSim:
         with build_dir_lock(plan.shared_dir, test=self.test_name):
             return self._compile_with_plan(plan)
 
+    def _reuse_shared_build(self, plan, *, quiet=False):
+        """Reuse the stamped build in ``plan.shared_dir`` if it validates.
+
+        One place, because the question is asked twice: unlocked in
+        :meth:`compile` (the fast path — a warm build nobody is compiling
+        is the common case) and again inside the build lock, where it is
+        the second half of the double check. ``quiet`` is for the first,
+        advisory ask: the in-lock repeat owns the "why this stamp lost"
+        diagnostics, so a rebuild explains itself once rather than twice.
+        """
+        if not self._shared_build_is_valid(
+            plan.shared_dir, plan.fingerprint, test_name=self.test_name, quiet=quiet
+        ):
+            return False
+        self._report_build_reused(plan, stamp_dir=plan.shared_dir)
+        # 0.0, not the stamp-check time: the number is read as "what this
+        # build cost", and a reuse cost no build. The stat cost is real
+        # but sub-millisecond and would only invite someone to sum it
+        # against a compile.
+        self._record_compile(duration_sec=0.0, reused=True)
+        return True
+
     def _compile_with_plan(self, plan):
         """Check the stamp, compile if it does not validate, stamp the result.
 
@@ -2006,6 +2058,15 @@ class VlogSim:
         and stamp are one critical section, and a lock released between
         them would let a second process see the invalidated stamp and
         start its own compile into the same directory.
+
+        The stamp is validated against ``plan.fingerprint``, which
+        :meth:`_compile_plan` computed BEFORE any wait on the lock. So the
+        comparison is "as of when this compile was planned", not as of
+        acquisition: a source edited while this process queued behind
+        another compile is judged by its pre-wait hash and gets caught on
+        the next run instead. The window is the pre-existing one — a
+        fingerprint has always been taken before the compile it describes
+        — widened from ~0 to the length of somebody else's compile.
         """
         rtl_builder_cfg = self.rtl_builder_cfg
         compile_work_dir = plan.compile_work_dir
@@ -2018,15 +2079,7 @@ class VlogSim:
                 # than the stamp — and claimed only once per directory, so
                 # the next test with this key reuses what this one builds.
                 forced = self._rebuild_forced(plan.shared_dir)
-                if not forced and self._shared_build_is_valid(
-                    plan.shared_dir, fingerprint, test_name=self.test_name
-                ):
-                    self._report_build_reused(plan, stamp_dir=plan.shared_dir)
-                    # 0.0, not the stamp-check time: the number is read as
-                    # "what this build cost", and a reuse cost no build.
-                    # The stat cost is real but sub-millisecond and would
-                    # only invite someone to sum it against a compile.
-                    self._record_compile(duration_sec=0.0, reused=True)
+                if not forced and self._reuse_shared_build(plan):
                     return 0
                 # (The directory itself was created by compile(), which
                 # needed it to put the build lock in.)

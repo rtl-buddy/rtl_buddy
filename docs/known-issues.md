@@ -140,6 +140,8 @@ Verilator reports consumed headers, library files, its standard includes, and it
 
 Ambient environment variables and undeclared tool inputs are not tracked. Force a rebuild by deleting the specific shared directory under `artefacts/.shared-builds/` or the test's `rb-compile-stamp.json`, or run without `--share-build`. `compile.build_dep_changed` explains detected invalidation.
 
+Concurrent processes populating one shared directory are serialised by an advisory `flock` on `<shared directory>/.rb-build.lock`; a process that has to wait logs `compile.build_lock_wait` and repeats it every few minutes. Two bounds apply. On an NFS mount with `nolock`, `local_lock=flock`, or `local_lock=all`, `flock` is process-local and *succeeds*, so there is no warning and the cross-node guarantee silently does not hold. And the lock file lives inside the directory it guards, so delete a shared build tree between runs, never during one — an `rm -rf` that races a live run leaves the next process locking a fresh inode while the old holder still writes. Where the filesystem cannot lock at all, `compile.build_lock_unavailable` is logged once per directory and the compile proceeds unserialised.
+
 ## Yosys-backed flows do not support whitespace in paths
 
 Yosys script parsing is not shell parsing: whitespace splits tokens, `#` starts a comment, and single quotes from `shlex.quote` do not group a path. Keep design and artifact paths for synthesis and FPV free of whitespace. `fpv.yaml` parameter validation also rejects whitespace, `;`, and `#`.

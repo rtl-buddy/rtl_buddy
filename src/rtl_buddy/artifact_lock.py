@@ -29,6 +29,8 @@ import fcntl
 import json
 import logging
 import os
+import threading
+import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +42,40 @@ logger = logging.getLogger(__name__)
 
 LOCK_FILENAME = ".rtl-buddy.lock"
 BUILD_LOCK_FILENAME = ".rb-build.lock"
+
+# How often a blocked compile retries, and how often it says so. The poll
+# is cheap (one non-blocking flock) and the announcement interval is what
+# keeps a long wait legible without turning a job log into a wait log.
+BUILD_LOCK_POLL_SEC = 0.2
+BUILD_LOCK_ANNOUNCE_SEC = 300.0
+
+# Build directories this process has already reported as unlockable.
+_DEGRADED_BUILD_DIRS: set[str] = set()
+_DEGRADED_BUILD_DIRS_LOCK = threading.Lock()
+
+
+def _claim_degrade_warning(build_dir: Path) -> bool:
+    """Is this the first time this process could not lock ``build_dir``?
+
+    A filesystem that cannot flock cannot flock for the whole run, so the
+    warning is about a *configuration*, not about a compile: emitted once
+    per directory rather than once per test, or a shared tree nobody can
+    lock would warn in every element of every suite forever. ``realpath``'d
+    for the reason :func:`~rtl_buddy.tools.vlog_sim._claim_rebuild` is —
+    two spellings of one directory are one directory.
+    """
+    key = os.path.realpath(build_dir)
+    with _DEGRADED_BUILD_DIRS_LOCK:
+        if key in _DEGRADED_BUILD_DIRS:
+            return False
+        _DEGRADED_BUILD_DIRS.add(key)
+        return True
+
+
+def _reset_degrade_warnings() -> None:
+    """Forget every claim. Tests only — one pytest process is many runs."""
+    with _DEGRADED_BUILD_DIRS_LOCK:
+        _DEGRADED_BUILD_DIRS.clear()
 
 
 class ArtifactLocks:
@@ -137,7 +173,11 @@ def build_dir_lock(build_dir: Path | str, *, test: str | None = None) -> Iterato
     stamp is written. The caller therefore keeps its stamp check
     *inside* the ``with`` — double-checked locking, so a waiter that
     blocked while another process compiled exactly what it needs reuses
-    that build instead of rebuilding it.
+    that build instead of rebuilding it. This lock is for *populating* a
+    build directory; a caller that has already decided it will reuse a
+    valid stamp must not take it (see :meth:`VlogSim.compile`), or every
+    reuser in a fan-out would queue behind whatever compile happens to
+    hold it.
 
     Holder metadata (pid, test, start time) goes into the lock file so
     the waiting line can say who is ahead; it is advisory and possibly
@@ -147,11 +187,23 @@ def build_dir_lock(build_dir: Path | str, *, test: str | None = None) -> Iterato
     (read-only, ``ENOLCK`` on some NFS mounts) yields ``False`` after a
     warning: a broken lock degrades to today's unlocked behaviour rather
     than turning a working build red, because nothing in this path may
-    change a build job's exit code.
+    change a build job's exit code. Nothing in-tree branches on the
+    yielded flag — the compile that follows is the same either way — so
+    it exists for tests, and for a caller that wants to record which
+    guarantee it had.
 
     Lock ordering: a thread holds at most one build lock (one compile,
     one directory), and the artefact-tree lock is taken when a command
     starts — never while a build lock is held — so the two cannot cycle.
+
+    Two bounds worth knowing, both documented in docs/known-issues.md:
+    an NFS mount with ``nolock`` or ``local_lock=flock``/``all`` makes
+    ``flock`` process-local, and it *succeeds* — so there is nothing to
+    warn about and the cross-node guarantee silently does not hold. And
+    the lock file lives inside the directory it guards, so an
+    ``rm -rf`` of the shared tree that races a live run unlinks it from
+    under the holder, after which the next process locks a fresh inode:
+    delete a shared tree between runs, not during one.
     """
     build_dir = Path(build_dir)
     fields = {
@@ -169,20 +221,7 @@ def build_dir_lock(build_dir: Path | str, *, test: str | None = None) -> Iterato
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            # Non-blocking first purely so the wait can be announced: a
-            # compile can take minutes, and a job log that goes silent
-            # for them is the thing #494 is about.
-            holder = _read_holder(fd)
-            log_console_event(
-                logger,
-                logging.INFO,
-                "compile.build_lock_wait",
-                **fields,
-                holder_pid=holder.get("pid"),
-                holder_test=holder.get("test"),
-                holder_started=holder.get("started"),
-            )
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _wait_for_lock(fd, fields)
     except OSError as e:
         if fd is not None:
             # Suppressed: everything from here to the yield exists to
@@ -191,13 +230,14 @@ def build_dir_lock(build_dir: Path | str, *, test: str | None = None) -> Iterato
             with contextlib.suppress(OSError):
                 os.close(fd)
             fd = None
-        log_event(
-            logger,
-            logging.WARNING,
-            "compile.build_lock_unavailable",
-            **fields,
-            error=str(e),
-        )
+        if _claim_degrade_warning(build_dir):
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.build_lock_unavailable",
+                **fields,
+                error=str(e),
+            )
     else:
         # Diagnostics only, so a failure here must not cost the lock we
         # just took.
@@ -221,6 +261,51 @@ def build_dir_lock(build_dir: Path | str, *, test: str | None = None) -> Iterato
         # its holder metadata, for the next process to read.
         if fd is not None:
             os.close(fd)
+
+
+def _wait_for_lock(fd: int, fields: dict) -> None:
+    """Block until ``fd``'s flock is ours, saying so while we wait.
+
+    A poll loop rather than one blocking ``flock(fd, LOCK_EX)`` for the
+    reason the non-blocking first attempt exists at all: a compile can
+    take minutes — longer when the holder is queued for a VCS licence —
+    and a job log that goes silent for them is the shape of #494's
+    original complaint. The line repeats every
+    :data:`BUILD_LOCK_ANNOUNCE_SEC` with the wait so far, so a long wait
+    keeps reading as a wait rather than as a hang.
+
+    No cap, deliberately: the only alternative to waiting is compiling
+    into a directory another process is linking in, which is the bug this
+    lock exists to prevent. A holder that dies releases the flock in the
+    kernel, so the wait ends without anyone cleaning up; a holder that
+    wedges hangs this job either way, lock or no lock.
+
+    ``OSError`` propagates to :func:`build_dir_lock`'s degrade path,
+    which is where every "this filesystem cannot lock" answer belongs.
+    """
+    started = time.monotonic()
+    announced = None
+    while True:
+        waited = time.monotonic() - started
+        if announced is None or waited - announced >= BUILD_LOCK_ANNOUNCE_SEC:
+            holder = _read_holder(fd)
+            log_console_event(
+                logger,
+                logging.INFO,
+                "compile.build_lock_wait",
+                **fields,
+                waited_sec=round(waited),
+                holder_pid=holder.get("pid"),
+                holder_test=holder.get("test"),
+                holder_started=holder.get("started"),
+            )
+            announced = waited
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            time.sleep(BUILD_LOCK_POLL_SEC)
+        else:
+            return
 
 
 def _read_holder(fd: int) -> dict:
