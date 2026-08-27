@@ -14,6 +14,10 @@ cfg-dispatch:
     cpus: 8
     mem: 16G
     time: "02:00:00"
+    parallel: 4          # distinct builds compiled at once in the build job;
+                         # the head reserves up to cpus x parallel (32 here,
+                         # capped at the planned test count) and leaves mem
+                         # and time exactly as written
   sbatch-args:
     - --partition=verif
     - --account=chip

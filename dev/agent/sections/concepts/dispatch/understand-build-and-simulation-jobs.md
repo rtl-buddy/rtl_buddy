@@ -3,9 +3,13 @@
 For each suite, dispatch:
 
 1. Writes a plan and, when needed, submits one build job.
-2. Builds each unique compile key serially. Compile keys fingerprint sources, flags, defines, and the resolved builder.
+2. Builds each unique compile key. Compile keys fingerprint sources, flags, defines, and the resolved builder.
 3. Groups simulations with identical resolved resources into Slurm arrays and gates them with `afterok` on the build.
 4. Collects each worker's `result.json` into the normal summary and exit status.
+
+The build job compiles one key at a time by default. `cfg-dispatch.compile.parallel` raises that to N distinct builds compiled concurrently inside the same job. Concurrency is over distinct compile keys, never over tests: configs sharing a key compile one after another, the later ones short-circuiting on the first one's build stamp, because two builders writing one build directory is what `compile.prebuilt_stamp_invalid` reports. Configs whose resolved `builder-simv` output is one file — an absolute pin, or a relative spelling whose `..` escapes the per-test workspace — are grouped the same way even though their compile directories differ, because the executable they write is one path. A config whose compile fails is still reported per test, and the job still exits 0 so its `afterok` dependents run.
+
+Preprocessing hooks always run serially, and their position relative to compilation depends on `parallel`. At the default `parallel: 1` the job runs `preproc` and then the compile for one config before touching the next, so a hook that regenerates a shared input cannot overwrite what an earlier config is about to compile. Above 1 the compile key is only knowable after that config's `preproc` has run, so every hook runs first and the builders then overlap: raising `parallel` requires that no config's `preproc` mutate another config's inputs. Simulation jobs already require this — each `rb _test-job` re-runs its own `preproc` concurrently on its own node.
 
 Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. `max-jobs-per-array` is a `%N` throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.
 
