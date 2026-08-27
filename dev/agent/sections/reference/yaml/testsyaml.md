@@ -1,9 +1,12 @@
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build job.
 
 ```yaml
 rtl-buddy-filetype: test_config
+
+compile:
+  mem: 48G
 
 testbenches:
   - name: tb_top
@@ -17,6 +20,16 @@ tests:
     testbench: tb_top
     reglvl: 0
 ```
+
+Top-level fields:
+
+| Field | Requirement | Meaning |
+|---|---|---|
+| `rtl-buddy-filetype` | Required | Must be `test_config` |
+| `testbenches` | Required | Testbench definitions |
+| `tests` | Required | Test definitions |
+| `builder` | Optional | Suite default builder name |
+| `compile` | Optional | This suite's dispatch compile reservation: `cpus`, `mem`, and quoted `time`. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`; an omitted field inherits. Sizes the suite's build job, and the compile half of a simulation job that compiles for itself. `parallel` is not accepted here and is discarded. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
 
 Testbench fields:
 
