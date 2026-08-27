@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import logging
+import threading
 import types
 import uuid
 from dataclasses import dataclass, field
@@ -284,12 +285,163 @@ def _stat_entry(path: str) -> list:
 
     A vanished file records as ``[path, None, None]`` rather than being
     dropped, so its later reappearance still invalidates the stamp.
+
+    Still stat-only, and deliberately: its one remaining caller stamps the
+    build's *output* (``simv``), which is a freshness check on a binary
+    rtl_buddy just wrote, not edit detection on an input. Hashing a
+    hundred-megabyte executable on every validation would buy nothing —
+    see :func:`_hashed_stat_entry` for the inputs, where content decides.
     """
     try:
         stat = os.stat(path)
     except OSError:
         return [path, None, None]
     return [path, stat.st_size, stat.st_mtime_ns]
+
+
+# One content hash per (path, size, mtime_ns) per process. A suite
+# validating N stamps over one source set otherwise re-reads every file N
+# times, and the #495 build job validates from worker threads, so the memo
+# is guarded rather than thread-local: two threads asking for the same file
+# should read it once between them.
+_CONTENT_HASH_LOCK = threading.Lock()
+_CONTENT_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+_CONTENT_HASH_CHUNK = 1 << 20
+
+
+def _hash_file_content(path: str, size: int, mtime_ns: int) -> str | None:
+    """``sha256`` hexdigest[:16] of ``path``'s bytes, or None if unreadable.
+
+    Memoised on ``(path, size, mtime_ns)``: within one process a file whose
+    stats have not moved has not been rewritten, and re-reading it per
+    validated stamp is the cost this whole check has to stay under.
+    """
+    key = (path, size, mtime_ns)
+    with _CONTENT_HASH_LOCK:
+        cached = _CONTENT_HASH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as content_fp:
+            while True:
+                chunk = content_fp.read(_CONTENT_HASH_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        # A file that exists but cannot be read: record None and let the
+        # comparison fail closed against a stamp that has a hash.
+        return None
+    value = digest.hexdigest()[:16]
+    with _CONTENT_HASH_LOCK:
+        _CONTENT_HASH_CACHE[key] = value
+    return value
+
+
+def _content_sha(path: str, stat: os.stat_result, project_root: str | None):
+    """Hash ``path``'s content when policy allows, else None.
+
+    **Why content and not just stats (#494).** ``size``/``mtime_ns`` answer
+    "has this file changed?" correctly on one machine. Across a cluster they
+    do not: the edit happens on the submit host and the validation on a
+    compute node, and NFS serves that node a *cached* attribute answer for
+    up to ``acregmax`` — so a file edited seconds ago still stats as it did
+    before the edit and the stamp validates against a stale answer. Reading
+    the bytes is what closes it, because NFS close-to-open consistency
+    revalidates on ``open()``: the content of an edited file is visible even
+    while its cached stats are not. That is the difference between a rebuild
+    and a false PASS on a design that was never simulated.
+
+    **Policy: nothing outside the project root is hashed** (brief invariant
+    4). Verilator's dependency file names the toolchain's own std includes
+    and, for some installs, ``verilator_bin`` itself; hashing tens of
+    megabytes of unchanging install per validation is not a trade worth
+    making, and the toolchain fingerprint's version probe already catches an
+    install swapped underneath a build. Those entries stay stat-only.
+    """
+    if not project_root:
+        return None
+    resolved = os.path.realpath(path)
+    try:
+        if os.path.commonpath([resolved, project_root]) != project_root:
+            return None
+    except ValueError:
+        # Different drives on Windows: not under the root by definition.
+        return None
+    # Hash under the realpath so two spellings of one file (the filelist
+    # normpaths, the dependency file realpaths) share a memo entry.
+    return _hash_file_content(resolved, stat.st_size, stat.st_mtime_ns)
+
+
+def _hashed_stat_entry(path: str, *, project_root: str | None) -> list:
+    """``[path, size, mtime_ns, sha]`` for a tracked *input*.
+
+    ``sha`` is :func:`_content_sha` — a short content hash for files under
+    the project root, None for anything else (and for an existing file that
+    cannot be read, which :func:`_entry_matches` then treats as changed). A
+    vanished file records as ``[path, None, None, None]`` rather than being
+    dropped, so its later reappearance still invalidates the stamp.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return [path, None, None, None]
+    return [
+        path,
+        stat.st_size,
+        stat.st_mtime_ns,
+        _content_sha(path, stat, project_root),
+    ]
+
+
+def _entry_matches(stored, current: list) -> bool:
+    """Does a stored stamp entry still describe what ``current`` describes?
+
+    The one comparison both tracked-input lists go through — the filelist
+    fingerprint's ``sources`` and the build's ``deps`` — so they cannot
+    drift on what "unchanged" means.
+
+    **The hash decides.** When both sides carry a content hash and the
+    hashes agree, the entry validates even if ``mtime_ns`` moved: a ``git
+    checkout`` that restores byte-identical content, a ``touch``, or a
+    rebuilt generated file no longer forces a rebuild. When either side has
+    no hash (an entry outside the project root, or an unreadable file), the
+    comparison falls back to today's exact ``[path, size, mtime_ns]``
+    equality, which is fail-closed in both directions: a stamp that recorded
+    a hash for a file we can no longer hash counts as changed.
+
+    Anything that is not an entry of this version's shape — a 3-element
+    entry from a stamp written before #494, say — is "we do not know", and
+    the only honest reading of that is one rebuild.
+    """
+    if not isinstance(stored, list) or len(stored) != len(current):
+        return False
+    if stored[0] != current[0]:
+        return False
+    stored_sha, current_sha = stored[-1], current[-1]
+    if stored_sha is not None and current_sha is not None:
+        # A size mismatch under equal content hashes cannot happen for a
+        # real file, so there is nothing else worth asking.
+        return stored_sha == current_sha
+    return stored == current
+
+
+def _entry_lists_match(stored, current) -> bool:
+    """:func:`_entry_matches` over two whole lists, order-sensitive.
+
+    Order matters because both lists are built deterministically (filelist
+    order, sorted dependency paths), so a reordering is a real difference.
+    A stored value that is not a list at all fails closed.
+    """
+    if not isinstance(stored, list) or not isinstance(current, list):
+        return False
+    if len(stored) != len(current):
+        return False
+    return all(
+        _entry_matches(stored_entry, current_entry)
+        for stored_entry, current_entry in zip(stored, current)
+    )
 
 
 @dataclass
@@ -404,6 +556,29 @@ class VlogSim:
             os.path.abspath(suite_dir)
             if suite_dir is not None
             else os.path.abspath(os.getcwd())
+        )
+
+        # Which files this instance is allowed to content-hash for its build
+        # stamps (#494). The PROJECT root, not the suite dir: models, RTL and
+        # shared headers routinely live outside the suite that compiles them,
+        # and those are exactly the files an edit-then-rerun changes.
+        # Realpath'd once so containment tests compare canonical paths.
+        get_project_rootdir = getattr(self.root_cfg, "get_project_rootdir", None)
+        try:
+            project_root = (
+                get_project_rootdir() if get_project_rootdir is not None else None
+            )
+        except Exception:
+            # Deciding what may be hashed must never be what stops a build
+            # (build-job exit-0 contract): an unusable root just narrows the
+            # policy to the suite dir below.
+            project_root = None
+        # The cwd fallback matches suite_work_dir's, for the same
+        # directly-constructed callers.
+        self._project_root = os.path.realpath(
+            project_root
+            if isinstance(project_root, str) and project_root
+            else self.suite_work_dir
         )
 
         output_dir = Path(self.suite_work_dir) / "artefacts"
@@ -660,8 +835,19 @@ class VlogSim:
                     pd_list += [f"+define+{plusdefine}"]
         return pd_list
 
+    def _hashed_stat_entry(self, path):
+        """:func:`_hashed_stat_entry` under this instance's hashing policy."""
+        return _hashed_stat_entry(path, project_root=self._project_root)
+
     def _fingerprint_filelist_sources(self, filelist_path):
-        """Per-entry (line, size, mtime_ns) stamps for the generated run.f.
+        """Per-entry (line, size, mtime_ns, sha) stamps for the generated run.f.
+
+        The content hash is what makes an edit invalidate the stamp on a
+        cluster, where a cached NFS ``stat`` can still describe the file as
+        it was before the edit (#494) — see :func:`_content_sha`. It goes in
+        the *fingerprint*, never in the key: :meth:`_compile_config_key`
+        reads ``entry[0]`` only, so an edit still rebuilds in place instead
+        of stranding a new obj_dir per edit.
 
         Entries that don't resolve to a plain file (+incdir+/-y directories,
         +libext+ suffixes) keep only their raw line; changes inside include
@@ -689,17 +875,19 @@ class VlogSim:
                         parsed = shlex.split(entry_path)
                     except ValueError:
                         # An unbalanced quote must degrade to [line, None,
-                        # None] like every other malformed entry, not abort
-                        # the compile from the stamping path.
+                        # None, None] like every other malformed entry, not
+                        # abort the compile from the stamping path.
                         parsed = []
                     if len(parsed) == 1:
                         entry_path = parsed[0]
                 resolved = os.path.normpath(os.path.join(base, entry_path))
                 if os.path.isfile(resolved):
-                    stat = os.stat(resolved)
-                    stamps.append([line, stat.st_size, stat.st_mtime_ns])
+                    # The raw line, not the resolved path, stays entry[0]:
+                    # it is what run.f contains and what the compile key
+                    # hashes.
+                    stamps.append([line] + self._hashed_stat_entry(resolved)[1:])
                 else:
-                    stamps.append([line, None, None])
+                    stamps.append([line, None, None, None])
         return stamps
 
     def _fingerprint_toolchain(self, exe):
@@ -769,10 +957,13 @@ class VlogSim:
     def _compile_config_key(fingerprint):
         """Short stable hash naming the shared build dir.
 
-        Excludes source size/mtime — and the toolchain's size/mtime/version
-        — so editing RTL or upgrading a simulator in place rebuilds in the
-        same dir (the stamp comparison catches the staleness) instead of
-        accumulating a new obj_dir per edit.
+        Excludes source size/mtime/content-hash — and the toolchain's
+        size/mtime/version — so editing RTL or upgrading a simulator in
+        place rebuilds in the same dir (the stamp comparison catches the
+        staleness) instead of accumulating a new obj_dir per edit. Only
+        ``entry[0]``, the run.f line, is read out of each source entry, so
+        adding the content hash to the stamp in #494 left every existing
+        key unchanged.
         """
         config = {
             "cmd": fingerprint["cmd"],
@@ -916,15 +1107,24 @@ class VlogSim:
                 resolved = os.path.realpath(os.path.join(compile_cwd, prerequisite))
                 if resolved != filelist_path:
                     seen.setdefault(resolved, None)
-        return [_stat_entry(path) for path in sorted(seen)]
+        return [self._hashed_stat_entry(path) for path in sorted(seen)]
 
-    @staticmethod
-    def _deps_unchanged(test_name, deps):
-        """Have any of the stamp's recorded inputs changed on disk?"""
+    def _deps_unchanged(self, test_name, deps):
+        """Have any of the stamp's recorded inputs changed on disk?
+
+        Entry-wise through :func:`_entry_matches`, so a dependency inside
+        the project root is decided by its content and one outside it (a
+        toolchain header) by its stats — and a stamp written before #494,
+        whose entries are 3 elements long, fails closed into one rebuild.
+        """
         for entry in deps:
-            if not isinstance(entry, list) or len(entry) != 3:
+            if not isinstance(entry, list) or len(entry) != 4:
                 return False  # not a stamp this version wrote
-            if entry != _stat_entry(entry[0]):
+            if not isinstance(entry[0], str):
+                # `os.stat` takes a file *descriptor* for an int, so a
+                # corrupt stamp must never reach it.
+                return False
+            if not _entry_matches(entry, self._hashed_stat_entry(entry[0])):
                 # The one question worth answering when a warm run
                 # unexpectedly recompiles.
                 log_event(
@@ -937,15 +1137,13 @@ class VlogSim:
                 return False
         return True
 
-    @classmethod
-    def _shared_build_is_valid(cls, build_dir, fingerprint, *, test_name=None):
-        return cls._build_stamp_is_valid(
+    def _shared_build_is_valid(self, build_dir, fingerprint, *, test_name=None):
+        return self._build_stamp_is_valid(
             build_dir, Path(build_dir) / "simv", fingerprint, test_name=test_name
         )
 
-    @classmethod
     def _build_stamp_is_valid(
-        cls, stamp_dir, simv_path, fingerprint, *, test_name=None
+        self, stamp_dir, simv_path, fingerprint, *, test_name=None
     ):
         """Does the stamp in ``stamp_dir`` still describe ``simv_path``?
 
@@ -953,6 +1151,11 @@ class VlogSim:
         unshared build does not put the executable inside a directory
         rtl_buddy chose: the stamp goes in the test's compile work dir while
         ``builder-simv:`` decides where the binary lands (#369).
+
+        Everything but the tracked inputs compares by exact equality; the
+        two tracked-input lists (``sources`` and ``deps``) go entry-wise
+        through :func:`_entry_matches`, which lets a content hash outvote a
+        moved mtime and a moved mtime outvote nothing at all (#494).
         """
         simv_path = Path(simv_path)
         stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
@@ -985,18 +1188,32 @@ class VlogSim:
                 dependency=str(simv_path),
             )
             return False
+        if not isinstance(fingerprint, dict):
+            # A caller asserting a stamp is stale hands in no fingerprint;
+            # nothing can match one.
+            return False
         stored_inputs = {
             key: value for key, value in stored.items() if key not in ("deps", "simv")
         }
-        if stored_inputs != fingerprint:
+        # `sources` is the one input list whose entries are not compared by
+        # equality, so it comes out of the dict comparison and goes through
+        # _entry_matches; cmd/env/toolchain stay exact. Popping from copies
+        # keeps the two sides symmetrical — a stamp that has no `sources`
+        # key at all still fails, because None is not a list.
+        stored_sources = stored_inputs.pop("sources", None)
+        current_inputs = dict(fingerprint)
+        current_sources = current_inputs.pop("sources", None)
+        if stored_inputs != current_inputs:
             _log_stale_stamp_toolchain(stored_inputs, fingerprint, test_name=test_name)
+            return False
+        if not _entry_lists_match(stored_sources, current_sources):
             return False
         deps = stored["deps"]
         if deps is None:
             # The builder emitted no dependency file, so include-dir
             # contents stay untracked for it (docs/known-issues.md).
             return True
-        return cls._deps_unchanged(test_name, deps)
+        return self._deps_unchanged(test_name, deps)
 
     def pre(self, run_id=_UNSET):
         """Run the test's ``preproc`` hook; return a setup-failure string or None.

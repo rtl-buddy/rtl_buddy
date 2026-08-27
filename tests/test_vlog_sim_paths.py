@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import subprocess
@@ -268,11 +269,12 @@ def test_compile_fingerprint_stats_quoted_absolute_source(tmp_path, monkeypatch)
     stamps = sim._fingerprint_filelist_sources(str(run_f))
 
     stat = source.stat()
-    assert stamps == [[raw_line, stat.st_size, stat.st_mtime_ns]]
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+    assert stamps == [[raw_line, stat.st_size, stat.st_mtime_ns, sha]]
 
 
 def test_compile_fingerprint_degrades_on_unbalanced_quote(tmp_path, monkeypatch):
-    """A malformed quoted line stamps [line, None, None] instead of aborting."""
+    """A malformed quoted line stamps nulls instead of aborting."""
     sim = _make_sim(tmp_path, monkeypatch)
     sim._ensure_artifact_dir()
     run_f = Path(sim._get_filelist_path())
@@ -281,7 +283,7 @@ def test_compile_fingerprint_degrades_on_unbalanced_quote(tmp_path, monkeypatch)
 
     stamps = sim._fingerprint_filelist_sources(str(run_f))
 
-    assert stamps == [[raw_line, None, None]]
+    assert stamps == [[raw_line, None, None, None]]
 
 
 def _nested_worktree_repro(tmp_path: Path):

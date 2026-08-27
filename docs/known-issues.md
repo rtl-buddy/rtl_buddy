@@ -102,7 +102,7 @@ Under dispatch, `sweep` runs once on the head, while `preproc` runs in the build
 
 `cfg-dispatch.compile.parallel` above 1 adds a second requirement: no config's `preproc` may mutate an input another config compiles. The build job runs every hook before any builder starts, because a config's compile key is only knowable after its own hook ran, so a hook that regenerates a suite-level file overwrites it for configs that have already been fingerprinted. At the default `parallel: 1` the job still runs `preproc` and compile per config in turn, so a generator hook that owns one shared file per config is safe there. Simulation jobs make the same demand at any setting, each re-running `preproc` on its own node.
 
-Simulation jobs rely on the build stamp to skip recompilation. A preprocessor that rewrites a filelist source changes its mtime, invalidates every stamp, and can trigger concurrent compiles into one directory. `compile.prebuilt_stamp_invalid` identifies this case. Avoid rewriting unchanged shared inputs.
+Simulation jobs rely on the build stamp to skip recompilation. The stamp records a content hash of every tracked input under the project root, so content decides: a preprocessor that regenerates a filelist source byte-for-byte no longer invalidates anything, while one that changes a source's content invalidates every stamp and can trigger concurrent compiles into one directory. `compile.prebuilt_stamp_invalid` identifies this case. Avoid changing shared inputs from a per-test preprocessor.
 
 A design compile error is reported as `CompileFail`, not `DispatchFail`. Infrastructure failures remain `DispatchFail`. A failed build may be retried inside a simulation reservation, so size that reservation to accommodate compilation for non-shareable or recovery paths.
 
@@ -136,7 +136,7 @@ On a cluster with different mount paths per node, a stamp from one node may not 
 
 ## Shared-build dependency tracking varies by simulator
 
-Verilator reports consumed headers, library files, its standard includes, and its binary, so changes invalidate the shared-build stamp. VCS and Icarus do not report equivalent dependency data; editing a header reached only through `+incdir+` or `-y` can reuse a stale build.
+Verilator reports consumed headers, library files, its standard includes, and its binary, so changes invalidate the shared-build stamp. Tracked inputs under the project root are compared by content hash, which is what makes an edit visible to a node whose cached `stat` still describes the file as it was; inputs outside the project root, such as the toolchain's own includes and binary, are compared by size and mtime instead of being hashed on every validation. VCS and Icarus do not report equivalent dependency data; editing a header reached only through `+incdir+` or `-y` can reuse a stale build.
 
 Ambient environment variables and undeclared tool inputs are not tracked. Force a rebuild by deleting the specific shared directory under `artefacts/.shared-builds/` or the test's `rb-compile-stamp.json`, or run without `--share-build`. `compile.build_dep_changed` explains detected invalidation.
 

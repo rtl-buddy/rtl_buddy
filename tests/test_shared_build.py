@@ -990,6 +990,238 @@ def test_parse_depend_prerequisites_returns_nothing_without_a_separator():
     )
 
 
+# --- content-hashed stamps (issue #494) --------------------------------------
+
+
+def _edit_behind_a_stale_stat(path, text):
+    """Rewrite ``path``'s content while its size and mtime stay put.
+
+    This is what the reported failure looks like from the validating side.
+    The edit really happened, seconds ago, on the submit host; the compute
+    node that revalidates the stamp asks NFS for the file's attributes and
+    is served the *cached* pre-edit answer, so `stat` reports the size and
+    mtime the build recorded. Freezing both here reproduces that
+    deterministically, without a cluster: if size and mtime are all the
+    stamp compares, the edited design is reused and reports PASS.
+    """
+    stat = os.stat(path)
+    assert len(text.encode()) == stat.st_size, "an equal-size edit is the repro"
+    path.write_text(text)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+
+def _as_a_fresh_process():
+    """Drop the per-process content-hash memo.
+
+    The memo is keyed on (path, size, mtime_ns), so within one process a
+    file whose stats never moved is hashed once — which is the whole point
+    of it, and which the equal-stat edits above would otherwise defeat.
+    The run that reuses a stale build is a *different* process (a later
+    `rb test`, or a sim job on another node), and this is that boundary.
+    """
+    vlog_sim_module._CONTENT_HASH_CACHE.clear()
+
+
+def test_an_edit_hidden_by_an_unchanged_stat_still_invalidates_the_stamp(
+    tmp_path, monkeypatch
+):
+    """The reported bug: a stale PASS on a design that was never simulated.
+
+    A source whose recorded size and mtime still describe it exactly must
+    not validate the build when its bytes have changed (#494).
+    """
+    src = _write_source(tmp_path, "module top; /* aaa */ endmodule\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    _edit_behind_a_stale_stat(src, "module top; /* bbb */ endmodule\n")
+    _as_a_fresh_process()
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2, "the stamp validated against a stale stat"
+    # In place, as ever: an edit rebuilds the dir it had, it does not strand
+    # a new one per edit.
+    assert sim_b._get_simv_path() == sim_a._get_simv_path()
+
+
+def test_an_edited_header_hidden_by_an_unchanged_stat_invalidates_the_stamp(
+    tmp_path, monkeypatch
+):
+    """The same, on the deps side: a header reached only through +incdir+."""
+    _write_source(tmp_path)
+    header = _write_header(tmp_path, "`define W 08\n")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    _edit_behind_a_stale_stat(header, "`define W 16\n")
+    _as_a_fresh_process()
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2, "a tracked dependency's content was never read"
+
+
+def test_restoring_identical_content_no_longer_forces_a_rebuild(tmp_path, monkeypatch):
+    """The other side of hashing: content decides, so a moved mtime alone
+    is not a change. A `git checkout` that restores the same bytes, a
+    `touch`, or a regenerated file that came out identical used to cost a
+    full rebuild each; now the stamp still validates."""
+    src = _write_source(tmp_path)
+    header = _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    _touch(src, src.read_text())  # same bytes, new mtime
+    _touch(header, header.read_text())
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1, "identical content should not have rebuilt"
+
+
+def test_a_dependency_outside_the_project_root_stays_stat_only(tmp_path, monkeypatch):
+    """Verilator names its own std includes among the inputs it consumed.
+
+    Those are not the project's files and hashing an install per validation
+    buys nothing, so they keep the old stat comparison — which means a
+    moved mtime alone still invalidates there.
+    """
+    _write_source(tmp_path)
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-toolchain"
+    outside_dir.mkdir(exist_ok=True)
+    outside = outside_dir / "verilated_std.sv"
+    outside.write_text("// toolchain-owned\n")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", str(outside)]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    deps = {
+        entry[0]: entry for entry in json.loads(_stamp_of(sim_a).read_text())["deps"]
+    }
+    assert deps[os.path.realpath(outside)][3] is None  # never hashed
+    assert deps[os.path.realpath(tmp_path / "src" / "top.sv")][3] is not None
+
+    # With no hash to decide, stats do — as they always did.
+    _touch(outside, outside.read_text())
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_stamp_written_before_content_hashing_rebuilds_once(tmp_path, monkeypatch):
+    """Entries gained a fourth element, so every stamp an older rtl_buddy
+    wrote is a shape this version cannot read. "We do not know" is not a
+    reuse: it rebuilds, once, and what it writes back is readable."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    stamp = _stamp_of(sim_a)
+    legacy = json.loads(stamp.read_text())
+    legacy["sources"] = [entry[:3] for entry in legacy["sources"]]
+    legacy["deps"] = [entry[:3] for entry in legacy["deps"]]
+    stamp.write_text(json.dumps(legacy, sort_keys=True))
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+
+    fresh = json.loads(stamp.read_text())
+    assert all(len(entry) == 4 for entry in fresh["sources"])
+    assert all(len(entry) == 4 for entry in fresh["deps"])
+
+    sim_c = _make_sim(tmp_path, monkeypatch, test_name="test_c")
+    assert sim_c.compile() == 0
+    assert len(calls) == 2, "the rebuild happened once, not once per run"
+
+
+def test_the_compile_key_never_reads_the_content_hash():
+    """The hash lives in the stamp, never in the key.
+
+    If it leaked into the key an edit would name a *different* obj_dir,
+    stranding one build tree per edit instead of rebuilding in place — so
+    the key is pinned here against the exact input set, and the entry shape
+    change of #494 has to leave it alone.
+    """
+    fingerprint = {
+        "cmd": ["verilator", "--binary", "-f", "run.f"],
+        "env": {"VERILATOR_ROOT": "/opt/verilator"},
+        "sources": [["src/top.sv", 31, 1_700_000_000_000_000_000, "0123456789abcdef"]],
+        "toolchain": {
+            "exe": "/opt/verilator/bin/verilator",
+            "version": "5.020",
+            "size": 12,
+            "mtime_ns": 7,
+        },
+    }
+    legacy_shape = dict(
+        fingerprint, sources=[entry[:3] for entry in fingerprint["sources"]]
+    )
+    edited = dict(
+        fingerprint,
+        sources=[entry[:3] + ["fedcba9876543210"] for entry in fingerprint["sources"]],
+    )
+
+    key = vlog_sim_module.VlogSim._compile_config_key(fingerprint)
+    assert key == vlog_sim_module.VlogSim._compile_config_key(legacy_shape)
+    assert key == vlog_sim_module.VlogSim._compile_config_key(edited)
+    assert key == "ca6417efe2823758"  # pinned: this input set names this dir
+
+
+def test_a_file_is_hashed_once_per_process(tmp_path, monkeypatch):
+    """A suite validating N stamps over one source set reads each file once.
+
+    Content hashing is only affordable because of the memo: without it a
+    fifty-test suite re-reads every source fifty times per run.
+    """
+    src = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    _as_a_fresh_process()
+
+    reads = []
+    real_open = open
+
+    def _counting_open(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(src):
+            reads.append(str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "open", _counting_open, raising=False)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_b").compile() == 0
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_c").compile() == 0
+    assert len(calls) == 1  # one build, two reuses
+    assert len(reads) == 1, f"the source was read {len(reads)} times, not memoised"
+
+
 def test_shared_build_dir_helper_layout():
     assert shared_build_dir("/tmp/suite", "cafe0123") == Path(
         "/tmp/suite/artefacts/.shared-builds/obj_dir_cafe0123"
