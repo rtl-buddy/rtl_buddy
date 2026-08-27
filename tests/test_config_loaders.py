@@ -569,6 +569,70 @@ def test_suite_config_resolves_hook_paths_against_suite_dir(tmp_path):
     assert test.postproc_path == "/abs/path/post.py"
 
 
+_SUITE_WITH_COMPILE = """\
+rtl-buddy-filetype: test_config
+compile:
+  cpus: 8
+  mem: 48G
+  time: "03:00:00"
+testbenches:
+  - name: tb1
+    filelist: [tb.sv]
+tests:
+  - name: basic
+    desc: example
+    model: m
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb1
+    sim_timeout:
+"""
+
+
+def _write_compile_suite(tmp_path, body):
+    (tmp_path / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n  - name: m\n    filelist: [top.sv]\n"
+    )
+    path = tmp_path / "tests.yaml"
+    path.write_text(body)
+    return path
+
+
+def test_suite_config_loads_the_compile_block(tmp_path):
+    """The suite-level dispatch compile reservation survives load (#497)."""
+    path = _write_compile_suite(tmp_path, _SUITE_WITH_COMPILE)
+    cfg = SuiteConfig(str(path))
+    block = cfg.get_compile()
+    assert (block.cpus, block.mem, block.time) == (8, "48G", "03:00:00")
+    # The accessor and the attribute are the same object; nothing else in
+    # the suite is disturbed by the extra key.
+    assert cfg.get_compile() is cfg.compile
+    assert cfg.get_test_names() == ["basic"]
+
+
+def test_suite_config_without_a_compile_block_reports_none(tmp_path):
+    body = _SUITE_WITH_COMPILE.replace(
+        'compile:\n  cpus: 8\n  mem: 48G\n  time: "03:00:00"\n', ""
+    )
+    assert SuiteConfig(str(_write_compile_suite(tmp_path, body))).get_compile() is None
+
+
+def test_suite_config_compile_block_rejects_unquoted_time(tmp_path):
+    """YAML 1.1 reads `3:00:00` as 10800; a 10800-minute build is not it."""
+    path = _write_compile_suite(
+        tmp_path, _SUITE_WITH_COMPILE.replace('"03:00:00"', "3:00:00")
+    )
+    with pytest.raises(FatalRtlBuddyError, match="sexagesimal"):
+        SuiteConfig(str(path))
+
+
 def test_suite_config_duplicate_test_raises(tmp_path):
     body = """\
 rtl-buddy-filetype: test_config

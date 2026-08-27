@@ -7,6 +7,7 @@ import os
 from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
+from .dispatch import DispatchResourcesFile, validate_resources_block
 from .test import TestbenchConfig, TestConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -18,6 +19,16 @@ class SuiteConfigFile:
     testbenches: list[TestbenchConfig]
     tests: list[TestConfigFile]
     builder: str | None = None
+    # Optional suite-level compile reservation (#497). The dispatched build
+    # job is per suite, so the one reservation `cfg-dispatch.compile` hands
+    # every suite fences off the largest verilation in the repo for the
+    # smallest leaf-cell bench too. This layers over it field by field.
+    #
+    # Deliberately `DispatchResourcesFile` and not `DispatchCompileFile`:
+    # `parallel` is how many builds the *build job* runs at once, a
+    # cfg-dispatch knob, and there is nothing a suite could mean by it that
+    # the cluster-wide value does not already say.
+    compile: DispatchResourcesFile | None = None
 
 
 class SuiteConfig:
@@ -27,6 +38,8 @@ class SuiteConfig:
     Attributes:
       path (str): Path to the suite configuration file.
       tests (dict[str, TestConfig]): Test configs in suite, grouped by test name.
+      compile (DispatchResourcesFile|None): Suite-level dispatch compile
+        reservation, or ``None`` when the suite declared none (#497).
     """
 
     def __init__(self, path):
@@ -43,8 +56,26 @@ class SuiteConfig:
         tbs = {}
         self.tests = {}
         self.path = path
+        self.compile = None
 
         if data is not None:
+            # Validated at load, like cfg-dispatch's own blocks: an unquoted
+            # `time: 4:00:00` is an integer by the time serde sees it, and a
+            # reservation that silently means 10 days is worse than a load
+            # error. FatalRtlBuddyError, not a wrapped one — the message
+            # already names the trap and how to spell it (#497).
+            try:
+                self.compile = validate_resources_block(data.compile)
+            except FatalRtlBuddyError as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "suite_config.compile_invalid",
+                    path=path,
+                    error=e,
+                )
+                raise FatalRtlBuddyError(f"{path}: {e}") from e
+
             # Fail loud on duplicate testbench / test names — the
             # dict-comprehensions below would silently overwrite the
             # first entry with the last, hiding the user's typo.
@@ -164,6 +195,16 @@ class SuiteConfig:
           list[str]: Test names from the loaded suite config.
         """
         return list(self.tests.keys())
+
+    def get_compile(self):
+        """
+        Retrieve the suite-level dispatch compile reservation (#497).
+
+        Returns:
+          DispatchResourcesFile|None: The validated ``compile:`` block, or
+          ``None`` when the suite declared none (cfg-dispatch governs alone).
+        """
+        return self.compile
 
     def get_path(self):
         """

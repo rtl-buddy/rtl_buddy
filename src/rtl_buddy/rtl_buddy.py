@@ -74,6 +74,7 @@ from .config.dispatch import (
     JobResources,
     combine_for_in_job_compile,
     compile_parallel,
+    compile_resource_origins,
     resolve_compile_resources,
     resolve_resources,
 )
@@ -3048,6 +3049,15 @@ class RtlBuddy:
             run_token,
         )
 
+        # The suite's own `compile:` block, if any (#497) — the most
+        # specific layer of the compile reservation, and per suite exactly
+        # like the build job it sizes. Read once here and threaded to both
+        # consumers (the build job below, the in-job compile combination
+        # further down) so the two can never resolve differently, and
+        # stashed in the returned state for the post-run advice, which has
+        # no suite_cfg of its own.
+        suite_compile = suite_cfg.get_compile()
+
         # (2) Build job — unless nothing in this suite could use its output.
         # For a builder with no shared-build support the build pass compiles
         # on a compute node and produces no stamp any sim job can reuse, so
@@ -3077,6 +3087,7 @@ class RtlBuddy:
                 start_level=start_level,
                 plan_path=plan_path,
                 planned=len(entries),
+                suite_compile=suite_compile,
             )
         else:
             build_handle = None
@@ -3096,7 +3107,7 @@ class RtlBuddy:
         # (3) Group by resolved resources: elements of one sbatch array must
         # share a reservation shape. Consumes the single expansion; no hook.
         groups = {}  # (cpus, mem, time) -> list[(row index, TestJobSpec)]
-        compile_resources = resolve_compile_resources(dispatch_cfg)
+        compile_resources = resolve_compile_resources(dispatch_cfg, suite_compile)
         for entry in entries:
             cfg = entry["cfg"]
             resources = resolve_resources(dispatch_cfg, cfg)
@@ -3219,6 +3230,10 @@ class RtlBuddy:
             "build_handle": build_handle,
             "run_token": run_token,
             "submitted_at": submitted_at,
+            # For _analyze_reservations, which re-resolves the compile
+            # reservation from the root config alone and has no suite_cfg
+            # (#497) — same route as build_telemetry/build_compile_work.
+            "suite_compile": suite_compile,
         }
 
     def _announce_dispatched_suite(self, state, *, backend, suite):
@@ -3316,8 +3331,15 @@ class RtlBuddy:
         start_level,
         plan_path,
         planned,
+        suite_compile=None,
     ):
         """Submit the suite's compile as a Slurm build job (compute node).
+
+        ``suite_compile`` is the suite's own ``compile:`` block (#497),
+        layered over ``cfg-dispatch.compile`` field by field. Passed in
+        rather than re-read from ``suite_cfg`` so this job's reservation and
+        the in-job-compile combination in the caller are provably the same
+        resolution.
 
         ``planned`` is how many configs the plan holds. It caps the
         configured ``cfg-dispatch.compile.parallel``: a suite with two
@@ -3331,7 +3353,9 @@ class RtlBuddy:
         dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
         dispatch_root.mkdir(parents=True, exist_ok=True)
         parallel = max(1, min(compile_parallel(dispatch_cfg), planned))
-        resources = resolve_compile_resources(dispatch_cfg)
+        # `parallel` stays a cfg-dispatch knob: it sizes the build job's
+        # concurrency against the partition, which no suite knows about.
+        resources = resolve_compile_resources(dispatch_cfg, suite_compile)
         if parallel > 1:
             # Scale ONLY this job's reservation, and only here: the very
             # same resolved compile resources size an in-job compile's sim
@@ -3846,13 +3870,20 @@ class RtlBuddy:
             # had a build handle to query, so the two travel together and a
             # missing handle here is a bug that must fail loud.
             build_spec = state["build_handle"].spec
+            # The suite's own `compile:` block as submit resolved it (#497).
+            # .get(), unlike build_handle: an old state dict — or a caller
+            # that assembled one by hand — must degrade to root-config-only
+            # attribution rather than abort a finished run.
+            suite_compile = state.get("suite_compile")
             findings.extend(
                 analyze_build_reservation(
                     build_telemetry,
                     # The per-build reservation, NOT the scaled one the build
                     # spec carries: the advice names
                     # cfg-dispatch.compile.cpus, which is per-build.
-                    resolve_compile_resources(self.root_cfg.get_dispatch_cfg()),
+                    resolve_compile_resources(
+                        self.root_cfg.get_dispatch_cfg(), suite_compile
+                    ),
                     build_spec.parallel,
                     rightsize_cfg,
                     suite_display,
@@ -3872,6 +3903,12 @@ class RtlBuddy:
                     accounting_interval_s=(
                         backend.accounting_interval_s() if backend is not None else None
                     ),
+                    # Per-field provenance, so a value the suite block won
+                    # is pointed back at the suite's tests.yaml instead of
+                    # at a cfg-dispatch key editing which would move
+                    # nothing (#497).
+                    compile_origins=compile_resource_origins(suite_compile),
+                    suite_config_hint=suite_config_path or suite_display,
                 )
             )
         for finding in findings:

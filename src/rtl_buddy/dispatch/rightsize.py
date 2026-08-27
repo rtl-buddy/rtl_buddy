@@ -202,6 +202,8 @@ def analyze_build_reservation(
     *,
     compile_work=None,
     accounting_interval_s=None,
+    compile_origins=None,
+    suite_config_hint=None,
 ):
     """Right-size the *build job's* own reservation (#495).
 
@@ -249,6 +251,17 @@ def analyze_build_reservation(
     ``reduce`` for the same reason ``analyze_suite_reservations`` withholds
     memory advice: ``TotalCPU`` is accumulated from usage samples, so a job
     that finished inside one interval was measured at most once.
+
+    ``compile_origins`` says, per field, where the *winning* value came
+    from — ``{"mem": "suite"}`` when the suite's own ``compile:`` block set
+    it (#497) — and ``suite_config_hint`` is that suite's tests.yaml path.
+    Together they decide which file an edit hint names: advice that says
+    "shrink ``cfg-dispatch.compile.mem``" is wrong for a field a suite
+    block overrides, because editing the root config would not move this
+    job's reservation at all. The map is computed by
+    :func:`~rtl_buddy.config.dispatch.compile_resource_origins` beside the
+    layering it mirrors and handed in — never guessed here from the
+    values, which cannot tell an override from a coincidence.
     """
     if not build_telemetry:
         return []
@@ -303,13 +316,21 @@ def analyze_build_reservation(
     state = build_telemetry.get("state")
     states = [state] if state else []
 
+    origins = compile_origins or {}
+
     def hint(resource_field, note=None):
-        # cfg-dispatch lives in root_config.yaml, so without a path to it
-        # there is nothing honest to point at — the suite's tests.yaml does
-        # not govern a build job at all.
-        edit = {"path": f"cfg-dispatch.compile.{resource_field}"}
-        if root_config_hint:
-            edit["file"] = root_config_hint
+        # Point at whichever file holds the value that WON. A suite-level
+        # `compile:` block is the most specific layer, so for a field it
+        # set, editing cfg-dispatch would move nothing (#497). Otherwise
+        # cfg-dispatch lives in root_config.yaml, and without a path to it
+        # there is nothing honest to point at — a suite's tests.yaml does
+        # not govern a build job it does not override.
+        if origins.get(resource_field) == "suite" and suite_config_hint:
+            edit = {"file": suite_config_hint, "path": f"compile.{resource_field}"}
+        else:
+            edit = {"path": f"cfg-dispatch.compile.{resource_field}"}
+            if root_config_hint:
+                edit["file"] = root_config_hint
         if note:
             edit["note"] = note
         return edit
