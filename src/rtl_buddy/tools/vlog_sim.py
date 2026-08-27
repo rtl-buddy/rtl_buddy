@@ -449,13 +449,18 @@ class VlogSim:
         # this compile failed for a reason the sim itself already knows
         # (#498). Set only on the gated-build-failed path.
         self.compile_fail_desc = None
-        # Which file the next compile transcript is written to. The retry a
+        # Full-path override for where the next compile transcript is
+        # written; None means the test-scoped `compile.log`. The retry a
         # gated sim job runs when the build's stamp did not validate must
         # NOT truncate `compile.log`: that file is the build job's, and
         # overwriting it replaces a real compile error with whatever the
         # retry hit under the sim's (smaller) reservation — an 8G OOM
-        # reading as "signal 9" in the ECP report that filed #498.
-        self._compile_transcript_name = COMPILE_TRANSCRIPT_NAME
+        # reading as "signal 9" in the ECP report that filed #498. A full
+        # path rather than a name, because the retry log is RUN-scoped
+        # (#498 review): sibling runs of one fanned-out test share the test
+        # artefact dir, and a test-scoped retry log is one run's story
+        # advertised — and destroyed — by every sibling.
+        self._compile_transcript_override = None
         # CLI commands always pass suite_dir resolved from the test
         # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
         # is tests-only — `tests/test_setup_failures.py`,
@@ -558,7 +563,24 @@ class VlogSim:
         return str(artifact_dir)
 
     def _get_compile_transcript_path(self):
-        return str(Path(self._get_compile_work_dir()) / self._compile_transcript_name)
+        if self._compile_transcript_override is not None:
+            return self._compile_transcript_override
+        return str(Path(self._get_compile_work_dir()) / COMPILE_TRANSCRIPT_NAME)
+
+    def _get_retry_transcript_path(self):
+        """Where THIS run's gated retry writes its transcript (#498 review).
+
+        In the run's artifact directory (``run-NNNN`` under the test dir,
+        or the test dir itself for a single run) — the established home of
+        run-dependent outputs — because the retry is one run's recompile:
+        sibling runs of a fanned-out test share the test dir, and a
+        test-scoped ``compile.retry.log`` would be overwritten, unlinked
+        and advertised across runs that never retried.
+        """
+        return str(
+            Path(self._get_artifact_dir(run_id=self.run_id))
+            / COMPILE_RETRY_TRANSCRIPT_NAME
+        )
 
     def _get_build_compile_transcript_path(self):
         """Where the *build job* wrote this test's transcript.
@@ -1436,16 +1458,17 @@ class VlogSim:
         # not inherit the first's failure record, desc, or transcript name.
         self.last_compile_failure = None
         self.compile_fail_desc = None
-        self._compile_transcript_name = COMPILE_TRANSCRIPT_NAME
+        self._compile_transcript_override = None
         # A retry transcript describes exactly one run's retry. Left behind,
         # `rb graph results` would keep advertising it as this run's (#498
         # review) — remove it up front so it exists only when this compile's
-        # own gated retry writes it. The same discipline as the stale stamp
-        # unlink; best-effort like every artefact-dir touch.
+        # own gated retry writes it. THIS run's own, never a sibling's: the
+        # retry log is run-scoped (#498 review round 6), and unlinking at
+        # test scope destroyed the one diagnostic a sibling run's failed
+        # retry had left. The same discipline as the stale stamp unlink;
+        # best-effort like every artefact-dir touch.
         try:
-            (Path(self._get_compile_work_dir()) / COMPILE_RETRY_TRANSCRIPT_NAME).unlink(
-                missing_ok=True
-            )
+            Path(self._get_retry_transcript_path()).unlink(missing_ok=True)
         except OSError:
             pass
         log_event(
@@ -1656,8 +1679,13 @@ class VlogSim:
             # Beside the build's transcript, never over it: whatever this
             # retry hits is the *sim job's* story, told under the sim job's
             # reservation, and the build's compile.log is the only record of
-            # what the build job saw.
-            self._compile_transcript_name = COMPILE_RETRY_TRANSCRIPT_NAME
+            # what the build job saw. In the RUN's own directory (#498
+            # review round 6): the retry is one run's recompile, and
+            # sibling runs share the test dir. `_ensure_artifact_dir`, not
+            # just the path — a failing retry must find the dir to write
+            # its transcript into.
+            self._ensure_artifact_dir(run_id=self.run_id)
+            self._compile_transcript_override = self._get_retry_transcript_path()
         log_event(
             logger,
             logging.INFO,

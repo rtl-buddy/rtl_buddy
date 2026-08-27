@@ -235,14 +235,17 @@ def _artefacts(project_root: Path, scope_dir: Path, test_dir: Path) -> dict:
     # the build job's (or the only) compile, and `compile.retry.log` is the
     # recompile a gated sim job ran after finding the build's stamp invalid.
     # They fail for different reasons under different reservations, so a
-    # reader handed one when they wanted the other is misled.
-    for key, name in (
-        ("compile_log", "compile.log"),
-        ("compile_retry_log", "compile.retry.log"),
-    ):
-        candidate = test_dir / name
-        if candidate.is_file():
-            found[key] = _rel(project_root, candidate)
+    # reader handed one when they wanted the other is misled. The compile
+    # log is test-scoped (one compile feeds every iteration); the retry log
+    # is RUN-scoped (#498 review round 6) — only the run whose retry failed
+    # wrote one, so it is looked up in the run's own directory and a
+    # sibling that never retried does not advertise it.
+    compile_log = test_dir / "compile.log"
+    if compile_log.is_file():
+        found["compile_log"] = _rel(project_root, compile_log)
+    retry_log = scope_dir / "compile.retry.log"
+    if retry_log.is_file():
+        found["compile_retry_log"] = _rel(project_root, retry_log)
     return found
 
 

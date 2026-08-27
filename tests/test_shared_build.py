@@ -137,6 +137,7 @@ def _make_sim(
     family="verilator",
     simv="simv",
     compile_opts=None,
+    run_id=None,
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
@@ -151,6 +152,7 @@ def _make_sim(
         rtl_builder_mode="sim",
         sim_mode={"sim_to_stdout": True},
         share_build=share_build,
+        run_id=run_id,
     )
 
 
@@ -1348,6 +1350,53 @@ def test_a_no_evidence_retry_that_fails_writes_the_retry_log(
     assert retry_log.is_file()
     assert _events(caplog, "compile.prebuilt_stamp_invalid")
     assert sim.compile_fail_desc is None
+
+
+def test_a_siblings_retry_log_survives_another_runs_compile(tmp_path, monkeypatch):
+    """Fan-out siblings share the test dir; retry logs are per run (#498 r6).
+
+    Run 1's gated retry fails and leaves `run-0001/compile.retry.log` — the
+    only diagnostic of what ITS recompile hit. Run 2 then enters compile();
+    its self-cleanup unlink must target run 2's own (absent) retry log,
+    never run 1's evidence, and run 2's clean pass must not leave a retry
+    log of its own anywhere.
+    """
+    _write_source(tmp_path)
+
+    # Run 1: an evidence-less failure record earns the retry, which fails.
+    calls1 = []
+    _install_fake_builder(monkeypatch, calls1, returncode=1)
+    run1 = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    compile_log = _seed_build_transcript(run1)
+    run1.expect_prebuilt = True
+    run1.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "error_tail": ["hook exploded"]}],
+    )
+    assert run1.compile() == 1
+    assert len(calls1) == 1
+    run1_retry = Path(run1._get_artifact_dir(run_id=1)) / "compile.retry.log"
+    assert run1_retry.is_file()
+    run1_evidence = run1_retry.read_text()
+    # The test-scoped retry name is gone: nothing writes it any more.
+    assert not (compile_log.parent / "compile.retry.log").exists()
+
+    # Run 2, same test artefact dir: retries too, and passes.
+    calls2 = []
+    _install_fake_builder(monkeypatch, calls2)
+    run2 = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=2)
+    run2.expect_prebuilt = True
+    run2.build_result_json = run1.build_result_json
+    assert run2.compile() == 0
+    assert len(calls2) == 1
+
+    # Run 1's diagnostic survives, byte for byte; run 2 left none.
+    assert run1_retry.read_text() == run1_evidence
+    assert not (Path(run2._get_artifact_dir(run_id=2)) / "compile.retry.log").exists()
+    assert not (compile_log.parent / "compile.retry.log").exists()
+    # And the build job's own transcript was never touched either.
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
 
 
 def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
