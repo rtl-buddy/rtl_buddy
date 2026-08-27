@@ -104,7 +104,7 @@ Under dispatch, `sweep` runs once on the head, while `preproc` runs in the build
 
 Simulation jobs rely on the build stamp to skip recompilation. The stamp records a content hash of every tracked input under the project root, so content decides: a preprocessor that regenerates a filelist source byte-for-byte no longer invalidates anything, while one that changes a source's content invalidates every stamp and can trigger concurrent compiles into one directory. `compile.prebuilt_stamp_invalid` identifies this case. Avoid changing shared inputs from a per-test preprocessor.
 
-A design compile error is reported as `CompileFail`, not `DispatchFail`. Infrastructure failures remain `DispatchFail`. A failed build may be retried inside a simulation reservation, so size that reservation to accommodate compilation for non-shareable or recovery paths.
+A design compile error is reported as `CompileFail`, not `DispatchFail`. Infrastructure failures remain `DispatchFail`. A build the build job recorded as failed with a builder exit code, on the same inputs the simulation job would compile, is not recompiled by its simulation jobs — the summary row carries the build job's error and logs; fix the design or the build reservation, not the simulation one. A simulation job recompiles only when the stamp is invalid without that evidence (stamp drift, a build-side setup failure, or inputs that changed since the failed build), at simulation size with its transcript in the run's own `compile.retry.log` (under `run-NNNN/` for a fanned-out test), so size the simulation reservation for compilation only when relying on that recovery path.
 
 ## Slurm retry reuses artifact paths
 

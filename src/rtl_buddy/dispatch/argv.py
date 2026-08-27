@@ -122,6 +122,11 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
         argv += ["--expect-prebuilt"]
     if spec.rebuild:
         argv += ["--rebuild"]
+    if spec.build_result_json is not None:
+        # Only ever set alongside --expect-prebuilt: without a build job
+        # there is no envelope, and an ungated job has nothing to consult.
+        # Absent for every non-gated job, so their argv is unchanged (#498).
+        argv += ["--build-result-json", str(spec.build_result_json)]
     if spec.run_id is not None:
         argv += ["--run-id", str(spec.run_id)]
     if spec.seed_mode != SeedMode.DEFAULT:

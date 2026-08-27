@@ -17,6 +17,7 @@ from rtl_buddy.config.dispatch import (
     RetryConfigFile,
     combine_for_in_job_compile,
     compile_parallel,
+    compile_resource_origins,
     mem_to_bytes,
     resolve_compile_resources,
     resolve_resources,
@@ -575,4 +576,128 @@ def test_parallel_is_not_a_field_of_a_test_level_resources_block(
     assert not hasattr(basic.resources, "parallel")
     resolved = resolve_resources(DispatchConfigFile(), basic)
     assert resolved.cpus == 2
+    assert not hasattr(resolved, "parallel")
+
+
+# --- suite-level compile reservation (#497) ----------------------------
+
+
+def test_suite_compile_block_is_the_most_specific_compile_layer():
+    """suite `compile:` > cfg-dispatch.compile > cfg-dispatch.resources."""
+    cfg = DispatchConfigFile(
+        resources=DispatchResourcesFile(cpus=2, mem="4G", time="00:30:00"),
+        compile=DispatchCompileFile(cpus=4, mem="16G", parallel=4),
+    ).initialise()
+
+    # No suite block: exactly the layering that shipped before.
+    assert resolve_compile_resources(cfg) == JobResources(
+        cpus=4, mem="16G", time="00:30:00"
+    )
+
+    # A suite block wins field by field; an omitted field still inherits.
+    resolved = resolve_compile_resources(cfg, DispatchResourcesFile(mem="48G"))
+    assert resolved == JobResources(cpus=4, mem="48G", time="00:30:00")
+
+
+def test_suite_compile_block_layers_over_defaults_without_cfg_dispatch():
+    """A project with no cfg-dispatch at all still honours the suite block."""
+    resolved = resolve_compile_resources(
+        None, DispatchResourcesFile(cpus=8, mem="32G", time="03:00:00")
+    )
+    assert resolved == JobResources(cpus=8, mem="32G", time="03:00:00")
+
+
+def test_resolve_compile_resources_returns_a_fresh_object_each_call():
+    """Scaling the build job's cpus must not reach the in-job compile."""
+    cfg = DispatchConfigFile(compile=DispatchCompileFile(cpus=4)).initialise()
+    suite_block = DispatchResourcesFile(mem="48G")
+    first = resolve_compile_resources(cfg, suite_block)
+    second = resolve_compile_resources(cfg, suite_block)
+    assert first is not second
+    first.cpus *= 4
+    assert second.cpus == 4
+
+
+def test_compile_resource_origins_names_only_the_fields_the_suite_set():
+    assert compile_resource_origins(None) == {}
+    assert compile_resource_origins(DispatchResourcesFile()) == {}
+    assert compile_resource_origins(DispatchResourcesFile(mem="48G")) == {
+        "mem": "suite"
+    }
+    assert compile_resource_origins(
+        DispatchResourcesFile(cpus=8, mem="48G", time="03:00:00")
+    ) == {"cpus": "suite", "mem": "suite", "time": "suite"}
+
+
+def test_suite_compile_block_loads_and_validates_mem_and_time(
+    minimal_project: Path,
+):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        'compile:\n  cpus: 8\n  mem: 48G\n  time: "03:00:00"\n' + tests_yaml.read_text()
+    )
+    suite = SuiteConfig(path=str(tests_yaml))
+    block = suite.get_compile()
+    assert (block.cpus, block.mem, block.time) == (8, "48G", "03:00:00")
+    # mem is normalised to a string by the same validator cfg-dispatch uses.
+    assert isinstance(block.mem, str)
+
+
+def test_suite_compile_block_absent_resolves_to_none(minimal_project: Path):
+    suite = SuiteConfig(path=str(minimal_project / "tests.yaml"))
+    assert suite.get_compile() is None
+    assert (
+        resolve_compile_resources(
+            DispatchConfigFile().initialise(), suite.get_compile()
+        )
+        == JobResources()
+    )
+
+
+def test_suite_compile_block_rejects_the_sexagesimal_time_trap(
+    minimal_project: Path,
+):
+    """An unquoted `3:00:00` is the integer 10800 by the time serde sees it."""
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text("compile:\n  time: 3:00:00\n" + tests_yaml.read_text())
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        SuiteConfig(path=str(tests_yaml))
+    assert "sexagesimal" in str(excinfo.value)
+
+
+def test_suite_compile_block_rejects_a_malformed_time(minimal_project: Path):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text('compile:\n  time: "3 hours"\n' + tests_yaml.read_text())
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        SuiteConfig(path=str(tests_yaml))
+    assert "not a valid Slurm time" in str(excinfo.value)
+
+
+def test_suite_compile_block_coerces_an_integer_mem(minimal_project: Path):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text("compile:\n  mem: 4096\n" + tests_yaml.read_text())
+    assert SuiteConfig(path=str(tests_yaml)).get_compile().mem == "4096"
+
+
+def test_parallel_is_not_a_field_of_a_suite_level_compile_block(
+    minimal_project: Path,
+):
+    """`parallel` at suite level is an unknown key, not a knob (#497).
+
+    Concurrency sizes the build job against the partition's widest node,
+    which is a cluster fact; serde drops the key, so the resolved
+    reservation is untouched and cfg-dispatch still owns the concurrency.
+    """
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        "compile:\n  mem: 48G\n  parallel: 4\n" + tests_yaml.read_text()
+    )
+    block = SuiteConfig(path=str(tests_yaml)).get_compile()
+    assert block.mem == "48G"
+    assert not hasattr(block, "parallel")
+
+    cfg = DispatchConfigFile(compile=DispatchCompileFile(cpus=4)).initialise()
+    assert compile_parallel(cfg) == 1
+    resolved = resolve_compile_resources(cfg, block)
+    assert resolved == JobResources(cpus=4, mem="48G")
     assert not hasattr(resolved, "parallel")

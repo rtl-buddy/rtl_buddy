@@ -29,6 +29,7 @@ from rtl_buddy.runner.result_io import write_build_result_json, write_result_jso
 from rtl_buddy.runner.test_results import (
     CompileFailResults,
     EarlyStopResults,
+    SimTimeoutResults,
     TestPassResults,
 )
 from rtl_buddy.seed_mode import SeedMode
@@ -423,6 +424,234 @@ def test_build_compile_failure_surfaces_as_compile_fail(
     assert rows["basic"]["result"] == "FAIL"
     assert "compile failed in build job" in rows["basic"]["desc"]
     assert "produced no result" not in rows["basic"]["desc"]
+
+
+def test_build_compile_failure_puts_the_real_error_in_the_summary(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The row names the build job, its exit status and its error (#498).
+
+    The failure this replaces: the sim job retried the compile under its
+    own reservation, was OOM-killed, wrote `%Error: Verilator threw signal
+    9` over the build's compile.log, and the summary said `Compile failed`
+    pointing at that file. Three rounds of raising compile memory went by
+    before anyone opened `.dispatch/build-<id>.log` and found a one-line
+    lint error.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _CompileFailBuild(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "transcript": os.path.join("artefacts", "basic", "compile.log"),
+                        "error_tail": [
+                            "=== stderr ===",
+                            "%Error: src/top.sv:3:7: Signal is not driven: 'q'",
+                            "%Error: Exiting due to 1 error(s)",
+                        ],
+                    }
+                ],
+            )
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            # The real gated job declines to recompile and reports the
+            # build's verdict; its envelope is a CompileFail with the
+            # generic desc when it predates #498, which is the case the
+            # head still has to enrich.
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _CompileFailBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    # Every gated job was handed the envelope it needs to make that call.
+    gated = {spec.test_name: spec for spec in backend.submitted}
+    assert gated["basic"].expect_prebuilt is True
+    assert gated["basic"].build_result_json == backend.build_submitted[0].result_json
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    desc = rows["basic"]["desc"]
+    assert rows["basic"]["result"] == "FAIL"
+    assert desc.startswith("compile failed in build job fake-build (exit 1)")
+    assert "Signal is not driven" in desc
+    assert desc != "Compile failed"
+    # One line: the summary renders it in a table cell.
+    assert "\n" not in desc
+    # A test the build actually built keeps its own verdict untouched.
+    assert "compile failed in build job" not in rows["extra"]["desc"]
+    # The rewrite is durable, not just rendered: `rb graph results` re-reads
+    # the envelope, which would otherwise still say `Compile failed` (#498
+    # review).
+    envelope = json.loads(Path(gated["basic"].result_json).read_text())
+    assert envelope["result"]["results"]["desc"] == desc
+
+
+def test_a_sim_failure_is_not_relabelled_as_the_build_job_s_compile_error(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`failed` says a compile failed, not that THIS row's failure was it.
+
+    A config the build job failed to compile can still have a sim job that
+    recompiled successfully (the stamp path is per-key) and then failed in
+    simulation. Rewriting that row's desc would replace a real diagnosis
+    with a guess (#498).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _SimFailAfterBuildFail(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(spec.result_json, built=[], failed=["basic"])
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            handle = super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+            if spec.test_name == "basic":
+                write_result_json(
+                    spec.result_json,
+                    test_name=spec.test_name,
+                    run_id=spec.run_id,
+                    results=SimTimeoutResults(name=spec.test_name + "/results"),
+                    run_token=read_plan_token(spec.plan_path),
+                )
+            return handle
+
+    backend = _SimFailAfterBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["desc"] == "Sim hit timeout"
+
+
+def test_an_evidence_less_build_failure_keeps_the_retry_s_own_compile_fail(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head's rewrite demands the same compiler evidence as the sim's gate.
+
+    A `failed` entry whose record carries no returncode is a setup or worker
+    error; the sim job saw no evidence, retried, and here failed its *own*
+    compile. Rewriting that generic desc would attribute the retry's genuine
+    compile failure to a build job whose compiler never ran (#498 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _EvidencelessBuildFail(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "error_tail": ["PRE hook raised: OSError: license server"],
+                    }
+                ],
+            )
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _EvidencelessBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"] == "Compile failed"
+
+
+def test_an_inputs_changed_retry_s_own_failure_is_not_relabelled(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A sha-bearing record plus a generic desc means the sim retried.
+
+    A current-generation sim job suppresses the retry on matching inputs
+    and stamps the build prefix into its own desc — so a desc still saying
+    `Compile failed` beside a `fingerprint_sha` record is the retry's own
+    failure after input drift, not the build's stale verdict (#498 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _DriftedBuildFail(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "fingerprint_sha": "0" * 64,
+                        "error_tail": ["%Error: the OLD sources' error"],
+                    }
+                ],
+            )
+            return super().submit_build(spec)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _DriftedBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"] == "Compile failed"
+    assert "the OLD sources' error" not in rows["basic"]["desc"]
 
 
 def test_empty_suite_submits_no_build_job(
@@ -991,6 +1220,98 @@ def test_share_build_capable_builder_keeps_the_sim_sized_reservation(
     assert fake_backend.build_submitted[0].parallel == 1
 
 
+def _add_suite_compile(project: Path, block: str):
+    """Prepend a suite-level ``compile:`` block to the fixture's tests.yaml.
+
+    Top of file, after the filetype line, which is where the docs put it.
+    """
+    tests_yaml = project / "tests.yaml"
+    body = tests_yaml.read_text()
+    marker = "rtl-buddy-filetype: test_config\n"
+    assert body.startswith(marker)
+    tests_yaml.write_text(marker + block + body[len(marker) :])
+
+
+def test_suite_compile_block_overrides_the_build_job_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A suite's own ``compile:`` beats cfg-dispatch, field by field (#497).
+
+    The reported waste: one global compile reservation fences off the
+    largest verilation in the repo for every leaf-cell bench's build job.
+    The suite that genuinely needs the memory states it, and the cpus/time
+    it says nothing about still come from cfg-dispatch.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, "compile:\n  mem: 48G\n")
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0].resources
+    assert build.mem == "48G"  # the suite's
+    assert (build.cpus, build.time) == (4, "02:00:00")  # inherited
+    # Sim jobs only simulate: the compile block, at either level, is not
+    # allowed anywhere near their reservation.
+    sim = fake_backend.submitted[0].resources
+    assert (sim.cpus, sim.mem, sim.time) == (1, "2G", "00:20:00")
+
+
+def test_suite_compile_block_scales_with_compile_parallel(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`parallel` stays a cfg-dispatch knob and scales the suite's cpus too."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 6\n  parallel: 8\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    # `parallel: 8` in the suite block is an unknown key and is dropped;
+    # the cluster-wide 2 still binds, capped at the 2 planned configs.
+    assert build.parallel == 2
+    assert build.resources.cpus == 12  # 2 x the suite's 6, not 2 x 4
+    assert build.resources.mem == "16G"  # cfg-dispatch's, unscaled
+
+
+def test_suite_compile_block_reaches_an_in_job_compile_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A builder that compiles in its own sim job gets the suite block too.
+
+    The fixture's inferred "echo" family cannot share a build, so there is
+    no build job at all — the compile reservation only ever shows up in the
+    field-wise maximum that sizes the sim job. A suite block that stopped
+    at the build job would leave exactly that case under-reserved (#497).
+    """
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 2\n    mem: 4G\n    time: "00:10:00"\n',
+    )
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 8\n  mem: 48G\n")
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    resources = fake_backend.submitted[0].resources
+    assert resources.cpus == 8  # the suite's compile, over cfg-dispatch's 2
+    assert resources.mem == "48G"  # the suite's compile, over cfg-dispatch's 4G
+    assert resources.time == "00:20:00"  # sim's is longer than compile's
+
+
 def _add_third_test(project: Path):
     """A third planned config, so ``parallel`` can be the binding limit.
 
@@ -1368,6 +1689,68 @@ def test_machine_payload_carries_build_job_reservation_advice(
     assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
     assert time_a["edit_hint"]["file"].endswith("root_config.yaml")
     assert "note" not in time_a["edit_hint"]
+
+
+def test_build_advice_names_the_suite_file_for_a_field_the_suite_overrode(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The advice must point at the file that holds the winning value (#497).
+
+    A suite-level `compile.time` beats cfg-dispatch, so advice that named
+    `cfg-dispatch.compile.time` would send a project to edit a key that
+    moves nothing. The suite block travels to the post-run analysis through
+    the dispatch state, which is what this exercises end to end.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        builds=[
+            {
+                "test": "basic",
+                "builder": "hook-chosen-builder",
+                "duration_sec": 42.5,
+                "reused": False,
+                "group": "obj_dir_cafe",
+            }
+        ],
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 10800,
+            "alloc_cpus": 4,
+            "total_cpu_s": 60,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, 'compile:\n  time: "03:00:00"\n')
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    build_advice = {a["resource"]: a for a in advice if a["phase"] == "compile"}
+
+    time_a = build_advice["time"]
+    # The suite's 3 h, not cfg-dispatch's 2 h, is what was reserved...
+    assert time_a["reserved"] == "03:00:00"
+    # ...and it is the suite's tests.yaml the project is sent to edit.
+    assert time_a["edit_hint"]["path"] == "compile.time"
+    assert time_a["edit_hint"]["file"].endswith("tests.yaml")
+
+    # cpus came from cfg-dispatch, so its row still names the root config.
+    cpus_a = build_advice["cpus"]
+    assert cpus_a["edit_hint"]["path"] == "cfg-dispatch.compile.cpus"
+    assert cpus_a["edit_hint"]["file"].endswith("root_config.yaml")
 
 
 def test_a_build_job_that_only_reused_stamps_gets_no_reduce_advice(

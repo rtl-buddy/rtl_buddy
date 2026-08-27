@@ -93,6 +93,13 @@ class TestJobSpec:
     # would put every element of the array into one build directory at once
     # (#369).
     rebuild: bool = False
+    # That build job's result envelope, when there is one (#498). It is what
+    # lets a gated job tell the two reasons a stamp fails to validate apart:
+    # a compile that FAILED for this test is deterministic and must not be
+    # retried under the sim's reservation (the retry's own failure would
+    # overwrite the build's `compile.log` and hide the real error), while a
+    # merely absent or stale stamp still deserves the recompile.
+    build_result_json: Path | None = None
     log_path: Path | None = None
     # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
     # from it instead of re-running the suite's sweep hook. See BuildJobSpec.

@@ -202,6 +202,7 @@ def _make_sim(
     model_path=None,
     filelist=None,
     rebuild=False,
+    run_id=None,
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
@@ -220,6 +221,7 @@ def _make_sim(
         suite_dir=str(suite_dir) if suite_dir is not None else None,
         share_build=share_build,
         rebuild=rebuild,
+        run_id=run_id,
     )
 
 
@@ -1724,6 +1726,589 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
 
     assert len(calls) == 1
     assert "compiling despite being gated" not in caplog.text
+
+
+def test_clear_retry_transcripts_unlinks_every_named_run(tmp_path, monkeypatch):
+    """`run_multiple`'s one compile serves runs 1..N (#498 review).
+
+    The per-run cleanup in pre()/compile() reaches only the sim's own
+    run_id, so a local rerun after a dispatched fan-out relies on this to
+    stop runs 2..N advertising the dispatch's retry transcripts.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    stale = []
+    for run_id in (1, 2, 3):
+        p = Path(sim._get_artifact_dir(run_id=run_id)) / "compile.retry.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("%Error: an old dispatch's retry\n")
+        stale.append(p)
+
+    sim.clear_retry_transcripts([1, 2, 3])
+    assert not any(p.exists() for p in stale)
+
+
+def test_a_stale_retry_log_is_cleared_before_a_failing_pre(tmp_path, monkeypatch):
+    """A PRE failure must not resurrect the last invocation's retry (#498 review).
+
+    A reused run directory whose next invocation dies in `preproc` never
+    reaches compile(), so the cleanup there cannot run — the fresh
+    SetupFail envelope would be paired with the previous invocation's
+    `compile.retry.log` by the results overlay.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    stale = Path(sim._get_retry_transcript_path())
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("%Error: a previous invocation's retry\n")
+    hook = tmp_path / "boom_preproc.py"
+    hook.write_text("raise RuntimeError('pre exploded')\n")
+    monkeypatch.setattr(sim.test_cfg, "get_preproc_path", lambda: str(hook))
+
+    assert sim.pre() is not None
+    assert not stale.exists()
+
+
+def test_a_stale_retry_log_does_not_survive_the_next_compile(tmp_path, monkeypatch):
+    """`compile.retry.log` describes exactly one run's retry (#498 review).
+
+    Left behind, a later run that reused the build (or never retried at
+    all) would keep advertising the old transcript through `rb graph
+    results`' existence check, implying this run retried compilation.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    reader.expect_prebuilt = True
+    stale = Path(reader._get_compile_work_dir()) / "compile.retry.log"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("%Error: a previous run's retry\n")
+
+    assert reader.compile() == 0
+    assert not stale.exists()
+
+
+# ------------------------------- a gated job vs. a failed build (#498)
+
+# What the build job left in artefacts/<test>/compile.log. Every test below
+# asserts it byte-for-byte afterwards: the whole bug was a sim-side retry
+# writing its own `%Error: Verilator threw signal 9` over this text, so the
+# only visible failure became an OOM that read as a resource problem.
+_BUILD_TRANSCRIPT = (
+    "Command: verilator --Mdir obj_dir -f run.f\n\n"
+    "=== stderr ===\n"
+    "%Error: src/top.sv:3:7: Signal is not driven: 'q'\n"
+    "%Error: Exiting due to 1 error(s)\n"
+    "\n=== stdout ===\n"
+)
+
+
+def _seed_build_transcript(sim):
+    """Put the build job's compile.log where this sim would look for it."""
+    path = Path(sim._get_compile_transcript_path())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_BUILD_TRANSCRIPT)
+    return path
+
+
+def _write_build_envelope(tmp_path, *, failed, builds=None):
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    return write_build_result_json(
+        tmp_path / "artefacts" / ".dispatch" / "build-result-1.json",
+        built=[name for name in ("test_a",) if name not in failed],
+        failed=failed,
+        builds=builds,
+    )
+
+
+def _events(caplog, name):
+    return [
+        record.rtl_fields
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == name
+    ]
+
+
+def test_a_gated_job_does_not_retry_a_compile_the_build_job_already_failed(
+    tmp_path, monkeypatch, caplog
+):
+    """A deterministic compile error will not pass on retry (#498).
+
+    Retrying it in the sim job runs the same elaboration under the *sim*
+    reservation, so a big design is OOM-killed and writes `signal 9` over
+    the build job's real error. Refuse the retry, report the build's exit
+    status and error lines, and leave that transcript alone.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[
+            {
+                "test": "test_a",
+                "returncode": 1,
+                "transcript": os.path.join("artefacts", "test_a", "compile.log"),
+                "error_tail": [
+                    "%Error: src/top.sv:3:7: Signal is not driven: 'q'",
+                    "%Error: Exiting due to 1 error(s)",
+                ],
+            }
+        ],
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    # No builder ran, and neither transcript was touched.
+    assert calls == []
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert not (compile_log.parent / "compile.retry.log").exists()
+    # The real error reaches the summary row, in one line.
+    desc = sim.compile_fail_desc
+    assert "Signal is not driven" in desc
+    assert "(exit 1)" in desc
+    assert str(compile_log) in desc
+    assert "\n" not in desc
+    # ...and the retry WARNING must not fire: nothing is compiling here, so
+    # the "every sibling is compiling into one dir" advice would be wrong.
+    assert _events(caplog, "compile.prebuilt_stamp_invalid") == []
+    assert _events(caplog, "compile.build_job_failed")[0]["returncode"] == 1
+
+
+def test_a_gated_job_retries_a_failure_recorded_without_compiler_evidence(
+    tmp_path, monkeypatch, caplog
+):
+    """`failed` alone is not a compile verdict (#498 review).
+
+    The envelope's `failed` list also carries PRE/setup failures, filelist
+    errors and worker exceptions, and a sim job re-runs its own preproc —
+    so a transient setup failure on the build side can pass here, and
+    suppressing the retry would turn that run into a false CompileFail.
+    Only a per-build record with a `returncode` — a builder that genuinely
+    ran and exited non-zero — is deterministic enough to stop the retry.
+    """
+    import logging as _logging
+
+    cases = (
+        # An older build job: listed as failed, no builds records at all.
+        ("no builds record", {"failed": ["test_a"]}),
+        # A worker exception / setup failure: a record, but no returncode
+        # because no builder ever ran.
+        (
+            "record without returncode",
+            {
+                "failed": ["test_a"],
+                "builds": [{"test": "test_a", "error_tail": ["hook exploded"]}],
+            },
+        ),
+    )
+    _write_source(tmp_path)
+    for case_i, (label, shape) in enumerate(cases):
+        calls = []
+        _install_fake_builder(monkeypatch, calls)
+        # A distinct define per case, so no case short-circuits on the
+        # shared build stamp an earlier one left.
+        sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", pd={"CASE": case_i})
+        compile_log = _seed_build_transcript(sim)
+        sim.expect_prebuilt = True
+        sim.build_result_json = _write_build_envelope(tmp_path, **shape)
+
+        caplog.clear()
+        with caplog.at_level(_logging.DEBUG):
+            assert sim.compile() == 0, label  # the retry ran, and passed
+
+        assert len(calls) == 1, label
+        assert _events(caplog, "compile.prebuilt_stamp_invalid"), label
+        assert _events(caplog, "compile.build_job_failed") == [], label
+        # The build job's transcript is untouched by the successful retry.
+        assert compile_log.read_text() == _BUILD_TRANSCRIPT, label
+        assert sim.compile_fail_desc is None, label
+
+
+def test_a_no_evidence_retry_that_fails_writes_the_retry_log(
+    tmp_path, monkeypatch, caplog
+):
+    """The evidence-less retry is a gated retry like any other (#498 review).
+
+    Its transcript goes to `compile.retry.log` beside the build job's
+    `compile.log`, never over it — and its failure is the sim job's own
+    story (the generic desc), not the build job's verdict.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "error_tail": ["hook exploded"]}],
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert len(calls) == 1  # the retry really ran
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    retry_log = compile_log.parent / "compile.retry.log"
+    assert retry_log.is_file()
+    assert _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert sim.compile_fail_desc is None
+
+
+def test_a_siblings_retry_log_survives_another_runs_compile(tmp_path, monkeypatch):
+    """Fan-out siblings share the test dir; retry logs are per run (#498 r6).
+
+    Run 1's gated retry fails and leaves `run-0001/compile.retry.log` — the
+    only diagnostic of what ITS recompile hit. Run 2 then enters compile();
+    its self-cleanup unlink must target run 2's own retry log, never run 1's
+    evidence, and run 2's own retry writes only inside run 2's directory.
+
+    Run 2's retry passes and still leaves a transcript, in its own
+    `run-0002/compile.retry.log`: since #494 a compile that RAN always
+    records what it ran, so the presence of a transcript cannot come to mean
+    "nothing compiled". #498 only redirects WHICH file that is, so the
+    build's `compile.log` survives untouched either way.
+    """
+    _write_source(tmp_path)
+
+    # Run 1: an evidence-less failure record earns the retry, which fails.
+    calls1 = []
+    _install_fake_builder(monkeypatch, calls1, returncode=1)
+    run1 = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    compile_log = _seed_build_transcript(run1)
+    run1.expect_prebuilt = True
+    run1.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "error_tail": ["hook exploded"]}],
+    )
+    assert run1.compile() == 1
+    assert len(calls1) == 1
+    run1_retry = Path(run1._get_artifact_dir(run_id=1)) / "compile.retry.log"
+    assert run1_retry.is_file()
+    run1_evidence = run1_retry.read_text()
+    # The test-scoped retry name is gone: nothing writes it any more.
+    assert not (compile_log.parent / "compile.retry.log").exists()
+
+    # Run 2, same test artefact dir: retries too, and passes.
+    calls2 = []
+    _install_fake_builder(monkeypatch, calls2, stdout="run 2 recompiled\n")
+    run2 = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=2)
+    run2.expect_prebuilt = True
+    run2.build_result_json = run1.build_result_json
+    assert run2.compile() == 0
+    assert len(calls2) == 1
+
+    # Run 1's diagnostic survives, byte for byte; run 2's own retry recorded
+    # itself in run 2's directory and nowhere else.
+    assert run1_retry.read_text() == run1_evidence
+    run2_retry = Path(run2._get_artifact_dir(run_id=2)) / "compile.retry.log"
+    assert run2_retry.is_file()
+    assert "run 2 recompiled" in run2_retry.read_text()
+    assert "run 2 recompiled" not in run1_evidence
+    assert not (compile_log.parent / "compile.retry.log").exists()
+    # And the build job's own transcript was never touched either.
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+
+
+def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
+    tmp_path, monkeypatch, caplog
+):
+    """A recorded failure of a *different* compile earns the retry (#498 review).
+
+    The sim job's PRE has re-run and its fingerprint is recomputed; if the
+    sources, flags or toolchain moved since the build job's compile failed,
+    the new inputs might pass, and suppressing the recompile would report a
+    CompileFail nobody has run. The record's `fingerprint_sha` is compared
+    against the sim's own; only a match (or an older record without one)
+    keeps the verdict.
+    """
+    import logging as _logging
+
+    from rtl_buddy.tools.vlog_sim import _fingerprint_sha
+
+    _write_source(tmp_path)
+
+    # --- the build job's side: a real failing compile records the sha.
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+    build_sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert build_sim.compile() == 1
+    recorded = build_sim.last_compile_failure
+    assert recorded["fingerprint_sha"]
+
+    # --- same inputs: the gated job honours the verdict and does not retry.
+    calls2 = []
+    _install_fake_builder(monkeypatch, calls2)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[
+            {
+                "test": "test_a",
+                "returncode": 1,
+                "fingerprint_sha": recorded["fingerprint_sha"],
+            }
+        ],
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+    assert calls2 == []  # suppressed: same compile, known verdict
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    # The sim's own hash really is the same helper over the same shape.
+    assert _events(caplog, "compile.build_failure_inputs_changed") == []
+    assert _fingerprint_sha(None) is None
+
+    # --- the inputs moved: the same record with a different sha retries.
+    caplog.clear()
+    calls3 = []
+    _install_fake_builder(monkeypatch, calls3)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "returncode": 1, "fingerprint_sha": "0" * 64}],
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0  # the retry ran, and the new inputs passed
+    assert len(calls3) == 1
+    assert _events(caplog, "compile.build_failure_inputs_changed")
+    assert _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert _events(caplog, "compile.build_job_failed") == []
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert sim.compile_fail_desc is None
+
+
+def test_the_fingerprint_sha_agrees_with_the_stamp_comparison(tmp_path, monkeypatch):
+    """`_fingerprint_sha` means what `_entry_lists_match` means (#494 + #498).
+
+    The no-retry verdict compares two hashes of a fingerprint, and the
+    stamp compares the same fingerprint entry-wise — where a content hash
+    OUTVOTES a moved `mtime_ns` (#494). Hashing the raw entries would put
+    the two into disagreement in the one direction that costs a run: a
+    `touch`, or a regenerated file with identical bytes, would move the sha,
+    the gated job would call the inputs "changed", and it would recompile a
+    deterministic failure under the sim reservation — exactly what #498
+    exists to stop. An edited byte must still move both.
+    """
+    from rtl_buddy.tools.vlog_sim import (
+        _entry_lists_match,
+        _fingerprint_sha,
+    )
+
+    src = _write_source(tmp_path)
+
+    def fingerprint():
+        sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+        return sim._compile_plan().fingerprint
+
+    before = fingerprint()
+    assert before["sources"][0][3], "the source must be content-hashed at all"
+
+    # Same bytes, new mtime: the stamp still validates, so the sha must not
+    # move either.
+    os.utime(src, (0, 0))
+    touched = fingerprint()
+    assert touched["sources"] != before["sources"]  # the mtimes really moved
+    assert _entry_lists_match(before["sources"], touched["sources"])
+    assert _fingerprint_sha(touched) == _fingerprint_sha(before)
+
+    # A real edit moves both, in step.
+    src.write_text("module top; wire q; endmodule\n")
+    edited = fingerprint()
+    assert not _entry_lists_match(before["sources"], edited["sources"])
+    assert _fingerprint_sha(edited) != _fingerprint_sha(before)
+
+
+def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
+    tmp_path, monkeypatch, caplog
+):
+    """A stamp invalid for some *other* reason still earns its retry (#498).
+
+    Toolchain drift, a clock skew, a config the build job never reached:
+    the recompile is right. What it may not do is truncate the build job's
+    compile.log, so its transcript goes to compile.retry.log — and the
+    compile.failed event names whichever file was actually written, because
+    that is what every reader is pointed at.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    # The build job says this test BUILT; the stamp simply did not validate.
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=[])
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert len(calls) == 1  # the retry really ran
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    retry_log = compile_log.parent / "compile.retry.log"
+    assert retry_log.is_file()
+    assert "Command: " in retry_log.read_text()
+    assert _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert _events(caplog, "compile.failed")[0]["transcript"] == str(retry_log)
+    # No build-side verdict to report, so the generic desc still applies.
+    assert sim.compile_fail_desc is None
+
+
+def test_a_gated_retry_falls_back_to_todays_behaviour_without_an_envelope(
+    tmp_path, monkeypatch, caplog
+):
+    """Missing, corrupt, or simply not passed: retry, exactly as before.
+
+    Declining to compile on a guess would turn an unreadable file into a
+    lost run, so only an envelope that positively names this test as failed
+    stops the retry.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json")
+    cases = (
+        ("absent", tmp_path / "nope.json"),
+        ("corrupt", corrupt),
+        ("not passed at all", None),
+    )
+    for case_i, (label, envelope) in enumerate(cases):
+        calls = []
+        _install_fake_builder(monkeypatch, calls)
+        # A distinct define per case, so no case short-circuits on the
+        # shared build stamp an earlier one left.
+        sim = _make_sim(
+            tmp_path, monkeypatch, test_name=f"test_{case_i}", pd={"CASE": case_i}
+        )
+        compile_log = _seed_build_transcript(sim)
+        sim.expect_prebuilt = True
+        sim.build_result_json = envelope
+
+        caplog.clear()
+        with caplog.at_level(_logging.DEBUG):
+            assert sim.compile() == 0, label
+
+        assert len(calls) == 1, label
+        assert _events(caplog, "compile.prebuilt_stamp_invalid"), label
+        assert _events(caplog, "compile.build_job_failed") == [], label
+        # The retry's own transcript goes to compile.retry.log — since #494
+        # a compile that ran records itself even when it passed — so the
+        # build job's compile.log stays exactly as it was.
+        assert compile_log.read_text() == _BUILD_TRANSCRIPT, label
+        assert (
+            Path(sim._get_artifact_dir(run_id=sim.run_id)) / "compile.retry.log"
+        ).is_file(), label
+
+
+def test_an_ungated_compile_still_writes_compile_log(tmp_path, monkeypatch):
+    """The `.retry.` name is for gated retries and nothing else (#498).
+
+    Every local run, and every dispatched job with no build job behind it,
+    must keep writing the file the docs, `rb graph results` and a decade of
+    muscle memory look for.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 1
+
+    transcript = Path(sim._get_compile_transcript_path())
+    assert transcript.name == "compile.log"
+    assert transcript.is_file()
+    assert not (transcript.parent / "compile.retry.log").exists()
+    # And the record a dispatched build job would put in its envelope —
+    # including the identity of the inputs this compile failed on, which
+    # is what lets a gated sim job tell "same compile" from "inputs moved
+    # since" (#498 review).
+    failure = sim.last_compile_failure
+    assert failure["returncode"] == 1
+    assert failure["transcript"] == str(transcript)
+    sha = failure["fingerprint_sha"]
+    assert len(sha) == 64 and set(sha) <= set("0123456789abcdef")
+
+
+def test_a_gated_build_failure_becomes_the_compile_fail_desc(tmp_path, monkeypatch):
+    """The desc reaches the run summary through TestRunner, not just VlogSim.
+
+    `_compile_outcome` maps a non-zero compile to CompileFailResults, and
+    that mapping is where a bare "Compile failed" used to erase everything
+    the sim had just learned (#498).
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[
+            {
+                "test": "test_a",
+                "returncode": 2,
+                "error_tail": ["%Error: src/top.sv:3:7: Signal is not driven: 'q'"],
+            }
+        ],
+    )
+
+    runner = RtlBuddyTestRunner(
+        name="rtl_buddy/testrunner",
+        root_cfg=sim.root_cfg,
+        test_cfg=sim.test_cfg,
+        rtl_builder_mode="sim",
+        test_runner_mode={"sim_to_stdout": False},
+        share_build=True,
+        expect_prebuilt=True,
+        build_result_json=sim.build_result_json,
+        suite_dir=str(tmp_path),
+    )
+    monkeypatch.setattr(runner, "_run_pre", lambda **_kwargs: None)
+    runner._vlog_sim = sim
+
+    results = runner.compile_prepared()
+    assert results.results["result"] == "FAIL"
+    assert "Signal is not driven" in results.results["desc"]
+    assert "(exit 2)" in results.results["desc"]
+    # The runner's own view of the failure, which the build job records.
+    assert runner.last_compile_failure["returncode"] == 2
+    assert calls == []
 
 
 def test_share_build_unsupported_reason_is_the_predicate_the_head_uses():

@@ -202,6 +202,8 @@ def analyze_build_reservation(
     *,
     compile_work=None,
     accounting_interval_s=None,
+    compile_origins=None,
+    suite_config_hint=None,
 ):
     """Right-size the *build job's* own reservation (#495).
 
@@ -249,6 +251,17 @@ def analyze_build_reservation(
     ``reduce`` for the same reason ``analyze_suite_reservations`` withholds
     memory advice: ``TotalCPU`` is accumulated from usage samples, so a job
     that finished inside one interval was measured at most once.
+
+    ``compile_origins`` says, per field, where the *winning* value came
+    from — ``{"mem": "suite"}`` when the suite's own ``compile:`` block set
+    it (#497) — and ``suite_config_hint`` is that suite's tests.yaml path.
+    Together they decide which file an edit hint names: advice that says
+    "shrink ``cfg-dispatch.compile.mem``" is wrong for a field a suite
+    block overrides, because editing the root config would not move this
+    job's reservation at all. The map is computed by
+    :func:`~rtl_buddy.config.dispatch.compile_resource_origins` beside the
+    layering it mirrors and handed in — never guessed here from the
+    values, which cannot tell an override from a coincidence.
     """
     if not build_telemetry:
         return []
@@ -303,13 +316,21 @@ def analyze_build_reservation(
     state = build_telemetry.get("state")
     states = [state] if state else []
 
+    origins = compile_origins or {}
+
     def hint(resource_field, note=None):
-        # cfg-dispatch lives in root_config.yaml, so without a path to it
-        # there is nothing honest to point at — the suite's tests.yaml does
-        # not govern a build job at all.
-        edit = {"path": f"cfg-dispatch.compile.{resource_field}"}
-        if root_config_hint:
-            edit["file"] = root_config_hint
+        # Point at whichever file holds the value that WON. A suite-level
+        # `compile:` block is the most specific layer, so for a field it
+        # set, editing cfg-dispatch would move nothing (#497). Otherwise
+        # cfg-dispatch lives in root_config.yaml, and without a path to it
+        # there is nothing honest to point at — a suite's tests.yaml does
+        # not govern a build job it does not override.
+        if origins.get(resource_field) == "suite" and suite_config_hint:
+            edit = {"file": suite_config_hint, "path": f"compile.{resource_field}"}
+        else:
+            edit = {"path": f"cfg-dispatch.compile.{resource_field}"}
+            if root_config_hint:
+                edit["file"] = root_config_hint
         if note:
             edit["note"] = note
         return edit
@@ -516,6 +537,7 @@ def analyze_suite_reservations(
     simulator_family_of=None,
     root_config_path=None,
     accounting_interval_s=None,
+    compile_origins=None,
 ):
     """Produce :class:`RightsizeFinding`s for one suite's dispatched rows.
 
@@ -524,13 +546,19 @@ def analyze_suite_reservations(
     ``None`` disables that suppression. ``root_config_path`` is where
     ``cfg-dispatch`` lives, needed to hint at ``cfg-dispatch.compile`` for a
     field the compile reservation governs (#358); without it those findings
-    fall back to the per-test hint. ``accounting_interval_s`` is the
+    fall back to the per-test hint. ``compile_origins`` says which of those
+    compile fields the suite's own ``compile:`` block won (#497) — a field
+    it set is named in the suite's tests.yaml instead, because
+    cfg-dispatch is the layer the suite block overrides and editing it
+    would leave the allocation exactly where it is, so the advice would
+    never retire. ``accounting_interval_s`` is the
     scheduler's usage-sampling interval, used to suppress memory advice
     derived from a peak that was never sampled (#365); ``None`` disables
     that suppression.
     """
     findings = []
     unsampled = []
+    origins = compile_origins or {}
     for test, agg in _aggregate(suite_results).items():
         governed_by = agg["governed_by"]
         # An in-job compile's allocation is max(sim, compile), so no `reduce`
@@ -554,6 +582,20 @@ def analyze_suite_reservations(
             # A field the compile reservation won is masked by the max, so
             # editing the test's resources: would not move the allocation.
             from_compile = from_compile or _governed_by.get(resource_field) == "compile"
+            # ...and of the two files that can hold the compile reservation,
+            # the suite's own `compile:` block is the layer that wins, so a
+            # field it set is edited there. Sending a project to
+            # cfg-dispatch.compile for it would move nothing and the advice
+            # would come back every run (#497).
+            if (
+                from_compile
+                and origins.get(resource_field) == "suite"
+                and suite_config_path
+            ):
+                return {
+                    "file": suite_config_path,
+                    "path": f"compile.{resource_field}",
+                }
             if from_compile and root_config_path:
                 return {
                     "file": root_config_path,

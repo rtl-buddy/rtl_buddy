@@ -30,6 +30,106 @@ RESULT_JSON_SCHEMA_VERSION = 1
 BUILD_RESULT_FILETYPE = "build_result"
 BUILD_RESULT_SCHEMA_VERSION = 1
 
+# How many trailing transcript lines a failed build records in its envelope
+# (#498). Enough to carry a Verilator error with its source excerpt and the
+# `%Error: Exiting due to N error(s)` tail; small enough that a plan of
+# eight broken configs does not turn the envelope into a log file.
+COMPILE_ERROR_TAIL_LINES = 15
+
+# The one spelling of "this row failed in the suite's build job". Written by
+# the gated sim job (which knows the error but not the job id) and by the
+# head (which knows both), and matched as a prefix by the head to tell a
+# desc it already enriched from one it still has to (#498).
+BUILD_COMPILE_FAIL_PREFIX = "compile failed in build job"
+
+# Longest error line a one-line desc will carry into a summary table cell.
+_ERROR_LINE_BUDGET = 160
+
+
+def compile_error_tail(path, limit=COMPILE_ERROR_TAIL_LINES):
+    """The last ``limit`` non-blank lines of a compile transcript.
+
+    Non-blank, and over the *whole* transcript rather than its trailing
+    section: ``_write_compile_transcript`` lays the file out as
+    ``Command:``/``=== stderr ===``/``=== stdout ===``, and a Verilator
+    lint error is entirely in the stderr half while stdout is empty — a
+    literal tail of the file would be the section banner and nothing else.
+
+    Never raises: this feeds a diagnostic, and a build job that cannot read
+    back its own transcript must still write its envelope and exit 0.
+    """
+    try:
+        text = Path(path).read_text(errors="replace")
+    except (OSError, ValueError):
+        return []
+    lines = [line.rstrip() for line in text.splitlines()]
+    return [line for line in lines if line.strip()][-limit:]
+
+
+def _first_error_line(error_tail):
+    """The one line of ``error_tail`` worth putting in a summary cell.
+
+    The first line that announces an error, because a builder prints the
+    diagnostic *before* its "exiting due to N errors" tail and the summary
+    has room for one of them. Falls back to the last line when nothing
+    matches — an unrecognised builder still says something.
+
+    Each element is flattened to its physical non-blank lines first: an
+    element can carry embedded newlines (a ``str(exception)`` recorded by
+    an older build job predates the producer-side flattening), and the
+    returned line feeds a one-line desc contract — ``render_summary`` puts
+    it in a table cell (#498 review).
+    """
+    lines = [
+        part.strip()
+        for line in (error_tail or [])
+        for part in str(line).splitlines()
+        if part.strip()
+    ]
+    if not lines:
+        return None
+    # The transcript's echoed compile command must not be mistaken for the
+    # diagnostic: a command carrying ``--error-limit``, an ``ERROR_*``
+    # define, or a path named ``errors`` matches the scan and would put a
+    # truncated ``Command: …`` in the summary cell (#498 review).
+    chosen = next(
+        (
+            line
+            for line in lines
+            if "error" in line.lower() and not line.startswith("Command: ")
+        ),
+        lines[-1],
+    )
+    if len(chosen) > _ERROR_LINE_BUDGET:
+        chosen = chosen[: _ERROR_LINE_BUDGET - 1].rstrip() + "…"
+    return chosen
+
+
+def build_compile_fail_desc(
+    *, job_id=None, returncode=None, error_tail=None, logs=None
+):
+    """One line naming the build job's compile failure, for a summary row.
+
+    The single formatter for both producers of that row (#498) — the gated
+    sim job, which knows the error but not the scheduler's job id, and the
+    head, which knows both — so the two can never drift into two spellings
+    of the same fact, and the head can recognise a desc it already has.
+
+    One line by contract: ``render_summary`` puts it in a table cell, and
+    the full transcript is named rather than quoted.
+    """
+    desc = BUILD_COMPILE_FAIL_PREFIX
+    if job_id is not None:
+        desc += f" {job_id}"
+    if returncode is not None:
+        desc += f" (exit {returncode})"
+    error_line = _first_error_line(error_tail)
+    if error_line:
+        desc += f": {error_line}"
+    if logs:
+        desc += f" (see {logs})"
+    return desc
+
 
 def write_result_json(path, *, test_name, run_id, results, run_token=None):
     """Atomically write one run's result envelope to ``path``.
@@ -262,6 +362,15 @@ def write_build_result_json(path, *, built, failed, builds=None):
     at ``parallel: 1``, where a real build job still reports one record
     per planned config — and omitted only when a caller passes none (the
     telemetry-drop retry in ``do_cmd_build_job``, and tests).
+
+    A record for a build that FAILED carries three more keys, on the same
+    additive terms (#498): ``returncode`` (the builder's exit status),
+    ``error_tail`` (the last :data:`COMPILE_ERROR_TAIL_LINES` non-blank
+    lines of its transcript) and ``transcript`` (suite-relative, for the
+    reason ``group`` is). They exist so the failure is readable from the
+    envelope alone — the gated sim job reads them to decline a retry that
+    would only fail again, and the head reads them to put the real error in
+    the run summary instead of the retry's.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -290,7 +399,10 @@ def load_build_result_json(path):
 
     ``builds`` is the per-config compile record (#495) and is empty for an
     envelope written before it existed — the key is additive, so a mixed
-    version fleet degrades to today's behaviour instead of failing.
+    version fleet degrades to today's behaviour instead of failing. Each
+    record is returned as written: a consumer reads the failure keys
+    (#498) with ``.get()``, because a build job predating them, or one
+    whose config succeeded, writes none.
     """
     path = Path(path)
     try:

@@ -12,6 +12,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -62,6 +63,10 @@ class _StubTestRunner:
     # itself (#495). Default: a plausible record so the envelope's `builds`
     # list is exercised without every test having to opt in.
     compile_record_of = None
+    # test name -> {returncode, transcript} / None, the failure record
+    # VlogSim stamps on itself (#498). Default: none, i.e. a build job that
+    # has nothing to say about *why* a config failed.
+    compile_failure_of = None
 
     def __init__(self, **kwargs):
         type(self).last_init = kwargs
@@ -109,6 +114,11 @@ class _StubTestRunner:
         return record_of(self.test_name)
 
     @property
+    def last_compile_failure(self):
+        failure_of = type(self).compile_failure_of
+        return None if failure_of is None else failure_of(self.test_name)
+
+    @property
     def builder_name(self):
         # Known from the moment the sim exists, i.e. before any compile
         # plan — the fallback the build job uses for a config whose PRE
@@ -127,6 +137,7 @@ def stub_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StubTestRunner]:
     _StubTestRunner.prepare_hook = None
     _StubTestRunner.group_fail = None
     _StubTestRunner.compile_record_of = None
+    _StubTestRunner.compile_failure_of = None
     monkeypatch.setattr(rtl_buddy_module, "TestRunner", _StubTestRunner)
     return _StubTestRunner
 
@@ -1398,6 +1409,316 @@ def test_build_records_that_cannot_be_serialised_do_not_cost_the_envelope(
     br = load_build_result_json(minimal_project / "b.json")
     assert set(br["built"]) == {"basic", "extra"}
     assert br["builds"] == []
+
+
+# ------------------------------- build failure detail (#498)
+
+
+def test_build_envelope_records_why_a_compile_failed(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """A failed build carries its returncode, transcript and error tail.
+
+    Without them the only record of a one-line lint error is a log on a
+    compute node, while the sim job it gates recompiles under a smaller
+    reservation and writes an OOM over the transcript that held it (#498).
+    """
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    transcript = minimal_project / "artefacts" / "basic" / "compile.log"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(
+        "Command: verilator -f run.f\n\n"
+        "=== stderr ===\n"
+        "%Error: src/top.sv:3:7: Signal is not driven: 'q'\n"
+        "%Error: Exiting due to 1 error(s)\n"
+        "\n=== stdout ===\n"
+    )
+
+    stub_runner.compile_hook = lambda name: (
+        CompileFailResults(name=f"{name}/results")
+        if name == "basic"
+        else EarlyStopResults(name=f"{name}/results", desc="compiled")
+    )
+    stub_runner.compile_failure_of = lambda name: (
+        {
+            "returncode": 1,
+            "transcript": str(transcript),
+            # What VlogSim records beside a real failure (#498 review): the
+            # identity of the inputs the builder failed on, which a gated
+            # sim job compares against its own before declining a retry.
+            "fingerprint_sha": "ab" * 32,
+        }
+        if name == "basic"
+        else None
+    )
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    assert br["failed"] == ["basic"]
+    by_test = {entry["test"]: entry for entry in br["builds"]}
+    assert by_test["basic"]["returncode"] == 1
+    assert by_test["basic"]["fingerprint_sha"] == "ab" * 32
+    # Suite-relative, for the reason `group` is: an absolute path here pins
+    # the compute node's mount into an artifact the head reads.
+    assert by_test["basic"]["transcript"] == os.path.join(
+        "artefacts", "basic", "compile.log"
+    )
+    # Non-blank lines from the whole transcript, so a builder that writes
+    # only to stderr is not tailed down to a section banner.
+    assert by_test["basic"]["error_tail"] == [
+        "Command: verilator -f run.f",
+        "=== stderr ===",
+        "%Error: src/top.sv:3:7: Signal is not driven: 'q'",
+        "%Error: Exiting due to 1 error(s)",
+        "=== stdout ===",
+    ]
+    # A config that BUILT gets none of them — the keys mean "this failed".
+    assert "returncode" not in by_test["extra"]
+    assert "error_tail" not in by_test["extra"]
+    assert "fingerprint_sha" not in by_test["extra"]
+
+
+def test_a_worker_exception_becomes_the_error_tail_when_no_builder_ran(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """No builder, no transcript — but the exception is the whole "why"."""
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    def boom_for_basic(name):
+        if name == "basic":
+            raise RuntimeError("builder vanished")
+        return EarlyStopResults(name=f"{name}/results", desc="compiled")
+
+    stub_runner.compile_hook = boom_for_basic
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    by_test = {entry["test"]: entry for entry in br["builds"]}
+    assert by_test["basic"]["error_tail"] == ["builder vanished"]
+    assert "returncode" not in by_test["basic"]
+    assert "transcript" not in by_test["basic"]
+
+
+def test_a_multi_line_worker_exception_is_recorded_as_physical_lines(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """str() of an exception can embed newlines (#498 review).
+
+    An `error_tail` element is one physical line by contract:
+    `build_compile_fail_desc` selects one element for a one-line summary
+    cell, and an element with embedded newlines would break that row.
+    """
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    def boom_for_basic(name):
+        if name == "basic":
+            raise RuntimeError(
+                "serde error:\n  field 'cpus'\n\n  expected int, got str"
+            )
+        return EarlyStopResults(name=f"{name}/results", desc="compiled")
+
+    stub_runner.compile_hook = boom_for_basic
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    by_test = {entry["test"]: entry for entry in br["builds"]}
+    assert by_test["basic"]["error_tail"] == [
+        "serde error:",
+        "field 'cpus'",
+        "expected int, got str",
+    ]
+    assert all("\n" not in line for line in by_test["basic"]["error_tail"])
+
+
+def test_an_unreadable_transcript_does_not_cost_the_build_job_its_envelope(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The exit-0 contract covers the new detail too (#498).
+
+    A failure to *describe* a failure must not take the envelope — and so
+    the fan-out's `afterok` — down with it. The verdict survives; only the
+    error text is missing.
+    """
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.compile_hook = lambda name: (
+        CompileFailResults(name=f"{name}/results")
+        if name == "basic"
+        else EarlyStopResults(name=f"{name}/results", desc="compiled")
+    )
+    stub_runner.compile_failure_of = lambda name: (
+        # A path that does not exist: compile_error_tail declines rather
+        # than raising, and the returncode still lands.
+        {"returncode": 3, "transcript": str(minimal_project / "gone" / "compile.log")}
+        if name == "basic"
+        else None
+    )
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["_build-job", "-c", "tests.yaml", "-l", "5", "--result-json", "b.json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    br = load_build_result_json(minimal_project / "b.json")
+    assert br["failed"] == ["basic"]
+    by_test = {entry["test"]: entry for entry in br["builds"]}
+    assert by_test["basic"]["returncode"] == 3
+    assert "error_tail" not in by_test["basic"]
+
+
+def test_the_envelope_loader_tolerates_records_without_the_failure_keys():
+    """A mixed-version fleet degrades, never fails (#498).
+
+    An envelope written by a build job that predates the failure detail is
+    still a valid schema-1 envelope; the keys are additive and every
+    consumer reads them with `.get()`.
+    """
+    import json as _json
+
+    from rtl_buddy.runner.result_io import (
+        BUILD_RESULT_FILETYPE,
+        BUILD_RESULT_SCHEMA_VERSION,
+        load_build_result_json,
+        write_build_result_json,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_build_result_json(
+            Path(tmp) / "b.json",
+            built=["extra"],
+            failed=["basic"],
+            builds=[{"test": "basic", "builder": "verilator", "group": "obj"}],
+        )
+        raw = _json.loads(Path(path).read_text())
+        # The schema version does NOT move for an additive field.
+        assert raw["schema_version"] == BUILD_RESULT_SCHEMA_VERSION == 1
+        assert raw["rtl-buddy-filetype"] == BUILD_RESULT_FILETYPE
+
+        br = load_build_result_json(path)
+        assert br["failed"] == ["basic"]
+        assert br["builds"][0].get("returncode") is None
+        assert br["builds"][0].get("error_tail") is None
+
+
+def test_compile_error_tail_reads_the_whole_transcript_not_its_last_lines():
+    """A Verilator error is in the stderr half; stdout is empty (#498).
+
+    A literal tail of the file would be `=== stdout ===` and nothing else,
+    which is why the tail is taken over the non-blank lines of the whole
+    file.
+    """
+    from rtl_buddy.runner.result_io import compile_error_tail
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "compile.log"
+        path.write_text(
+            "Command: verilator -f run.f\n\n"
+            "=== stderr ===\n"
+            "%Error: src/top.sv:3:7: Signal is not driven: 'q'\n"
+            "\n=== stdout ===\n"
+        )
+        assert compile_error_tail(path) == [
+            "Command: verilator -f run.f",
+            "=== stderr ===",
+            "%Error: src/top.sv:3:7: Signal is not driven: 'q'",
+            "=== stdout ===",
+        ]
+        assert compile_error_tail(path, limit=2)[-1] == "=== stdout ==="
+        # Never raises: a build job that cannot read back its own
+        # transcript must still write its envelope and exit 0.
+        assert compile_error_tail(Path(tmp) / "gone.log") == []
+
+
+def test_the_build_fail_desc_stays_one_line_for_a_multi_line_tail_element():
+    """The one-line desc contract survives a legacy envelope (#498 review).
+
+    An envelope written before the producer flattened worker exceptions can
+    still carry an `error_tail` element with embedded newlines; the desc
+    goes into a summary table cell, so the selector flattens each element
+    to physical lines before choosing one.
+    """
+    from rtl_buddy.runner.result_io import build_compile_fail_desc
+
+    desc = build_compile_fail_desc(
+        job_id="4242",
+        returncode=1,
+        error_tail=["%Error: bad thing\n  detail one\n  detail two"],
+        logs="build-4242.log",
+    )
+    assert "\n" not in desc
+    assert "%Error: bad thing" in desc
+    assert "detail one" not in desc
+
+
+def test_the_echoed_compile_command_is_never_the_chosen_diagnostic():
+    """A command carrying `error` must not displace the real error (#498 review).
+
+    A short transcript's first line is `Command: …`; with `--error-limit`
+    (or an `ERROR_*` define, or a path named `errors`) in the command, the
+    loose scan would pick that echo and the summary would show a truncated
+    command instead of the compiler's diagnostic below it.
+    """
+    from rtl_buddy.runner.result_io import build_compile_fail_desc
+
+    desc = build_compile_fail_desc(
+        job_id="4242",
+        returncode=1,
+        error_tail=[
+            "Command: verilator --error-limit 5 +define+ERROR_INJECT tb.sv",
+            "=== stderr ===",
+            "%Error: tb.sv:3:7: Signal is not driven: 'q'",
+        ],
+        logs="build-4242.log",
+    )
+    assert "Signal is not driven" in desc
+    assert "--error-limit" not in desc
+
+
+def test_failure_detail_warning_has_a_dedicated_human_message():
+    """A WARNING must not fall through to the generic event-name fallback."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "build_job.failure_detail_failed", {"test": "basic", "error": "bad path"}
+    )
+    assert "basic" in msg and "bad path" in msg
+    assert "still reported" in msg
+    assert "build_job failure_detail_failed" not in msg
+
+
+def test_build_job_failed_error_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "compile.build_job_failed",
+        {
+            "test": "basic",
+            "run_id": 3,
+            "returncode": 1,
+            "transcript": "artefacts/basic/compile.log",
+        },
+    )
+    assert "basic (run 3)" in msg
+    assert "exit 1" in msg
+    assert "artefacts/basic/compile.log" in msg
+    assert "compile build_job_failed" not in msg
 
 
 def test_build_records_failure_warning_has_a_dedicated_human_message():
