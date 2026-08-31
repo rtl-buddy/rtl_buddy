@@ -3,6 +3,7 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import threading
 from contextlib import nullcontext
 from pathlib import Path
@@ -1020,10 +1021,14 @@ def _write_lib(tmp_path, name, content="module lib_mod; endmodule\n"):
     return path
 
 
+def _dir_entry_of(sources, prefix):
+    """The ``sources`` entry for the line starting with ``prefix``."""
+    return next(entry for entry in sources if entry[0].startswith(prefix))
+
+
 def _dir_entry(sim, prefix):
     """The stamp's ``sources`` entry for the line starting with ``prefix``."""
-    sources = json.loads(_stamp_of(sim).read_text())["sources"]
-    return next(entry for entry in sources if entry[0].startswith(prefix))
+    return _dir_entry_of(json.loads(_stamp_of(sim).read_text())["sources"], prefix)
 
 
 def test_an_incdir_header_edit_invalidates_a_stamp_with_no_depfile(
@@ -1123,13 +1128,47 @@ def test_a_file_appearing_in_a_library_dir_invalidates_the_stamp(tmp_path, monke
     assert len(calls) == 2
 
 
-def test_a_library_dir_listing_is_bounded_by_the_declared_libext(tmp_path, monkeypatch):
-    """A library dir can be large, so only the suffixes `-y` could actually
-    resolve are listed. `+libext+` itself is a suffix, not a path, and keeps
-    the untracked entry shape."""
+def test_a_library_dir_listing_is_unfiltered_by_suffix(tmp_path, monkeypatch):
+    """`+libext+` can be set on the builder command line
+    (`builder-opts.compile-time`) and never reach run.f, so a listing that
+    filtered by the suffixes run.f declares would silently miss the library
+    file that appears with any other one — Gap 2, still open. Everything in
+    the directory is listed instead. `+libext+` itself is a suffix, not a
+    path, and keeps the untracked entry shape."""
     _write_source(tmp_path)
     _write_lib(tmp_path, "bar.sv")
     _write_lib(tmp_path, "notes.txt", "not verilog\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            filelist=["src/top.sv", "+libext+.sv", "-y lib"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    listing = _dir_entry(sim_a, "-y ")[-1]
+    assert [entry[0] for entry in listing] == ["bar.sv", "notes.txt"]
+    assert _dir_entry(sim_a, "+libext+") == ["+libext+.sv", None, None, None]
+
+    # The suffix run.f never mentions: only an unfiltered listing sees it.
+    _write_lib(tmp_path, "newmod.vp", "module newmod; endmodule\n")
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_library_dir_listing_stays_flat(tmp_path, monkeypatch):
+    """`-y` maps a module name to a file in the directory itself, so a
+    subdirectory holds nothing the search can reach and walking it would
+    charge the stamp for files no compile can see."""
+    _write_source(tmp_path)
+    _write_lib(tmp_path, "bar.sv")
+    (tmp_path / "lib" / "vendor").mkdir()
+    (tmp_path / "lib" / "vendor" / "deep.sv").write_text("module deep; endmodule\n")
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
@@ -1137,35 +1176,26 @@ def test_a_library_dir_listing_is_bounded_by_the_declared_libext(tmp_path, monke
         tmp_path,
         monkeypatch,
         test_name="test_a",
-        filelist=["src/top.sv", "+libext+.sv", "-y lib"],
+        filelist=["src/top.sv", "-y lib"],
     )
     assert sim.compile() == 0
-
-    listing = _dir_entry(sim, "-y ")[-1]
-    assert [entry[0] for entry in listing] == ["bar.sv"]
-    assert _dir_entry(sim, "+libext+") == ["+libext+.sv", None, None, None]
-
-    _write_lib(tmp_path, "notes.txt", "still not verilog\n")
-    assert (
-        _make_sim(
-            tmp_path,
-            monkeypatch,
-            test_name="test_b",
-            filelist=["src/top.sv", "+libext+.sv", "-y lib"],
-        ).compile()
-        == 0
-    )
-    assert len(calls) == 1  # an unresolvable suffix is not a compile input
+    assert [entry[0] for entry in _dir_entry(sim, "-y ")[-1]] == ["bar.sv"]
 
 
-def test_an_incdir_listing_covers_every_regular_file(tmp_path, monkeypatch):
-    """Any name can be `include`d, so an include dir is listed unfiltered —
-    and flat, because `+incdir+` resolution is not recursive."""
+def test_an_incdir_listing_is_recursive_and_skips_dot_names(tmp_path, monkeypatch):
+    """Any name at all can be `include`d, so an include dir is listed
+    unfiltered — and recursively, because `` `include "nested/deep.svh" ``
+    resolves *beneath* the directory. Dot-prefixed names are not compile
+    inputs: browsing a directory in Finder writes `.DS_Store`, and charging
+    a full recompile for that is not a trade worth making."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     (tmp_path / "inc" / "table.txt").write_text("0\n")
     (tmp_path / "inc" / "nested").mkdir()
     (tmp_path / "inc" / "nested" / "deep.svh").write_text("`define D 1\n")
+    (tmp_path / "inc" / ".DS_Store").write_text("finder\n")
+    (tmp_path / "inc" / ".hidden").mkdir()
+    (tmp_path / "inc" / ".hidden" / "swap.svh").write_text("`define S 1\n")
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
@@ -1177,7 +1207,72 @@ def test_an_incdir_listing_covers_every_regular_file(tmp_path, monkeypatch):
     )
     assert sim.compile() == 0
     listing = _dir_entry(sim, "+incdir+")[-1]
-    assert [entry[0] for entry in listing] == ["table.txt", "w.svh"]
+    assert [entry[0] for entry in listing] == [
+        "nested/deep.svh",
+        "table.txt",
+        "w.svh",
+    ]
+
+
+def test_a_header_nested_under_an_incdir_invalidates_the_stamp(tmp_path, monkeypatch):
+    """`` `include "nested/deep.svh" `` is an ordinary spelling and resolves
+    below the include directory, so a flat listing would leave an edit to it
+    invisible on a builder that reports no dependencies."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    nested = tmp_path / "inc" / "nested"
+    nested.mkdir()
+    deep = nested / "deep.svh"
+    deep.write_text("`define D 1\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+
+    _touch(deep, "`define D 2\n")
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_dot_file_appearing_in_an_incdir_does_not_invalidate(tmp_path, monkeypatch):
+    """The over-approximation stops at names no simulator resolves through.
+    A `.DS_Store` dropped by browsing the directory must not cost a rebuild
+    of a whole chip."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+
+    (tmp_path / "inc" / ".DS_Store").write_text("finder\n")
+    (tmp_path / "inc" / ".w.svh.swp").write_text("vim\n")
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 1
 
 
 def test_an_edit_outside_every_listed_directory_still_reuses(tmp_path, monkeypatch):
@@ -1243,7 +1338,7 @@ def test_a_stamp_written_before_directory_listings_rebuilds_once(tmp_path, monke
     assert len(calls) == 2, "the rebuild happened once, not once per run"
 
 
-def test_a_directory_listing_never_reaches_the_compile_key(tmp_path, monkeypatch):
+def test_a_directory_listing_never_reaches_the_compile_key():
     """The listing belongs on the stamp side of the line #494 drew: an edit
     inside an include dir rebuilds *in place* instead of stranding one
     obj_dir per edit."""
@@ -1317,11 +1412,21 @@ def test_an_edit_inside_an_include_dir_rebuilds_in_place(tmp_path, monkeypatch):
     assert sim_b._get_simv_path() == sim_a._get_simv_path()
 
 
+def _source_changed_entries(caplog):
+    return [
+        record.rtl_fields["entry"]
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "compile.build_source_changed"
+    ]
+
+
 def test_a_changed_directory_entry_names_the_file_that_changed(
     tmp_path, monkeypatch, caplog
 ):
     """`compile.build_source_changed` is the answer to "why did this
-    recompile", so a directory entry has to name the file inside it."""
+    recompile", so a directory entry has to name the file inside it — for an
+    edit, and for a file added or removed, which shifts every entry after it
+    and used to be answered with a bare entry count."""
     _write_source(tmp_path)
     header = _write_header(tmp_path)
     calls = []
@@ -1342,25 +1447,65 @@ def test_a_changed_directory_entry_names_the_file_that_changed(
 
     with caplog.at_level(logging.DEBUG, logger="rtl_buddy.tools.vlog_sim"):
         assert _sim("test_b").compile() == 0
-    entries = [
-        record.rtl_fields["entry"]
-        for record in caplog.records
-        if getattr(record, "rtl_event", None) == "compile.build_source_changed"
-    ]
+    entries = _source_changed_entries(caplog)
     assert entries, "no compile.build_source_changed event was logged"
-    assert any("+incdir+" in entry and "w.svh" in entry for entry in entries)
+    assert any("+incdir+" in entry and entry.endswith(":: w.svh") for entry in entries)
+
+    added = tmp_path / "inc" / "extra.svh"
+    added.write_text("`define X 1\n")
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.tools.vlog_sim"):
+        assert _sim("test_c").compile() == 0
+    assert any(
+        entry.endswith(":: +extra.svh") for entry in _source_changed_entries(caplog)
+    )
+
+    added.unlink()
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.tools.vlog_sim"):
+        assert _sim("test_d").compile() == 0
+    assert any(
+        entry.endswith(":: -extra.svh") for entry in _source_changed_entries(caplog)
+    )
 
 
 def test_a_vanished_include_directory_invalidates_the_stamp(tmp_path, monkeypatch):
     """A `+incdir+` whose directory is gone stamps as untracked again, which
     cannot match the listing that was recorded — one rebuild, not a reuse."""
     _write_source(tmp_path)
-    header = _write_header(tmp_path)
-    stored = ["+incdir+../../inc", None, None, None, [["w.svh", 9, 17, "aaaa"]]]
-    gone = ["+incdir+../../inc", None, None, None]
-    assert not vlog_sim_module._entry_matches(stored, gone)
-    assert not vlog_sim_module._entry_matches(gone, stored)
-    assert header.exists()
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    assert _dir_entry(sim_a, "+incdir+")[-1]  # a listing was recorded
+
+    # The filelist writer refuses a missing directory, so the stamp is
+    # revalidated directly: this is what a compile from a stamp whose
+    # include tree has since been deleted decides.
+    stored = json.loads(_stamp_of(sim_a).read_text())["sources"]
+    run_f = sim_a._get_filelist_path()
+    shutil.rmtree(tmp_path / "inc")
+    current = sim_a._fingerprint_filelist_sources(run_f)
+    assert _dir_entry_of(current, "+incdir+") == [
+        next(entry[0] for entry in current if entry[0].startswith("+incdir+")),
+        None,
+        None,
+        None,
+    ]
+    assert not vlog_sim_module._entry_lists_match(stored, current)
 
 
 def test_an_unreadable_directory_degrades_to_untracked(tmp_path, monkeypatch):
@@ -1379,7 +1524,10 @@ def test_an_unreadable_directory_degrades_to_untracked(tmp_path, monkeypatch):
             raise PermissionError(13, "Permission denied")
         return real_scandir(path, *args, **kwargs)
 
+    # `os.walk` calls `scandir` too, and by default swallows a directory it
+    # cannot open — which would make an unreadable include dir look empty.
     monkeypatch.setattr(vlog_sim_module.os, "scandir", _refuse)
+    monkeypatch.setattr(os, "scandir", _refuse)
 
     sim = _make_sim(
         tmp_path,

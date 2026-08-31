@@ -60,7 +60,8 @@ header inputs, filelists, plusdefines, compile options, configured extra compile
 environment, builder, or toolchain changes rebuild; runtime plusargs, seeds, and
 `sim_timeout` do not.
 VCS/Icarus report no header dependencies, but every builder's stamp lists each
-`+incdir+`/`-y` directory's contents, so an edited or added file in one rebuilds.
+`+incdir+` tree (recursively) and `-y` directory (flat), unfiltered by suffix and
+skipping dot-names, so an edited, added, or removed file in one rebuilds.
 Batch compile-input edits before
 an expensive build and use independent cheap suites while it runs.
 
