@@ -34,6 +34,14 @@ rb tool-check --explain rtl-buddy-view
 
 The external extractor is optional. If absent, its tier is `skipped` and the graph remains usable. A requested tier that breaks is `failed`; per-model failures become non-zero only with `--strict`. Inspect `graph-meta.json` for tier status and failure details.
 
+## Models with no elaborable root
+
+The design tier roots each model's export at the model's `top:`, defaulting to the model name. A model that has no such module — an SV `interface` published as a library entry, or a filelist of vendored IP — sets `graph: false` in [`models.yaml`](../reference/yaml.md#modelsyaml).
+
+An opted-out model, and any testbench or non-simulation run rooted at it, is listed under the design tier's `skipped` entries in the envelope and in `graph-meta.json`, never under `failures`. `skipped` does not affect the exit code, including under `--strict`. If every model in scope opts out, the tier itself is `skipped`.
+
+The config tier still emits the model node, carrying `graph: false`, so `spec:` and test cross-references resolve. It emits no `maps_to` edge for it, and no `elaborates_as` or `targets` edge from a testbench or run whose top is that model's root, because the design tier will not define those `module:` nodes. Give the model a `top:` instead when the filelist elaborates and only the root module name differs.
+
 Unchanged inputs, tool versions, and schema produce a cached no-op build. A failure remains cached until an input or tool version changes, or `--force` is used.
 
 ## Query the graph
@@ -190,7 +198,7 @@ artefacts/graph/
 └── bind/graph.json
 ```
 
-`graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
+`graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, skipped items, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
 
 Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
 

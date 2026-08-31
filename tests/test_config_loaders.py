@@ -1913,3 +1913,81 @@ def test_unknown_platform_pin_has_a_dedicated_human_message():
     assert "verilator" in msg
     assert "osxx" in msg
     assert "linux, macos" in msg
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — graph opt-out + top override (#479)
+# ---------------------------------------------------------------------------
+
+
+def test_model_config_graph_and_top_default_to_graphable_self_topped():
+    """Every existing models.yaml keeps its current meaning.
+
+    ``graph:`` defaults to True and ``top:`` to None, so ``get_top()``
+    reproduces the project convention the whole codebase assumed before
+    the knobs existed: the model's root module is named after the model.
+    """
+    model = ModelConfig(name="soc", filelist=["src/soc.sv"])
+    assert model.graph is True
+    assert model.top is None
+    assert model.get_top() == "soc"
+
+
+def test_model_config_graph_false_and_top_override_round_trip(tmp_path):
+    """The two #479 knobs parse out of models.yaml and reach ``get_top()``."""
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "apb_intf"\n'
+        '    desc: "interface library"\n'
+        '    filelist: ["-v apb_intf.sv"]\n'
+        "    graph: false\n"
+        '  - name: "pp_axi"\n'
+        '    desc: "vendored collection"\n'
+        '    filelist: ["-F pp_axi.f"]\n'
+        '    top: "axi_xbar"\n'
+    )
+    loader = ModelConfigLoader(str(models_yaml))
+    intf = loader.get_model("apb_intf")
+    assert intf.graph is False
+    assert intf.get_top() == "apb_intf"
+
+    coll = loader.get_model("pp_axi")
+    assert coll.graph is True
+    assert coll.top == "axi_xbar"
+    assert coll.get_top() == "axi_xbar"
+
+
+def test_model_top_override_reaches_the_non_simulation_flows(tmp_path):
+    """``top:`` is the model's root module, not a graph-only fact.
+
+    ``cdc.yaml`` / ``synth.yaml`` / ``lint.yaml`` / ``fpga.yaml`` runs all
+    default their top to the model, so the override has to reach them —
+    otherwise a project needs the same escape hatch four more times.
+    """
+    from types import SimpleNamespace
+
+    from rtl_buddy.config.cdc import CdcConfig
+    from rtl_buddy.config.fpga import FpgaConfig
+    from rtl_buddy.config.lint import LintConfig
+    from rtl_buddy.config.synth import SynthConfig
+
+    model = ModelConfig(
+        name="pp_axi",
+        filelist=["-F pp_axi.f"],
+        top="axi_xbar",
+        path=str(tmp_path / "models.yaml"),
+    )
+    # `get_top` reads nothing but `self.model`, and each of these entry
+    # classes needs a dozen unrelated required fields to instantiate —
+    # so call the accessor against the one attribute it uses.
+    entry = SimpleNamespace(model=model)
+    for cls in (CdcConfig, SynthConfig, LintConfig, FpgaConfig):
+        assert cls.get_top(entry) == "axi_xbar", cls.__name__
+
+    plain = SimpleNamespace(model=ModelConfig(name="pp_axi", filelist=[]))
+    for cls in (CdcConfig, SynthConfig, LintConfig, FpgaConfig):
+        assert cls.get_top(plain) == "pp_axi", cls.__name__

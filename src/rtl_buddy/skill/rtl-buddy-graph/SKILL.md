@@ -26,6 +26,10 @@ rb --machine graph path NODE_A NODE_B
   `--strict`); `graph results` exits 1 for incomplete results under `--strict`.
   Otherwise they exit 0, and fatal errors exit 2. `hier`/`hier-query` propagate
   the renderer's exit code.
+- A design-tier row naming a model that cannot elaborate (an SV `interface`
+  library entry, a vendored filelist) is fixed in `models.yaml`, not by rerunning:
+  `top:` names the real root module, `graph: false` opts the model out and lists
+  it as *skipped* instead of *failed*.
 - Query matching is deterministic. A no-match exit 1 is a valid empty answer;
   exit 2 usually means the graph has not been built.
 - Prefer lean neighbours; use `--expand` only when full peer summaries are needed.

@@ -101,6 +101,11 @@ CACHED = "cached"
 SKIPPED = "skipped"
 FAILED = "failed"
 
+#: Why a design-tier item is in ``skipped`` rather than ``failures``
+#: (#479). The reason string is part of ``graph-meta.json``, so it names
+#: the knob a reader has to change to get the export back.
+GRAPH_OPT_OUT = "models.yaml `graph: false`"
+
 #: First ``rtl-buddy-view`` release carrying the ``graph`` subcommand
 #: (rtl-buddy-view#126). Mirrors the ``0.3.0`` floor that ``rb
 #: hier-query`` gates on in ``tool_manifest.py`` — the manifest floor
@@ -195,6 +200,11 @@ class TierReport:
       links (int): Links contributed (before the union).
       generator (dict | None): The tier's own ``graph.generator`` block.
       failures (list): Per-item failures that did not sink the tier.
+      skipped (list): Per-item opt-outs (#479) — a model marked
+        ``graph: false`` in models.yaml, and the testbench / flow-run
+        exports that would have re-elaborated it. Deliberately kept apart
+        from ``failures``: nothing went wrong, so it must not colour the
+        exit code under ``--strict`` or read as noise the project caused.
       extra (dict): Tier-specific fields for the meta sidecar.
     """
 
@@ -206,6 +216,7 @@ class TierReport:
     links: int = 0
     generator: dict | None = None
     failures: list = dc_field(default_factory=list)
+    skipped: list = dc_field(default_factory=list)
     extra: dict = dc_field(default_factory=dict)
 
     def as_meta(self) -> dict:
@@ -220,6 +231,8 @@ class TierReport:
         block["inputs"] = self.inputs
         if self.failures:
             block["failures"] = self.failures
+        if self.skipped:
+            block["skipped"] = self.skipped
         return block
 
     def as_payload(self) -> dict:
@@ -233,6 +246,8 @@ class TierReport:
             block["detail"] = self.detail
         if self.failures:
             block["failures"] = self.failures
+        if self.skipped:
+            block["skipped"] = self.skipped
         models = self.extra.get("models")
         if models is not None:
             block["models"] = models
@@ -273,6 +288,8 @@ class TierReport:
             parts.append(f"{len(collisions)} id(s) suite-qualified")
         if self.failures:
             parts.append(f"{len(self.failures)} failed")
+        if self.skipped:
+            parts.append(f"{len(self.skipped)} skipped")
         return ", ".join(parts) or "-"
 
 
@@ -446,11 +463,11 @@ def testbenches_from_suites(
     reproduce the first one's bytes. Names differing is not a
     difference.
 
-    A testbench whose top is the DUT top is dropped: ``--tb-top
-    <model.name>`` would re-elaborate exactly what the DUT export
-    already covered. That is the cocotb/SystemC case, where
-    ``toplevel:`` is required *and* names the DUT — there is no SV
-    testbench above it to add.
+    A testbench whose top is the DUT top (the model's ``top:`` when it
+    declares one, else its name) is dropped: ``--tb-top <that top>``
+    would re-elaborate exactly what the DUT export already covered. That
+    is the cocotb/SystemC case, where ``toplevel:`` is required *and*
+    names the DUT — there is no SV testbench above it to add.
 
     Args:
       project_root: Root that ``suite_rel`` is relative to.
@@ -486,7 +503,7 @@ def testbenches_from_suites(
             if allowed is not None and _model_key(model) not in allowed:
                 continue
             tb_top = tb.toplevel or tb.get_name()
-            if tb_top == model.name:
+            if tb_top == model.get_top():
                 continue
             key = (
                 suite_dir,
@@ -624,9 +641,9 @@ def flow_runs_from_regressions(
     exported here are exactly the ones that got ``test:`` nodes and
     ``targets`` stitches.
 
-    A run whose ``top:`` is the model's own name is dropped: the DUT
-    export already covers that hierarchy, and today that is every synth
-    / cdc / fpga run (their ``get_top()`` is the model name by
+    A run whose ``top:`` is the model's own root module is dropped: the
+    DUT export already covers that hierarchy, and today that is every
+    synth / cdc / fpga run (their ``get_top()`` is the model's by
     construction). What remains is the formal case — a checker top
     defined in the flow's own filelist.
 
@@ -657,7 +674,7 @@ def flow_runs_from_regressions(
         for entry in getattr(suite_cfg, entries_attr)():
             model = entry.get_model()
             top = entry.get_top()
-            if not top or top == model.name:
+            if not top or top == model.get_top():
                 continue
             if allowed is not None and _model_key(model) not in allowed:
                 continue
@@ -788,6 +805,39 @@ def _flow_exporters(
         )
         exporters.append((target, exporter))
     return exporters
+
+
+def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
+    """Partition TB / flow-run targets by their DUT's ``graph:`` flag (#479).
+
+    A ``graph: false`` model has no elaborable root, and both export
+    shapes still hand the viewer ``--top <model top>`` alongside their
+    own ``--tb-top`` — so a testbench or flow run over such a model
+    would fail for exactly the reason the model opted out. Skipping it
+    with a record of its own keeps the reason visible instead of
+    silently shrinking the tier.
+
+    Args:
+      targets: :class:`TestbenchTarget` / :class:`FlowRunTarget` list.
+      kind: ``"testbench"`` or ``"run"`` — the key the skip record uses,
+        matching the one its failure rows already use.
+
+    Returns:
+      tuple: (targets to export, skip records for the rest).
+    """
+    keep, skipped = [], []
+    for target in targets:
+        if target.model.graph:
+            keep.append(target)
+        else:
+            skipped.append(
+                {
+                    kind: target.label,
+                    "model": target.model.name,
+                    "reason": GRAPH_OPT_OUT,
+                }
+            )
+    return keep, skipped
 
 
 def _stitch_link(node_id: str, module_node_id: str, link_type: str) -> dict:
@@ -1301,9 +1351,21 @@ def build_graph(
         else:
             tools["rtl-buddy-view"] = view_version
             sources: list[str] = []
+            # #479: a model that declares `graph: false` has no elaborable
+            # root — an SV `interface` published as a library entry, a
+            # filelist of vendored IP with no module named after the model.
+            # It is recorded as skipped and never handed to the viewer, so
+            # the project stops carrying a permanent failure row it cannot
+            # silence. The config tier still emits its `model:` node.
+            graphable = [model for model in models if model.graph]
+            design_report.skipped.extend(
+                {"model": model.name, "reason": GRAPH_OPT_OUT}
+                for model in models
+                if not model.graph
+            )
             for model, exporter in _design_exporters(
                 root,
-                models,
+                graphable,
                 out,
                 view_executable=view_executable,
                 frontend=frontend,
@@ -1322,9 +1384,13 @@ def build_graph(
             # sources join the tier's input hashes, which is what keeps
             # the no-op check honest when only a testbench changed.
             if tb:
+                tb_targets, opted_out = _split_opted_out(
+                    testbenches_from_suites(root, search_verif, models), "testbench"
+                )
+                design_report.skipped.extend(opted_out)
                 for target, exporter in _tb_exporters(
                     root,
-                    testbenches_from_suites(root, search_verif, models),
+                    tb_targets,
                     out,
                     view_executable=view_executable,
                     frontend=frontend,
@@ -1344,9 +1410,13 @@ def build_graph(
             # join the tier's input hashes too, so editing a properties
             # file invalidates the cached graph.
             if flow_tops:
+                run_targets, opted_out = _split_opted_out(
+                    flow_runs_from_regressions(root, models), "run"
+                )
+                design_report.skipped.extend(opted_out)
                 for target, exporter in _flow_exporters(
                     root,
-                    flow_runs_from_regressions(root, models),
+                    run_targets,
                     out,
                     view_executable=view_executable,
                     frontend=frontend,
@@ -1362,8 +1432,18 @@ def build_graph(
                     flow_exporters.append((target, exporter))
             design_report.inputs = hash_inputs(root, sources)
             if not exporters and not tb_exporters and not flow_exporters:
-                design_report.status = FAILED
-                design_report.detail = "no model produced a filelist"
+                if design_report.skipped and not design_report.failures:
+                    # Everything in scope opted out. Nothing broke, so the
+                    # tier is skipped rather than failed — a project whose
+                    # design dir holds only library models must still exit 0.
+                    design_report.status = SKIPPED
+                    design_report.detail = (
+                        f"every model in scope opted out "
+                        f"({len(design_report.skipped)} skipped)"
+                    )
+                else:
+                    design_report.status = FAILED
+                    design_report.detail = "no model produced a filelist"
     reports[DESIGN_TIER] = design_report
 
     # --- config tier ----------------------------------------------------
@@ -1699,6 +1779,8 @@ def _hydrate_from_meta(reports: dict[str, TierReport], stored_meta: dict) -> Non
             report.links = int(stored.get("links") or 0)
         if not report.failures:
             report.failures = stored.get("failures") or []
+        if not report.skipped:
+            report.skipped = stored.get("skipped") or []
         for key in ("models", "testbenches", "flow_runs"):
             if key in stored and key not in report.extra:
                 report.extra[key] = stored[key]

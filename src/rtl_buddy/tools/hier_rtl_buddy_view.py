@@ -303,7 +303,7 @@ class RtlBuddyView:
         cmd = [
             self.executable,
             "--top",
-            self.model_cfg.name,
+            self.model_cfg.get_top(),
             "--filelist",
             fl_path,
             "--format",
@@ -682,7 +682,7 @@ class RtlBuddyViewGraph(RtlBuddyView):
             "--filelist",
             fl_path,
             "--top",
-            self.model_cfg.name,
+            self.model_cfg.get_top(),
             "--output",
             str(self.output),
             "--project-root",
@@ -775,7 +775,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
             self.verb,
             self.arg,
             "--top",
-            self.model_cfg.name,
+            self.model_cfg.get_top(),
             "--filelist",
             fl_path,
         ]

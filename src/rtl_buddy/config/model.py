@@ -84,6 +84,19 @@ class ModelConfig:
       tests (str|None): Relative path from models.yaml to the tests.yaml that
         owns this model's testbench/test suite. Same ``#test_name`` fragment
         semantics. Not consumed by any tool yet.
+      graph (bool): Whether this model takes part in ``rb graph build``'s
+        design tier. ``false`` opts it out for the models that have no
+        elaborable root at all — an SV ``interface`` published as a library
+        entry, or a filelist of vendored IP with no module named after the
+        model. The config tier still emits the model node (so spec and
+        test cross-references resolve); the design tier records the model
+        as *skipped* rather than attempting an export that can only fail.
+      top (str|None): Root module of this model's filelist, when it is not
+        named after the model. Defaults to ``name``, which is the project
+        convention every flow assumed before this field existed. Feeds
+        ``get_top()``, so it is also the default top of a ``cdc.yaml`` /
+        ``synth.yaml`` / ``lint.yaml`` / ``fpga.yaml`` run against this
+        model — the same escape hatch ``fpv.yaml`` already spells per-run.
       path (str|None): Path to the model config file. Will usually be set by the loader.
     """
 
@@ -96,6 +109,8 @@ class ModelConfig:
     cdc: str | None = None
     synth: str | None = None
     tests: str | None = None
+    graph: bool = True
+    top: str | None = None
     path: str | None = None
 
     def _resolve_relative(self, rel: str) -> str:
@@ -128,6 +143,17 @@ class ModelConfig:
         if self.axi_monitor_out is None:
             return None
         return self._resolve_relative(self.axi_monitor_out)
+
+    def get_top(self) -> str:
+        """The module this model's filelist is rooted at.
+
+        ``top:`` when declared, else the model name — the convention
+        ``rb hier``, ``rb graph build`` and the non-simulation flows all
+        relied on implicitly before the override existed. Returned even
+        for a ``graph: false`` model: the opt-out says the model is not
+        worth elaborating, not that this fallback changed.
+        """
+        return self.top or self.name
 
     def get_model_name(self):
         """

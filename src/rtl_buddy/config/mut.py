@@ -176,7 +176,7 @@ class MutConfigFile:
         return MutConfig(
             name=self.name or self.model,
             model=model,
-            top=self.top or self.model,
+            top=self.top or model.get_top(),
             design_file=design_file,
             operators=list(self.operators),
             fpv_config=fpv_config,

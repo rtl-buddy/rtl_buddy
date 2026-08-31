@@ -1812,6 +1812,214 @@ def test_cli_second_run_reports_unchanged(graph_project: Path, tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# models.yaml `graph:` / `top:` (#479)
+#
+# Two legitimate model shapes have no module named after the model: an SV
+# `interface` published as a library entry, and a filelist of vendored IP.
+# Before the knobs, both produced a permanent design-tier failure row and a
+# dangling `model --maps_to--> module:<name>` in every merged graph.
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_model(project: Path, name: str, extra: str) -> None:
+    """Append ``extra`` YAML lines to one model entry in its models.yaml."""
+    path = project / "design" / name / "models.yaml"
+    path.write_text(path.read_text().rstrip("\n") + "\n" + extra)
+
+
+def test_graph_false_model_is_skipped_not_failed(graph_project: Path, tmp_path: Path):
+    _rewrite_model(graph_project, "blk_b", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "built"
+    # Skipped, never failed — an opt-out is not a degradation, so
+    # `--strict` must stay silent about it.
+    assert design.failures == []
+    assert design.skipped == [{"model": "blk_b", "reason": graph_build.GRAPH_OPT_OUT}]
+    assert not build.has_failures()
+
+    # The viewer was never asked about blk_b.
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    # The config tier still carries the model — spec/test cross-references
+    # resolve — but there is no module node and no stitch inventing one.
+    assert "model:design/blk_b/models.yaml#blk_b" in nodes
+    assert nodes["model:design/blk_b/models.yaml#blk_b"]["graph"] is False
+    assert "module:blk_b" not in nodes
+    assert dangling_targets(graph) == []
+
+    meta = json.loads(build.meta_path.read_text())
+    assert meta["tiers"][DESIGN_TIER]["skipped"] == design.skipped
+    assert "failures" not in meta["tiers"][DESIGN_TIER]
+    assert design.row_detail().endswith("1 skipped")
+
+
+def test_graph_false_model_skips_its_testbench_and_run_exports(
+    graph_project: Path, tmp_path: Path
+):
+    """A TB or flow run over an opted-out model is skipped the same way.
+
+    Both export shapes still pass ``--top <the model's root>`` next to
+    their own ``--tb-top``, so they would fail for the exact reason the
+    model opted out.
+    """
+    _flow_suite(graph_project)
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.failures == []
+    assert design.skipped == [
+        {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
+        {
+            "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a_chk#chk_bmc",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+    ]
+    assert _tb_calls(record) == [] and _run_calls(record) == []
+    # blk_b is untouched by its neighbour's opt-out.
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_b"]
+
+
+def test_every_model_opting_out_skips_the_tier_without_failing_it(
+    graph_project: Path, tmp_path: Path
+):
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "skipped"
+    assert "opted out" in (design.detail or "")
+    assert build.failed_tiers() == []
+    assert _graph_calls(record) == []
+    assert build.graph_path.is_file()
+
+    graph = json.loads(build.graph_path.read_text())
+    # No config->design stitch survives: `maps_to`, a run's `targets` at
+    # the model's own root, and a cocotb testbench's declared
+    # `elaborates_as` are all withdrawn, because the tier that would
+    # define their target is not going to run.
+    assert [
+        link
+        for link in graph["links"]
+        if link["type"] in ("maps_to", "targets", "elaborates_as")
+    ] == []
+    # What is left is the binding tier's cocotb `test -> module:<DUT>`
+    # hop, which is emitted from the merged graph and is dangling for the
+    # same reason `--no-design` leaves it dangling (docs/known-issues.md).
+    assert dangling_targets(graph) == ["module:blk_a"]
+    assert all(
+        link["type"] == "binds_to"
+        for link in graph["links"]
+        if link["target"] == "module:blk_a"
+    )
+
+
+def test_model_top_override_roots_the_export_and_the_config_stitch(
+    graph_project: Path, tmp_path: Path
+):
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_b_core"\n')
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    assert sorted(argv[argv.index("--top") + 1] for argv in _dut_calls(record)) == [
+        "blk_a",
+        "blk_b_core",
+    ]
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    assert "module:blk_b_core" in nodes and "module:blk_b" not in nodes
+    # The config tier's stitch follows the override, so the merged graph
+    # resolves instead of dangling on a module that does not exist.
+    assert {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    } == {
+        ("model:design/blk_a/models.yaml#blk_a", "module:blk_a"),
+        ("model:design/blk_b/models.yaml#blk_b", "module:blk_b_core"),
+    }
+    assert dangling_targets(graph) == []
+
+
+def test_model_top_override_still_dedupes_a_model_topped_flow_run(
+    graph_project: Path,
+):
+    """The fixture's `blk_a_safety` run tops at its model.
+
+    Its `get_top()` follows the model override, so the DUT export still
+    covers it and it must not become a second, run-rooted export.
+    """
+    _rewrite_model(graph_project, "blk_a", '    top: "blk_a_core"\n')
+    assert graph_build.flow_runs_from_regressions(graph_project) == []
+
+
+def test_cli_envelope_and_summary_report_opted_out_models(
+    graph_project: Path, tmp_path: Path
+):
+    _rewrite_model(graph_project, "blk_b", "    graph: false\n")
+    view, _ = _fake_view(tmp_path)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "graph",
+            "build",
+            "--tool",
+            str(view),
+            "--no-extract",
+            "--strict",
+        ],
+    )
+    # `--strict` promotes real per-item failures; an opt-out is not one.
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.output.strip().splitlines()[-1])
+    design = next(t for t in envelope["payload"]["tiers"] if t["tier"] == DESIGN_TIER)
+    assert design["skipped"] == [
+        {"model": "blk_b", "reason": graph_build.GRAPH_OPT_OUT}
+    ]
+    assert "failures" not in design
+
+    human = runner.invoke(
+        rb.app, ["graph", "build", "--tool", str(view), "--no-extract", "--force"]
+    )
+    assert human.exit_code == 0, human.output
+    assert "1 skipped" in human.output
+
+
+# ---------------------------------------------------------------------------
 # End to end against the real viewer (skipped when it isn't installed)
 # ---------------------------------------------------------------------------
 
