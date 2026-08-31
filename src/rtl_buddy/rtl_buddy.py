@@ -3306,6 +3306,9 @@ class RtlBuddy:
                 suite_results[idx]["requested_cpus"] = (
                     None if cpus_overridden else resources.cpus
                 )
+                # ...and the argument that superseded it, so the cpus
+                # advice can name the thing an edit has to change.
+                suite_results[idx]["cpus_override"] = cpus_overridden
             dispatch_dir = (
                 Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
             )
@@ -4218,12 +4221,8 @@ class RtlBuddy:
                     # `--cpus-per-task` in `sbatch-args` is appended after
                     # the generated flags and wins, so neither the ratio nor
                     # the decomposition may be stated from it (#505 review).
-                    cpus_overridden=bool(
-                        sbatch_args_cpus_override(
-                            getattr(
-                                self.root_cfg.get_dispatch_cfg(), "sbatch_args", None
-                            )
-                        )
+                    cpus_override=sbatch_args_cpus_override(
+                        getattr(self.root_cfg.get_dispatch_cfg(), "sbatch_args", None)
                     ),
                 )
             )

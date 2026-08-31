@@ -31,6 +31,7 @@ def _row(
     governed_by=None,
     compile_floor=None,
     requested_cpus=None,
+    cpus_override=None,
 ):
     results = (
         TestPassResults(name=test + "/results")
@@ -49,6 +50,8 @@ def _row(
         "compile_floor": compile_floor or {},
         # What the head resolved and submitted as `--cpus-per-task` (#505).
         "requested_cpus": requested_cpus,
+        # ...and the `sbatch-args` entry that superseded it, if any.
+        "cpus_override": cpus_override,
     }
 
 
@@ -767,7 +770,7 @@ def _build_advice(
     accounting_interval_s=None,
     compile_origins=None,
     suite_config_hint=None,
-    cpus_overridden=False,
+    cpus_override=None,
 ):
     return analyze_build_reservation(
         telemetry,
@@ -780,7 +783,7 @@ def _build_advice(
         accounting_interval_s=accounting_interval_s,
         compile_origins=compile_origins,
         suite_config_hint=suite_config_hint,
-        cpus_overridden=cpus_overridden,
+        cpus_override=cpus_override,
     )
 
 
@@ -1623,7 +1626,9 @@ def test_a_cpus_override_in_sbatch_args_withdraws_the_configured_request():
 
     (cpus_a,) = [
         f
-        for f in _build_advice(telemetry, parallel=1, cpus=2, cpus_overridden=True)
+        for f in _build_advice(
+            telemetry, parallel=1, cpus=2, cpus_override="--cpus-per-task=8"
+        )
         if f.resource == "cpus"
     ]
     # 200 / (100 x 8) = 0.25 against the 8 the override submitted.
@@ -1631,10 +1636,26 @@ def test_a_cpus_override_in_sbatch_args_withdraws_the_configured_request():
     assert cpus_a.allocated is None
     assert cpus_a.utilization == 0.25
     assert cpus_a.suggested == "3"  # ceil(8 x 0.25 x 1.5)
-    # The decomposition may not name the superseded `compile.cpus: 2` either.
+    # ...and the hint names the argument, not the field it masks: editing
+    # `compile.cpus` would not move the next job's reservation, so the
+    # finding would come back — the shape #505 is about.
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpus_a.edit_hint["file"] == "root_config.yaml"
     note = cpus_a.edit_hint["note"]
-    assert "reserved 2" not in note
-    assert "the build job reserved 8" in note
+    assert "sbatch-args `--cpus-per-task=8` supersedes" in note
+    assert "cfg-dispatch.compile.cpus" in note
+    # The superseded decomposition is gone with it.
+    assert "the build job reserved" not in note
+
+    # time advice is unaffected: `--cpus-per-task` masks nothing there.
+    (time_a,) = [
+        f
+        for f in _build_advice(
+            telemetry, parallel=1, cpus=2, cpus_override="--cpus-per-task=8"
+        )
+        if f.resource == "time"
+    ]
+    assert time_a.edit_hint["path"] == "cfg-dispatch.compile.time"
 
 
 def test_a_test_row_falls_back_when_the_head_records_no_request():
@@ -1661,3 +1682,103 @@ def test_a_test_row_falls_back_when_the_head_records_no_request():
     (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
     assert cpu.reserved == "4"
     assert cpu.suggested == "2"
+
+
+# --------- #505 review: an override retargets the cpus edit hint too
+
+
+def test_a_cpus_override_retargets_the_per_test_edit_hint():
+    """Naming a masked field is advice that cannot be applied.
+
+    `sbatch-args` wins over the generated `--cpus-per-task`, so editing
+    `tests[name=t].resources.cpus` leaves the next job's reservation exactly
+    where it was and the finding returns on the following run — the
+    non-retiring shape #505 exists to stop. The hint names the argument
+    instead, and says which field it supersedes.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 2**30,
+                "total_cpu_s": 1000.0,  # 0.25 efficiency against the 4
+            },
+            requested_cpus=None,  # withdrawn by the override
+            cpus_override="--cpus-per-task=4",
+        )
+    ]
+    findings = _analyze(rows, root_config_path="root_config.yaml")
+    (cpu,) = [f for f in findings if f.resource == "cpus"]
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpu.edit_hint["file"] == "root_config.yaml"
+    note = cpu.edit_hint["note"]
+    assert "sbatch-args `--cpus-per-task=4` supersedes" in note
+    assert "tests[name=t].resources.cpus" in note
+
+    # Only cpus is masked: mem and time still name the fields that govern
+    # them, since `--cpus-per-task` supersedes neither.
+    (mem,) = [f for f in findings if f.resource == "mem"]
+    assert mem.edit_hint["path"] == "tests[name=t].resources.mem"
+    assert "note" not in mem.edit_hint
+    (time_f,) = [f for f in findings if f.resource == "time"]
+    assert time_f.edit_hint["path"] == "tests[name=t].resources.time"
+
+
+def test_an_overridden_in_job_compile_row_names_the_field_it_masks():
+    """The note names whichever cpus field the layering would have chosen.
+
+    For a job that compiles inside itself the compile reservation can win
+    the `cpus` field, so the masked field is `cfg-dispatch.compile.cpus`
+    (or the suite's own `compile.cpus`) rather than the test's `resources`.
+    """
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 1000,
+        "timelimit_s": 3600,
+        "alloc_cpus": 4,
+        "req_cpus": 4,
+        "total_cpu_s": 1000.0,
+    }
+    rows = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            cpus_override="-c 4",
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert "supersedes cfg-dispatch.compile.cpus" in cpu.edit_hint["note"]
+
+    # ...and the suite's own compile block when that is the layer that won.
+    rows = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            cpus_override="-c 4",
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(
+            rows,
+            root_config_path="root_config.yaml",
+            compile_origins={"cpus": "suite"},
+        )
+        if f.resource == "cpus"
+    ]
+    assert "supersedes compile.cpus" in cpu.edit_hint["note"]

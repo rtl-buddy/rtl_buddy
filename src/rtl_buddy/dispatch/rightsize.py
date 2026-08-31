@@ -163,6 +163,21 @@ def format_time(seconds: float) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
 
 
+def _override_note(sbatch_arg: str, masked_path: str) -> str:
+    """Why a cpus finding names ``sbatch-args`` instead of a YAML field.
+
+    ``cfg-dispatch.sbatch-args`` is appended after the generated reservation
+    flags, so a ``--cpus-per-task`` there is the reservation. Advice that
+    named the masked field would be unappliable — the edit lands, the next
+    job is submitted with the same argument, and the finding returns
+    (#505 review).
+    """
+    return (
+        f"sbatch-args `{sbatch_arg}` supersedes {masked_path}; edit it "
+        "there. Suggested value is the whole-job figure that argument takes."
+    )
+
+
 def _aggregate(rows):
     """Per-test peaks across runs: {test: {field: value, 'runs': n, ...}}."""
     per_test: dict[str, dict] = {}
@@ -190,6 +205,11 @@ def _aggregate(rows):
                 # post-rounding, and `ReqCPUS` is post-rounding too on a
                 # Slurm that normalizes it before accounting (#505).
                 "requested_cpus": row.get("requested_cpus"),
+                # The `sbatch-args` entry that superseded it, if any: the
+                # denominator falls back to the scheduler, and the edit hint
+                # has to name the argument rather than a YAML field the
+                # override masks (#505 review).
+                "cpus_override": row.get("cpus_override"),
             },
         )
         agg["runs"] += 1
@@ -251,7 +271,7 @@ def analyze_build_reservation(
     accounting_interval_s=None,
     compile_origins=None,
     suite_config_hint=None,
-    cpus_overridden=False,
+    cpus_override=None,
 ):
     """Right-size the *build job's* own reservation (#495).
 
@@ -285,12 +305,14 @@ def analyze_build_reservation(
     shown a decomposition that does not match its YAML. The efficiency
     ratio follows the same rule: its denominator is that resolved value
     scaled by ``parallel`` — the job's own ``--cpus-per-task`` — then
-    ``ReqCPUS``, then ``AllocCPUS`` (#505). ``cpus_overridden`` withdraws
+    ``ReqCPUS``, then ``AllocCPUS`` (#505). ``cpus_override`` withdraws
     the first of those: ``cfg-dispatch.sbatch-args`` is appended after
     the generated flags and wins, so a ``--cpus-per-task`` written there
     means the resolved value was never submitted and may state neither
-    the ratio nor the decomposition. Empty telemetry (a local-parallel
-    backend reports none) yields no advice at all.
+    the ratio nor the decomposition. It is the argument itself, so the
+    cpus row's ``edit_hint`` can name ``cfg-dispatch.sbatch-args`` and say
+    which field it masks. Empty telemetry (a local-parallel backend
+    reports none) yields no advice at all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -374,6 +396,24 @@ def analyze_build_reservation(
     origins = compile_origins or {}
 
     def hint(resource_field, note=None):
+        # `cfg-dispatch.sbatch-args` is appended after the generated
+        # reservation flags and wins, so a `--cpus-per-task` there masks
+        # every cpus field the layering below could name. Advice that named
+        # one would be unappliable, and would come back on the next run
+        # (#505 review).
+        if resource_field == "cpus" and cpus_override:
+            masked = (
+                "compile.cpus"
+                if origins.get("cpus") == "suite" and suite_config_hint
+                else "cfg-dispatch.compile.cpus"
+            )
+            edit = {
+                "path": "cfg-dispatch.sbatch-args",
+                "note": _override_note(cpus_override, masked),
+            }
+            if root_config_hint:
+                edit["file"] = root_config_hint
+            return edit
         # Point at whichever file holds the value that WON. A suite-level
         # `compile:` block is the most specific layer, so for a field it
         # set, editing cfg-dispatch would move nothing (#497). Otherwise
@@ -469,7 +509,7 @@ def analyze_build_reservation(
     # the same reason.
     submitted = (
         0
-        if cpus_overridden or compile_resources is None
+        if cpus_override or compile_resources is None
         else (compile_resources.cpus or 0) * parallel
     )
     cpus = submitted or build_telemetry.get("req_cpus") or alloc_cpus
@@ -532,7 +572,7 @@ def analyze_build_reservation(
             # resolve the block at all.
             resolved_per_build = (
                 getattr(compile_resources, "cpus", None)
-                if compile_resources is not None and not cpus_overridden
+                if compile_resources is not None and not cpus_override
                 else None
             )
             per_build_now = resolved_per_build or math.ceil(cpus / parallel)
@@ -659,7 +699,38 @@ def analyze_suite_reservations(
             "phase": "compile+sim" if agg["compile_in_job"] else "sim",
         }
 
-        def hint(resource_field, *, from_compile=False, _governed_by=governed_by):
+        cpus_override = agg.get("cpus_override")
+        # The YAML field the override masks — named in the note so a reader
+        # can see what was superseded, resolved by the same layering the
+        # unmasked hint would have used.
+        if governed_by.get("cpus") != "compile":
+            masked_cpus_path = f"tests[name={test}].resources.cpus"
+        elif origins.get("cpus") == "suite" and suite_config_path:
+            masked_cpus_path = "compile.cpus"
+        else:
+            masked_cpus_path = "cfg-dispatch.compile.cpus"
+
+        def hint(
+            resource_field,
+            *,
+            from_compile=False,
+            _governed_by=governed_by,
+            _cpus_override=cpus_override,
+        ):
+            # `cfg-dispatch.sbatch-args` is appended after the generated
+            # reservation flags and wins, so a `--cpus-per-task` written
+            # there masks every cpus field in the YAML. Naming one of them
+            # would be advice that cannot be applied: the edit lands, the
+            # next job is submitted with the same override, and the finding
+            # comes back — the very shape #505 exists to stop.
+            if resource_field == "cpus" and _cpus_override:
+                edit = {
+                    "path": "cfg-dispatch.sbatch-args",
+                    "note": _override_note(_cpus_override, masked_cpus_path),
+                }
+                if root_config_path:
+                    edit["file"] = root_config_path
+                return edit
             # A field the compile reservation won is masked by the max, so
             # editing the test's resources: would not move the allocation.
             from_compile = from_compile or _governed_by.get(resource_field) == "compile"

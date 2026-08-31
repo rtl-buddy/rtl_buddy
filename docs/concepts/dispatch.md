@@ -243,7 +243,16 @@ A partition with `SelectTypeParameters=NONE` on nodes with `ThreadsPerCore=2` al
 
 Efficiency is therefore taken against the request, which is what a `resources.cpus` or `compile.cpus` edit actually moves, and a `reduce` is emitted only when the suggestion is strictly below it. The denominator is the reservation rtl_buddy itself resolved and submitted as `--cpus-per-task` — the request by construction, so it holds on a site whose Slurm also normalises `ReqCPUS` to the rounded figure. Where that is unavailable the fallbacks are `ReqCPUS`, then `AllocCPUS`.
 
-One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **after** the generated reservation flags and therefore overrides them, so a `--cpus-per-task=N`, `--cpus-per-task N`, `-c N` or `-cN` written there is what the jobs actually run with and the resolved reservation is not. rtl_buddy detects such an argument and records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names the argument responsible. Note that the `edit_hint` still points at the YAML field, which an override supersedes — under a cpus override in `sbatch-args`, that argument is the thing to edit.
+One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **after** the generated reservation flags and therefore overrides them, so a `--cpus-per-task=N`, `--cpus-per-task N`, `-c N` or `-cN` written there is what the jobs actually run with and the resolved reservation is not. rtl_buddy detects such an argument and records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names the argument responsible.
+
+The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at `root_config.yaml`) and its `note` says which field was superseded, for example:
+
+```
+sbatch-args `--cpus-per-task=4` supersedes tests[name=wr_single].resources.cpus;
+edit it there. Suggested value is the whole-job figure that argument takes.
+```
+
+Only `cpus` is retargeted: `--cpus-per-task` supersedes no `mem` or `time` field, so those findings keep naming the reservation that governs them.
 
 `mem` and `time` advice never had this exposure: both are already measured against `ReqMem` and `TimelimitRaw`, which `sacct` reports from the allocation the override actually produced, so no override can put a stale number in their denominators.
 

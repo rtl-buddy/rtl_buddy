@@ -1669,6 +1669,16 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     assert cpus["reserved"] == "4"
     assert cpus["allocated"] is None
     assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
+    # ...and the hint names the argument, not the field it masks: editing
+    # `resources.cpus` would leave the next job's reservation where it is.
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert (
+        "sbatch-args `--cpus-per-task=4` supersedes "
+        "tests[name=basic].resources.cpus" in cpus["edit_hint"]["note"]
+    )
+    # time still names its own field; `--cpus-per-task` supersedes nothing there.
+    (time_row,) = [a for a in advice if a["resource"] == "time"]
+    assert time_row["edit_hint"]["path"] == "tests[name=basic].resources.time"
     # ...and the run says why the advice came from sacct rather than from
     # the reservation, naming the argument responsible.
     assert "sbatch-args" in result.output
