@@ -1287,6 +1287,93 @@ def test_an_incdir_above_the_artefact_dir_does_not_stamp_rtl_buddys_output(
     assert len(calls) == 1
 
 
+def test_a_generated_header_under_the_artefact_dir_is_tracked(tmp_path, monkeypatch):
+    """A `preproc` hook is documented to generate headers into its
+    `artifact_dir`, and the filelist then names `+incdir+artefacts/<test>/gen`.
+    The walk STARTS inside the managed tree, so no `artefacts` component is
+    ever seen and pruning by directory name cannot help. The generated
+    header must be tracked — that is the point of the include — while
+    rtl_buddy's own outputs beside it must not be, because every one of them
+    is written after the fingerprint that would list it."""
+    _write_source(tmp_path)
+    gen = tmp_path / "artefacts" / "test_a" / "gen"
+    gen.mkdir(parents=True)
+    generated = gen / "gen_w.svh"
+    generated.write_text("`define GW 8\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+artefacts/test_a"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
+    assert "gen/gen_w.svh" in listing, listing
+    # ...and nothing rtl_buddy wrote into that same directory.
+    for output in ("run.f", "compile.log", "result.json", "rb-compile-stamp.json"):
+        assert not any(name.endswith(output) for name in listing), listing
+
+    # The reuse those outputs would otherwise have made impossible: the
+    # compile writes run.f and the stamp *after* the fingerprint is taken.
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 1
+    assert _sim("test_c").compile() == 0
+    assert len(calls) == 1
+
+    # But the generated header itself is a real input.
+    _touch(generated, "`define GW 16\n")
+    assert _sim("test_d").compile() == 0
+    assert len(calls) == 2
+
+
+def test_rtl_buddys_own_outputs_are_never_listed(tmp_path, monkeypatch):
+    """The exclusion is by name and applies wherever a listing is taken, so
+    a run directory's logs and envelopes are out too. Pinned against the
+    constants the writers use, so a renamed output cannot silently start
+    being stamped."""
+    _write_source(tmp_path)
+    inc = tmp_path / "inc"
+    inc.mkdir(parents=True, exist_ok=True)
+    (inc / "w.svh").write_text("`define W 8\n")
+    for name in (
+        vlog_sim_module.FILELIST_NAME,
+        vlog_sim_module.COMPILE_TRANSCRIPT_NAME,
+        vlog_sim_module.COMPILE_RETRY_TRANSCRIPT_NAME,
+        vlog_sim_module.TEST_LOG_NAME,
+        vlog_sim_module.TEST_ERR_NAME,
+        vlog_sim_module.TEST_RANDSEED_NAME,
+        vlog_sim_module.COVERAGE_DAT_NAME,
+        vlog_sim_module.SIMV_NAME,
+        vlog_sim_module.ICARUS_SNAPSHOT_NAME,
+        vlog_sim_module.SHARED_BUILD_STAMP_NAME,
+        "result.json",
+        "result-1234.json",
+        "rtl_buddy-1234.log",
+    ):
+        (inc / name).write_text("rtl_buddy output\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        filelist=["src/top.sv", "+incdir+inc"],
+    )
+    assert sim.compile() == 0
+    assert [entry[0] for entry in _dir_entry(sim, "+incdir+")[-1]] == ["w.svh"]
+
+
 def test_a_build_directory_beside_the_sources_is_pruned_too(tmp_path, monkeypatch):
     """`obj_dir*` is rtl_buddy's build-directory spelling wherever it lands,
     including an unshared build dropped next to the sources."""

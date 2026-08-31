@@ -62,7 +62,9 @@ environment, builder, or toolchain changes rebuild; runtime plusargs, seeds, and
 VCS/Icarus report no header dependencies, but every builder's stamp lists each
 `+incdir+` tree (recursively) and `-y` directory (flat), unfiltered by suffix, so
 an edited, added, or removed file in one rebuilds. The walk skips dot-directories,
-`artefacts`/`obj_dir*`, and editor/VCS bookkeeping files.
+`artefacts`/`obj_dir*`, editor/VCS bookkeeping, and rtl_buddy's own outputs by
+name (run.f, compile.log, test.log, result.json, the stamp); a header generated
+into a test's `artifact_dir` by a preproc hook is still tracked.
 Batch compile-input edits before
 an expensive build and use independent cheap suites while it runs.
 

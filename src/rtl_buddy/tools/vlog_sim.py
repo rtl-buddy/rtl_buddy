@@ -37,6 +37,8 @@ from .vlog_cov import VlogCov
 from .artifact_paths import (
     ARTIFACT_DIRNAME,
     BUILD_DIR_PREFIX,
+    DISPATCH_OUTPUT_PATTERNS,
+    RESULT_JSON_NAME,
     SHARED_BUILDS_DIRNAME,
     shared_build_dir,
     test_artifact_dir,
@@ -109,6 +111,19 @@ _CARRIED_TRANSCRIPT_HEADER = (
 # one-line lint error became three rounds of "raise compile memory" (#498).
 COMPILE_TRANSCRIPT_NAME = "compile.log"
 COMPILE_RETRY_TRANSCRIPT_NAME = "compile.retry.log"
+
+# The rest of what a test writes into its artefact directory, named rather
+# than spelled inline at the one `_get_*_path` that builds each: the
+# shared-build stamp has to recognise rtl_buddy's own outputs to keep them
+# out of a directory listing (#478), and a list of names guessed
+# separately from the code that writes them is a list that goes stale.
+FILELIST_NAME = "run.f"
+TEST_LOG_NAME = "test.log"
+TEST_ERR_NAME = "test.err"
+TEST_RANDSEED_NAME = "test.randseed"
+COVERAGE_DAT_NAME = "coverage.dat"
+SIMV_NAME = "simv"
+ICARUS_SNAPSHOT_NAME = "simv.vvp"
 
 # Simulator families whose compile output rtl_buddy can redirect wholesale
 # into a shared build dir, and whose simv still runs from there once other
@@ -398,7 +413,7 @@ _PRUNED_WALK_DIR_PREFIXES = (BUILD_DIR_PREFIX,)
 # no simulator ever reads, and `.DS_Store` in particular, which browsing an
 # include directory in Finder writes and which used to force a full
 # recompile.
-_NON_INPUT_FILE_PATTERNS = (
+_BOOKKEEPING_FILE_PATTERNS = (
     ".DS_Store",
     ".gitignore",
     ".gitattributes",
@@ -409,6 +424,37 @@ _NON_INPUT_FILE_PATTERNS = (
     ".#*",  # emacs lock
     "#*#",  # emacs autosave
 )
+
+# rtl_buddy's OWN outputs, by name (#478 review).
+#
+# Pruning the `artefacts` directory is not enough on its own, because an
+# include root can *be* one: a `preproc` hook is documented to generate
+# headers into its `artifact_dir`, and the filelist then carries
+# `+incdir+artefacts/<test>` or a subdirectory of it. The walk starts
+# inside the managed tree, so no `artefacts` component is ever seen — and
+# every one of these files is written AFTER the fingerprint that would list
+# it, so the generated header the project actually wanted tracked came with
+# run.f, compile.log, test.log, the result envelope and the stamp itself
+# attached, and no run ever validated the stamp again.
+#
+# Generated inputs under `artefacts/` MUST stay tracked, so the tree is
+# walked and the outputs are removed by name instead. Every entry is taken
+# from the constant the writer uses, not restated here.
+_MANAGED_OUTPUT_FILE_PATTERNS = (
+    FILELIST_NAME,
+    COMPILE_TRANSCRIPT_NAME,
+    COMPILE_RETRY_TRANSCRIPT_NAME,
+    TEST_LOG_NAME,
+    TEST_ERR_NAME,
+    TEST_RANDSEED_NAME,
+    COVERAGE_DAT_NAME,
+    SIMV_NAME,
+    ICARUS_SNAPSHOT_NAME,
+    SHARED_BUILD_STAMP_NAME,
+    RESULT_JSON_NAME,
+) + DISPATCH_OUTPUT_PATTERNS
+
+_NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PATTERNS
 
 # A directory-valued source entry is `[line, None, None, None, listing]`:
 # four elements of the ordinary `[path, size, mtime_ns, sha]` shape, all
@@ -775,12 +821,15 @@ def _is_pruned_walk_dir(name: str) -> bool:
 
 
 def _is_non_input_file(name: str) -> bool:
-    """Is ``name`` editor/VCS bookkeeping rather than a compile input?
+    """Is ``name`` bookkeeping or rtl_buddy's own output, not a compile input?
 
-    Matched against :data:`_NON_INPUT_FILE_PATTERNS` by name only. Every
-    other file is listed, dot-prefixed ones included — ``.config.svh`` is a
-    legal include and dropping it would be exactly the silent gap #478 is
-    about.
+    Matched against :data:`_NON_INPUT_FILE_PATTERNS` by name only, and
+    everywhere in a listing rather than only under ``artefacts/``: an
+    include root can *be* an artefact directory (a ``preproc`` hook
+    generating headers into its ``artifact_dir``), and then no path
+    component says so. Every other file is listed, dot-prefixed ones
+    included — ``.config.svh`` is a legal include and dropping it would be
+    exactly the silent gap #478 is about.
     """
     return any(
         fnmatch.fnmatchcase(name, pattern) for pattern in _NON_INPUT_FILE_PATTERNS
@@ -1237,14 +1286,14 @@ class VlogSim:
         what `_shared_build_is_valid` validates against the stamp.
         """
         if self._shared_build_dir is not None:
-            return str(Path(self._shared_build_dir) / "simv")
+            return str(Path(self._shared_build_dir) / SIMV_NAME)
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
             return str(
-                Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
+                Path(self._get_compile_work_dir()) / self._get_build_dir() / SIMV_NAME
             )
         if self._get_simulator_family() == "icarus":
-            return str(Path(self._get_compile_work_dir()) / "simv")
+            return str(Path(self._get_compile_work_dir()) / SIMV_NAME)
         simv_path = self.rtl_builder_cfg.get_simv()
         if os.path.isabs(simv_path):
             return simv_path
@@ -1253,9 +1302,11 @@ class VlogSim:
     def _get_icarus_snapshot_path(self):
         """Path to the .vvp snapshot produced by iverilog."""
         if self._shared_build_dir is not None:
-            return str(Path(self._shared_build_dir) / "simv.vvp")
+            return str(Path(self._shared_build_dir) / ICARUS_SNAPSHOT_NAME)
         return str(
-            Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv.vvp"
+            Path(self._get_compile_work_dir())
+            / self._get_build_dir()
+            / ICARUS_SNAPSHOT_NAME
         )
 
     def _icarus_vvp_extra_args(self) -> list:
@@ -1341,16 +1392,16 @@ class VlogSim:
         return str(Path(self._get_compile_work_dir()) / COMPILE_TRANSCRIPT_NAME)
 
     def _get_filelist_path(self):
-        return str(Path(self._get_compile_work_dir()) / "run.f")
+        return str(Path(self._get_compile_work_dir()) / FILELIST_NAME)
 
     def _get_log_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.log")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_LOG_NAME)
 
     def _get_err_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.err")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_ERR_NAME)
 
     def _get_randseed_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.randseed")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_RANDSEED_NAME)
 
     def _coverage_enabled(self):
         compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
@@ -1557,7 +1608,7 @@ class VlogSim:
         return {}
 
     def _get_cov_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "coverage.dat")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / COVERAGE_DAT_NAME)
 
     def _get_cov_abspath(self, run_id=None):
         return str(Path(self._get_cov_path(run_id=run_id)).resolve())
@@ -1737,15 +1788,27 @@ class VlogSim:
         Two kinds of name are skipped, and only two. **Directories** that
         are dot-prefixed (``.git``, ``.svn``) or are one of rtl_buddy's own
         managed artefact trees are never descended into — see
-        :func:`_is_pruned_walk_dir`; the artefact prune is what keeps a
-        ``+incdir+`` that happens to be an *ancestor* of the suite's
-        ``artefacts/`` from stamping ``run.f``, the compile log and the
-        stamp itself, all of which are written after the fingerprint that
-        would list them, so that every later process saw a different
-        listing and recompiled. **Files** are skipped only when they match
-        :data:`_NON_INPUT_FILE_PATTERNS`. A dot-*file* is otherwise listed
-        like any other: `` `include ".config.svh" `` is legal and resolves,
-        so a blanket dot-name skip would reopen the gap this stamp closes.
+        :func:`_is_pruned_walk_dir`. **Files** are skipped when they match
+        :data:`_NON_INPUT_FILE_PATTERNS`, which is editor and VCS
+        bookkeeping plus rtl_buddy's own per-test outputs. A dot-*file* is
+        otherwise listed like any other: `` `include ".config.svh" `` is
+        legal and resolves, so a blanket dot-name skip would reopen the gap
+        this stamp closes.
+
+        Both halves exist for one failure. Everything rtl_buddy writes into
+        an artefact directory — ``run.f``, the compile transcript, the
+        logs, the result envelope, the build output, the stamp itself — is
+        written *after* the fingerprint that would list it, so a listing
+        that contained any of them could never validate again: every later
+        process saw a different one and recompiled, which under
+        ``--dispatch`` is every gated simulation job. The directory prune
+        covers an ``+incdir+`` that is an *ancestor* of ``artefacts/``
+        (``+incdir+.`` in a tests.yaml). The file-name exclusion covers an
+        include root that *is* one — a ``preproc`` hook is documented to
+        generate headers into its ``artifact_dir``, and then the filelist
+        names ``+incdir+artefacts/<test>`` and no path component ever says
+        "managed". Those generated headers must stay tracked, so the tree
+        is walked and only the outputs are removed.
 
         ``None`` comes back when the directory cannot be read. That degrades
         to the pre-#478 untracked entry rather than to an empty listing,

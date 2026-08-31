@@ -16,6 +16,23 @@ SHARED_BUILDS_DIRNAME = ".shared-builds"
 #: the per-test ``obj_dir_<test>`` and the shared ``obj_dir_<key>``.
 BUILD_DIR_PREFIX = "obj_dir"
 
+#: The per-run result envelope the in-process runner writes into a test's
+#: artefact directory. Named here for the same reason as the directories
+#: above: it is an rtl_buddy *output*, and the shared-build stamp has to be
+#: able to tell one of those from a generated input (#478).
+RESULT_JSON_NAME = "result.json"
+
+#: A dispatched job's envelope and log, written into
+#: ``<test>/dispatch/`` (per test) and ``artefacts/.dispatch/`` (per head)
+#: — see :mod:`rtl_buddy.dispatch.argv`. fnmatch patterns, because both
+#: carry a per-job tag.
+DISPATCH_OUTPUT_PATTERNS = (
+    "result-*.json",
+    "build-result-*.json",
+    "rtl_buddy-*.log",
+    "build-rtl_buddy-*.log",
+)
+
 
 def sanitize_artifact_component(name: str) -> str:
     """
