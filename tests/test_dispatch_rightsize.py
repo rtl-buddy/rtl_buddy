@@ -30,6 +30,7 @@ def _row(
     compile_in_job=False,
     governed_by=None,
     compile_floor=None,
+    requested_cpus=None,
 ):
     results = (
         TestPassResults(name=test + "/results")
@@ -46,6 +47,8 @@ def _row(
         "compile_in_job": compile_in_job,
         "governed_by": governed_by or {},
         "compile_floor": compile_floor or {},
+        # What the head resolved and submitted as `--cpus-per-task` (#505).
+        "requested_cpus": requested_cpus,
     }
 
 
@@ -893,7 +896,8 @@ def test_a_single_build_is_advised_even_at_a_wide_parallel():
         compile_work={"records": 1, "compiled": 1, "compiled_sec": 90.0},
     )
     (cpus_a,) = [f for f in findings if f.resource == "cpus"]
-    # ceil(8 x 0.25 x 1.5) = 3 -> not divided again by the four idle slots.
+    # The head submitted 8 x 4 = 32, so the ratio is 200 / (100 x 32) and
+    # ceil(32 x 0.0625 x 1.5) = 3 -- not divided again by the idle slots.
     assert cpus_a.suggested == "3"
     # ...but 3 > the 2 already configured, so the note explains the lever
     # that is actually oversized here.
@@ -911,6 +915,10 @@ def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
     already there, which is advice that never retires. The decomposition
     is therefore stated from the resolved `cfg-dispatch.compile.cpus`, with
     the allocated figure named separately so `sacct` still reconciles.
+
+    The same resolved value is the ratio's denominator and the reported
+    `reserved` (#505): this row carries no `req_cpus` at all, so without it
+    the whole finding would be stated in the site's rounded numbers.
     """
     findings = _build_advice(
         {
@@ -918,20 +926,25 @@ def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
             "elapsed_s": 100,
             "timelimit_s": 7200,
             "alloc_cpus": 8,  # the site rounded 3 up to a whole node's core count
-            "total_cpu_s": 100,  # 0.125 efficiency
+            "total_cpu_s": 100,  # 0.33 efficiency against the 3 requested
         },
         parallel=1,
         cpus=3,
     )
     (cpus_a,) = [f for f in findings if f.resource == "cpus"]
     note = cpus_a.edit_hint["note"]
-    assert "the build job reserved 3" not in note
-    assert "asked for 3 = 3 x compile.parallel 1" in note
-    assert "reported 8 allocated" in note
+    # One build slot, so the request is the per-build figure with nothing to
+    # decompose — and the site's rounding is named, not adopted.
+    assert "the build job reserved 3" in note
+    assert "the scheduler reported 8 allocated" in note
     # 8 would have been the sacct-derived per-build figure.
     assert "= 8 x" not in note
-    # The allocated figure is still what `squeue`/`sacct` shows.
-    assert cpus_a.reserved == "8"
+    # `reserved` is the number `cfg-dispatch.compile.cpus` holds; the
+    # allocation rides along as an additive field (#505).
+    assert cpus_a.reserved == "3"
+    assert cpus_a.allocated == "8"
+    assert cpus_a.utilization == 100 / 300
+    assert cpus_a.suggested == "2"  # ceil(3 x 0.333 x 1.5)
 
 
 def test_a_saturated_build_job_gets_no_cpus_advice(caplog):
@@ -1480,3 +1493,102 @@ def test_the_table_shows_the_allocation_beside_the_request(monkeypatch):
     rows, metadata = _rendered_rows([rounded], monkeypatch)
     assert rows[0]["reserved"] == "4 (8 allocated)"
     assert any("whole cores" in line for line in metadata)
+
+
+# ------------- #505 review: prefer the reservation rtl_buddy itself submitted
+
+
+def test_the_configured_request_beats_what_the_scheduler_reports():
+    """`--cpus-per-task` is the request; ReqCPUS is only a report of it.
+
+    A Slurm that normalizes `ReqCPUS` to the post-rounding figure would put
+    the allocation back in the denominator by another route. The head knows
+    what it submitted, so it says so, and the advice stays site-independent:
+    a `cpus: 1` test on a whole-core node is never advised down to 1.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 2,
+                "req_cpus": 2,  # the site rounded this one too
+                "total_cpu_s": 500.0,
+            },
+            requested_cpus=1,
+        )
+    ]
+    assert [f for f in _analyze(rows) if f.resource == "cpus"] == []
+
+
+def test_a_test_row_without_req_cpus_still_uses_the_configured_request():
+    """No `ReqCPUS` in telemetry at all — the head's own number carries it."""
+    retired = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 2,  # whole-core rounding, no request reported
+                "total_cpu_s": 500.0,
+            },
+            requested_cpus=1,
+        )
+    ]
+    assert [f for f in _analyze(retired) if f.resource == "cpus"] == []
+
+    over = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "total_cpu_s": 1000.0,  # 0.25 eff against the requested 4
+            },
+            requested_cpus=4,
+        )
+    ]
+    (cpu,) = [f for f in _analyze(over) if f.resource == "cpus"]
+    assert cpu.reserved == "4"
+    assert cpu.allocated == "8"
+    assert cpu.utilization == 0.25
+    assert cpu.suggested == "2"
+
+
+def test_a_build_row_without_req_cpus_still_uses_the_configured_request():
+    """Same for the build job: `compile.cpus x parallel` is what it asked."""
+    retired = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 2,  # whole-core rounding, no request reported
+            "total_cpu_s": 50,
+        },
+        parallel=1,
+        cpus=1,
+    )
+    assert [f for f in retired if f.resource == "cpus"] == []
+
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "req_cpus": 8,  # a site that normalizes ReqCPUS as well
+            "total_cpu_s": 100,  # 0.25 eff against the 4 the head submitted
+        },
+        parallel=1,
+        cpus=4,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert cpus_a.reserved == "4"
+    assert cpus_a.allocated == "8"
+    assert cpus_a.utilization == 0.25
+    assert cpus_a.suggested == "2"

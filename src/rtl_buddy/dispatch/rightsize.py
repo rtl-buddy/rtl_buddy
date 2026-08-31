@@ -45,8 +45,11 @@ Semantics:
   what a ``resources:`` field controls, so it is the denominator and it is
   what a finding reports as ``reserved``; the allocated figure rides along
   in ``allocated`` when it differs, so ``squeue``/``sacct`` still
-  reconcile. Backends that report no request (and telemetry predating the
-  field) fall back to the allocation.
+  reconcile. The denominator is preferably the reservation rtl-buddy itself
+  resolved and submitted, which is the request by construction and needs no
+  cooperation from the site; ``ReqCPUS`` and then ``AllocCPUS`` are the
+  fallbacks, for a caller that cannot supply it and for telemetry predating
+  the field.
 - Advice is labeled with the run count and regression level it was
   derived from — a smoke-level run must not be used to shrink a
   nightly test's reservation.
@@ -176,6 +179,12 @@ def _aggregate(rows):
                 "compile_in_job": bool(row.get("compile_in_job")),
                 "governed_by": row.get("governed_by") or {},
                 "compile_floor": row.get("compile_floor") or {},
+                # What the head resolved and submitted as `--cpus-per-task`
+                # for this test. It IS the request by construction, so it
+                # beats anything the scheduler reports back: `AllocCPUS` is
+                # post-rounding, and `ReqCPUS` is post-rounding too on a
+                # Slurm that normalizes it before accounting (#505).
+                "requested_cpus": row.get("requested_cpus"),
             },
         )
         agg["runs"] += 1
@@ -203,8 +212,15 @@ def _aggregate(rows):
         # asked for and the only number a tests.yaml edit moves. A site
         # allocating whole cores hands out more than that, and rationing a
         # single-threaded job against the surplus advises a reduction to the
-        # value already in the YAML (#505).
-        cpus = telemetry.get("req_cpus") or telemetry.get("alloc_cpus")
+        # value already in the YAML (#505). Preference order: what the head
+        # submitted, then what the scheduler says was requested, then what it
+        # allocated — each step is one remove further from the field a
+        # project edits.
+        cpus = (
+            row.get("requested_cpus")
+            or telemetry.get("req_cpus")
+            or telemetry.get("alloc_cpus")
+        )
         cpu_time = telemetry.get("total_cpu_s")
         elapsed = telemetry.get("elapsed_s")
         if cpus and cpu_time is not None and elapsed:
@@ -261,10 +277,10 @@ def analyze_build_reservation(
     per-build value, in preference to dividing AllocCPUS: a site where the
     scheduler reports more cpus than were requested would otherwise be
     shown a decomposition that does not match its YAML. The efficiency
-    ratio follows the same rule and is taken against ``ReqCPUS``, falling
-    back to ``AllocCPUS`` where the request is unknown (#505). Empty
-    telemetry (a local-parallel backend reports none) yields no advice at
-    all.
+    ratio follows the same rule: its denominator is that resolved value
+    scaled by ``parallel`` — the job's own ``--cpus-per-task`` — then
+    ``ReqCPUS``, then ``AllocCPUS`` (#505). Empty telemetry (a
+    local-parallel backend reports none) yields no advice at all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -427,15 +443,18 @@ def analyze_build_reservation(
 
     # --- cpus (efficiency; only ever suggests reducing) --------------
     alloc_cpus = build_telemetry.get("alloc_cpus")
-    # The scheduler's ReqCPUS first: a site allocating whole cores hands a
-    # build job more cpus than it asked for, and rationing against the
-    # surplus advises a per-build value the config already holds (#505).
-    cpus = build_telemetry.get("req_cpus") or alloc_cpus
-    if not cpus and compile_resources is not None:
-        # No allocation reported: fall back to what the head asked for, so
-        # a backend that reports usage but not the reservation still gets
-        # the ratio right.
-        cpus = (compile_resources.cpus or 0) * parallel
+    # What the head itself submitted, first: the resolved per-build cpus
+    # scaled by `parallel` IS this job's `--cpus-per-task`, so it is the
+    # request by construction and needs no cooperation from the site. A
+    # cluster allocating whole cores hands the job more than that, and
+    # rationing against the surplus advises a per-build value the config
+    # already holds (#505). `ReqCPUS` is the next best thing for a head that
+    # could not resolve the block, and the allocation the last (it is also
+    # the only one available to telemetry predating the field).
+    submitted = (
+        (compile_resources.cpus or 0) * parallel if compile_resources is not None else 0
+    )
+    cpus = submitted or build_telemetry.get("req_cpus") or alloc_cpus
     cpu_time = build_telemetry.get("total_cpu_s")
     # Whole-job cpu efficiency is a *per-build* number only when the job ran
     # one build at a time. Above that it also carries the tail — builds of
@@ -792,8 +811,11 @@ def analyze_suite_reservations(
         # `reserved` are the request: a site allocating whole cores gives a
         # `cpus: 1` test 2, and advising it down to 1 from a `Reserved 2`
         # the tests.yaml never said is advice that can never retire (#505).
+        # The head's own resolved reservation comes first — it is the
+        # `--cpus-per-task` that was submitted, so it is the request by
+        # construction and needs no cooperation from the site.
         alloc_cpus = agg.get("alloc_cpus")
-        cpus = agg.get("req_cpus") or alloc_cpus
+        cpus = agg.get("requested_cpus") or agg.get("req_cpus") or alloc_cpus
         efficiency = agg.get("cpu_efficiency")
         if cpus and cpus > 1 and efficiency is not None:
             if efficiency < rightsize_cfg.over_threshold:

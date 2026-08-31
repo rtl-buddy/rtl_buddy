@@ -1565,6 +1565,50 @@ def test_regression_machine_payload_carries_reservation_advice(
     assert mem["runs"] == 1
 
 
+def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head's own `--cpus-per-task` reaches right-sizing (#505).
+
+    The project reserves the default 1 cpu; the site allocates a whole core
+    and reports 2, with no `ReqCPUS` at all. Judged against the allocation a
+    fully-busy single-threaded run measures 0.5 efficiency and every test
+    gets advised down to the `cpus: 1` it already has. The row records what
+    the head submitted, so the ratio is 1.0 and there is nothing to say.
+    """
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "total_cpu_s": 25.0,  # 0.125 eff vs the allocation, 0.25 vs 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+    # `allocated` is on every finding, so the key set stays stable; it is
+    # only ever non-null on a cpus row.
+    assert advice, "the time/mem rows should still be there"
+    assert all(a["allocated"] is None for a in advice)
+
+
 def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],

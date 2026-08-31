@@ -3274,6 +3274,16 @@ class RtlBuddy:
                     time=resources.time,
                     governed_by=governed_by,
                 )
+            for idx, _ in entry["rows"]:
+                # The cpus this test's jobs are submitted with, recorded for
+                # right-sizing: it is `--cpus-per-task` verbatim, so it is
+                # the REQUEST by construction. A site that allocates whole
+                # cores reports more back, and judging efficiency against
+                # that surplus advises a reduction to the value the
+                # tests.yaml already holds (#505). Recorded after the in-job
+                # compile max, so it is the number that actually governed
+                # the allocation.
+                suite_results[idx]["requested_cpus"] = resources.cpus
             dispatch_dir = (
                 Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
             )
