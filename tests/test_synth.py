@@ -4110,3 +4110,158 @@ def test_filelist_defines_ignored_has_a_dedicated_human_message():
     assert msg != "synth filelist_defines_ignored"
     for sub in ("block", "A, B", "defines:"):
         assert sub in msg
+
+
+# ---------------------------------------------------------------------------
+# `undefineall follows the frontend in use (review round 6, item 1)
+# ---------------------------------------------------------------------------
+
+_UNDEFINEALL_FLOW_SRC = dedent("""\
+    module my_module;
+    `define GUARD 1
+    `undefineall
+    `ifndef GUARD
+      function bit dbg(input bit x); return x; endfunction
+    `endif
+    endmodule
+""")
+
+
+def test_undefineall_no_longer_suppresses_a_finding(tmp_path, monkeypatch):
+    """The reviewer's repro: `` `define GUARD ``, `` `undefineall ``, then a
+    static function under `` `ifndef GUARD ``. Yosys compiles it — verified in
+    the elaborated design, which grows `$not` cells only when the guard is
+    cleared — so the gate must report it."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _UNDEFINEALL_FLOW_SRC,
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_undefineall_keeps_the_run_defines_under_slang(tmp_path, monkeypatch):
+    """slang's undefineAll() re-applies options.predefines, so a `defines:`
+    macro survives `` `undefineall `` and its guarded region stays uncompiled.
+    """
+    src = dedent("""\
+        module my_module;
+        `undefineall
+        `ifndef FAST_SIM_ONLY
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+        defines={"FAST_SIM_ONLY": 1},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_undefineall_drops_the_run_defines_under_the_verilog_frontend(
+    tmp_path, monkeypatch
+):
+    """Yosys's own read_verilog clears global_defines_cache too, so the same
+    source DOES compile the guarded region there."""
+    src = dedent("""\
+        module my_module;
+        `undefineall
+        `ifndef FAST_SIM_ONLY
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={"frontend": "verilog", "static_functions": "error"},
+        defines={"FAST_SIM_ONLY": 1},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_openroad_undefineall_follows_the_elaboration_frontend(tmp_path, monkeypatch):
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path,
+        _UNDEFINEALL_FLOW_SRC,
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_openroad_yosys(monkeypatch)
+    _gate_count, ok, desc = or_synth._run_yosys_stage(fl)
+    assert ok is False
+    assert "function dbg" in desc
+
+
+# ---------------------------------------------------------------------------
+# Gate modes resolve before the filelist write (review round 6, item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_gate_mode_is_fatal_even_when_the_filelist_fails(tmp_path, monkeypatch):
+    """A misspelled mode is a config error. A FilelistError must not turn it
+    into an ordinary FAIL — the modes are resolved before the filelist write,
+    as on the OpenROAD path."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"conflicting_drivers": "warn"},
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    with pytest.raises(FatalRtlBuddyError, match="conflicting-drivers"):
+        ys.run()
+
+
+def test_invalid_static_functions_mode_is_fatal_even_when_the_filelist_fails(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"static_functions": "loud"},
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    with pytest.raises(FatalRtlBuddyError, match="static-functions"):
+        ys.run()
+
+
+def test_a_failing_filelist_with_valid_modes_is_still_an_ordinary_failure(
+    tmp_path, monkeypatch
+):
+    """The reordering must not turn a real filelist error into something else."""
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "Filelist error" in result.results["desc"]

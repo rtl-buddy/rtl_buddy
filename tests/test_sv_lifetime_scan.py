@@ -926,3 +926,158 @@ def test_a_hash_that_is_not_a_parameterisation_is_ignored():
         endmodule
     """)
     assert _names(scan_text(src, "m.sv")) == [(2, "function", "delayed")]
+
+
+# ---------------------------------------------------------------------------
+# `undefineall (review round 6, item 1)
+# ---------------------------------------------------------------------------
+
+# `undefineall` semantics differ between the two frontends, verified against
+# each with a deliberate syntax error inside the guarded region:
+#   slang        Preprocessor::undefineAll() clears the macro map and then
+#                re-applies options.predefines, so the -D macros survive.
+#   read_verilog clears `defines` AND `global_defines_cache`, so nothing does.
+
+_UNDEFINEALL_SRC = dedent("""\
+    module m;
+    `define GUARD 1
+    `undefineall
+    `ifndef GUARD
+      function bit dbg(input bit x); return x; endfunction
+    `endif
+    endmodule
+""")
+
+_UNDEFINEALL_CMDLINE_SRC = dedent("""\
+    module m;
+    `undefineall
+    `ifndef CMDLINE
+      function bit dbg(input bit x); return x; endfunction
+    `endif
+    endmodule
+""")
+
+
+@pytest.mark.parametrize("keeps_predefines", [True, False])
+def test_undefineall_clears_a_source_defined_macro(keeps_predefines):
+    """Both frontends drop a `` `define `` from the source, so the guarded
+    function IS compiled and must be reported."""
+    findings = scan_text(
+        _UNDEFINEALL_SRC,
+        "m.sv",
+        undefineall_keeps_predefines=keeps_predefines,
+    )
+    assert _names(findings) == [(5, "function", "dbg")]
+
+
+def test_undefineall_spares_a_command_line_define_under_slang():
+    assert (
+        scan_text(
+            _UNDEFINEALL_CMDLINE_SRC,
+            "m.sv",
+            defines={"CMDLINE": 1},
+            undefineall_keeps_predefines=True,
+        )
+        == []
+    )
+
+
+def test_undefineall_drops_a_command_line_define_under_read_verilog():
+    findings = scan_text(
+        _UNDEFINEALL_CMDLINE_SRC,
+        "m.sv",
+        defines={"CMDLINE": 1},
+        undefineall_keeps_predefines=False,
+    )
+    assert _names(findings) == [(4, "function", "dbg")]
+
+
+def test_undefineall_spares_the_implicit_synthesis_macro_under_slang():
+    src = _UNDEFINEALL_CMDLINE_SRC.replace("CMDLINE", "SYNTHESIS")
+    assert scan_text(src, "m.sv", defines={"SYNTHESIS": "1"}) == []
+
+
+def test_undefineall_drops_the_implicit_synthesis_macro_under_read_verilog():
+    src = _UNDEFINEALL_CMDLINE_SRC.replace("CMDLINE", "SYNTHESIS")
+    findings = scan_text(
+        src,
+        "m.sv",
+        defines={"SYNTHESIS": "1"},
+        undefineall_keeps_predefines=False,
+    )
+    assert [f.name for f in findings] == ["dbg"]
+
+
+def test_a_define_after_undefineall_takes_effect_again():
+    src = dedent("""\
+        module m;
+        `undefineall
+        `define GUARD 1
+        `ifndef GUARD
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+          function int always_here; return 1; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["always_here"]
+
+
+def test_undefineall_inside_an_inactive_region_is_not_applied():
+    src = dedent("""\
+        module m;
+        `define GUARD 1
+        `ifdef NEVER
+        `undefineall
+        `endif
+        `ifndef GUARD
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_undefineall_in_a_header_reaches_the_includer(tmp_path):
+    """`` `include `` is textual, so the header's `undefineall` clears the
+    includer's macros too."""
+    (tmp_path / "reset.svh").write_text("`undefineall\n")
+    top = tmp_path / "top.sv"
+    top.write_text(
+        dedent("""\
+            module m;
+            `define GUARD 1
+            `include "reset.svh"
+            `ifndef GUARD
+              function bit dbg(input bit x); return x; endfunction
+            `endif
+            endmodule
+        """)
+    )
+    assert [f.name for f in scan_files([str(top)])] == ["dbg"]
+
+
+def test_undefineall_does_not_leak_between_sources_without_single_unit(tmp_path):
+    """Each source starts from a fresh seed anyway, so a trailing
+    `undefineall` in one file cannot affect the next."""
+    (tmp_path / "a.sv").write_text("`undefineall\nmodule a; endmodule\n")
+    (tmp_path / "b.sv").write_text(
+        "module b;\n`ifndef SYNTHESIS\n"
+        "  function int hidden; return 1; endfunction\n`endif\nendmodule\n"
+    )
+    paths = [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
+    assert scan_files(paths, defines={"SYNTHESIS": "1"}) == []
+
+
+def test_undefineall_reaches_the_next_source_under_single_unit(tmp_path):
+    """Under `--single-unit` the macro table is shared, but slang re-applies
+    the -D macros, so the seed still survives."""
+    (tmp_path / "a.sv").write_text("`define LOCAL 1\n`undefineall\n")
+    (tmp_path / "b.sv").write_text(
+        "module b;\n`ifndef LOCAL\n"
+        "  function int hidden; return 1; endfunction\n`endif\n"
+        "`ifndef SYNTHESIS\n"
+        "  function int also_hidden; return 1; endfunction\n`endif\nendmodule\n"
+    )
+    paths = [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
+    findings = scan_files(paths, defines={"SYNTHESIS": "1"}, single_unit=True)
+    assert [f.name for f in findings] == ["hidden"]

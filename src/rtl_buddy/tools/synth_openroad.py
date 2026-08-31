@@ -180,6 +180,9 @@ class OpenRoadSynth:
             # flag is ignored (with a warning), so each file is its own
             # compilation unit either way.
             single_unit=opts.single_unit and opts.frontend == "slang",
+            # slang's `undefineall` re-applies the -D macros; Yosys's own
+            # read_verilog drops them along with everything else.
+            undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
     def _write_yosys_script(self, fl_path: str) -> str:

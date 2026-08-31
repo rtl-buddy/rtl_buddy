@@ -27,6 +27,10 @@ Misses (a real hazard the scan does not report):
   directory or the filelist's `+incdir+` entries is logged at DEBUG and
   skipped, not failed.
 
+`` `undefineall `` is honoured with the semantics of the frontend in use:
+slang spares the command-line macros (its `undefineAll()` re-applies
+`options.predefines`), while Yosys's own `read_verilog` clears those too.
+
 The macro table follows the compilation-unit boundary the frontend actually
 uses: reset per top-level source and re-seeded from the run's defines, unless
 the caller passes ``single_unit=True``. Headers share their includer's table,
@@ -177,6 +181,13 @@ class _ScanState:
     defined: set[str] = field(default_factory=set)
     incdirs: tuple[str, ...] = ()
     active: list[str] = field(default_factory=list)
+    # The command-line seed (run `defines:` plus the frontend's own implicit
+    # macros), kept so `` `undefineall `` can restore it -- see `keep_seed`.
+    seed: frozenset[str] = frozenset()
+    # Whether `` `undefineall `` spares the seed. It does under slang, whose
+    # undefineAll() re-applies options.predefines; it does NOT under Yosys's
+    # own read_verilog, which clears its global_defines_cache too.
+    keep_seed: bool = True
 
 
 def _tokenize(text: str, path: str) -> list[_Token]:
@@ -339,6 +350,16 @@ def _expand_text(
             if i + 1 < len(tokens):
                 state.defined.discard(tokens[i + 1].text)
             i += 2 if i + 1 < len(tokens) else 1
+            continue
+
+        if name == "undefineall":
+            # Verified against both frontends with a syntax error inside the
+            # guarded region: slang's Preprocessor::undefineAll() clears the
+            # macro map and then re-applies options.predefines, so the -D
+            # macros survive; Yosys's read_verilog clears `defines` AND
+            # `global_defines_cache`, so nothing survives.
+            state.defined = set(state.seed) if state.keep_seed else set()
+            i += 1
             continue
 
         if name == "include":
@@ -610,10 +631,16 @@ def _dedupe(findings: list[LifetimeFinding]) -> list[LifetimeFinding]:
 
 
 def _new_state(
-    defines: dict | None, incdirs: tuple[str, ...] | list[str]
+    defines: dict | None,
+    incdirs: tuple[str, ...] | list[str],
+    keep_seed: bool = True,
 ) -> _ScanState:
+    seed = frozenset(str(k) for k in (defines or {}))
     return _ScanState(
-        defined=set(str(k) for k in (defines or {})), incdirs=tuple(incdirs)
+        defined=set(seed),
+        incdirs=tuple(incdirs),
+        seed=seed,
+        keep_seed=keep_seed,
     )
 
 
@@ -623,9 +650,10 @@ def scan_text(
     *,
     incdirs: tuple[str, ...] | list[str] = (),
     defines: dict | None = None,
+    undefineall_keeps_predefines: bool = True,
 ) -> list[LifetimeFinding]:
     """Scan one source's text and return its static-lifetime findings."""
-    state = _new_state(defines, incdirs)
+    state = _new_state(defines, incdirs, undefineall_keeps_predefines)
     state.active.append(os.path.realpath(path))
     return _dedupe(_walk(_expand_text(text, path, state)))
 
@@ -635,6 +663,7 @@ def scan_file(
     *,
     incdirs: tuple[str, ...] | list[str] = (),
     defines: dict | None = None,
+    undefineall_keeps_predefines: bool = True,
     state: _ScanState | None = None,
 ) -> list[LifetimeFinding]:
     """Scan one file and everything it includes.
@@ -643,7 +672,7 @@ def scan_file(
     macro table across several sources.
     """
     if state is None:
-        state = _new_state(defines, incdirs)
+        state = _new_state(defines, incdirs, undefineall_keeps_predefines)
     return _dedupe(_walk(_expand_file(path, state)))
 
 
@@ -653,6 +682,7 @@ def scan_files(
     incdirs: tuple[str, ...] | list[str] = (),
     defines: dict | None = None,
     single_unit: bool = False,
+    undefineall_keeps_predefines: bool = True,
 ) -> list[LifetimeFinding]:
     """Scan sources in order and return their combined findings.
 
@@ -666,11 +696,22 @@ def scan_files(
 
     Headers always share their includer's macro table, because `` `include ``
     is textual.
+
+    `undefineall_keeps_predefines` selects the `` `undefineall `` semantics of
+    the frontend in use: True for slang, whose `undefineAll()` re-applies
+    `options.predefines`, and False for Yosys's own `read_verilog`, which
+    clears its `global_defines_cache` as well. It defaults to the slang
+    behaviour, that being the frontend whose miscompilation this gate exists
+    for.
     """
-    shared = _new_state(defines, incdirs) if single_unit else None
+
+    def _fresh() -> _ScanState:
+        return _new_state(defines, incdirs, undefineall_keeps_predefines)
+
+    shared = _fresh() if single_unit else None
     findings: list[LifetimeFinding] = []
     for path in paths:
-        state = shared if shared is not None else _new_state(defines, incdirs)
+        state = shared if shared is not None else _fresh()
         findings.extend(_walk(_expand_file(path, state)))
     return _dedupe(findings)
 

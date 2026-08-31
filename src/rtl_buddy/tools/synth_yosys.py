@@ -474,6 +474,9 @@ class YosysSynth:
             # flag is ignored (with a warning), so each file is its own
             # compilation unit either way.
             single_unit=opts.single_unit and opts.frontend == "slang",
+            # slang's `undefineall` re-applies the -D macros; Yosys's own
+            # read_verilog drops them along with everything else.
+            undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
     def _write_script(self, fl_path: str) -> str:
@@ -624,6 +627,14 @@ class YosysSynth:
             top=self.synth_cfg.get_top(),
         )
 
+        # Both gate modes are resolved up front, ahead of the filelist write,
+        # so a misspelled value is the fatal config error it is on every run --
+        # not something a FilelistError can mask into an ordinary FAIL. Matches
+        # OpenRoadSynth.run().
+        opts = self._resolve_opts()
+        static_mode = resolve_static_functions_mode(opts)
+        conflicting_mode = resolve_conflicting_drivers_mode(opts)
+
         try:
             fl_path = self._write_filelist()
         except FilelistError as e:
@@ -638,11 +649,6 @@ class YosysSynth:
                 name=self.name + "/results", desc=f"Filelist error: {e}"
             )
 
-        opts = self._resolve_opts()
-        static_mode = resolve_static_functions_mode(opts)
-        # Both gate modes are resolved up front, so a misspelled value is fatal
-        # on every run rather than only on runs that reach the gate.
-        conflicting_mode = resolve_conflicting_drivers_mode(opts)
         findings = self._scan_static_lifetimes(fl_path, opts)
         if findings:
             detail = describe_findings(findings)

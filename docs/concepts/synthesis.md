@@ -196,8 +196,9 @@ reported when the same header is included from an ordinary module — and one
 declaration is reported once however many places include it.
 
 `` `ifdef `` / `` `ifndef `` / `` `elsif `` / `` `else `` / `` `endif `` are
-evaluated on definedness and updated by `` `define `` and `` `undef `` in the
-sources. The macro table is seeded to match the Yosys invocation exactly:
+evaluated on definedness and updated by `` `define ``, `` `undef `` and
+`` `undefineall `` in the sources. The macro table is seeded to match the Yosys
+invocation exactly:
 
 - the run's `defines:`, which is all `rb synth` passes to `read_verilog -D` /
   `read_slang -D`;
@@ -213,6 +214,13 @@ filelist carries `+define+` macros the flow drops logs one
 simulation flow, which does apply them, predates this gate and is tracked
 separately — move the macro to the synth.yaml entry's `defines:` if the design
 needs it.
+
+`` `undefineall `` follows the frontend in use, which differ: slang clears the
+source's own macros but re-applies the command-line ones, so the seed above
+survives; Yosys's `read_verilog` clears its command-line cache as well, so
+nothing does. A `` `ifndef `` guarded on a `defines:` macro after an
+`` `undefineall `` is therefore compiled under `frontend: verilog` and not
+under `frontend: slang`, and the scan reports it accordingly.
 
 The macro table follows the compilation-unit boundary the frontend actually
 uses. With `single-unit: false` — the default — each source is its own
