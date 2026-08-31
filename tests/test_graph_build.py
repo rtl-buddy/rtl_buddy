@@ -593,6 +593,13 @@ def test_fingerprint_changes_with_inputs_and_with_tool_versions(tmp_path: Path):
     upgraded = dict(base, tools={"rtl-buddy-view": "0.5.0"})
     assert fingerprint(**upgraded) != first
 
+    # A tier can hash the same inputs and still owe a different sidecar:
+    # what it *selected* is part of what `graph-meta.json` reports.
+    narrowed = dict(base, selection={"design": {"models": ["design/a#a"]}})
+    assert fingerprint(**narrowed) != first
+    assert fingerprint(**narrowed) == fingerprint(**narrowed)
+    assert fingerprint(**dict(base, selection={})) == first
+
 
 def test_hash_inputs_records_a_missing_file_instead_of_raising(tmp_path: Path):
     entries = hash_inputs(tmp_path, [tmp_path / "gone.sv"])
@@ -2141,6 +2148,91 @@ def test_the_duplicate_top_refusal_ignores_models_out_of_scope(
     )
     assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
     assert next(t for t in build.tiers if t.tier == DESIGN_TIER).status == "built"
+
+
+def test_narrowing_an_all_opted_out_build_refreshes_the_skipped_list(
+    graph_project: Path, tmp_path: Path
+):
+    """A selector that only moves `skipped` must still invalidate the cache.
+
+    An all-opted-out design tier hashes nothing, so `--model` moves no
+    input and the fingerprint used to match — handing back a
+    `graph-meta.json` whose `skipped` list still described the wider,
+    previous invocation. The sidecar is part of what the build promises,
+    so what narrowed it is part of the fingerprint.
+    """
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+
+    wide = build_graph(graph_project, **common)
+    wide_skipped = json.loads(wide.meta_path.read_text())["tiers"][DESIGN_TIER][
+        "skipped"
+    ]
+    assert wide_skipped == [
+        {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
+        {"model": "blk_b", "reason": graph_build.GRAPH_OPT_OUT},
+        {
+            "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+    ]
+
+    only_a = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_a"
+    ]
+    narrow = build_graph(graph_project, models=only_a, **common)
+    assert narrow.unchanged is False
+    assert narrow.fingerprint != wide.fingerprint
+    # The sidecar on disk now describes *this* invocation: blk_b is gone
+    # from it, and only blk_a's own records remain.
+    narrow_skipped = json.loads(narrow.meta_path.read_text())["tiers"][DESIGN_TIER][
+        "skipped"
+    ]
+    assert narrow_skipped == [
+        {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
+        {
+            "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+    ]
+    assert narrow_skipped != wide_skipped
+
+    # ...and re-running the narrowed build really is a no-op again.
+    assert build_graph(graph_project, models=only_a, **common).unchanged is True
+
+
+def test_tier_flags_are_part_of_the_fingerprint_even_with_nothing_to_hash(
+    graph_project: Path, tmp_path: Path
+):
+    """`--no-tb` / `--no-flow-tops` / `--no-design` change the sidecar too.
+
+    On a project with design-tier inputs the flags already move the input
+    hashes. On an all-opted-out one they move nothing, which is exactly
+    when the stale sidecar was reachable.
+    """
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    base = build_graph(graph_project, **common).fingerprint
+    assert build_graph(graph_project, tb=False, **common).fingerprint != base
+    assert build_graph(graph_project, flow_tops=False, **common).fingerprint != base
+    assert build_graph(graph_project, design=False, **common).fingerprint != base
+    # `--no-design` and a fully opted-out tier produce the same graph but
+    # not the same report, so they must not share a fingerprint.
+    off = build_graph(graph_project, design=False, **common)
+    off_design = next(t for t in off.tiers if t.tier == DESIGN_TIER)
+    assert off_design.detail == "disabled (--no-design)"
 
 
 def test_model_top_override_roots_the_export_and_the_config_stitch(

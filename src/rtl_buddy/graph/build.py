@@ -840,6 +840,17 @@ def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
     return keep, skipped
 
 
+def _model_ident(project_root: Path, model: ModelConfig) -> str:
+    """Repo-relative identity of a model — ``<models.yaml>#<name>``.
+
+    The fingerprint's counterpart to :func:`_model_key`, which keys on an
+    absolute realpath and so cannot go into a hash that has to reproduce
+    across checkouts and machines.
+    """
+    rel = rel_path(project_root, model.path) if model.path else "?"
+    return f"{rel}#{model.name}"
+
+
 def _reject_duplicate_tops(project_root: Path, models: list[ModelConfig]) -> None:
     """Refuse to export two models rooted at the same module (#479).
 
@@ -1401,6 +1412,11 @@ def build_graph(
     exporters: list[tuple[ModelConfig, RtlBuddyViewGraph]] = []
     tb_exporters: list[tuple[TestbenchTarget, RtlBuddyViewGraph]] = []
     flow_exporters: list[tuple[FlowRunTarget, RtlBuddyViewGraph]] = []
+    # What the design tier selected, kept outside the branches below so
+    # the fingerprint can see it whichever way the tier resolved.
+    graphable: list[ModelConfig] = []
+    tb_targets: list[TestbenchTarget] = []
+    run_targets: list[FlowRunTarget] = []
     design_report = TierReport(tier=DESIGN_TIER)
     if not design:
         design_report.status = SKIPPED
@@ -1430,8 +1446,6 @@ def build_graph(
         # Before anything is planned, let alone exported: two graphable
         # models rooted at one module cannot both be in the design tier.
         _reject_duplicate_tops(root, graphable)
-        tb_targets: list[TestbenchTarget] = []
-        run_targets: list[FlowRunTarget] = []
         if tb:
             tb_targets, opted_out = _split_opted_out(
                 testbenches_from_suites(root, search_verif, models), "testbench"
@@ -1576,8 +1590,35 @@ def build_graph(
 
     # --- no-op check ----------------------------------------------------
     tier_inputs = {name: report.inputs for name, report in reports.items()}
+    # What this invocation *chose* to cover, alongside what it read.
+    # Inputs alone are not enough to decide a re-run is a no-op: a design
+    # tier whose models all declared `graph: false` hashes nothing, so
+    # narrowing it with `--model` — or dropping `--tb` / `--flow-tops` —
+    # moves nothing in `tier_inputs`, the fingerprint matches, and the
+    # build hands back a `graph-meta.json` whose `skipped` list describes
+    # the *previous* invocation (#479). The selectors and the opt-out
+    # records are part of what the sidecar reports, so they are part of
+    # what makes it stale. Identities are repo-relative, so the
+    # fingerprint still reproduces across checkouts.
+    selection = {
+        DESIGN_TIER: {
+            "enabled": design,
+            "tb": tb,
+            "flow_tops": flow_tops,
+            "models": sorted(_model_ident(root, m) for m in graphable),
+            "testbenches": sorted(t.label for t in tb_targets),
+            "flow_runs": sorted(t.label for t in run_targets),
+            "skipped": sorted(
+                json.dumps(record, sort_keys=True) for record in design_report.skipped
+            ),
+        },
+        BINDING_TIER: {"bind": bind, "extract": extract_enabled},
+    }
     fp = fingerprint(
-        schema_version=SCHEMA_VERSION, tools=tools, tier_inputs=tier_inputs
+        schema_version=SCHEMA_VERSION,
+        tools=tools,
+        tier_inputs=tier_inputs,
+        selection=selection,
     )
     stored_meta = _read_json(meta_path) or {}
     if not force and graph_path.is_file() and stored_meta.get("fingerprint") == fp:
