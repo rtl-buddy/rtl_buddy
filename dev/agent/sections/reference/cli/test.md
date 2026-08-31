@@ -39,6 +39,9 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --rebuild                                       recompile even when a valid build    │
+│                                                 already exists (implies nothing      │
+│                                                 about --share-build)                 │
 │ --reg-level                            INTEGER  regression level to stop at          │
 │ --start-level                          INTEGER  regression level to start at         │
 │ --dispatch                             TEXT     execution backend for the test run   │

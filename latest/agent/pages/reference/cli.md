@@ -130,6 +130,9 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --rebuild                                       recompile even when a valid build    │
+│                                                 already exists (implies nothing      │
+│                                                 about --share-build)                 │
 │ --reg-level                            INTEGER  regression level to stop at          │
 │ --start-level                          INTEGER  regression level to start at         │
 │ --dispatch                             TEXT     execution backend for the test run   │
@@ -160,6 +163,8 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --test-config  -c      TEXT     test_config.yaml to use [default: tests.yaml]        │
 │ --rnd-rpt      -r      INTEGER  repeat iteration number from previous run            │
+│ --rebuild                       recompile even when a valid build already exists     │
+│                                 (implies nothing about --share-build)                │
 │ --dispatch             TEXT     execution backend for the seed fan-out (local,       │
 │                                 local-parallel, slurm)                               │
 │                                 [default: (cfg-dispatch backend, else local)]        │
@@ -209,6 +214,9 @@ Usage: rtl-buddy regression [OPTIONS]
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --rebuild                                       recompile even when a valid build    │
+│                                                 already exists (implies nothing      │
+│                                                 about --share-build)                 │
 │ --dispatch                             TEXT     execution backend for test runs      │
 │                                                 (local, local-parallel, slurm)       │
 │                                                 [default: (cfg-dispatch backend,     │

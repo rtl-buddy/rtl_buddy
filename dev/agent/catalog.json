@@ -1898,6 +1898,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/shared-build-dependency-tracking-varies-by-simulator.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#the-first-run-after-upgrading-recompiles-every-shared-build",
+          "slug": "the-first-run-after-upgrading-recompiles-every-shared-build",
+          "title": "The first run after upgrading recompiles every shared build",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/the-first-run-after-upgrading-recompiles-every-shared-build.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#yosys-backed-flows-do-not-support-whitespace-in-paths",
           "slug": "yosys-backed-flows-do-not-support-whitespace-in-paths",
           "title": "Yosys-backed flows do not support whitespace in paths",

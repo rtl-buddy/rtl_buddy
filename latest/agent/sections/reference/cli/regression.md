@@ -37,6 +37,9 @@ Usage: rtl-buddy regression [OPTIONS]
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --rebuild                                       recompile even when a valid build    │
+│                                                 already exists (implies nothing      │
+│                                                 about --share-build)                 │
 │ --dispatch                             TEXT     execution backend for test runs      │
 │                                                 (local, local-parallel, slurm)       │
 │                                                 [default: (cfg-dispatch backend,     │
