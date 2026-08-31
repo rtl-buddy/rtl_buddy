@@ -369,3 +369,114 @@ def test_cancelling_a_parallel_build_job_starts_no_queued_compiler(tmp_path_fact
                 os.killpg(pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+# --------------------------------- two build jobs, one compile key (#507)
+
+
+def _wait_for(predicate, *, timeout=60, message=""):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.1)
+    raise AssertionError(message or "condition never held")
+
+
+def test_a_second_build_job_waits_for_the_first_and_reuses_its_build(tmp_path_factory):
+    """Two ``rb _build-job`` processes over one compile key (#507).
+
+    The issue's shape: a run is interrupted client-side but its dispatched
+    build job keeps compiling, and the next invocation dispatches a second
+    one for the same key. Both hold ``--Mdir
+    artefacts/.shared-builds/obj_dir_<key>``, and before the #504 lock both
+    Verilated into it at once. Nothing in-tree proved the *build job* takes
+    that lock — the lock tests drive ``VlogSim`` directly, and the build job
+    reaches ``compile()`` through ``TestRunner``, which is exactly the
+    layering a refactor could break silently.
+
+    Real subprocesses, because the claim is cross-process: the first
+    build job's fake verilator parks inside the lock until this test
+    releases it, which is what makes "the second one is queued behind it"
+    observable rather than timing-dependent. One compile between them, and
+    the second reports a reuse.
+    """
+    work = tmp_path_factory.mktemp("build_job_lock")
+    project = work / "proj"
+    shutil.copytree(_FIXTURE, project)
+    suite = project / "verif" / "blk"
+    pids_file = work / "compiler_pids.txt"
+    spans = work / "compiler_spans.txt"
+    release = work / "release"
+    first_log = work / "first.log"
+    second_log = work / "second.log"
+
+    env = dict(os.environ)
+    env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
+    # One line per verilator invocation, appended by both processes: the
+    # count IS the assertion.
+    env["RB_SHIM_SPANS"] = str(spans)
+    argv = [sys.executable, "-m", "rtl_buddy", "_build-job", "-c", "tests.yaml"]
+
+    first = second = None
+    try:
+        with open(first_log, "w") as out:
+            first = subprocess.Popen(
+                argv,
+                cwd=suite,
+                env={
+                    **env,
+                    "RB_SHIM_WAIT_FILE": str(release),
+                    "RB_SHIM_PIDS": str(pids_file),
+                },
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        # The compiler is running, so the first job is inside the lock.
+        _wait_for(
+            lambda: _recorded_compiler_pids(pids_file),
+            message=f"the first build job never compiled\n{first_log.read_text()}",
+        )
+        with open(second_log, "w") as out:
+            second = subprocess.Popen(
+                argv,
+                cwd=suite,
+                env=env,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        # ...and the second is queued on it. The line is emitted immediately
+        # before the blocking flock, so this is a fact, not a sleep.
+        _wait_for(
+            lambda: "waiting for another rtl-buddy" in second_log.read_text(),
+            message=(
+                "the second build job never queued on the build lock\n"
+                f"{second_log.read_text()}"
+            ),
+        )
+        release.touch()
+        assert first.wait(timeout=180) == 0, first_log.read_text()
+        assert second.wait(timeout=180) == 0, second_log.read_text()
+    finally:
+        release.touch()  # pragma: no cover - only matters on a failed run
+        for proc in (first, second):
+            if proc is not None and proc.poll() is None:  # pragma: no cover
+                proc.kill()
+                proc.wait()
+
+    diag = f"--- first ---\n{first_log.read_text()}--- second ---\n{second_log.read_text()}"
+    # One compile between the two processes, into the one shared directory.
+    compiles = [
+        line.split()[0] for line in spans.read_text().splitlines() if line.strip()
+    ]
+    assert len(compiles) == 1, f"the waiter recompiled instead of reusing\n{diag}"
+    assert compiles[0].startswith("obj_dir_"), diag
+    # The waiter says what it did with the wait: it validated the stamp the
+    # first job wrote and reused it.
+    assert "reused shared build" in second_log.read_text(), diag
+    # The lock lives in the directory it guards.
+    shared = sorted((suite / "artefacts" / ".shared-builds").glob("obj_dir_*"))
+    assert [d.name for d in shared] == compiles, diag
+    assert (shared[0] / ".rb-build.lock").exists(), diag

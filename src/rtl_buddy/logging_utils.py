@@ -857,6 +857,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Submitted shared-build job {fields.get('job_id')} for "
                 f"{fields.get('suite_dir')}{concurrency}"
             )
+        case "dispatch.build_job_deduped":
+            # WARNING, and the only line that explains why this run's build
+            # job sits PENDING behind a job the user did not submit in this
+            # invocation (#507).
+            ids = fields.get("job_ids")
+            joined = ", ".join(ids) if isinstance(ids, list) else str(ids)
+            return (
+                f"A shared build for {fields.get('suite_dir')} is already queued or "
+                f"running as job {joined}; this run's build job "
+                f"{fields.get('job_id')} waits for it to finish and then reuses "
+                "what it built, rather than compiling into the same directory "
+                "alongside it"
+            )
         case "dispatch.submitted":
             gate = fields.get("dependency")
             target = fields.get("test")

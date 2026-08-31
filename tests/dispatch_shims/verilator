@@ -19,6 +19,20 @@ for a in "$@"; do
   prev="$a"
 done
 [ -z "$mdir" ] && { echo "no --Mdir" >&2; exit 1; }
+# With $RB_SHIM_WAIT_FILE set it records its own pid in $RB_SHIM_PIDS and
+# then blocks until that file exists (bounded, so a broken test fails rather
+# than hanging the suite). That turns "a compile is in flight" into something
+# a test can observe and then release on demand, which is what a build-lock
+# race needs: park one builder inside the lock, let the second reach it, then
+# let the first finish (#507).
+if [ -n "${RB_SHIM_WAIT_FILE:-}" ]; then
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "$$" >> "$RB_SHIM_PIDS"
+  waited=0
+  while [ ! -e "$RB_SHIM_WAIT_FILE" ] && [ "$waited" -lt 1200 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+fi
 if [ -n "${RB_SHIM_HANG:-}" ]; then
   [ -n "${RB_SHIM_PIDS:-}" ] && echo "$$" >> "$RB_SHIM_PIDS"
   sleep "$RB_SHIM_HANG"

@@ -27,6 +27,8 @@ Each passes an explicit ``cwd`` per the engineering guidelines, since the
 head process cwd is re-anchored per suite during a regression.
 """
 
+import getpass
+import hashlib
 import logging
 import math
 import os
@@ -229,6 +231,72 @@ def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
 _ACCT_FREQ_OPT = "--acctg-freq"
 _ACCT_FREQ_DEFAULT = f"{_ACCT_FREQ_OPT}=task=1"
 _DEFAULT_ACCT_INTERVAL_S = 1.0
+
+# ------------------------------------------------ build-job dedup (#507)
+#
+# A build job carries a name derived from what it builds, so a second run
+# of the same suite can find the first run's build job still in the queue
+# and wait for it instead of compiling into the same shared directory
+# beside it. The in-job `flock` (#504) already makes that safe, but only
+# by making the second builder *wait for the whole first compile while
+# holding a compute allocation*; depending on the job is the same wait
+# with the allocation released, and it is the only form that also covers
+# a filesystem whose `flock` is process-local.
+_BUILD_JOB_NAME_PREFIX = "rb-build"
+# What "already in flight" means. `--states` takes the long names; every
+# other state (COMPLETED/FAILED/CANCELLED/...) is a job whose stamp is
+# already on disk for the normal reuse path to find.
+_DEDUP_STATES = "PENDING,RUNNING,CONFIGURING,SUSPENDED"
+# The probe sits between the user and their submission, so it is
+# time-boxed: a wedged squeue must cost a few seconds and a DEBUG line,
+# never the run.
+_DEDUP_TIMEOUT_SEC = 20.0
+# `afterany`, not `afterok`: the in-flight job may fail, be cancelled, or
+# be killed for time, and this run must still build. What it needs is the
+# other builder to be *done* writing the directory; whether it succeeded
+# is then decided by the stamp, under the lock, inside the job.
+_DEDUP_DEPENDENCY_KIND = "afterany"
+
+
+def build_job_name(spec: BuildJobSpec) -> str:
+    """The Slurm job name for ``spec``: one name per build identity (#507).
+
+    Deterministic across runs and across users' processes, because that
+    is what makes it a rendezvous point: two invocations that would
+    populate the same shared build directory submit jobs with the same
+    name, and :meth:`SlurmDispatchBackend._queued_build_ids` finds one
+    from the other.
+
+    The identity is the suite directory, the planned test names (sorted:
+    plan order is a scheduling detail, the set is what decides what gets
+    compiled) and the builder selection — mode plus any ``--builder``
+    override, since those resolve different builders and therefore
+    different compile keys.
+
+    **Bound, deliberately.** This is not the compile key. The keys
+    fingerprint sources, flags and defines, and they are only knowable
+    after a config's ``pre()`` hook has run — which happens inside the
+    build job, on a compute node, after the filelists are written (#458).
+    The head cannot compute them without doing the build job's work on
+    the submit host. So the name is an *upper bound* on the collision:
+    two runs of the same suite over the same tests get one name whether
+    or not their sources have since diverged, and a source edit between
+    them makes the second job wait for a build it will then correctly
+    reject and redo. That costs queue latency and never correctness. In
+    the other direction the bound is exact where it matters — a
+    different suite, or a different set of tests, never adopts another
+    build's wait.
+    """
+    identity = "\n".join(
+        [
+            os.path.abspath(spec.suite_dir),
+            spec.builder_mode or "",
+            spec.builder_override or "",
+            *sorted(spec.test_names),
+        ]
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return f"{_BUILD_JOB_NAME_PREFIX}-{digest}"
 
 
 def _parse_mem_to_bytes(text: str) -> int | None:
@@ -549,14 +617,114 @@ class SlurmDispatchBackend(DispatchBackend):
             return []
         return [f"--dependency=afterok:{dependency}", "--kill-on-invalid-dep=yes"]
 
+    def _queued_build_ids(self, job_name: str, *, cwd: str) -> list[str]:
+        """This user's build jobs already queued or running under ``job_name``.
+
+        Best-effort by construction (#507). A squeue that is absent,
+        errors, or hangs leaves the answer empty, which submits exactly
+        what this backend submitted before the dedup existed — the
+        in-job build lock is still there, so the degraded path is the
+        pre-#507 behaviour and not a broken one. It says so at DEBUG
+        rather than WARNING for that reason: nothing is wrong with the
+        run, only with the optimisation.
+
+        Scoped to this user: a dependency on somebody else's job is not
+        something a site necessarily permits, and their build is not
+        this user's to wait on.
+        """
+        fields = {"job_name": job_name, "suite_dir": cwd}
+        try:
+            user = getpass.getuser()
+        except Exception as e:  # noqa: BLE001 - no login name, no dedup
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.build_dedup_unavailable",
+                **fields,
+                error=str(e),
+            )
+            return []
+        argv = [
+            "squeue",
+            "--noheader",
+            "--format=%i",
+            f"--user={user}",
+            f"--name={job_name}",
+            f"--states={_DEDUP_STATES}",
+        ]
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=_DEDUP_TIMEOUT_SEC,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.build_dedup_unavailable",
+                **fields,
+                error=str(e),
+            )
+            return []
+        if proc.returncode != 0:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.build_dedup_unavailable",
+                **fields,
+                error=proc.stderr.strip() or f"squeue exited {proc.returncode}",
+            )
+            return []
+        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+    def _configured_dependency(self) -> str | None:
+        """The dependency expression the user's ``sbatch-args`` already set.
+
+        Composed with rather than overwritten: a site that gates every
+        job behind a reservation or a staging job means it, and the dedup
+        clause is an additional condition, not a replacement.
+        """
+        args = self.sbatch_args
+        for index, arg in enumerate(args):
+            if arg.startswith("--dependency="):
+                return arg.split("=", 1)[1]
+            if (
+                arg.startswith("-d")
+                and arg not in ("-d", "--dependency")
+                and arg[1] != "-"
+            ):
+                return arg[2:]
+            if arg in ("-d", "--dependency") and index + 1 < len(args):
+                return args[index + 1]
+        return None
+
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
+        job_name = build_job_name(spec)
         cmd = self._reservation_argv(
             spec.resources,
-            job_name="rb-build",
+            job_name=job_name,
             chdir=spec.suite_dir,
             log_path=spec.log_path,
         )
         cmd += self.sbatch_args
+        # Adopt an in-flight build of the same identity instead of racing
+        # it into one directory (#507). The flag goes AFTER `sbatch_args`,
+        # unlike the sim jobs' `afterok` gate: Slurm lets the last
+        # `--dependency` win, and a user-configured one would otherwise
+        # silently drop the dedup. It carries the user's expression too,
+        # so composing loses neither condition.
+        inflight = self._queued_build_ids(job_name, cwd=spec.suite_dir)
+        dependency = None
+        if inflight:
+            clause = f"{_DEDUP_DEPENDENCY_KIND}:{':'.join(inflight)}"
+            configured = self._configured_dependency()
+            dependency = f"{configured},{clause}" if configured else clause
+            # No `--kill-on-invalid-dep`: `afterany` is satisfied by any
+            # termination, so it cannot become unsatisfiable.
+            cmd.append(f"--dependency={dependency}")
         cmd += ["--wrap", shlex.join(build_job_argv(spec))]
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
         if proc.returncode != 0:
@@ -567,12 +735,32 @@ class SlurmDispatchBackend(DispatchBackend):
         job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
             raise FatalRtlBuddyError("sbatch returned no job id for build job")
+        if inflight:
+            # WARNING, so it reaches the console: this run's build will not
+            # start until an earlier one finishes, and a user watching the
+            # queue needs to read that wait as deliberate. After the submit,
+            # so it describes a job that exists and can name it.
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.build_job_deduped",
+                backend=self.name,
+                job_id=job_id,
+                suite_dir=spec.suite_dir,
+                job_name=job_name,
+                job_ids=inflight,
+                dependency=dependency,
+            )
         log_event(
             logger,
             logging.INFO,
             "dispatch.build_submitted",
             backend=self.name,
             job_id=job_id,
+            # The identity name the next run's dedup probe looks for (#507);
+            # recorded so a queue full of `rb-build-<hash>` entries can be
+            # traced back to the suite that submitted each one.
+            job_name=job_name,
             suite_dir=spec.suite_dir,
             time=spec.resources.time,
             cpus=spec.resources.cpus,

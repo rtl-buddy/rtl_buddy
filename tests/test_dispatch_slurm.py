@@ -524,7 +524,14 @@ def test_array_script_fails_loud_on_missing_manifest_line():
 def test_submit_build_builds_argv(monkeypatch):
     from rtl_buddy.dispatch.base import BuildJobSpec
 
-    calls, results = [], [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    calls, results = (
+        [],
+        [
+            # The dedup probe: nothing of this identity is in the queue.
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(
         DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
@@ -540,9 +547,10 @@ def test_submit_build_builds_argv(monkeypatch):
     handle = backend.submit_build(spec)
 
     assert handle.job_id == "900"
-    (argv,) = calls
+    probe, argv = calls
+    assert probe[0] == "squeue"
     assert argv[0] == "sbatch"
-    assert "--job-name=rb-build" in argv
+    assert f"--job-name={slurm_module.build_job_name(spec)}" in argv
     assert "--time=02:00:00" in argv and "--cpus-per-task=8" in argv
     assert "--mem=16G" in argv
     assert "--partition=verif" in argv
@@ -566,7 +574,13 @@ def test_submit_build_reserves_the_head_scaled_cpus(monkeypatch):
     """
     from rtl_buddy.dispatch.base import BuildJobSpec
 
-    calls, results = [], [SimpleNamespace(returncode=0, stdout="901\n", stderr="")]
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="901\n", stderr=""),
+        ],
+    )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
@@ -578,7 +592,7 @@ def test_submit_build_reserves_the_head_scaled_cpus(monkeypatch):
     )
     backend.submit_build(spec)
 
-    (argv,) = calls
+    _probe, argv = calls
     assert "--cpus-per-task=16" in argv
     # mem/time are NOT multiplied by the head, so they arrive as configured.
     assert "--mem=16G" in argv and "--time=02:00:00" in argv
@@ -593,7 +607,13 @@ def test_build_submitted_event_records_the_concurrency(monkeypatch, caplog):
     from rtl_buddy.dispatch.base import BuildJobSpec
     from rtl_buddy.logging_utils import _human_message
 
-    calls, results = [], [SimpleNamespace(returncode=0, stdout="902\n", stderr="")]
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="902\n", stderr=""),
+        ],
+    )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
@@ -643,7 +663,13 @@ def test_submit_sim_without_dependency_has_no_flag(monkeypatch):
 def test_build_argv_carries_plan_and_result_json(monkeypatch):
     from rtl_buddy.dispatch.base import BuildJobSpec
 
-    calls, results = [], [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
@@ -655,7 +681,7 @@ def test_build_argv_carries_plan_and_result_json(monkeypatch):
         result_json=Path("/proj/verif/blk/artefacts/.dispatch/build-result-1.json"),
     )
     backend.submit_build(spec)
-    (argv,) = calls
+    _probe, argv = calls
     wrapped = shlex.split(argv[argv.index("--wrap") + 1])
     assert wrapped[wrapped.index("--plan") + 1] == str(spec.plan_path)
     assert wrapped[wrapped.index("--result-json") + 1] == str(spec.result_json)
@@ -2594,3 +2620,255 @@ def test_neither_ceiling_known_is_still_one_unsplit_array(
     (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
     assert "cfg-dispatch.max-array-size" in fields["hint"]
     assert "max-array-tasks" in fields["hint"]
+
+    assert "-M" not in argv
+
+
+# ------------------------------------- build-job dedup on the queue (#507)
+#
+# The in-job `flock` (#504) makes two build jobs of one compile key safe,
+# but only by parking the second inside a compute allocation for the whole
+# of the first's compile. These prove the head declines to create that
+# second builder in the first place: it names the job after what it
+# builds, finds the in-flight one by that name, and depends on it.
+
+
+def _build_spec(**overrides):
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    defaults = dict(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+        test_names=("alpha", "beta"),
+    )
+    defaults.update(overrides)
+    return BuildJobSpec(**defaults)
+
+
+def _dedup_results(queued: str, job_id: str = "900"):
+    """squeue's answer, then sbatch's — the order submit_build asks in."""
+    return [
+        SimpleNamespace(returncode=0, stdout=queued, stderr=""),
+        SimpleNamespace(returncode=0, stdout=f"{job_id}\n", stderr=""),
+    ]
+
+
+def test_the_build_job_name_is_derived_from_what_it_builds(monkeypatch):
+    """Same identity → same name, so two runs can find each other."""
+    name = slurm_module.build_job_name(_build_spec())
+    assert name.startswith("rb-build-")
+    # Deterministic across processes: no pid, no time, no run token.
+    assert name == slurm_module.build_job_name(_build_spec())
+    # ...and over the SET of tests, not their plan order.
+    assert name == slurm_module.build_job_name(
+        _build_spec(test_names=("beta", "alpha"))
+    )
+
+
+@pytest.mark.parametrize(
+    "different",
+    [
+        {"test_names": ("alpha",)},
+        {"test_names": ("alpha", "beta", "gamma")},
+        {"suite_dir": "/proj/verif/other"},
+        {"builder_mode": "debug"},
+        {"builder_override": "vcs"},
+    ],
+    ids=["fewer-tests", "more-tests", "other-suite", "other-mode", "other-builder"],
+)
+def test_a_different_build_gets_a_different_job_name(different):
+    """A name is a rendezvous point, so it must not over-collide: a
+    different suite, test set, or builder selection compiles different
+    keys and must never adopt another build's wait."""
+    assert slurm_module.build_job_name(_build_spec()) != slurm_module.build_job_name(
+        _build_spec(**different)
+    )
+
+
+def test_an_in_flight_build_job_becomes_a_dependency(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], _dedup_results("41\n42\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    spec = _build_spec()
+
+    with caplog.at_level(logging.WARNING):
+        handle = backend.submit_build(spec)
+
+    assert handle.job_id == "900"
+    probe, argv = calls
+    job_name = slurm_module.build_job_name(spec)
+    # The probe: this user's jobs of this identity that still occupy the
+    # queue, ids only.
+    assert probe[0] == "squeue"
+    assert "--noheader" in probe and "--format=%i" in probe
+    assert f"--name={job_name}" in probe
+    assert f"--states={slurm_module._DEDUP_STATES}" in probe
+    assert any(a.startswith("--user=") for a in probe)
+    # afterany: the orphan may fail or be cancelled and this run must still
+    # build; what it needs is for the directory to stop being written.
+    assert "--dependency=afterany:41:42" in argv
+    # ...and not the sim path's self-reaping flag, which only makes sense
+    # for an `afterok` that can become unsatisfiable.
+    assert "--kill-on-invalid-dep=yes" not in argv
+
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.levelno == logging.WARNING  # console-visible by default
+    fields = record.__dict__["rtl_fields"]
+    assert fields["job_ids"] == ["41", "42"]
+    assert fields["job_name"] == job_name
+    assert fields["suite_dir"] == "/proj/verif/blk"
+    assert fields["job_id"] == "900"  # the job that will do the waiting
+    assert "41, 42" in record.getMessage() and "900" in record.getMessage()
+
+
+def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
+    """A site that gates every job behind a staging job means it.
+
+    The composed flag is emitted last so Slurm's last-one-wins picks it up
+    — a `--dependency` in `sbatch-args` would otherwise silently drop the
+    dedup — and it carries the configured expression, so neither condition
+    is lost.
+    """
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--dependency=afterok:7"]).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    composed = "--dependency=afterok:7,afterany:41"
+    assert composed in argv
+    assert argv.index(composed) > argv.index("--dependency=afterok:7")
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["--dependency", "afterok:7"], ["-d", "afterok:7"], ["-dafterok:7"]],
+    ids=["separated-long", "separated-short", "joined-short"],
+)
+def test_every_spelling_of_a_configured_dependency_is_composed_with(
+    monkeypatch, sbatch_args
+):
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:7,afterany:41" in argv
+
+
+def test_an_empty_queue_submits_the_build_job_as_before(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], _dedup_results("\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert not any(a.startswith("--dependency") for a in argv)
+    assert [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ] == []
+
+
+def test_a_squeue_that_errors_submits_the_build_job_anyway(monkeypatch, caplog):
+    """The dedup is an optimisation over a lock that already works.
+
+    A site with no squeue on the submit host, or one that rejects the
+    query, gets exactly the pre-#507 submission — and a DEBUG line, not a
+    warning: nothing about the run is wrong.
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=1, stdout="", stderr="squeue: error: nope"),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        handle = backend.submit_build(_build_spec())
+
+    assert handle.job_id == "900"
+    _probe, argv = calls
+    assert not any(a.startswith("--dependency") for a in argv)
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert record.levelno == logging.DEBUG
+    assert "squeue: error: nope" in record.__dict__["rtl_fields"]["error"]
+
+
+@pytest.mark.parametrize(
+    "boom",
+    [
+        FileNotFoundError("squeue"),
+        slurm_module.subprocess.TimeoutExpired("squeue", 20),
+    ],
+    ids=["absent", "wedged"],
+)
+def test_a_squeue_that_never_answers_submits_the_build_job_anyway(monkeypatch, boom):
+    """Absent or wedged, the probe costs a DEBUG line and nothing else —
+    it sits between the user and their submission, so it is time-boxed."""
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            assert timeout == slurm_module._DEDUP_TIMEOUT_SEC
+            raise boom
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.submit_build(_build_spec()).job_id == "900"
+    _probe, argv = calls
+    assert not any(a.startswith("--dependency") for a in argv)
+
+
+def test_the_submitted_event_records_the_job_name(monkeypatch, caplog):
+    """The queue is full of `rb-build-<hash>` entries; the log is what
+    ties each one back to the suite that submitted it."""
+    import logging
+
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    spec = _build_spec()
+
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(spec)
+
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_submitted"
+    ]
+    assert record.__dict__["rtl_fields"]["job_name"] == slurm_module.build_job_name(
+        spec
+    )
