@@ -130,9 +130,11 @@ The plugin pin must speak the hub protocol shipped by rtl_buddy; maintainers upd
 
 ## Generated `run.f` files are checkout-specific
 
-rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. `+incdir+` and `-y` search directories are written absolute for the same reason: a builder reads `-f` entries relative to its own working directory, so a relative search directory would follow the consumer instead of the filelist that declared it. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
 
 On a cluster with different mount paths per node, a stamp from one node may not validate on another. This causes a safe recompile, not compilation of the wrong source.
+
+Because the compile key hashes the text of each `run.f` entry, the first run after upgrading to a release that changed how an entry is spelled recompiles each shared build once.
 
 ## Shared-build dependency tracking varies by simulator
 

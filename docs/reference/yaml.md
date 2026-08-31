@@ -313,7 +313,7 @@ models:
 | `synth` | Optional | Synthesis ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` owns its own include path no matter which suite consumes it. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
 
 ## tests.yaml
 

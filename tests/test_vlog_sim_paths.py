@@ -333,15 +333,18 @@ def _nested_worktree_repro(tmp_path: Path):
 def test_write_output_absolute_sources_blocks_nested_worktree_composition(
     tmp_path: Path,
 ):
-    """Explicit sources are pinned while search options retain their spelling."""
+    """Explicit sources and search directories are both pinned (#457, #474)."""
     primary_source, worktree_source, testbench, run_f = _nested_worktree_repro(tmp_path)
     output_dir = run_f.parent
+    worktree = output_dir.parents[3]
     lines = run_f.read_text().splitlines()
 
     assert f'-v "{worktree_source}"' in lines
     assert f'"{testbench}"' in lines
-    assert "+incdir+../../../../common" in lines
-    assert "-y ../../../../lib" in lines
+    # The worktree sits under a directory with a space, so the pinned search
+    # directories come back quoted exactly like the pinned sources do.
+    assert f'+incdir+"{worktree / "common"}"' in lines
+    assert f'-y "{worktree / "lib"}"' in lines
     assert "+define+WIDTH=8" in lines
     assert "+libext+.sv" in lines
 
@@ -349,7 +352,9 @@ def test_write_output_absolute_sources_blocks_nested_worktree_composition(
     # fallback. It exists in the primary checkout, so the wrong source won.
     old_source_entry = os.path.relpath(worktree_source, output_dir)
     incdir_entry = next(
-        line.removeprefix("+incdir+") for line in lines if line.startswith("+incdir+")
+        line.removeprefix("+incdir+").strip('"')
+        for line in lines
+        if line.startswith("+incdir+")
     )
     composed = Path(os.path.normpath(output_dir / incdir_entry / old_source_entry))
     assert composed == primary_source
@@ -385,6 +390,106 @@ def test_verilator_compiles_nested_worktree_source_from_absolute_run_f(tmp_path:
     ver_files = ver_files_path.read_text()
     assert str(worktree_source) in ver_files
     assert str(primary_source) not in ver_files
+
+
+def _nested_incdir_repro(tmp_path: Path):
+    """The #474 geometry: a design filelist that owns its own include path.
+
+    ``models.yaml`` at the project root pulls ``design/blk/blk.f`` in with
+    ``-F``; that nested filelist carries ``+incdir+.`` and ``-y .`` for its
+    own directory. The consuming suite lives in an unrelated subtree, so
+    every search directory needs four ``..`` hops from ``run.f``. The root
+    has a space in it to exercise quoting.
+    """
+    root = tmp_path / "project with spaces"
+    (root / ".git").mkdir(parents=True)
+    (root / "root_config.yaml").write_text("{}\n")
+    design = root / "design" / "blk"
+    design.mkdir(parents=True)
+    (design / "blk_helper.svh").write_text("localparam int BLK_W = 8;\n")
+    (design / "blk_lib.sv").write_text("module blk_lib; endmodule\n")
+    (design / "blk.sv").write_text(
+        'module blk;\n`include "blk_helper.svh"\nblk_lib u_lib();\nendmodule\n'
+    )
+    (design / "blk.f").write_text("+incdir+.\n-y .\n+libext+.sv\nblk.sv\n")
+
+    suite = root / "verif" / "unrelated"
+    suite.mkdir(parents=True)
+    (suite / "tb_top.sv").write_text("module tb_top;\nblk u_blk();\nendmodule\n")
+    (suite / "tb_inc").mkdir()
+    output_dir = suite / "artefacts" / "basic"
+    output_dir.mkdir(parents=True)
+
+    model = ModelConfig(
+        name="blk",
+        filelist=["-F design/blk/blk.f"],
+        path=str(root / "models.yaml"),
+    )
+    run_f = output_dir / "run.f"
+    VlogFilelist(name="t", model_cfg=model, output_path=str(run_f)).write_output(
+        unroll=True,
+        deduplicate=True,
+        absolute_sources=True,
+        test_filelist=["+incdir+tb_inc", "tb_top.sv"],
+        suite_dir=str(suite),
+    )
+    return root, design, suite, run_f
+
+
+def test_write_output_pins_nested_filelist_search_dirs_to_declaring_filelist(
+    tmp_path: Path,
+):
+    """``+incdir+.`` in a nested ``-F`` names the nested filelist's directory,
+    and is emitted as an absolute path so no consumer's cwd can reinterpret
+    it (#474)."""
+    _root, design, suite, run_f = _nested_incdir_repro(tmp_path)
+    lines = run_f.read_text().splitlines()
+
+    assert f'+incdir+"{design}"' in lines
+    assert f'-y "{design}"' in lines
+    # The suite-level entry is still anchored on tests.yaml, not on the model.
+    assert f'+incdir+"{suite / "tb_inc"}"' in lines
+    # Nothing directory-valued is left for a consumer's cwd to reinterpret.
+    search_dirs = [
+        line.removeprefix("+incdir+").removeprefix("-y ").strip('"')
+        for line in lines
+        if line.startswith(("+incdir+", "-y "))
+    ]
+    assert search_dirs and all(os.path.isabs(entry) for entry in search_dirs)
+
+
+@pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
+def test_verilator_resolves_nested_incdir_from_a_foreign_cwd(tmp_path: Path):
+    """The reported failure: ``-f`` makes relative filelist entries resolve
+    against the *builder's* cwd, so a relative ``+incdir+`` silently landed on
+    the consuming directory and the header was not found (#474)."""
+    root, design, _suite, run_f = _nested_incdir_repro(tmp_path)
+    obj_dir = run_f.parent / "obj_dir"
+    result = subprocess.run(
+        [
+            "verilator",
+            "--cc",
+            "--top-module",
+            "tb_top",
+            "--Mdir",
+            str(obj_dir),
+            "-f",
+            str(run_f),
+        ],
+        # Deliberately not run.f's own directory.
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    ver_files_path = next(iter(sorted(obj_dir.glob("*__verFiles.dat"))), None)
+    assert ver_files_path is not None, f"no *__verFiles.dat under {obj_dir}"
+    ver_files = ver_files_path.read_text()
+    # The header came through +incdir+ and the library module through -y.
+    assert str(design / "blk_helper.svh") in ver_files
+    assert str(design / "blk_lib.sv") in ver_files
 
 
 def test_vlog_sim_execute_runs_in_artifact_dir_and_updates_symlinks(
