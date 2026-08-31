@@ -167,3 +167,25 @@ def test_job_log_path_accepts_str_and_keeps_relative_input_relative():
     assert isinstance(out, Path)
     assert out == Path("rtl_buddy-res.log")
     assert not out.is_absolute()
+
+
+def test_rebuild_is_forwarded_to_a_build_job():
+    """The head's ``--rebuild`` reaches the one process that may act on it
+    for a whole suite: the build job (#494)."""
+    argv = build_job_argv(_build_spec(rebuild=True))
+    assert "--rebuild" in argv
+    assert argv.index("--rebuild") > argv.index("_build-job")
+
+
+def test_rebuild_is_forwarded_to_a_sim_job():
+    """A suite that submitted no build job puts it on the elements instead;
+    the argv contract has to carry it either way."""
+    argv = sim_job_argv(_test_spec(rebuild=True))
+    assert "--rebuild" in argv
+    assert argv.index("--rebuild") > argv.index("_test-job")
+
+
+def test_rebuild_is_absent_at_the_default():
+    """Nobody asked, so the job script is the one a pre-#494 head wrote."""
+    assert "--rebuild" not in build_job_argv(_build_spec())
+    assert "--rebuild" not in sim_job_argv(_test_spec())

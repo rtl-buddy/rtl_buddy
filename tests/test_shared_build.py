@@ -1,12 +1,66 @@
+import errno
+import fcntl
 import json
 import os
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 
+import pytest
+
+from rtl_buddy import artifact_lock as artifact_lock_module
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.artifact_paths import shared_build_dir
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
+
+
+@pytest.fixture(autouse=True)
+def _forget_rebuild_claims():
+    """``--rebuild`` is honoured once per build dir per PROCESS (#494).
+
+    pytest is one process for the whole file, so a claim left standing by
+    one test would silently turn the next test's forced rebuild into a
+    reuse — and the tmp_path spellings are close enough to collide once
+    somebody parametrises them.
+    """
+    vlog_sim_module._reset_rebuilt_dirs()
+    yield
+    vlog_sim_module._reset_rebuilt_dirs()
+
+
+@pytest.fixture(autouse=True)
+def _forget_content_hashes():
+    """The hash memo is keyed on (path, size, mtime_ns) per PROCESS (#494).
+
+    tmp_path spellings and restored mtimes recur across tests in this file
+    by design — the stale-stat tests fabricate exactly the collisions the
+    memo is keyed on — so a stale memo entry would validate content one
+    test rewrote for another.
+    """
+    with vlog_sim_module._CONTENT_HASH_LOCK:
+        vlog_sim_module._CONTENT_HASH_CACHE.clear()
+    yield
+    with vlog_sim_module._CONTENT_HASH_LOCK:
+        vlog_sim_module._CONTENT_HASH_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _forget_reuse_announcements():
+    """``compile.build_reused`` hits the console once per build dir per
+    PROCESS (#494 review); console-assertion tests need a fresh slate."""
+    vlog_sim_module._reset_reuse_announcements()
+    yield
+    vlog_sim_module._reset_reuse_announcements()
+
+
+@pytest.fixture(autouse=True)
+def _forget_lock_degrade_warnings():
+    """``compile.build_lock_unavailable`` is emitted once per build dir per
+    PROCESS (#494), which is one claim per pytest session unless reset."""
+    artifact_lock_module._reset_degrade_warnings()
+    yield
+    artifact_lock_module._reset_degrade_warnings()
 
 
 class DummyBuilderCfg:
@@ -50,8 +104,14 @@ class DummyBuilderCfg:
 
 
 class DummyRootCfg:
-    def __init__(self, builder_cfg):
+    def __init__(self, builder_cfg, project_root=None):
         self.builder_cfg = builder_cfg
+        if project_root is not None:
+            # Only a root config that really has one gets the accessor: the
+            # absent-accessor fallback (VlogSim built straight from tests,
+            # older config objects) is a live path too, and the rest of this
+            # file exercises it.
+            self.get_project_rootdir = lambda: str(project_root)
 
     def get_rtl_builder_cfg(self):
         return self.builder_cfg
@@ -137,21 +197,30 @@ def _make_sim(
     family="verilator",
     simv="simv",
     compile_opts=None,
+    suite_dir=None,
+    project_root=None,
+    model_path=None,
+    filelist=None,
+    rebuild=False,
     run_id=None,
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
         exe=exe, simulator_family=family, simv=simv, compile_opts=compile_opts
     )
-    model_cfg = DummyModelCfg(tmp_path / "models.yaml", filelist=["src/top.sv"])
+    model_cfg = DummyModelCfg(
+        model_path or (tmp_path / "models.yaml"), filelist=filelist or ["src/top.sv"]
+    )
     test_cfg = DummyTestCfg(test_name, model_cfg, pd=pd)
     return vlog_sim_module.VlogSim(
         name="rtl_buddy/vlog_sim",
-        root_cfg=DummyRootCfg(builder_cfg),
+        root_cfg=DummyRootCfg(builder_cfg, project_root=project_root),
         test_cfg=test_cfg,
         rtl_builder_mode="sim",
         sim_mode={"sim_to_stdout": True},
+        suite_dir=str(suite_dir) if suite_dir is not None else None,
         share_build=share_build,
+        rebuild=rebuild,
         run_id=run_id,
     )
 
@@ -758,14 +827,27 @@ def test_vcs_compile_license_queue_is_reported(tmp_path, monkeypatch):
     assert "Queuing for License" in transcript.read_text()
 
 
-def test_verilator_compile_never_reports_license_queue(tmp_path, monkeypatch):
+def test_verilator_compile_never_reports_license_queue(tmp_path, monkeypatch, caplog):
+    """Only VCS queues, so the marker in another family's output is text.
+
+    Asserted on the event rather than on an absent ``compile.log``: since
+    #494 every compile that runs leaves a transcript, so the file's absence
+    no longer means anything.
+    """
+    import logging as _logging
+
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, stdout="Queuing for License...\n")
 
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
-    assert sim.compile() == 0
-    assert not Path(sim._get_compile_transcript_path()).exists()
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.license_queued"
+    ]
 
 
 def test_share_build_disabled_keeps_per_test_build_dirs(tmp_path, monkeypatch):
@@ -990,6 +1072,503 @@ def test_parse_depend_prerequisites_returns_nothing_without_a_separator():
     assert (
         vlog_sim_module.parse_depend_prerequisites("obj/Vtop.cpp obj/Vtop.mk\n") == []
     )
+
+
+# --- content-hashed stamps (issue #494) --------------------------------------
+
+
+def _edit_behind_a_stale_stat(path, text):
+    """Rewrite ``path``'s content while its size and mtime stay put.
+
+    This is what the reported failure looks like from the validating side.
+    The edit really happened, seconds ago, on the submit host; the compute
+    node that revalidates the stamp asks NFS for the file's attributes and
+    is served the *cached* pre-edit answer, so `stat` reports the size and
+    mtime the build recorded. Freezing both here reproduces that
+    deterministically, without a cluster: if size and mtime are all the
+    stamp compares, the edited design is reused and reports PASS.
+    """
+    stat = os.stat(path)
+    assert len(text.encode()) == stat.st_size, "an equal-size edit is the repro"
+    path.write_text(text)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+
+def _as_a_fresh_process():
+    """Drop the per-process content-hash memo.
+
+    The memo is keyed on (path, size, mtime_ns), so within one process a
+    file whose stats never moved is hashed once — which is the whole point
+    of it, and which the equal-stat edits above would otherwise defeat.
+    The run that reuses a stale build is a *different* process (a later
+    `rb test`, or a sim job on another node), and this is that boundary.
+    """
+    vlog_sim_module._CONTENT_HASH_CACHE.clear()
+
+
+def test_an_edit_hidden_by_an_unchanged_stat_still_invalidates_the_stamp(
+    tmp_path, monkeypatch
+):
+    """The reported bug: a stale PASS on a design that was never simulated.
+
+    A source whose recorded size and mtime still describe it exactly must
+    not validate the build when its bytes have changed (#494).
+    """
+    src = _write_source(tmp_path, "module top; /* aaa */ endmodule\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    _edit_behind_a_stale_stat(src, "module top; /* bbb */ endmodule\n")
+    _as_a_fresh_process()
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2, "the stamp validated against a stale stat"
+    # In place, as ever: an edit rebuilds the dir it had, it does not strand
+    # a new one per edit.
+    assert sim_b._get_simv_path() == sim_a._get_simv_path()
+
+
+def test_an_edited_header_hidden_by_an_unchanged_stat_invalidates_the_stamp(
+    tmp_path, monkeypatch
+):
+    """The same, on the deps side: a header reached only through +incdir+."""
+    _write_source(tmp_path)
+    header = _write_header(tmp_path, "`define W 08\n")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    _edit_behind_a_stale_stat(header, "`define W 16\n")
+    _as_a_fresh_process()
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2, "a tracked dependency's content was never read"
+
+
+def test_restoring_identical_content_no_longer_forces_a_rebuild(tmp_path, monkeypatch):
+    """The other side of hashing: content decides, so a moved mtime alone
+    is not a change. A `git checkout` that restores the same bytes, a
+    `touch`, or a regenerated file that came out identical used to cost a
+    full rebuild each; now the stamp still validates."""
+    src = _write_source(tmp_path)
+    header = _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    _touch(src, src.read_text())  # same bytes, new mtime
+    _touch(header, header.read_text())
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1, "identical content should not have rebuilt"
+
+
+def test_a_dependency_outside_the_project_root_stays_stat_only(tmp_path, monkeypatch):
+    """Verilator names its own std includes among the inputs it consumed.
+
+    Those are not the project's files and hashing an install per validation
+    buys nothing, so they keep the old stat comparison — which means a
+    moved mtime alone still invalidates there.
+    """
+    _write_source(tmp_path)
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-toolchain"
+    outside_dir.mkdir(exist_ok=True)
+    outside = outside_dir / "verilated_std.sv"
+    outside.write_text("// toolchain-owned\n")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", str(outside)]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    deps = {
+        entry[0]: entry for entry in json.loads(_stamp_of(sim_a).read_text())["deps"]
+    }
+    assert deps[os.path.realpath(outside)][3] is None  # never hashed
+    assert deps[os.path.realpath(tmp_path / "src" / "top.sv")][3] is not None
+
+    # With no hash to decide, stats do — as they always did.
+    _touch(outside, outside.read_text())
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_stamp_written_before_content_hashing_rebuilds_once(tmp_path, monkeypatch):
+    """Entries gained a fourth element, so every stamp an older rtl_buddy
+    wrote is a shape this version cannot read. "We do not know" is not a
+    reuse: it rebuilds, once, and what it writes back is readable."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    stamp = _stamp_of(sim_a)
+    legacy = json.loads(stamp.read_text())
+    legacy["sources"] = [entry[:3] for entry in legacy["sources"]]
+    legacy["deps"] = [entry[:3] for entry in legacy["deps"]]
+    stamp.write_text(json.dumps(legacy, sort_keys=True))
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+
+    fresh = json.loads(stamp.read_text())
+    assert all(len(entry) == 4 for entry in fresh["sources"])
+    assert all(len(entry) == 4 for entry in fresh["deps"])
+
+    sim_c = _make_sim(tmp_path, monkeypatch, test_name="test_c")
+    assert sim_c.compile() == 0
+    assert len(calls) == 2, "the rebuild happened once, not once per run"
+
+
+def test_the_compile_key_never_reads_the_content_hash():
+    """The hash lives in the stamp, never in the key.
+
+    If it leaked into the key an edit would name a *different* obj_dir,
+    stranding one build tree per edit instead of rebuilding in place — so
+    the key is pinned here against the exact input set, and the entry shape
+    change of #494 has to leave it alone.
+    """
+    fingerprint = {
+        "cmd": ["verilator", "--binary", "-f", "run.f"],
+        "env": {"VERILATOR_ROOT": "/opt/verilator"},
+        "sources": [["src/top.sv", 31, 1_700_000_000_000_000_000, "0123456789abcdef"]],
+        "toolchain": {
+            "exe": "/opt/verilator/bin/verilator",
+            "version": "5.020",
+            "size": 12,
+            "mtime_ns": 7,
+        },
+    }
+    legacy_shape = dict(
+        fingerprint, sources=[entry[:3] for entry in fingerprint["sources"]]
+    )
+    edited = dict(
+        fingerprint,
+        sources=[entry[:3] + ["fedcba9876543210"] for entry in fingerprint["sources"]],
+    )
+
+    key = vlog_sim_module.VlogSim._compile_config_key(fingerprint)
+    assert key == vlog_sim_module.VlogSim._compile_config_key(legacy_shape)
+    assert key == vlog_sim_module.VlogSim._compile_config_key(edited)
+    assert key == "ca6417efe2823758"  # pinned: this input set names this dir
+
+
+def test_a_file_is_hashed_once_per_process(tmp_path, monkeypatch):
+    """A suite validating N stamps over one source set reads each file once.
+
+    Content hashing is only affordable because of the memo: without it a
+    fifty-test suite re-reads every source fifty times per run.
+    """
+    src = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    _as_a_fresh_process()
+
+    reads = []
+    real_open = open
+
+    def _counting_open(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(src):
+            reads.append(str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "open", _counting_open, raising=False)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_b").compile() == 0
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_c").compile() == 0
+    assert len(calls) == 1  # one build, two reuses
+    assert len(reads) == 1, f"the source was read {len(reads)} times, not memoised"
+
+
+def test_rtl_above_the_suite_is_hashed_because_the_root_is_the_project_root(
+    tmp_path, monkeypatch
+):
+    """The scope that makes this fix work is the PROJECT root, not the suite.
+
+    The reporter's layout is the ordinary one: the suite lives at
+    ``verif/<blk>/`` and owns ``artefacts/.shared-builds``, while the RTL it
+    compiles lives *above* it. Scoped to the suite dir, every one of those
+    sources falls outside the hashing policy and stays stat-only — which is
+    #494, still open, for exactly the projects that reported it. So this
+    test builds from a source outside the suite and asserts both halves:
+    the stamp carries a hash for it, and an edit a stale ``stat`` would hide
+    still invalidates the build.
+    """
+    suite = tmp_path / "verif" / "blk"
+    suite.mkdir(parents=True)
+    rtl = tmp_path / "rtl" / "a.sv"
+    rtl.parent.mkdir(parents=True)
+    rtl.write_text("module top; /* aaa */ endmodule\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            suite_dir=suite,
+            project_root=tmp_path,
+            model_path=suite / "models.yaml",
+            filelist=["../../rtl/a.sv"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a._project_root == os.path.realpath(tmp_path)
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    sources = json.loads(_stamp_of(sim_a).read_text())["sources"]
+    hashed = [entry for entry in sources if entry[0].endswith("a.sv")]
+    assert hashed, f"the source never reached the stamp: {sources}"
+    assert all(entry[3] is not None for entry in hashed), (
+        "RTL above the suite was recorded stat-only, so a stale NFS stat "
+        "still validates a stale build"
+    )
+
+    _edit_behind_a_stale_stat(rtl, "module top; /* bbb */ endmodule\n")
+    _as_a_fresh_process()
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2, "the stamp validated against a stale stat"
+
+
+def test_a_vendored_toolchain_under_the_project_root_is_still_not_hashed(
+    tmp_path, monkeypatch
+):
+    """ "Under the project root" is the implementation; "the project's files,
+    not the toolchain's" is the policy. A vendored install puts the two in
+    tension: ``verilator_bin`` and ``verilated.h`` land *inside* the root and
+    would be content-hashed, which is tens of megabytes read once per process
+    per node — the exact cost the policy exists to avoid.
+    """
+    src = _write_source(tmp_path)
+    install = tmp_path / "tools" / "verilator"
+    bindir = install / "bin"
+    bindir.mkdir(parents=True)
+    exe = bindir / "vendored-verilator"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    header = install / "share" / "verilator" / "include" / "verilated.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("// toolchain-owned\n")
+    monkeypatch.setenv("PATH", str(bindir))
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vendored-verilator")
+    assert sim._get_toolchain_prefix() == os.path.realpath(install)
+    assert sim._tracked_entry(str(header))[3] is None
+    assert sim._tracked_entry(str(src))[3] is not None
+
+
+def test_a_toolchain_at_the_project_root_itself_excludes_nothing(tmp_path, monkeypatch):
+    """The exclusion is only taken when it is a *proper* subdirectory.
+
+    A project that keeps its simulator in ``<root>/bin`` would otherwise
+    derive ``<root>`` as the install prefix and exclude the entire design —
+    turning the fix off everywhere, silently, for the projects most likely
+    to vendor a toolchain in the first place.
+    """
+    src = _write_source(tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / "rooted-verilator"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="rooted-verilator")
+    assert sim._get_toolchain_prefix() is None
+    assert sim._tracked_entry(str(src))[3] is not None
+
+
+def test_a_source_symlinked_in_from_outside_the_project_is_still_hashed(
+    tmp_path, monkeypatch
+):
+    """Symlinking a shared IP or RTL tree into the checkout is an ordinary
+    hardware-repo layout, and it is served off the same NFS mount #494 is
+    about. Deciding containment on where the name *resolves* would leave
+    exactly those files stat-only — the fix off for the case it exists
+    for — so the name ``run.f`` declares counts too.
+    """
+    external = tmp_path.parent / f"{tmp_path.name}-ip"
+    external.mkdir(exist_ok=True)
+    ip = external / "ip.sv"
+    ip.write_text("module top; /* aaa */ endmodule\n")
+    (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+    link = tmp_path / "src" / "ip.sv"
+    link.symlink_to(ip)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path, monkeypatch, test_name=test_name, filelist=["src/ip.sv"]
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    sources = json.loads(_stamp_of(sim_a).read_text())["sources"]
+    hashed = [entry for entry in sources if entry[0].endswith("ip.sv")]
+    assert hashed, f"the source never reached the stamp: {sources}"
+    assert all(entry[3] is not None for entry in hashed), (
+        "a symlinked-in source was recorded stat-only, so a stale NFS stat "
+        "still validates a stale build"
+    )
+
+    _edit_behind_a_stale_stat(ip, "module top; /* bbb */ endmodule\n")
+    _as_a_fresh_process()
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2, "the stamp validated against a stale stat"
+
+
+def test_a_symlinked_in_dependency_is_judged_where_it_resolves(tmp_path, monkeypatch):
+    """The boundary of the rule above, stated so it is a decision and not a
+    surprise: the dependency list is keyed on realpaths — that is what makes
+    both sides of the comparison and the ``run.f`` exclusion agree — so an
+    entry that only ever appears there carries no declared path to consult.
+    A header reached through ``+incdir+`` from a symlinked-in tree is
+    therefore stat-only, while that same tree's sources, which ``run.f``
+    names, are hashed by the test above.
+    """
+    external = tmp_path.parent / f"{tmp_path.name}-inc"
+    external.mkdir(exist_ok=True)
+    header = external / "w.svh"
+    header.write_text("`define W 8\n")
+    (tmp_path / "inc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "inc" / "w.svh").symlink_to(header)
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    assert sim._tracked_entry(os.path.realpath(header), resolved=True)[3] is None
+
+
+def test_an_oversized_input_stays_stat_only_and_says_which(
+    tmp_path, monkeypatch, caplog
+):
+    """The hashing policy is locational, so a memory-init ``.hex`` or a
+    vendored blob named in ``run.f`` qualifies exactly as a ``.sv`` does —
+    and would be read in full on every validation, on every node. Over the
+    cap it keeps the old stat comparison, and says so once so that "why was
+    this not hashed" has an answer in the log.
+    """
+    import logging as _logging
+
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+    monkeypatch.setattr(vlog_sim_module, "_HASH_SKIPPED_LARGE", set())
+    src = _write_source(tmp_path)
+    small = tmp_path / "src" / "tiny.sv"
+    small.write_text("//\n")
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim._tracked_entry(str(src))[3] is None
+        assert sim._tracked_entry(str(src))[3] is None
+    assert sim._tracked_entry(str(small))[3] is not None
+
+    skipped = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.hash_skipped_large"
+    ]
+    assert len(skipped) == 1, "once per path per process, not once per validation"
+    assert os.path.realpath(src) in caplog.text
+
+
+def test_deps_validation_fails_closed_on_every_shape_it_cannot_read(
+    tmp_path, monkeypatch
+):
+    """A stamp is data from another machine and possibly another version.
+
+    Under dispatch the stamp is written on whichever node built and read on
+    whichever node reuses, and a mixed-version cluster (submit host upgraded,
+    compute nodes not) is the ordinary way the two disagree. Every shape
+    this version cannot read has to answer "rebuild" — not raise, which
+    under the build job's exit-0 contract would be a failed build instead of
+    a slow one.
+    """
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    def _refuse(path, **kwargs):
+        raise AssertionError(f"an unreadable stamp shape reached os.stat: {path!r}")
+
+    # The guards have to decide *before* anything is stat'd — the point of
+    # rejecting an int path is that `os.stat` would take it for a file
+    # *descriptor* and answer about whatever unrelated file is open on it,
+    # so "returns False anyway" is not the property being asserted here.
+    monkeypatch.setattr(vlog_sim_module, "_hashed_stat_entry", _refuse)
+
+    # Entries from before content hashing: three elements, no hash.
+    assert sim._deps_unchanged("test_a", [["/x", 1, 2]]) is False
+    assert sim._deps_unchanged("test_a", [[5, 1, 2, "abcd"]]) is False
+    assert sim._deps_unchanged("test_a", ["not-an-entry"]) is False
+    # `deps` itself in a container this version was never taught.
+    assert sim._deps_unchanged("test_a", 5) is False
+    assert sim._deps_unchanged("test_a", {"/x": [1, 2, "abcd"]}) is False
+    assert sim._deps_unchanged("test_a", None) is False
+
+
+def test_nothing_but_a_regular_file_is_ever_opened_for_hashing(tmp_path, monkeypatch):
+    """Stats decide *whether* to read, before anything is opened.
+
+    ``_collect_build_deps`` records whatever the builder's ``.d`` names, and
+    it does not gate on ``isfile`` the way the filelist fingerprint does. A
+    directory there is ordinary and merely raises on open; a FIFO is the case
+    that decides the shape of the guard, because opening one blocks forever —
+    a build job that never returns rather than one that fails closed. The
+    ``st_mode`` is already in hand, so the question is asked before the open.
+    """
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    a_directory = tmp_path / "src"
+
+    opened = []
+    real_open = open
+
+    def _recording_open(path, *args, **kwargs):
+        opened.append(os.path.realpath(str(path)))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "open", _recording_open, raising=False)
+
+    entry = sim._tracked_entry(str(a_directory))
+    assert entry[1] is not None, "still tracked, still stat'd"
+    assert entry[3] is None, "no content hash for something that is not a file"
+    assert os.path.realpath(a_directory) not in opened
+
+
+def test_entry_comparison_fails_closed_on_empty_entries():
+    """Two empty entries are the same length and index into nothing."""
+    assert vlog_sim_module._entry_lists_match([[]], [[]]) is False
+    assert vlog_sim_module._entry_matches([], []) is False
 
 
 def test_shared_build_dir_helper_layout():
@@ -1404,9 +1983,14 @@ def test_a_siblings_retry_log_survives_another_runs_compile(tmp_path, monkeypatc
 
     Run 1's gated retry fails and leaves `run-0001/compile.retry.log` — the
     only diagnostic of what ITS recompile hit. Run 2 then enters compile();
-    its self-cleanup unlink must target run 2's own (absent) retry log,
-    never run 1's evidence, and run 2's clean pass must not leave a retry
-    log of its own anywhere.
+    its self-cleanup unlink must target run 2's own retry log, never run 1's
+    evidence, and run 2's own retry writes only inside run 2's directory.
+
+    Run 2's retry passes and still leaves a transcript, in its own
+    `run-0002/compile.retry.log`: since #494 a compile that RAN always
+    records what it ran, so the presence of a transcript cannot come to mean
+    "nothing compiled". #498 only redirects WHICH file that is, so the
+    build's `compile.log` survives untouched either way.
     """
     _write_source(tmp_path)
 
@@ -1431,16 +2015,20 @@ def test_a_siblings_retry_log_survives_another_runs_compile(tmp_path, monkeypatc
 
     # Run 2, same test artefact dir: retries too, and passes.
     calls2 = []
-    _install_fake_builder(monkeypatch, calls2)
+    _install_fake_builder(monkeypatch, calls2, stdout="run 2 recompiled\n")
     run2 = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=2)
     run2.expect_prebuilt = True
     run2.build_result_json = run1.build_result_json
     assert run2.compile() == 0
     assert len(calls2) == 1
 
-    # Run 1's diagnostic survives, byte for byte; run 2 left none.
+    # Run 1's diagnostic survives, byte for byte; run 2's own retry recorded
+    # itself in run 2's directory and nowhere else.
     assert run1_retry.read_text() == run1_evidence
-    assert not (Path(run2._get_artifact_dir(run_id=2)) / "compile.retry.log").exists()
+    run2_retry = Path(run2._get_artifact_dir(run_id=2)) / "compile.retry.log"
+    assert run2_retry.is_file()
+    assert "run 2 recompiled" in run2_retry.read_text()
+    assert "run 2 recompiled" not in run1_evidence
     assert not (compile_log.parent / "compile.retry.log").exists()
     # And the build job's own transcript was never touched either.
     assert compile_log.read_text() == _BUILD_TRANSCRIPT
@@ -1519,6 +2107,47 @@ def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
     assert sim.compile_fail_desc is None
 
 
+def test_the_fingerprint_sha_agrees_with_the_stamp_comparison(tmp_path, monkeypatch):
+    """`_fingerprint_sha` means what `_entry_lists_match` means (#494 + #498).
+
+    The no-retry verdict compares two hashes of a fingerprint, and the
+    stamp compares the same fingerprint entry-wise — where a content hash
+    OUTVOTES a moved `mtime_ns` (#494). Hashing the raw entries would put
+    the two into disagreement in the one direction that costs a run: a
+    `touch`, or a regenerated file with identical bytes, would move the sha,
+    the gated job would call the inputs "changed", and it would recompile a
+    deterministic failure under the sim reservation — exactly what #498
+    exists to stop. An edited byte must still move both.
+    """
+    from rtl_buddy.tools.vlog_sim import (
+        _entry_lists_match,
+        _fingerprint_sha,
+    )
+
+    src = _write_source(tmp_path)
+
+    def fingerprint():
+        sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+        return sim._compile_plan().fingerprint
+
+    before = fingerprint()
+    assert before["sources"][0][3], "the source must be content-hashed at all"
+
+    # Same bytes, new mtime: the stamp still validates, so the sha must not
+    # move either.
+    os.utime(src, (0, 0))
+    touched = fingerprint()
+    assert touched["sources"] != before["sources"]  # the mtimes really moved
+    assert _entry_lists_match(before["sources"], touched["sources"])
+    assert _fingerprint_sha(touched) == _fingerprint_sha(before)
+
+    # A real edit moves both, in step.
+    src.write_text("module top; wire q; endmodule\n")
+    edited = fingerprint()
+    assert not _entry_lists_match(before["sources"], edited["sources"])
+    assert _fingerprint_sha(edited) != _fingerprint_sha(before)
+
+
 def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
     tmp_path, monkeypatch, caplog
 ):
@@ -1595,9 +2224,13 @@ def test_a_gated_retry_falls_back_to_todays_behaviour_without_an_envelope(
         assert len(calls) == 1, label
         assert _events(caplog, "compile.prebuilt_stamp_invalid"), label
         assert _events(caplog, "compile.build_job_failed") == [], label
-        # A successful compile writes no transcript at all, so the build
-        # job's stays exactly as it was.
+        # The retry's own transcript goes to compile.retry.log — since #494
+        # a compile that ran records itself even when it passed — so the
+        # build job's compile.log stays exactly as it was.
         assert compile_log.read_text() == _BUILD_TRANSCRIPT, label
+        assert (
+            Path(sim._get_artifact_dir(run_id=sim.run_id)) / "compile.retry.log"
+        ).is_file(), label
 
 
 def test_an_ungated_compile_still_writes_compile_log(tmp_path, monkeypatch):
@@ -1848,7 +2481,7 @@ def test_reusing_a_build_names_the_toolchain_that_produced_it(
         assert reader.compile() == 0
 
     assert len(calls) == 1
-    assert "built by Verilator 5.049 devel rev vBBBB" in caplog.text
+    assert "Verilator 5.049 devel rev vBBBB" in caplog.text
 
 
 def test_an_unshareable_builder_also_rebuilds_when_the_toolchain_changes(
@@ -2071,3 +2704,814 @@ def test_identical_inputs_group_together_and_plusdefines_split_them(
 
     assert same_a.compile_group_dir() == same_b.compile_group_dir()
     assert other.compile_group_dir() != same_a.compile_group_dir()
+
+
+# ---------------------------------------------- visible reuse + --rebuild (#494)
+
+
+def _compile_log_of(sim):
+    return Path(sim._get_compile_transcript_path())
+
+
+def _console_events(monkeypatch):
+    """Collect the events that go out through ``log_console_event``.
+
+    The channel is the point, not the record: ``caplog`` captures
+    ``log_event`` and ``log_console_event`` identically, so a test that
+    only reads ``caplog`` cannot tell that a line survives a console
+    handler sitting at WARNING — which is the whole of #494's "a stale
+    reuse must be visible at default verbosity". Forwards to the real
+    function so the record is emitted as usual.
+    """
+    seen = []
+    real = vlog_sim_module.log_console_event
+
+    def _spy(spy_logger, level, event, **fields):
+        seen.append(event)
+        return real(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(vlog_sim_module, "log_console_event", _spy)
+    return seen
+
+
+def _logged_events(monkeypatch):
+    """Collect the events that go out through ``log_event``.
+
+    A spy rather than ``caplog`` for the reason above turned inside out:
+    the first ``log_console_event`` of a pytest process detaches pytest's
+    capture handler, so what a test sees in ``caplog`` depends on which
+    tests ran before it. The call is the observable either way.
+    """
+    seen = []
+    real = vlog_sim_module.log_event
+
+    def _spy(spy_logger, level, event, **fields):
+        seen.append(event)
+        return real(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(vlog_sim_module, "log_event", _spy)
+    return seen
+
+
+def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
+    tmp_path, monkeypatch, caplog
+):
+    """A stale reuse used to be deducible only from an *absent*
+    ``compile.log``, which reads as "nothing to do" (#494).
+
+    So the reuse names the directory and how old its stamp is, and it goes
+    out through ``log_console_event``: the console handler sits at WARNING,
+    and a dispatched run's job log is the only artifact a stale PASS can be
+    caught in.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.049 devel rev vBBBB")
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))
+    assert writer.compile() == 0
+
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
+    console = _console_events(monkeypatch)
+    with caplog.at_level(_logging.INFO):
+        assert reader.compile() == 0
+    assert len(calls) == 1
+    # Through the console channel, not merely into the log file: at default
+    # verbosity the handler is at WARNING, and a dispatched run's job log is
+    # the only artifact a stale PASS can be caught in.
+    assert console == ["compile.build_reused"]
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.build_reused"
+    )
+    shared_dir = Path(writer._get_simv_path()).parent
+    # The basename, because that is what a reader compares against
+    # `ls artefacts/.shared-builds/`; the absolute path rides alongside.
+    assert record.rtl_fields["build_dir"] == shared_dir.name
+    assert record.rtl_fields["build_path"] == str(shared_dir)
+    assert record.rtl_fields["stamp_age_sec"] >= 0
+    assert record.rtl_fields["toolchain"] == "Verilator 5.049 devel rev vBBBB"
+    # The rendered line, not just the fields: it is what a human reads.
+    assert shared_dir.name in record.getMessage()
+    assert "ago" in record.getMessage()
+
+
+def test_a_reuse_leaves_a_compile_log_naming_what_it_reused(tmp_path, monkeypatch):
+    """ "The absence of compile.log reads as nothing to do" (#494).
+
+    So a skipped compile writes the same transcript a real one does, saying
+    which directory was reused, when its stamp was written, and the command
+    a rebuild would have run.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert writer.compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert reader.compile() == 0
+    assert len(calls) == 1
+
+    text = _compile_log_of(reader).read_text()
+    shared_dir = Path(writer._get_simv_path()).parent
+    assert str(shared_dir) in text
+    assert "Compile skipped" in text
+    assert "Stamp written:" in text
+    # The command that WOULD have run, derived from the same assembly the
+    # real compile uses — so it names this build's --Mdir, not a guess.
+    assert f"--Mdir {shared_dir}" in text
+    assert "--rebuild" in text
+
+
+def test_a_reuse_over_a_non_utf8_transcript_degrades_instead_of_raising(
+    tmp_path, monkeypatch
+):
+    """A carried transcript owes nobody valid UTF-8 (#494 review).
+
+    Real compile output is raw simulator bytes; a breadcrumb helper that
+    read it strictly would raise UnicodeDecodeError on the exit-0 path of
+    a build job. The reuse must still write its breadcrumb, carrying the
+    old transcript with undecodable bytes replaced.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert writer.compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    # A prior transcript with bytes no ambient encoding decodes.
+    log = _compile_log_of(reader)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_bytes(b"Command: x\n\xff\xfe raw sim bytes\n")
+    assert reader.compile() == 0
+
+    text = _compile_log_of(reader).read_text()
+    assert "Compile skipped" in text
+    assert "raw sim bytes" in text  # carried, with bad bytes replaced
+
+
+def test_a_compile_that_ran_leaves_a_transcript_even_when_it_passed(
+    tmp_path, monkeypatch
+):
+    """Since a reuse writes ``compile.log``, a silent success would make the
+    file's *presence* mean "nothing compiled" — the inverse of what
+    docs/concepts/tests.md says it is (#494)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, stdout="Parsing design\n")
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    text = _compile_log_of(sim).read_text()
+    assert text.startswith("Command: ")
+    assert "Parsing design" in text
+    assert "Compile skipped" not in text
+
+
+def test_a_transcript_that_cannot_be_written_does_not_fail_a_passing_compile(
+    tmp_path, monkeypatch, caplog
+):
+    """The compile transcript is written on the SUCCESS path since #494, so
+    it has to degrade the way the reuse breadcrumb already does: a builder
+    that exited 0 must not become a failed compile — a failed row in the
+    build job, a traceback in-process — because its breadcrumb could not be
+    written."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    def _refuse(path, text):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(type(sim), "_replace_text", staticmethod(_refuse))
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert len(calls) == 1
+    assert [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.transcript_unwritable"
+    ]
+
+
+def test_a_reuse_keeps_the_compile_transcript_it_writes_over(tmp_path, monkeypatch):
+    """Under dispatch the build job's compile and then every gated element's
+    reuse write this one path in turn, and that first write is the run's only
+    file-level record of, say, a VCS ``-licqueue`` wait — so the breadcrumb
+    carries it rather than dropping it (#494)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, stdout="Queuing for License...\n")
+
+    def _vcs(test_name):
+        return _make_sim(
+            tmp_path, monkeypatch, test_name=test_name, exe="vcs", family="vcs"
+        )
+
+    builder = _vcs("test_a")
+    assert builder.compile() == 0
+    assert "Queuing for License" in _compile_log_of(builder).read_text()
+
+    # Same test name, so the same compile.log: the gated element's shape.
+    first_reuse = _vcs("test_a")
+    assert first_reuse.compile() == 0
+    assert len(calls) == 1
+    text = _compile_log_of(first_reuse).read_text()
+    assert text.startswith("Compile skipped")
+    assert "Queuing for License" in text
+
+    # And a reuse over a reuse carries that transcript forward instead of
+    # nesting breadcrumbs, so N elements leave one file of bounded size.
+    second_reuse = _vcs("test_a")
+    assert second_reuse.compile() == 0
+    text = _compile_log_of(second_reuse).read_text()
+    assert text.count("Compile skipped") == 1
+    assert "Queuing for License" in text
+
+
+def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
+    tmp_path, monkeypatch, caplog
+):
+    """The per-test-stamp reuse is the branch a dispatched fan-out takes for
+    every element, so it is the one most likely to hide a stale build."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert first.compile() == 0
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    with caplog.at_level(_logging.INFO):
+        assert second.compile() == 0
+    assert len(calls) == 1
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.build_reused"
+    )
+    assert record.rtl_fields["shared"] is False
+    assert "unshared build" in record.getMessage()
+    # Where the build is, not the test name a second time: an unshared
+    # build's directory IS `artefacts/<test>`, so its basename is the word
+    # the line already opens with and only the path identifies it.
+    build_dir = Path(second._get_compile_work_dir())
+    assert record.rtl_fields["build_path"] == str(build_dir)
+    assert record.rtl_fields["build_dir"] == build_dir.name
+    assert str(build_dir) in record.getMessage()
+    assert "Compile skipped" in _compile_log_of(second).read_text()
+
+
+def test_rebuild_recompiles_over_a_warm_valid_stamp(tmp_path, monkeypatch):
+    """The escape hatch the issue asks for: dropping ``--share-build`` does
+    not stop the reuse, so there has to be something that does (#494)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert len(calls) == 1
+    # Same key, warm stamp: without --rebuild this is the reuse proven above.
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True).compile()
+        == 0
+    )
+    assert len(calls) == 2
+
+
+def test_rebuild_forces_one_rebuild_per_build_dir_per_process(tmp_path, monkeypatch):
+    """One user request is one rebuild of the shared directory, not one per
+    test: N builders into one directory is #369 with extra steps.
+
+    The first test through claims the directory and rebuilds; the rest
+    validate the stamp that rebuild just wrote and reuse it.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert len(calls) == 1
+
+    first = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_c", rebuild=True)
+    assert first.compile() == 0
+    assert second.compile() == 0
+    assert len(calls) == 2, "the shared build was rebuilt once per test"
+
+
+def test_rebuild_claims_the_directory_through_a_second_spelling_of_it(
+    tmp_path, monkeypatch
+):
+    """Two spellings of one directory are one build, so the claim is
+    ``realpath``'d — the same reason the compile grouping is (#495).
+
+    Exercised with a symlinked suite dir, because that is the spelling
+    textual normalization cannot see through: the compile key excludes the
+    suite path, so both sims land in one ``obj_dir_<key>`` and a claim keyed
+    on the string would force a second rebuild of it.
+
+    The claim is read off ``compile.rebuild_forced``, which fires exactly
+    when a claim is granted. (A builder call count would not isolate it:
+    the stamp records ``simv`` by the path spelling that wrote it, so the
+    second spelling's stamp check fails on its own account — separate
+    behaviour, and not what this test is about.)
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(suite, target_is_directory=True)
+
+    direct = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", suite_dir=suite, rebuild=True
+    )
+    through_link = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", suite_dir=link, rebuild=True
+    )
+    # One directory under two names — the premise the claim has to see.
+    assert (
+        Path(through_link.compile_group_dir()).resolve()
+        == Path(direct.compile_group_dir()).resolve()
+    )
+    assert direct.compile_group_dir() != through_link.compile_group_dir()
+
+    console = _console_events(monkeypatch)
+    assert direct.compile() == 0
+    assert through_link.compile() == 0
+    assert console.count("compile.rebuild_forced") == 1, (
+        "the same directory was claimed twice under two spellings"
+    )
+
+
+def test_a_repeated_compile_on_one_instance_does_not_re_rebuild(tmp_path, monkeypatch):
+    """``compile()`` re-derives its plan every call, but the claim the first
+    call made still stands, so the second validates the stamp instead."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    assert sim.compile() == 0
+    assert len(calls) == 2
+    assert sim.compile() == 0
+    assert len(calls) == 2
+
+
+def test_rebuild_also_overrides_an_unshareable_builders_own_stamp(
+    tmp_path, monkeypatch
+):
+    """The per-test stamp is a reuse too, so the escape hatch has to reach
+    it — otherwise `--rebuild` works for verilator and silently does not for
+    the families that cannot share."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert (
+        _make_sim(
+            tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+        ).compile()
+        == 0
+    )
+    assert len(calls) == 1
+    assert (
+        _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            exe="qrun",
+            family="questa",
+            rebuild=True,
+        ).compile()
+        == 0
+    )
+    assert len(calls) == 2
+
+
+def test_without_rebuild_a_warm_stamp_is_still_reused(tmp_path, monkeypatch):
+    """Byte-parity when nothing is configured: the flag defaults off and the
+    reuse it overrides is the one that was there before it existed."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_b").compile() == 0
+    assert len(calls) == 1
+
+
+def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
+    tmp_path, monkeypatch, caplog
+):
+    """With ``--rebuild`` the reader's question flips from "is this stale?"
+    to "did it actually recompile?", so the answer has a line of its own."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    writer = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert writer.compile() == 0
+    shared_dir = Path(writer._get_simv_path()).parent
+
+    forced = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    console = _console_events(monkeypatch)
+    with caplog.at_level(_logging.INFO):
+        assert forced.compile() == 0
+    assert len(calls) == 2
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.rebuild_forced"
+    )
+    # The same field schema its counterpart `compile.build_reused` carries:
+    # basename in `build_dir`, absolute in `build_path`. A consumer keying
+    # on either across the pair gets one kind of thing.
+    assert record.rtl_fields["build_dir"] == shared_dir.name
+    assert record.rtl_fields["build_path"] == str(shared_dir)
+    assert "--rebuild given" in record.getMessage()
+    assert shared_dir.name in record.getMessage()
+    # And on the console, like the reuse line: "did --rebuild reach this
+    # job?" is unanswerable from a job log that never printed it.
+    assert console == ["compile.rebuild_forced"]
+
+
+# ------------------------------------------- cross-process build lock (#494)
+#
+# After a manual `rm -rf .shared-builds`, the issue's suite started eight
+# tests together, three of which died with `collect2: error: ld returned 1
+# exit status`: every process found no stamp and compiled into the one
+# freshly created directory. The #495 in-job grouping serialises the
+# compiles of ONE process, so the fix is a flock the stamp check sits
+# inside. These drive VlogSim directly, which is where that lock lives —
+# the cross-PROCESS half is in tests/test_artifact_lock.py.
+
+
+def _lock_events(monkeypatch):
+    """Collect (and forward) the build lock's console events."""
+    seen = []
+    real = artifact_lock_module.log_console_event
+
+    def _spy(spy_logger, level, event, **fields):
+        seen.append((event, fields))
+        return real(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(artifact_lock_module, "log_console_event", _spy)
+    return seen
+
+
+def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
+    tmp_path, monkeypatch
+):
+    """Double-checked locking: the waiter re-decides after acquiring.
+
+    Two compiles of one shared directory, the first held inside its
+    builder until the second is provably blocked on the lock. Waiting and
+    then compiling anyway would be the same two writers with extra
+    latency, so what the second must do is validate the stamp the first
+    just wrote and reuse it — one builder invocation for both.
+
+    Threads rather than processes only because the fake builder has to
+    live in this process; flock treats descriptors from separate
+    ``open()`` calls as separate holders, so the lock is genuinely
+    contended. The cross-PROCESS half is in tests/test_artifact_lock.py.
+
+    Read off the console spies rather than ``caplog``: the first
+    ``log_console_event`` of a pytest process initialises logging, which
+    detaches pytest's capture handler — and here that first event is the
+    waiting line itself.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    compiling = threading.Event()
+    finish = threading.Event()
+    waiting = threading.Event()
+    inner_builder = vlog_sim_module.run_managed_process
+
+    def _held_open(*args, **kwargs):
+        compiling.set()
+        assert finish.wait(60), "the waiter never reached the lock"
+        return inner_builder(*args, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _held_open)
+    lock_events = _lock_events(monkeypatch)
+    forwarding_spy = artifact_lock_module.log_console_event
+
+    def _note_wait(spy_logger, level, event, **fields):
+        if event == "compile.build_lock_wait":
+            waiting.set()
+        return forwarding_spy(spy_logger, level, event, **fields)
+
+    monkeypatch.setattr(artifact_lock_module, "log_console_event", _note_wait)
+    compile_events = _console_events(monkeypatch)
+
+    first = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    results = {}
+
+    def _compile(key, sim):
+        results[key] = sim.compile()
+
+    builder = threading.Thread(target=_compile, args=("first", first))
+    builder.start()
+    assert compiling.wait(60)
+    waiter = threading.Thread(target=_compile, args=("second", second))
+    waiter.start()
+    # The wait line is emitted immediately before the blocking flock, so
+    # this is "the second compile is now queued behind the first" with no
+    # sleep to be flaky about.
+    assert waiting.wait(60), "the second compile did not queue on the lock"
+    finish.set()
+    builder.join(60)
+    waiter.join(60)
+
+    assert results == {"first": 0, "second": 0}
+    assert len(calls) == 1, "the waiter recompiled instead of reusing"
+    assert [event for event, _ in lock_events] == ["compile.build_lock_wait"]
+    # It waited, then reused — the double check paying for itself. (Only
+    # the waiter reports a reuse; the compile it waited for reports none.)
+    assert compile_events == ["compile.build_reused"]
+
+    _, fields = lock_events[0]
+    shared_dir = Path(first._get_simv_path()).parent
+    # The same directory-field schema every other compile.* build event
+    # carries, so one consumer reads the whole family.
+    assert {key: fields[key] for key in ("build_dir", "build_path")} == (
+        vlog_sim_module._build_dir_fields(shared_dir, shared=True)
+    )
+    assert fields["test"] == "test_b"
+    assert fields["holder_pid"] == os.getpid()
+    assert fields["holder_test"] == "test_a"
+
+
+def test_a_warm_shared_build_is_reused_without_taking_the_lock(tmp_path, monkeypatch):
+    """The reuse fast path never queues.
+
+    A dispatched suite's gated sim elements all call ``compile()`` against
+    one already-valid shared build. Serialising those on the lock would
+    put N stamp validations on the critical path back to back and leave
+    every reuser hostage to whatever compile happened to hold it — for a
+    guarantee the reuse path does not get anyway, since the lock is
+    released before the simulation runs.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+
+    locked = []
+    real_lock = vlog_sim_module.build_dir_lock
+
+    def _spy(build_dir, **kwargs):
+        locked.append(str(build_dir))
+        return real_lock(build_dir, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _spy)
+    events = _console_events(monkeypatch)
+
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert second.compile() == 0
+    assert len(calls) == 1, "the warm build was recompiled"
+    assert events == ["compile.build_reused"]
+    assert locked == [], "a reuse took the build lock"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="flock(2) is POSIX")
+def test_a_reuse_does_not_wait_for_a_process_holding_the_lock(tmp_path, monkeypatch):
+    """The same claim, made against a lock somebody really holds.
+
+    Held from a separate file description, which flock counts as another
+    holder even in this process, so a reuse that took the lock would
+    block here forever — the timeout is what the assertion is made of.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert first.compile() == 0
+    shared_dir = Path(first._get_simv_path()).parent
+
+    fd = os.open(
+        shared_dir / artifact_lock_module.BUILD_LOCK_FILENAME,
+        os.O_RDWR | os.O_CREAT,
+        0o644,
+    )
+    result = {}
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+        reuse = threading.Thread(target=lambda: result.update(rc=second.compile()))
+        reuse.start()
+        reuse.join(60)
+        assert not reuse.is_alive(), "the reuse queued behind the lock holder"
+    finally:
+        os.close(fd)
+    assert result == {"rc": 0}
+    assert len(calls) == 1
+
+
+def test_a_forced_rebuild_still_takes_the_lock(tmp_path, monkeypatch):
+    """``--rebuild`` skips the fast path, not the serialisation.
+
+    The claim ``_rebuild_forced`` makes is the decision to compile, so it
+    belongs inside the lock next to the compile it forces — a rebuild
+    racing another process into one directory is the very thing the lock
+    is for.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+
+    locked = []
+    real_lock = vlog_sim_module.build_dir_lock
+
+    def _spy(build_dir, **kwargs):
+        locked.append(str(build_dir))
+        return real_lock(build_dir, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _spy)
+    second = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
+    assert second.compile() == 0
+    assert len(calls) == 2, "--rebuild reused the warm build"
+    assert locked == [str(Path(second._get_simv_path()).parent)]
+
+
+def test_a_stale_stamp_explains_itself_once_across_both_checks(tmp_path, monkeypatch):
+    """The pre-check is advisory; the in-lock check owns the diagnostics.
+
+    Asking twice must not say everything twice.
+    ``compile.build_toolchain_changed`` is a WARNING that names an
+    upgrade a reader is meant to act on, and hearing it twice for one
+    rebuild reads as two upgrades.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.048 2024-01-01")
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe)).compile()
+        == 0
+    )
+    _touch(exe, '#!/bin/sh\necho "Verilator 5.049 devel rev vBBBB"\n')
+
+    events = _logged_events(monkeypatch)
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe)).compile()
+        == 0
+    )
+    assert len(calls) == 2, "the upgraded toolchain reused the old build"
+    changed = [e for e in events if e == "compile.build_toolchain_changed"]
+    assert len(changed) == 1, f"the stale-stamp diagnostics fired {len(changed)} times"
+
+
+def test_a_build_lock_the_filesystem_refuses_still_compiles(
+    tmp_path, monkeypatch, caplog
+):
+    """flock support varies (ENOLCK on some NFS mounts, EROFS on a
+    read-only tree). A lock that cannot be taken costs the cross-process
+    serialisation and nothing else — never a red build, because nothing on
+    this path may change a build job's exit code."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _no_locks(fd, operation):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(artifact_lock_module.fcntl, "flock", _no_locks)
+
+    with caplog.at_level(_logging.WARNING):
+        assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    assert len(calls) == 1
+
+    warnings = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.build_lock_unavailable"
+    ]
+    assert len(warnings) == 1
+    assert "not serialised" in warnings[0].getMessage()
+
+
+def test_an_unshared_build_takes_no_build_lock(tmp_path, monkeypatch):
+    """Per-test build directories already have one writer within a
+    dispatched run (#369), and the lock file would land in the test's
+    artefact directory for nothing."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    assert sim.compile() == 0
+    work_dir = Path(sim._get_compile_work_dir())
+    assert list(work_dir.rglob(artifact_lock_module.BUILD_LOCK_FILENAME)) == []
+
+
+def test_the_lock_lives_in_the_shared_build_directory_it_guards(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    shared_dir = Path(sim._get_simv_path()).parent
+    assert (shared_dir / artifact_lock_module.BUILD_LOCK_FILENAME).is_file()
+
+
+def test_a_wait_line_stands_up_when_the_holder_is_unknown():
+    """The holder metadata is advisory: a lock file a dead process left
+    behind, or one nobody had written yet, must still leave a sentence."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_lock_wait",
+        {"build_dir": "obj_dir_abc", "build_path": "/w/obj_dir_abc"},
+    )
+    assert "another rtl-buddy process to finish compiling obj_dir_abc" in message
+    # The first line of a wait says nothing about elapsed time, because
+    # none has elapsed.
+    assert "so far" not in message
+
+
+def test_a_repeated_wait_line_says_how_long_it_has_been():
+    """A wait re-announced every few minutes has to distinguish itself
+    from the line that started it, or a job log reads as a stutter."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_lock_wait",
+        {"build_dir": "obj_dir_abc", "build_path": "/w/obj_dir_abc", "waited_sec": 600},
+    )
+    assert "(600s so far)" in message
+
+
+def test_a_reuse_line_reports_the_stamp_age_before_the_toolchain():
+    """The question a stale reuse raises is "was this built before my
+    edit?", so the age leads and is written the way a reader reads a
+    wall clock rather than as a raw second count (#494)."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_reused",
+        {
+            "test": "test_a",
+            "build_dir": "obj_dir_abc",
+            "build_path": "/w/obj_dir_abc",
+            "stamp_age_sec": 3723,
+            "toolchain": "Verilator 5.049 devel rev vBBBB",
+        },
+    )
+    assert message == (
+        "test_a: reused shared build obj_dir_abc "
+        "(built 1h02m03s ago, Verilator 5.049 devel rev vBBBB); nothing compiled"
+    )
+
+
+def test_an_unknown_stamp_age_says_so_rather_than_going_quiet():
+    """The stamp can vanish between validating and being stat-ed, and a
+    reuse must not fail over telemetry. "Age unknown" is still a fact a
+    reader wants, so the line states it instead of dropping the clause."""
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "compile.build_reused",
+        {
+            "test": "test_a",
+            "build_dir": "obj_dir_abc",
+            "build_path": "/w/obj_dir_abc",
+            "stamp_age_sec": None,
+            "toolchain": None,
+        },
+    )
+    assert message == (
+        "test_a: reused shared build obj_dir_abc (age unknown); nothing compiled"
+    )

@@ -86,6 +86,10 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
         # head's keeps plan/manifest and job-script diffs quiet for every
         # project that never asks for concurrency.
         argv += ["--parallel", str(spec.parallel)]
+    if spec.rebuild:
+        # Omitted at the default, like --parallel above: an unchanged argv
+        # keeps job-script diffs quiet for every run that did not ask.
+        argv += ["--rebuild"]
     if spec.plan_path is not None:
         # Compile exactly the head's planned configs — no sweep re-run.
         argv += ["--plan", str(spec.plan_path)]
@@ -116,6 +120,8 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
         argv += ["--share-build"]
     if spec.expect_prebuilt:
         argv += ["--expect-prebuilt"]
+    if spec.rebuild:
+        argv += ["--rebuild"]
     if spec.build_result_json is not None:
         # Only ever set alongside --expect-prebuilt: without a build job
         # there is no envelope, and an ungated job has nothing to consult.

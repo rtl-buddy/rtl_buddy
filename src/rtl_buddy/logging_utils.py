@@ -315,6 +315,22 @@ def _format_artifacts(fields: Mapping[str, Any]) -> str:
     return ", ".join(artifact_paths)
 
 
+def _build_location(fields: Mapping[str, Any]) -> str:
+    """Which spelling of a build directory the compile events show (#494).
+
+    Both carry ``build_dir`` (the basename) and ``build_path`` (absolute).
+    A *shared* build lives at ``artefacts/.shared-builds/obj_dir_<key>``,
+    where the basename is the identity a reader compares against an ``ls``
+    of that directory, and a full path would bury it. An *unshared* build
+    lives at ``artefacts/<test>``, whose basename is the test name the line
+    already opens with — saying it twice tells the reader nothing and hides
+    where the build actually is, so that case shows the path.
+    """
+    if fields.get("shared", True):
+        return str(fields.get("build_dir") or fields.get("build_path"))
+    return str(fields.get("build_path") or fields.get("build_dir"))
+
+
 def _human_message(event: str, fields: Mapping[str, Any]) -> str:
     test = fields.get("test")
     run_id = fields.get("run_id")
@@ -688,11 +704,81 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
         case "compile.build_reused":
+            # Age first, toolchain second: the question a stale reuse
+            # raises is "was this built before my edit?", and the answer is
+            # the age (#494). An unknown age says so rather than being
+            # dropped — "reused, age unknown" is a fact worth reading.
+            age = fields.get("stamp_age_sec")
+            built = (
+                f"built {_format_elapsed(age)} ago"
+                if age is not None
+                else "age unknown"
+            )
             toolchain = fields.get("toolchain")
-            built_by = "" if toolchain is None else f", built by {toolchain}"
+            if toolchain is not None:
+                built = f"{built}, {toolchain}"
+            shared = "" if fields.get("shared", True) else "un"
             return (
-                f"{target or 'compile'}: reused shared build "
-                f"{fields.get('build_dir')}{built_by} (compile skipped)"
+                f"{target or 'compile'}: reused {shared}shared build "
+                f"{_build_location(fields)} ({built}); nothing compiled"
+            )
+        case "compile.rebuild_forced":
+            # The counterpart of build_reused: with --rebuild the reader's
+            # question flips to "did it actually recompile?", and this is
+            # the line that answers it (once per build dir, #494).
+            return (
+                f"{target or 'compile'}: --rebuild given, compiling "
+                f"{_build_location(fields)} even though a stamp may validate"
+            )
+        case "compile.hash_root":
+            # DEBUG, but readable when asked for: which root gates content
+            # hashing decides whether an out-of-suite edit invalidates a
+            # stamp — the silent fallback is the wrong place for a raw
+            # dict (#494 review).
+            origin = (
+                "from root_config" if fields.get("derived") else "suite-dir fallback"
+            )
+            return (
+                f"{target or 'compile'}: content-hash root "
+                f"{fields.get('project_root')} ({origin})"
+            )
+        case "compile.build_lock_wait":
+            # Named ahead of the wait, not after it: a compile can take
+            # minutes, and a job log that simply stops for them is
+            # indistinguishable from a hang (#494). The holder is whatever
+            # the lock file could tell us — advisory, possibly stale, and
+            # absent entirely when nobody had written it yet, which is why
+            # the sentence stands up without it.
+            # Deferred for the same reason as artifact_lock.contended
+            # above: artifact_lock imports log_event from this module.
+            from .artifact_lock import _describe_holder
+
+            holder = _describe_holder(
+                {
+                    "pid": fields.get("holder_pid"),
+                    "test": fields.get("holder_test"),
+                    "started": fields.get("holder_started"),
+                }
+            )
+            # Repeated every few minutes while the wait lasts, with the
+            # elapsed time appended from the second line on — the first
+            # says "this is a wait", the rest say "it is still a wait".
+            waited = fields.get("waited_sec") or 0
+            return (
+                f"{target or 'compile'}: waiting for another rtl-buddy "
+                f"process{holder} to finish compiling "
+                f"{_build_location(fields)}"
+                + (f" ({waited}s so far)" if waited else "")
+            )
+        case "compile.build_lock_unavailable":
+            # A filesystem that cannot flock (read-only, ENOLCK on some NFS
+            # mounts) must not fail the build — it loses the cross-process
+            # serialisation and says which guarantee went with it.
+            return (
+                f"{target or 'compile'}: could not lock "
+                f"{_build_location(fields)} ({fields.get('error')}); "
+                "compiling without it — concurrent rtl-buddy processes "
+                "populating this build directory are not serialised"
             )
         case "compile.build_toolchain_changed":
             return (
@@ -792,10 +878,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"the executable is {fields.get('used')}"
             )
         case "compile.license_queued":
+            # The transcript is the evidence, but it is best-effort since
+            # #494 (an unwritable artefact tree must not fail a compile that
+            # passed), so an absent one drops the clause instead of printing
+            # "transcript: None".
+            transcript = fields.get("transcript")
             return (
                 f"{fields.get('test')}: compile waited in the VCS license queue — "
                 f"its {_format_duration(fields.get('duration_sec'))} is not all "
-                f"compile work; transcript: {fields.get('transcript')}"
+                "compile work" + (f"; transcript: {transcript}" if transcript else "")
             )
         case "sim.start":
             return f"{target or 'sim'}: simulation started"

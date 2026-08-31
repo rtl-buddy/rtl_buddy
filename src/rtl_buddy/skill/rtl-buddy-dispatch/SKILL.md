@@ -61,9 +61,19 @@ of the global reservation.
 
 ## Shared-build gotchas
 
-Any tracked compile input change invalidates a shared build. Runtime-only
-plusargs, seeds, and simulation timeout do not. Batch compile-input changes before
+Any tracked compile input change invalidates a shared build; stamps compare
+content, so a byte-for-byte regeneration does not. Runtime-only plusargs, seeds,
+and simulation timeout do not either. Batch compile-input changes before
 launching a large build; use independent cheap suites while it compiles.
+
+- An edit that seems not to take effect, or a suspicious PASS right after one:
+  read the `compile.build_reused` line (the run's own log; console once per
+  build directory) and the test's `compile.log` breadcrumb, which name the reused build directory and its stamp's age.
+- `--rebuild` forces a fresh compile — once per build directory per invocation,
+  carried by the build job. Prefer it to deleting `artefacts/.shared-builds/`;
+  dropping `--share-build` does not stop reuse.
+- A wait on `compile.build_lock_wait` is another process compiling into the same
+  directory, not a hang.
 
 For missing envelopes, retries, license queues, accounting gaps, and builders
 that compile inside simulation jobs, read `concepts/dispatch` and `known-issues`.

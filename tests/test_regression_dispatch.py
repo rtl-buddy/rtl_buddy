@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,9 @@ from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
 from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
+
+# Aliased so pytest does not try to collect the dataclass as a test class.
+from rtl_buddy.dispatch.base import TestJobSpec as SimJobSpec
 from rtl_buddy.dispatch.plan import read_plan_configs, read_plan_token
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
@@ -2087,6 +2091,83 @@ def test_ungated_jobs_are_not(
 
     assert fake_backend.build_submitted == []
     assert not any(spec.expect_prebuilt for spec in fake_backend.submitted)
+
+
+@pytest.mark.parametrize("backend", ["slurm", "local-parallel"])
+def test_rebuild_goes_to_the_build_job_and_not_to_its_gated_elements(
+    backend: str,
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """The head rule for ``--rebuild`` under dispatch (#494).
+
+    The build job is the single writer of the shared directory, so it is
+    the one place a forced recompile costs one compile instead of one per
+    element. Handing the gated array ``--rebuild`` as well would defeat the
+    fresh stamp that is exactly what stops the elements compiling, and put
+    every one of them into that directory at once (#369).
+
+    ``local-parallel`` is the same rule and, deliberately, the same head
+    code: its jobs are separate PROCESSES gated on the build's result just
+    as Slurm's array elements are, so the per-process rebuild memo does not
+    cover them either. Parametrised rather than written twice so that the
+    duplication is visible as duplication — if the head ever grows a
+    backend-specific branch, this is where it gets caught.
+    """
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", backend, "--rebuild"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.build_submitted[0].rebuild is True
+    assert not any(spec.rebuild for spec in fake_backend.submitted)
+
+
+def test_rebuild_goes_to_the_sim_jobs_when_no_build_job_was_submitted(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """With no build job every element owns its own per-test build dir, so
+    rebuilding there races nothing — and it is the only place the request
+    can be honoured at all."""
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "slurm", "--rebuild"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    assert fake_backend.submitted
+    assert all(spec.rebuild for spec in fake_backend.submitted)
+
+
+def test_a_suite_that_did_not_ask_carries_no_rebuild_anywhere(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """Byte-parity at the default: the specs are a pre-#494 head's."""
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert not fake_backend.build_submitted[0].rebuild
+    assert not any(spec.rebuild for spec in fake_backend.submitted)
+
+
+def test_a_retry_carries_rebuild_but_never_adds_it(minimal_project: Path):
+    """A gated element denied ``--rebuild`` on its first attempt must not
+    acquire it on its second, and one that legitimately holds it (its own
+    per-test dir) still needs it if the attempt died before compiling."""
+    rb = RtlBuddy(name="retry_rebuild")
+    gated = SimJobSpec(
+        test_name="alpha",
+        suite_dir=".",
+        test_config_path="tests.yaml",
+        result_json=Path("r.json"),
+        expect_prebuilt=True,
+    )
+    assert rb._retry_spec(gated, attempt=2).rebuild is False
+    ungated = replace(gated, expect_prebuilt=False, rebuild=True)
+    assert rb._retry_spec(ungated, attempt=2).rebuild is True
 
 
 def test_a_pinned_builder_simv_is_planned_as_compiling_in_job(
