@@ -119,9 +119,12 @@ launching a large build; use independent cheap suites while it compiles.
 - A wait on `compile.build_lock_wait` is another process compiling into the same
   directory, not a hang.
 - `dispatch.build_job_deduped` means an earlier run's build job for this suite
-  is still queued or running, so this run's build job waits for it (`afterany`)
-  and reuses what it built. Expected after an interrupted run; nothing to fix.
-  Jobs are named `rb-build-<hash>` per suite + planned tests + builder.
+  is still queued or running, so this run's build job waits for it
+  (`--dependency=singleton`, per job name and user) and reuses what it built.
+  Expected after an interrupted run; nothing to fix. Jobs are named
+  `rb-build-<hash>` per suite + builder, so a regression and a single test in
+  that suite share one. If the new job stays PENDING, the one ahead is stuck:
+  `scancel` the ids the warning names.
 
 For missing envelopes, retries, license queues, accounting gaps, and builders
 that compile inside simulation jobs, read `concepts/dispatch` and `known-issues`.

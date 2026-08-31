@@ -234,57 +234,65 @@ _DEFAULT_ACCT_INTERVAL_S = 1.0
 
 # ------------------------------------------------ build-job dedup (#507)
 #
-# A build job carries a name derived from what it builds, so a second run
-# of the same suite can find the first run's build job still in the queue
-# and wait for it instead of compiling into the same shared directory
-# beside it. The in-job `flock` (#504) already makes that safe, but only
-# by making the second builder *wait for the whole first compile while
-# holding a compute allocation*; depending on the job is the same wait
-# with the allocation released, and it is the only form that also covers
-# a filesystem whose `flock` is process-local.
+# A build job carries a name derived from what it builds, and is submitted
+# with `--dependency=singleton`, which Slurm defines as "this job can begin
+# execution after any previously launched jobs sharing the same job name
+# and user have terminated". So one build identity admits one running
+# build job per user, cluster-side and atomically: a second run of the
+# same suite queues behind the first run's build job instead of Verilating
+# into the same shared directory beside it. The in-job `flock` (#504)
+# already makes that safe, but only by parking the second builder inside a
+# compute allocation for the whole of the first compile; a queue
+# dependency is the same wait with the allocation released, and it is the
+# form that also holds where `flock` is process-local (an NFS mount with
+# `nolock`).
 _BUILD_JOB_NAME_PREFIX = "rb-build"
-# What "already in flight" means. `--states` takes the long names; every
-# other state (COMPLETED/FAILED/CANCELLED/...) is a job whose stamp is
-# already on disk for the normal reuse path to find.
-_DEDUP_STATES = "PENDING,RUNNING,CONFIGURING,SUSPENDED"
+# The clause itself. It names no job ids — Slurm resolves it against the
+# (user, job name) pair at schedule time — which is what makes it free of
+# the check-then-submit race a queue probe has, and what makes it work on
+# a submit host where `squeue` is unavailable.
+_DEDUP_DEPENDENCY = "singleton"
+# Slurm takes `,` (all dependencies must be satisfied) or `?` (any may be),
+# and one expression may not mix them. A configured `?` therefore cannot be
+# composed with, and this is the marker for that case.
+_DEPENDENCY_OR_SEPARATOR = "?"
+# What the informational probe counts as "still in flight". `--states`
+# takes the long names. COMPLETING is included deliberately: such a job is
+# still finishing, so naming it explains a wait that has not ended. Every
+# state left out is a job whose build is over.
+_DEDUP_STATES = "PENDING,RUNNING,CONFIGURING,SUSPENDED,COMPLETING"
 # The probe sits between the user and their submission, so it is
 # time-boxed: a wedged squeue must cost a few seconds and a DEBUG line,
-# never the run.
+# never the run. It only feeds a log line — the guarantee is the
+# dependency above — so losing it loses nothing but the explanation.
 _DEDUP_TIMEOUT_SEC = 20.0
-# `afterany`, not `afterok`: the in-flight job may fail, be cancelled, or
-# be killed for time, and this run must still build. What it needs is the
-# other builder to be *done* writing the directory; whether it succeeded
-# is then decided by the stamp, under the lock, inside the job.
-_DEDUP_DEPENDENCY_KIND = "afterany"
 
 
 def build_job_name(spec: BuildJobSpec) -> str:
     """The Slurm job name for ``spec``: one name per build identity (#507).
 
-    Deterministic across runs and across users' processes, because that
-    is what makes it a rendezvous point: two invocations that would
-    populate the same shared build directory submit jobs with the same
-    name, and :meth:`SlurmDispatchBackend._queued_build_ids` finds one
-    from the other.
+    Deterministic across runs and across a user's processes, because the
+    name is the rendezvous point: ``--dependency=singleton`` serialises
+    jobs that share a name and owner, so two invocations that would
+    populate the same shared build directory have to answer to one name
+    or the dedup does not fire.
 
-    The identity is the suite directory, the planned test names (sorted:
-    plan order is a scheduling detail, the set is what decides what gets
-    compiled) and the builder selection — mode plus any ``--builder``
-    override, since those resolve different builders and therefore
-    different compile keys.
+    The identity is the suite directory plus the builder selection (mode
+    and any ``--builder`` override, which resolve different builders and
+    therefore different compile keys). Deliberately **not** the planned
+    tests: ``rb regression`` over a suite and ``rb test alpha`` inside it
+    compile the same key into the same ``obj_dir_<key>``, and the whole
+    point is the "interrupt a regression, re-run one test" shape — a name
+    that separated them would leave exactly that case racing.
 
-    **Bound, deliberately.** This is not the compile key. The keys
-    fingerprint sources, flags and defines, and they are only knowable
-    after a config's ``pre()`` hook has run — which happens inside the
-    build job, on a compute node, after the filelists are written (#458).
-    The head cannot compute them without doing the build job's work on
-    the submit host. So the name is an *upper bound* on the collision:
-    two runs of the same suite over the same tests get one name whether
-    or not their sources have since diverged, and a source edit between
-    them makes the second job wait for a build it will then correctly
-    reject and redo. That costs queue latency and never correctness. In
-    the other direction the bound is exact where it matters — a
-    different suite, or a different set of tests, never adopts another
+    So the name over-matches, on purpose. It is not the compile key and
+    cannot be: keys fingerprint sources, flags and defines, and are only
+    knowable after a config's ``pre()`` hook has run inside the job, on a
+    compute node, after the filelists are written (#458). Two runs of one
+    suite therefore share a name whether or not they compile the same
+    thing, and the cost of a false match is queue latency — the second job
+    waits, then finds the stamp does not validate and builds — never a
+    wrong build. A different suite or builder never adopts another
     build's wait.
     """
     identity = "\n".join(
@@ -292,7 +300,6 @@ def build_job_name(spec: BuildJobSpec) -> str:
             os.path.abspath(spec.suite_dir),
             spec.builder_mode or "",
             spec.builder_override or "",
-            *sorted(spec.test_names),
         ]
     )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
@@ -618,19 +625,19 @@ class SlurmDispatchBackend(DispatchBackend):
         return [f"--dependency=afterok:{dependency}", "--kill-on-invalid-dep=yes"]
 
     def _queued_build_ids(self, job_name: str, *, cwd: str) -> list[str]:
-        """This user's build jobs already queued or running under ``job_name``.
+        """This user's build jobs still in flight under ``job_name``.
 
-        Best-effort by construction (#507). A squeue that is absent,
-        errors, or hangs leaves the answer empty, which submits exactly
-        what this backend submitted before the dedup existed — the
-        in-job build lock is still there, so the degraded path is the
-        pre-#507 behaviour and not a broken one. It says so at DEBUG
-        rather than WARNING for that reason: nothing is wrong with the
-        run, only with the optimisation.
+        Informational only (#507). The serialisation is
+        ``--dependency=singleton``, which Slurm evaluates itself against
+        the (user, job name) pair; this probe exists so the warning that
+        explains the resulting wait can *name* the jobs being waited on.
+        Nothing branches on it but that line.
 
-        Scoped to this user: a dependency on somebody else's job is not
-        something a site necessarily permits, and their build is not
-        this user's to wait on.
+        Which is why every failure here is a DEBUG line and an empty
+        answer: a submit host with no ``squeue``, one that errors, or one
+        that hangs loses the explanation and keeps the guarantee. Scoped
+        to this user because that is the scope ``singleton`` has, so the
+        line describes the jobs the dependency actually waits for.
         """
         fields = {"job_name": job_name, "suite_dir": cwd}
         try:
@@ -685,7 +692,9 @@ class SlurmDispatchBackend(DispatchBackend):
 
         Composed with rather than overwritten: a site that gates every
         job behind a reservation or a staging job means it, and the dedup
-        clause is an additional condition, not a replacement.
+        clause is an additional condition, not a replacement. Returned
+        raw, separators included, because whether it uses ``,`` or ``?``
+        decides whether composing is possible at all.
         """
         args = self.sbatch_args
         for index, arg in enumerate(args):
@@ -701,6 +710,43 @@ class SlurmDispatchBackend(DispatchBackend):
                 return args[index + 1]
         return None
 
+    def _dedup_dependency(self, *, suite_dir: str) -> str | None:
+        """The ``--dependency`` value that serialises this build job (#507).
+
+        ``singleton`` on its own, or the configured expression with
+        ``singleton`` ANDed onto it — a site that gates every job behind a
+        staging job means that, and the dedup is an extra condition rather
+        than a replacement.
+
+        ``None`` when the configured expression uses the ``?`` (any-of)
+        separator: Slurm allows one separator per expression, so
+        ``afterok:7?afterok:8,singleton`` is rejected outright and the
+        submission would fail. Losing the dedup there costs what the dedup
+        buys — the in-job build lock still makes concurrent builders safe —
+        while composing would cost the run.
+        """
+        configured = self._configured_dependency()
+        if configured is None:
+            return _DEDUP_DEPENDENCY
+        if _DEPENDENCY_OR_SEPARATOR in configured:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.build_dedup_unavailable",
+                suite_dir=suite_dir,
+                error=(
+                    f"configured --dependency={configured} uses the "
+                    f"{_DEPENDENCY_OR_SEPARATOR!r} (any-of) separator, which "
+                    "Slurm will not let a second clause be added to"
+                ),
+            )
+            return None
+        if _DEDUP_DEPENDENCY in configured.split(","):
+            # Already asked for by the user: repeating the clause would be
+            # inert but would make the argv read as if two things wanted it.
+            return configured
+        return f"{configured},{_DEDUP_DEPENDENCY}"
+
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
         job_name = build_job_name(spec)
         cmd = self._reservation_argv(
@@ -710,21 +756,27 @@ class SlurmDispatchBackend(DispatchBackend):
             log_path=spec.log_path,
         )
         cmd += self.sbatch_args
-        # Adopt an in-flight build of the same identity instead of racing
-        # it into one directory (#507). The flag goes AFTER `sbatch_args`,
-        # unlike the sim jobs' `afterok` gate: Slurm lets the last
-        # `--dependency` win, and a user-configured one would otherwise
-        # silently drop the dedup. It carries the user's expression too,
-        # so composing loses neither condition.
-        inflight = self._queued_build_ids(job_name, cwd=spec.suite_dir)
-        dependency = None
-        if inflight:
-            clause = f"{_DEDUP_DEPENDENCY_KIND}:{':'.join(inflight)}"
-            configured = self._configured_dependency()
-            dependency = f"{configured},{clause}" if configured else clause
-            # No `--kill-on-invalid-dep`: `afterany` is satisfied by any
-            # termination, so it cannot become unsatisfiable.
+        # One build job of this identity runs at a time (#507). The flag
+        # goes AFTER `sbatch_args`, unlike the sim jobs' `afterok` gate:
+        # Slurm lets the last `--dependency` win, and a user-configured one
+        # would otherwise silently drop the dedup. It carries the user's
+        # expression too, so composing loses neither condition.
+        #
+        # No `--kill-on-invalid-dep`: `singleton` waits for terminations, so
+        # it cannot become unsatisfiable. A composed user `afterok` still
+        # can — that is the exposure their own flag already had, unchanged
+        # here.
+        dependency = self._dedup_dependency(suite_dir=spec.suite_dir)
+        if dependency is not None:
             cmd.append(f"--dependency={dependency}")
+        # Informational, and BEFORE the submit so it cannot see this run's
+        # own job: which jobs the dependency above will make this one wait
+        # for. The guarantee does not depend on the answer.
+        inflight = (
+            self._queued_build_ids(job_name, cwd=spec.suite_dir)
+            if dependency is not None
+            else []
+        )
         cmd += ["--wrap", shlex.join(build_job_argv(spec))]
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
         if proc.returncode != 0:
@@ -738,8 +790,9 @@ class SlurmDispatchBackend(DispatchBackend):
         if inflight:
             # WARNING, so it reaches the console: this run's build will not
             # start until an earlier one finishes, and a user watching the
-            # queue needs to read that wait as deliberate. After the submit,
-            # so it describes a job that exists and can name it.
+            # queue needs to read that wait as deliberate — and to know
+            # which ids to `scancel` if the job ahead is held. After the
+            # submit, so it describes a job that exists and can name it.
             log_event(
                 logger,
                 logging.WARNING,
@@ -757,9 +810,12 @@ class SlurmDispatchBackend(DispatchBackend):
             "dispatch.build_submitted",
             backend=self.name,
             job_id=job_id,
-            # The identity name the next run's dedup probe looks for (#507);
-            # recorded so a queue full of `rb-build-<hash>` entries can be
-            # traced back to the suite that submitted each one.
+            # The identity name `--dependency=singleton` serialises on
+            # (#507); recorded so a queue full of `rb-build-<hash>` entries
+            # can be traced back to the suite that submitted each one, and
+            # so `squeue --name=` / `scancel --name=` have a value to use.
+            # Slurm-only: the local-parallel backend has no queue to name a
+            # job in and emits this event without the field.
             job_name=job_name,
             suite_dir=spec.suite_dir,
             time=spec.resources.time,

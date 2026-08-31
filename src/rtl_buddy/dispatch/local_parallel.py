@@ -260,6 +260,13 @@ class LocalProcessBackend(DispatchBackend):
             job_id=handle.job_id,
             suite_dir=spec.suite_dir,
             parallel=spec.parallel,
+            # No `job_name`: that field is the Slurm backend's identity name
+            # for `--dependency=singleton` (#507), and this backend has no
+            # queue to name a job in. Its build jobs are processes on one
+            # host, where the shared build directory's `flock` (#504)
+            # already serialises two runs against each other, so it needs
+            # no dedup of its own. A consumer must treat `job_name` as
+            # optional and Slurm-only.
         )
         # Start it now if a slot is free: the head goes on to plan further
         # suites, and a build running through that is free wall-clock.

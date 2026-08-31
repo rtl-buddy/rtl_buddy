@@ -2630,7 +2630,9 @@ def test_neither_ceiling_known_is_still_one_unsplit_array(
 # but only by parking the second inside a compute allocation for the whole
 # of the first's compile. These prove the head declines to create that
 # second builder in the first place: it names the job after what it
-# builds, finds the in-flight one by that name, and depends on it.
+# builds and hands Slurm `--dependency=singleton`, which serialises jobs
+# sharing a name and owner. The `squeue` probe only names the jobs being
+# waited on in the warning; nothing else reads it.
 
 
 def _build_spec(**overrides):
@@ -2640,7 +2642,6 @@ def _build_spec(**overrides):
         suite_dir="/proj/verif/blk",
         test_config_path="/proj/verif/blk/tests.yaml",
         resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
-        test_names=("alpha", "beta"),
     )
     defaults.update(overrides)
     return BuildJobSpec(**defaults)
@@ -2654,39 +2655,59 @@ def _dedup_results(queued: str, job_id: str = "900"):
     ]
 
 
-def test_the_build_job_name_is_derived_from_what_it_builds(monkeypatch):
-    """Same identity → same name, so two runs can find each other."""
+def test_the_build_job_name_is_derived_from_the_suite_and_builder(monkeypatch):
+    """Same identity → same name, which is what singleton serialises on."""
     name = slurm_module.build_job_name(_build_spec())
     assert name.startswith("rb-build-")
     # Deterministic across processes: no pid, no time, no run token.
     assert name == slurm_module.build_job_name(_build_spec())
-    # ...and over the SET of tests, not their plan order.
-    assert name == slurm_module.build_job_name(
-        _build_spec(test_names=("beta", "alpha"))
+
+
+def test_a_regression_and_a_single_test_share_one_build_job_name():
+    """The whole point: `rb regression` over a suite and `rb test alpha`
+    inside it compile the same key into the same `obj_dir_<key>`, so
+    interrupting the first and re-running the second must dedup. A name
+    that carried the planned tests would separate exactly that pair."""
+    assert slurm_module.build_job_name(_build_spec()) == slurm_module.build_job_name(
+        _build_spec(reg_level=1000, plan_path=Path("/proj/p.json"), parallel=4)
     )
 
 
 @pytest.mark.parametrize(
     "different",
     [
-        {"test_names": ("alpha",)},
-        {"test_names": ("alpha", "beta", "gamma")},
         {"suite_dir": "/proj/verif/other"},
         {"builder_mode": "debug"},
         {"builder_override": "vcs"},
     ],
-    ids=["fewer-tests", "more-tests", "other-suite", "other-mode", "other-builder"],
+    ids=["other-suite", "other-mode", "other-builder"],
 )
 def test_a_different_build_gets_a_different_job_name(different):
-    """A name is a rendezvous point, so it must not over-collide: a
-    different suite, test set, or builder selection compiles different
-    keys and must never adopt another build's wait."""
+    """Over-matching costs latency; under-matching would cost the dedup.
+    But a different suite or builder writes a different directory, and
+    must not queue behind an unrelated build."""
     assert slurm_module.build_job_name(_build_spec()) != slurm_module.build_job_name(
         _build_spec(**different)
     )
 
 
-def test_an_in_flight_build_job_becomes_a_dependency(monkeypatch, caplog):
+def test_every_build_job_is_submitted_as_a_singleton(monkeypatch):
+    """The guarantee, and it is Slurm's rather than the head's: no
+    check-then-submit window, and no dependence on `squeue` existing."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+    # Not the sim path's self-reaping flag: `singleton` waits for
+    # terminations, so it can never become unsatisfiable.
+    assert "--kill-on-invalid-dep=yes" not in argv
+
+
+def test_an_in_flight_build_job_is_named_in_the_warning(monkeypatch, caplog):
     import logging
 
     calls, results = [], _dedup_results("41\n42\n")
@@ -2701,18 +2722,16 @@ def test_an_in_flight_build_job_becomes_a_dependency(monkeypatch, caplog):
     probe, argv = calls
     job_name = slurm_module.build_job_name(spec)
     # The probe: this user's jobs of this identity that still occupy the
-    # queue, ids only.
+    # queue, ids only — the same scope `singleton` has, so the line
+    # describes the jobs the dependency really waits for.
     assert probe[0] == "squeue"
     assert "--noheader" in probe and "--format=%i" in probe
     assert f"--name={job_name}" in probe
     assert f"--states={slurm_module._DEDUP_STATES}" in probe
     assert any(a.startswith("--user=") for a in probe)
-    # afterany: the orphan may fail or be cancelled and this run must still
-    # build; what it needs is for the directory to stop being written.
-    assert "--dependency=afterany:41:42" in argv
-    # ...and not the sim path's self-reaping flag, which only makes sense
-    # for an `afterok` that can become unsatisfiable.
-    assert "--kill-on-invalid-dep=yes" not in argv
+    # ...and it runs BEFORE the submit, or it would find this run's own job.
+    assert argv[0] == "sbatch"
+    assert "--dependency=singleton" in argv
 
     (record,) = [
         r
@@ -2728,6 +2747,12 @@ def test_an_in_flight_build_job_becomes_a_dependency(monkeypatch, caplog):
     assert "41, 42" in record.getMessage() and "900" in record.getMessage()
 
 
+def test_a_completing_build_job_still_counts_as_in_flight():
+    """A COMPLETING job is still finishing, so naming it explains a wait
+    that has not ended."""
+    assert "COMPLETING" in slurm_module._DEDUP_STATES.split(",")
+
+
 def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
     """A site that gates every job behind a staging job means it.
 
@@ -2736,7 +2761,7 @@ def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
     dedup — and it carries the configured expression, so neither condition
     is lost.
     """
-    calls, results = [], _dedup_results("41\n")
+    calls, results = [], _dedup_results("")
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(
         DispatchConfigFile(sbatch_args=["--dependency=afterok:7"]).initialise()
@@ -2745,7 +2770,7 @@ def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
     backend.submit_build(_build_spec())
 
     _probe, argv = calls
-    composed = "--dependency=afterok:7,afterany:41"
+    composed = "--dependency=afterok:7,singleton"
     assert composed in argv
     assert argv.index(composed) > argv.index("--dependency=afterok:7")
 
@@ -2758,7 +2783,7 @@ def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
 def test_every_spelling_of_a_configured_dependency_is_composed_with(
     monkeypatch, sbatch_args
 ):
-    calls, results = [], _dedup_results("41\n")
+    calls, results = [], _dedup_results("")
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(
         DispatchConfigFile(sbatch_args=sbatch_args).initialise()
@@ -2767,10 +2792,52 @@ def test_every_spelling_of_a_configured_dependency_is_composed_with(
     backend.submit_build(_build_spec())
 
     _probe, argv = calls
-    assert "--dependency=afterok:7,afterany:41" in argv
+    assert "--dependency=afterok:7,singleton" in argv
 
 
-def test_an_empty_queue_submits_the_build_job_as_before(monkeypatch, caplog):
+def test_an_any_of_dependency_is_left_alone_rather_than_made_invalid(
+    monkeypatch, caplog
+):
+    """Slurm takes `,` or `?` in one expression, never both.
+
+    `afterok:7?afterok:8,singleton` is rejected by sbatch, which would turn
+    a configured any-of dependency into a failed submission — a fatal error
+    in place of an optimisation. The dedup stands down instead, saying so
+    at DEBUG, and the run keeps the in-job build lock it always had.
+    """
+    import logging
+
+    calls = []
+    # No probe here: nothing will be waited on, so there is nothing to name.
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7?afterok:8"]
+        ).initialise()
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        assert backend.submit_build(_build_spec()).job_id == "900"
+
+    (argv,) = calls
+    assert argv[0] == "sbatch"
+    # The user's own flag is untouched; nothing of ours was appended.
+    assert [a for a in argv if a.startswith("--dependency")] == [
+        "--dependency=afterok:7?afterok:8"
+    ]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert record.levelno == logging.DEBUG
+    assert "?" in record.__dict__["rtl_fields"]["error"]
+
+
+def test_an_empty_queue_submits_a_singleton_without_a_warning(monkeypatch, caplog):
+    """Nothing to wait for, so nothing to say — but the dependency is
+    still there, because the next run is what it protects against."""
     import logging
 
     calls, results = [], _dedup_results("\n")
@@ -2781,7 +2848,7 @@ def test_an_empty_queue_submits_the_build_job_as_before(monkeypatch, caplog):
         backend.submit_build(_build_spec())
 
     _probe, argv = calls
-    assert not any(a.startswith("--dependency") for a in argv)
+    assert "--dependency=singleton" in argv
     assert [
         r
         for r in caplog.records
@@ -2789,12 +2856,15 @@ def test_an_empty_queue_submits_the_build_job_as_before(monkeypatch, caplog):
     ] == []
 
 
-def test_a_squeue_that_errors_submits_the_build_job_anyway(monkeypatch, caplog):
-    """The dedup is an optimisation over a lock that already works.
+def test_a_squeue_that_errors_keeps_the_guarantee_and_loses_the_line(
+    monkeypatch, caplog
+):
+    """The probe is the explanation, not the mechanism.
 
     A site with no squeue on the submit host, or one that rejects the
-    query, gets exactly the pre-#507 submission — and a DEBUG line, not a
-    warning: nothing about the run is wrong.
+    query, still gets the singleton — it loses only the warning that would
+    have named the job ahead of it. DEBUG, not a warning: nothing about
+    the run is wrong.
     """
     import logging
 
@@ -2813,7 +2883,7 @@ def test_a_squeue_that_errors_submits_the_build_job_anyway(monkeypatch, caplog):
 
     assert handle.job_id == "900"
     _probe, argv = calls
-    assert not any(a.startswith("--dependency") for a in argv)
+    assert "--dependency=singleton" in argv
     (record,) = [
         r
         for r in caplog.records
@@ -2831,7 +2901,7 @@ def test_a_squeue_that_errors_submits_the_build_job_anyway(monkeypatch, caplog):
     ],
     ids=["absent", "wedged"],
 )
-def test_a_squeue_that_never_answers_submits_the_build_job_anyway(monkeypatch, boom):
+def test_a_squeue_that_never_answers_still_submits_a_singleton(monkeypatch, boom):
     """Absent or wedged, the probe costs a DEBUG line and nothing else —
     it sits between the user and their submission, so it is time-boxed."""
     calls = []
@@ -2848,12 +2918,13 @@ def test_a_squeue_that_never_answers_submits_the_build_job_anyway(monkeypatch, b
 
     assert backend.submit_build(_build_spec()).job_id == "900"
     _probe, argv = calls
-    assert not any(a.startswith("--dependency") for a in argv)
+    assert "--dependency=singleton" in argv
 
 
 def test_the_submitted_event_records_the_job_name(monkeypatch, caplog):
     """The queue is full of `rb-build-<hash>` entries; the log is what
-    ties each one back to the suite that submitted it."""
+    ties each one back to the suite that submitted it — and what gives
+    `squeue --name=` / `scancel --name=` a value to use."""
     import logging
 
     calls, results = [], _dedup_results("")
@@ -2872,3 +2943,20 @@ def test_the_submitted_event_records_the_job_name(monkeypatch, caplog):
     assert record.__dict__["rtl_fields"]["job_name"] == slurm_module.build_job_name(
         spec
     )
+
+
+def test_a_configured_singleton_is_not_repeated(monkeypatch):
+    """A site that already asks for it gets one clause, not two."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--dependency=singleton"]).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert [a for a in argv if a.startswith("--dependency")] == [
+        "--dependency=singleton",
+        "--dependency=singleton",
+    ]

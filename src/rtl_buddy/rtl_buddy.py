@@ -3262,7 +3262,6 @@ class RtlBuddy:
                 start_level=start_level,
                 plan_path=plan_path,
                 planned=len(entries),
-                test_names=[e["cfg"].get_name() for e in entries],
                 suite_compile=suite_compile,
             )
         else:
@@ -3566,7 +3565,6 @@ class RtlBuddy:
         start_level,
         plan_path,
         planned,
-        test_names=(),
         suite_compile=None,
     ):
         """Submit the suite's compile as a Slurm build job (compute node).
@@ -3585,13 +3583,6 @@ class RtlBuddy:
         keys — the head cannot know the keys without writing filelists on
         the submit host, which is the build job's job (#458), so the cap is
         an upper bound on the concurrency, never a promise of it.
-
-        ``test_names`` is what the plan holds, and it names the job rather
-        than shaping its argv (#507): a backend that can see its own queue
-        uses it to recognise an in-flight build of the same thing. Passed
-        alongside ``planned`` rather than instead of it — the cap is a
-        count and the identity is a set, and deriving one from the other
-        would tie two unrelated decisions together.
         """
         dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
         dispatch_root.mkdir(parents=True, exist_ok=True)
@@ -3638,9 +3629,6 @@ class RtlBuddy:
             builder_mode=self.rtl_builder_mode,
             builder_override=self._builder_override,
             extra_sim_timeout=self._extra_sim_timeout_override,
-            # What this job builds, for the backend that names it after
-            # that (#507).
-            test_names=tuple(test_names),
             log_path=dispatch_root / f"build-{os.getpid()}.log",
             plan_path=plan_path,
             # Where the build job records which configs compiled; the head

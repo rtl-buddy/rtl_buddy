@@ -58,14 +58,6 @@ class BuildJobSpec:
     # directory, and its per-process memo turns one user request into
     # exactly one rebuild per build dir for the whole suite.
     rebuild: bool = False
-    # The planned tests this job compiles for, in plan order (#507). Not
-    # used to build the argv — the job reads the plan for that — but to
-    # name the job after WHAT it builds, so a second run of the same suite
-    # can find this one still in the queue and depend on it instead of
-    # compiling into the same shared directory alongside it. A backend
-    # that does not dedup ignores it, and an empty tuple degrades the name
-    # to the suite alone.
-    test_names: tuple[str, ...] = ()
 
 
 @dataclass
