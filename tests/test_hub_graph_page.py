@@ -551,38 +551,156 @@ def _node_eval(script: str) -> str:
     return done.stdout
 
 
-def test_a_model_node_is_named_after_its_top_module():
+def test_a_model_node_is_named_by_its_maps_to_stitch():
     """Project-tier graphs — everything you have before a design tier is
-    built — put the design content on ``model:`` nodes, and a model is
-    named after the module it wraps. The fragment after ``#`` is that
-    name; a model id without one names nothing."""
+    built — put the design content on ``model:`` nodes, and the module a
+    model roots at is the target of its ``maps_to`` stitch.
+
+    Reading the ``#<name>`` fragment instead was right only while a model
+    was always named after its top module. A models.yaml ``top:``
+    (rtl-buddy/rtl_buddy#479) decouples the two, and a ``graph_focus`` on
+    a module id no graph has is a silent miss — the click just looks
+    broken. The stitch is the same one ``activeModelRoots`` reads and the
+    same one the config tier writes, so there is one answer, not two.
+    """
 
     out = _node_eval(
         _marked_js("module-name")
         + """
+        var links = [
+          { type: 'maps_to', source: 'model:design/common/models.yaml#ip_async_fifo',
+            target: 'module:ip_async_fifo' },
+          // `top: axi_xbar` — the name and the root module differ.
+          { type: 'maps_to', source: 'model:design/vendor/models.yaml#pp_axi',
+            target: 'module:axi_xbar' },
+          // A root whose id had to be suite-qualified: the qualifier
+          // disambiguates the id, it is not part of the module's name.
+          { type: 'maps_to', source: 'model:design/x/models.yaml#alias',
+            target: 'module:real_top@verif/x' },
+          // Right type, wrong shape — neither may be mistaken for a root.
+          { type: 'maps_to', source: 'model:design/x/models.yaml#empty',
+            target: 'module:' },
+          { type: 'maps_to', source: 'model:design/x/models.yaml#weird',
+            target: 'inst:real_top/real_top' },
+          // Some other edge off the same model.
+          { type: 'specified_by', source: 'model:design/common/models.yaml#ip_async_fifo',
+            target: 'block:fifo' },
+          null
+        ];
+        function outOf(id) {
+          return links.filter(function (l) { return l && l.source === id; });
+        }
         var ids = [
           'model:design/common/models.yaml#ip_async_fifo',
-          'model:design/cdc/models.yaml#ip_cdc_handshake',
-          'model:design/common/models.yaml#',
-          'model:design/common/models.yaml',
-          'model:a/b.yaml#deep#er'
+          'model:design/vendor/models.yaml#pp_axi',
+          'model:design/x/models.yaml#alias',
+          'model:design/x/models.yaml#empty',
+          'model:design/x/models.yaml#weird',
+          // `graph: false` — no stitch at all.
+          'model:design/vendor/models.yaml#apb_intf'
         ];
         console.log(JSON.stringify(ids.map(function (id) {
-          return moduleNameFor({ id: id, type: 'model' });
+          return moduleNameFor({ id: id, type: 'model' }, outOf(id));
         })));
+        // No links handed over at all, and a non-array second argument
+        // (`nodes.map(moduleNameFor)` passes the index).
+        console.log(JSON.stringify([
+          moduleNameFor({ id: ids[0], type: 'model' }),
+          moduleNameFor({ id: ids[0], type: 'model' }, 0),
+          moduleNameFor({ id: ids[0], type: 'model' }, [])
+        ]));
         """
     )
-    assert json.loads(out) == [
+    resolved, degenerate = out.strip().splitlines()
+    assert json.loads(resolved) == [
         "ip_async_fifo",
-        "ip_cdc_handshake",
-        # An empty fragment is not a module name.
+        # The point of the change: the top, not the model name.
+        "axi_xbar",
+        "real_top",
+        # `module:` with nothing after it is not a module name.
         None,
-        # No fragment at all, likewise.
+        # `maps_to` at a non-module target is not a root.
         None,
-        # Everything after the FIRST `#` — a name may not contain one,
-        # but splitting on the last would silently truncate a weird id.
-        "deep#er",
+        # An opted-out model has no stitch, so it has no coordinate —
+        # inventing `module:apb_intf` would send both panes after a node
+        # the graph does not contain.
+        None,
     ]
+    assert json.loads(degenerate) == [None, None, None]
+
+
+def test_the_served_payload_carries_the_stitch_the_page_resolves_through(
+    tmp_path: Path,
+):
+    """The other half of ``moduleNameFor``'s contract, server-side.
+
+    The page can only resolve a model through ``maps_to`` if the payload
+    it is handed still carries that link, unrewritten: same ``type``,
+    ``model:`` source, ``module:`` target. The bucketing pass rewrites
+    nodes (it stamps ``category``), so this pins that it leaves the
+    links alone — and that an opted-out model reaches the page with no
+    stitch at all, which is what makes the page decline to focus it.
+    """
+
+    graph = {
+        "directed": True,
+        "multigraph": True,
+        "graph": {"schema_version": 1, "generator": {"tier": "merged"}},
+        "nodes": [
+            {
+                "id": "module:axi_xbar",
+                "type": "module",
+                "label": "axi_xbar",
+                "tier": "design",
+                "file": "design/vendor/xbar.sv",
+                "line": 1,
+            },
+            # `top: axi_xbar` — name and root module differ.
+            {
+                "id": "model:design/vendor/models.yaml#pp_axi",
+                "type": "model",
+                "label": "pp_axi",
+                "tier": "config",
+                "file": "design/vendor/models.yaml",
+            },
+            # `graph: false` — node present, no stitch, flagged.
+            {
+                "id": "model:design/vendor/models.yaml#apb_intf",
+                "type": "model",
+                "label": "apb_intf",
+                "tier": "config",
+                "graph": False,
+                "file": "design/vendor/models.yaml",
+            },
+        ],
+        "links": [
+            {
+                "source": "model:design/vendor/models.yaml#pp_axi",
+                "target": "module:axi_xbar",
+                "type": "maps_to",
+                "confidence": "DECLARED",
+            },
+        ],
+    }
+    out = tmp_path / "artefacts" / "graph"
+    out.mkdir(parents=True)
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    payload = graph_page.build_graph_payload(tmp_path)
+    stitches = {
+        (link["source"], link["target"])
+        for link in payload["links"]
+        if link.get("type") == "maps_to"
+    }
+    assert stitches == {("model:design/vendor/models.yaml#pp_axi", "module:axi_xbar")}
+    served = {n["id"]: n for n in payload["nodes"]}
+    # The opted-out model is still a node — spec and test cross-references
+    # point at it — it simply has no design coordinate.
+    assert served["model:design/vendor/models.yaml#apb_intf"]["graph"] is False
+    assert not any(
+        link["source"] == "model:design/vendor/models.yaml#apb_intf"
+        for link in payload["links"]
+    )
 
 
 def test_a_module_node_falls_back_to_its_own_id():
@@ -628,9 +746,12 @@ def test_nothing_else_names_a_module():
           { id: 'py:verif/fifo/cocotb_fifo.py', type: 'python_module' },
           { id: 'inst:fifo/fifo.u_wr', type: 'instance' }
         ];
-        console.log(JSON.stringify(nodes.map(moduleNameFor)));
-        console.log(JSON.stringify([moduleNameFor(null), moduleNameFor(undefined),
-                                    moduleNameFor({ type: 'module' })]));
+        console.log(JSON.stringify(nodes.map(function (n) {
+          return moduleNameFor(n, []);
+        })));
+        console.log(JSON.stringify([moduleNameFor(null, []),
+                                    moduleNameFor(undefined, []),
+                                    moduleNameFor({ type: 'module' }, [])]));
         """
     )
     typed, nullish = out.strip().splitlines()
@@ -652,18 +773,21 @@ def test_a_node_without_an_instance_still_syncs_the_schematic():
     """
 
     js = _page_js()
-    derivation = js.split("function viewTargetFor(n) {")[1].split("\n  }")[0]
+    derivation = js.split("function viewTargetFor(n, out) {")[1].split("\n  }")[0]
     # The instance path still wins…
     assert "var ip = instancePathFor(n);" in derivation
     assert "type: 'selection_changed', payload: { instance_path: ip }," in derivation
-    # …and the module name is the fallback, not a second send.
-    assert "var mod = moduleNameFor(n);" in derivation
+    # …and the module name is the fallback, not a second send. The
+    # node's outgoing links ride along because a `model:` node's module
+    # comes off its `maps_to` stitch (#479).
+    assert "var mod = moduleNameFor(n, out);" in derivation
+    assert "function viewTargetFor(n, out) {" in js
     assert "type: 'graph_focus', payload: { node: 'module:' + mod }," in derivation
     assert derivation.index("instancePathFor") < derivation.index("moduleNameFor")
     assert "note: 'focus module:' + mod + ' in the schematic'" in derivation
     # One emit per click, off the one derivation.
     click = js.split("if (els.optSelect.checked) {")[1].split("\n    }")[0]
-    assert "var view = viewTargetFor(n);" in click
+    assert "var view = viewTargetFor(n, state.out[n.id]);" in click
     assert "var sent = !!view && emit(view.type, view.payload);" in click
     # The cross-model warning is armed only for a delivered instance path,
     # and cleared for everything else — including a send that never left.
@@ -890,13 +1014,28 @@ def test_a_graph_node_maps_onto_a_coverage_target():
     out = _node_eval(
         _cov_target_js()
         + """
+        // A model's module comes off its `maps_to` stitch (moduleNameFor),
+        // so the cov pane lands on the same module the schematic does —
+        // including when a models.yaml `top:` renamed it.
+        var links = [
+          { type: 'maps_to', source: 'model:design/common/models.yaml#ip_async_fifo',
+            target: 'module:ip_async_fifo' },
+          { type: 'maps_to', source: 'model:design/vendor/models.yaml#pp_axi',
+            target: 'module:axi_xbar' }
+        ];
+        function outOf(n) {
+          return links.filter(function (l) { return n && l.source === n.id; });
+        }
         var nodes = [
           // A test: the run's per-test attribution, qualified by suite
           // the way the schema's own example spells it.
           { id: 'test:verif/fifo#smoke', type: 'test', label: 'smoke',
             file: 'verif/fifo/tests.yaml', line: 4 },
-          // A model is named after its top module (moduleNameFor).
           { id: 'model:design/common/models.yaml#ip_async_fifo', type: 'model' },
+          // `top: axi_xbar`: the cov target follows the stitch, not the name.
+          { id: 'model:design/vendor/models.yaml#pp_axi', type: 'model' },
+          // `graph: false`: no stitch, and no file either — nothing to focus.
+          { id: 'model:design/vendor/models.yaml#apb_intf', type: 'model' },
           // A module node has a `file` too — the module is the better
           // answer, so it must win.
           { id: 'module:fifo', type: 'module',
@@ -916,14 +1055,21 @@ def test_a_graph_node_maps_onto_a_coverage_target():
           { id: 'test:', type: 'test' },
           { id: 'covitem:fifo#REQ-2', type: 'coverage_item', label: 'REQ-2' }
         ];
-        console.log(JSON.stringify(nodes.map(covTargetFor)));
-        console.log(JSON.stringify([covTargetFor(null), covTargetFor(undefined)]));
+        console.log(JSON.stringify(nodes.map(function (n) {
+          return covTargetFor(n, outOf(n));
+        })));
+        console.log(JSON.stringify([covTargetFor(null, []),
+                                    covTargetFor(undefined, [])]));
         """
     )
     mapped, nullish = out.strip().splitlines()
     assert json.loads(mapped) == [
         {"target": "test:verif/fifo#smoke"},
         {"target": "module:ip_async_fifo"},
+        # The point of #479: the top the model roots at, not its name.
+        {"target": "module:axi_xbar"},
+        # An opted-out model has no `maps_to` and so no coverage target.
+        None,
         {"target": "module:fifo"},
         {"target": "module:fifo", "metric": "cover", "item": "REQ-1"},
         {"target": "file:design/fifo/src/fifo.sv", "line": 9},
@@ -961,7 +1107,7 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
     # One send control per app, off the one target derivation. No open-↗
     # variant: opening an app fresh is the header switcher's job.
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
-    assert "var t = app.targetFor(n);" in row
+    assert "var t = app.targetFor(n, state.out[n.id]);" in row
     assert "'send → ' + originLabel(app.origin)," in row
     assert "function () { sendTo(app, n); }" in row
     assert "'open ' + " not in row
@@ -979,7 +1125,7 @@ def test_send_ignores_the_sync_checkbox():
     js = _page_js()
     send = js.split("function sendTo(app, n) {")[1].split("\n  }")[0]
     assert "els.optSelect" not in send
-    assert "var t = app.targetFor(n);" in send
+    assert "var t = app.targetFor(n, state.out[n.id]);" in send
     assert (
         "if (!app.send(t)) { note('hub not connected', 'error'); return false; }"
         in (send)

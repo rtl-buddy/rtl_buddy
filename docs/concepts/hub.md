@@ -155,6 +155,8 @@ Clicking graph nodes can:
 - send `open_source` for nodes with file locations;
 - translate a selected node into coverage focus.
 
+A model node is placed through its `maps_to` edge, so it lands on the module the model actually roots at even when `models.yaml` sets `top:`. A model that opted out with `graph: false` has no such edge and no design coordinate: its send buttons stay dark and say so, rather than focusing a module id the graph does not contain.
+
 The on-disk graph is never modified by the browser join. See [Design Knowledge Graph](graph.md) for graph semantics.
 
 ## Coverage pane
