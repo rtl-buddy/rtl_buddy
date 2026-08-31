@@ -649,7 +649,7 @@ def _add_testbench_node(
     tests_rel: str,
     tb: TestbenchConfig,
     flow: str | list[str],
-    opted_out_tops: frozenset[str] = frozenset(),
+    opted_out: bool = False,
 ) -> str:
     node = gb.add_node(
         testbench_id(suite_rel, tb.get_name()),
@@ -677,13 +677,14 @@ def _add_testbench_node(
     # config readback. `rb graph build` adds that edge instead, from
     # the top the viewer really elaborated.
     #
-    # `opted_out_tops` holds the roots of this suite's `graph: false`
-    # models (#479). A cocotb/SystemC harness declares `toplevel: <the
-    # DUT>`, so an opted-out DUT would otherwise leave the testbench
-    # pointing at a `module:` node the design tier is never going to
-    # export — the same permanently dangling stitch the model node's
-    # `maps_to` is suppressed to avoid.
-    if tb.toplevel and tb.toplevel not in opted_out_tops:
+    # `opted_out` says every test naming this testbench runs against a
+    # `graph: false` model (#479). The design tier drops such a TB export
+    # outright, so the declared edge would point at a `module:` node
+    # nothing is going to define — the same permanently dangling stitch
+    # the model node's `maps_to` is suppressed to avoid. The decision is
+    # per *testbench*, never per top name: two models can share a root
+    # module, and a graphable model's testbench must keep its edge.
+    if tb.toplevel and not opted_out:
         gb.add_link(node, module_id(tb.toplevel), ELABORATES_AS)
     return node
 
@@ -742,21 +743,36 @@ def _add_suite_nodes(
             flow=flow,
         )
 
-        # Roots of the models this suite's tests run against that opted
-        # out of the design tier (#479). Computed before any testbench
-        # node is emitted because the declared-but-unused pass runs
+        # Testbenches every one of whose tests runs against a
+        # `graph: false` model (#479), keyed by testbench name so a
+        # graphable model's testbench is unaffected even when the two
+        # models share a root module. Computed before any testbench node
+        # is emitted, because the declared-but-unused pass below runs
         # first and `add_link` keeps the first sighting of an edge.
-        opted_out_tops = frozenset(
-            test.get_model().get_top()
-            for test in suite.get_tests()
-            if not test.get_model().graph
+        # A declared-but-unused testbench has no model to inherit an
+        # opt-out from, so it keeps whatever it declares.
+        tb_models: dict[str, list] = {}
+        for test in suite.get_tests():
+            tb_models.setdefault(test.get_testbench().get_name(), []).append(
+                test.get_model()
+            )
+        opted_out_tbs = frozenset(
+            name
+            for name, tb_dut in tb_models.items()
+            if all(not model.graph for model in tb_dut)
         )
 
         declared = _declared_testbenches(path)
         if declared is not None:
             for tb in declared:
                 _add_testbench_node(
-                    gb, suite_rel, suite_node, tests_rel, tb, flow, opted_out_tops
+                    gb,
+                    suite_rel,
+                    suite_node,
+                    tests_rel,
+                    tb,
+                    flow,
+                    tb.get_name() in opted_out_tbs,
                 )
 
         for test in suite.get_tests():
@@ -767,7 +783,7 @@ def _add_suite_nodes(
                 tests_rel,
                 test.get_testbench(),
                 flow,
-                opted_out_tops,
+                test.get_testbench().get_name() in opted_out_tbs,
             )
             model = test.get_model()
             model_node = _add_model_node(gb, project_root, model.path, model)
@@ -873,12 +889,12 @@ def _add_flow_suite_nodes(
             )
             gb.add_link(suite_node, test_node, "declares")
             gb.add_link(test_node, model_node, "exercises")
-            # A run whose top is the model's own root inherits the model's
-            # `graph: false` opt-out (#479): the design tier will not export
-            # that hierarchy, so declaring an edge into it would only add a
-            # dangling target. A run that names its own checker top (fpv)
-            # keeps its stitch — that top is the flow's, not the model's.
-            if top and (model.graph or top != model.get_top()):
+            # Every run over a `graph: false` model inherits the opt-out
+            # (#479), whether it tops at the model's own root or at a
+            # checker of its own (the fpv shape): the design tier drops
+            # both export kinds for such a model, so either stitch would
+            # only add a permanently dangling target.
+            if top and model.graph:
                 gb.add_link(test_node, module_id(top), TARGETS)
             # An fpv run may declare `covers:` exactly as a test does
             # (rtl-buddy/rtl_buddy#385) — same field, same edge, same

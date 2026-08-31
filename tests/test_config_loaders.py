@@ -1991,3 +1991,95 @@ def test_model_top_override_reaches_the_non_simulation_flows(tmp_path):
     plain = SimpleNamespace(model=ModelConfig(name="pp_axi", filelist=[]))
     for cls in (CdcConfig, SynthConfig, LintConfig, FpgaConfig):
         assert cls.get_top(plain) == "pp_axi", cls.__name__
+
+
+def _top_override_project(tmp_path, *, model_top: str | None) -> tuple:
+    """A one-model project whose fpv.yaml + mut.yaml run against it.
+
+    Returns ``(fpv.yaml path, mut.yaml path)``. ``model_top`` writes the
+    models.yaml ``top:`` override (#479); neither run declares its own
+    ``top:``, so both inherit the model's root module.
+    """
+    design_dir = tmp_path / "design" / "leaf"
+    design_dir.mkdir(parents=True)
+    (design_dir / "leaf.sv").write_text("module leaf_core; endmodule\n")
+    top_line = f'    top: "{model_top}"\n' if model_top else ""
+    (design_dir / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "leaf"\n'
+        '    filelist: ["-v leaf.sv"]\n' + top_line
+    )
+    fpv_dir = tmp_path / "fpv" / "leaf"
+    fpv_dir.mkdir(parents=True)
+    fpv_path = fpv_dir / "fpv.yaml"
+    fpv_path.write_text(
+        "rtl-buddy-filetype: fpv_config\n"
+        "verifications:\n"
+        '  - name: "leaf_safety"\n'
+        '    desc: "safety"\n'
+        '    tool: "sby"\n'
+        '    model: "leaf"\n'
+        '    model_path: "../../design/leaf/models.yaml"\n'
+        "    properties: []\n"
+        '    mode: "bmc"\n'
+    )
+    mut_path = fpv_dir / "mut.yaml"
+    mut_path.write_text(
+        "rtl-buddy-filetype: mut_config\n"
+        'model: "leaf"\n'
+        'model_path: "../../design/leaf/models.yaml"\n'
+        'design_file: "../../design/leaf/leaf.sv"\n'
+        "operators: [arith_flip]\n"
+        "verify:\n"
+        '  fpv_config: "fpv.yaml"\n'
+        '  verification: "leaf_safety"\n'
+    )
+    return fpv_path, mut_path
+
+
+def test_fpv_and_mut_runs_inherit_the_models_yaml_top(tmp_path):
+    """A run with no ``top:`` of its own roots at the model's root module.
+
+    Both files default their top to the model; before #479 that default
+    was the model *name*, which is exactly the assumption `top:` exists
+    to escape.
+    """
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top="leaf_core")
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf_core"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_core"
+
+
+def test_fpv_and_mut_runs_default_to_the_model_name_without_an_override(tmp_path):
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top=None)
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf"
+
+
+def test_an_explicit_run_top_still_beats_the_models_yaml_override(tmp_path):
+    """``top:`` in fpv.yaml / mut.yaml is the narrower statement and wins.
+
+    A formal checker top lives in the run's own ``properties:``, so the
+    model-level default must never overwrite it.
+    """
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top="leaf_core")
+    fpv_path.write_text(
+        fpv_path.read_text().replace(
+            "    properties: []\n", '    top: "leaf_chk"\n    properties: []\n'
+        )
+    )
+    mut_path.write_text(mut_path.read_text() + 'top: "leaf_mut"\n')
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf_chk"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_mut"

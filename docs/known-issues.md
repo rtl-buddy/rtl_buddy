@@ -232,9 +232,9 @@ A merged LCOV `.info` attributes coverage by file, so every module declared in o
 
 `--coverage` requires `auto`, `model`, `none`, or a merged `.info` path. `--no-coverage` disables the join.
 
-## A testbench over an opted-out model can keep a dangling design edge
+## A cocotb test over an opted-out model keeps a dangling DUT edge
 
-`models.yaml` `graph: false` withdraws the config tier's edges into the model's own hierarchy, but two edges survive and name a `module:` node the design tier will not export: the binding tier's cocotb hop `python_module --binds_to--> module:<toplevel>`, which is derived from the merged graph, and an SV testbench's declared `toplevel:` when it names a module other than the model's root. Those ids stay in `graph-meta.json`'s `merge.dangling` list, exactly as they do under `--no-design`. Opt out only models that no testbench runs against, or give the model a `top:` instead.
+`models.yaml` `graph: false` withdraws every config-tier edge into the model's hierarchy, but the binding tier's cocotb hop `python_module --binds_to--> module:<toplevel>` is derived from the merged graph and still names the DUT. That id stays in `graph-meta.json`'s `merge.dangling` list, exactly as it does under `--no-design`. Opt out only models that no cocotb test runs against, or give the model a `top:` instead.
 
 ## The viewer distribution and executable have different names
 

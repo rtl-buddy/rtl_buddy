@@ -1901,6 +1901,20 @@ def test_graph_false_model_skips_its_testbench_and_run_exports(
     # blk_b is untouched by its neighbour's opt-out.
     assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_b"]
 
+    graph = json.loads(build.graph_path.read_text())
+    # The run's `targets` stitch goes with its export: an fpv checker top
+    # lives in the flow's own filelist, so nothing else is ever going to
+    # define `module:blk_a_chk`. Opting a model out must not *add* a
+    # dangling target. The one survivor is the documented cocotb
+    # `binds_to` hop from the binding tier (docs/known-issues.md).
+    assert dangling_targets(graph) == ["module:blk_a"]
+    assert all(
+        link["type"] == "binds_to"
+        for link in graph["links"]
+        if link["target"] == "module:blk_a"
+    )
+    assert "module:blk_a_chk" not in _nodes(graph)
+
 
 def test_every_model_opting_out_skips_the_tier_without_failing_it(
     graph_project: Path, tmp_path: Path
@@ -1940,6 +1954,107 @@ def test_every_model_opting_out_skips_the_tier_without_failing_it(
         for link in graph["links"]
         if link["target"] == "module:blk_a"
     )
+
+
+def test_an_outdated_viewer_cannot_fail_a_fully_opted_out_design_tier(
+    graph_project: Path, tmp_path: Path
+):
+    """The version gate must not decide a tier that never needs the viewer.
+
+    A project whose design directory holds only library models has
+    nothing to export, so an old (or gated) ``rtl-buddy-view`` is
+    irrelevant to it and must not turn an opt-out into a failed tier and
+    a non-zero exit.
+    """
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.3.1",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "skipped"
+    assert VIEW_GRAPH_MIN_VERSION not in (design.detail or "")
+    assert build.failed_tiers() == []
+    assert _argv_lines(record) == []
+    # A graphable model still gets the upgrade hint, so the gate is not
+    # simply switched off.
+    _rewrite_model(graph_project, "blk_b", "    graph: true\n")
+    gated = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.3.1",
+        extract_enabled=False,
+        force=True,
+    )
+    gated_design = next(t for t in gated.tiers if t.tier == DESIGN_TIER)
+    assert gated_design.status == "failed"
+    assert VIEW_GRAPH_MIN_VERSION in gated_design.detail
+
+
+def test_a_shared_top_does_not_leak_one_models_opt_out_onto_another(
+    graph_project: Path, tmp_path: Path
+):
+    """Two models rooted at the same module, one opted out.
+
+    The opt-out is a fact about a model and its testbenches, not about a
+    module name: keying it on the top would silently strip the graphable
+    model's testbench of its declared ``elaborates_as`` edge.
+    """
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    # blk_b now roots at blk_a's top. Both models are tested from the
+    # *same* suite, each by a cocotb testbench declaring that shared
+    # `toplevel:` — a per-suite set of opted-out top names cannot tell
+    # the two testbenches apart.
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    (graph_project / "verif" / "blk_a" / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        '  - name: "tb_cocotb"\n'
+        "    filelist: []\n"
+        "    toplevel: blk_a\n"
+        "    cocotb:\n"
+        "      module: cocotb_blk_a\n"
+        '  - name: "tb_b_cocotb"\n'
+        "    filelist: []\n"
+        "    toplevel: blk_a\n"
+        "    cocotb:\n"
+        "      module: cocotb_blk_a\n"
+        "tests:\n"
+        '  - name: "t_cocotb"\n'
+        '    desc: "blk_a cocotb test"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_a"\n'
+        '    model_path: "../../design/blk_a/models.yaml"\n'
+        '    testbench: "tb_cocotb"\n'
+        '  - name: "t_b"\n'
+        '    desc: "blk_b cocotb test"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_b"\n'
+        '    model_path: "../../design/blk_b/models.yaml"\n'
+        '    testbench: "tb_b_cocotb"\n'
+    )
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    graph = json.loads(build.graph_path.read_text())
+    stitches = {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "elaborates_as"
+    }
+    # blk_b's testbench keeps its edge — blk_b is graphable and exports
+    # `module:blk_a`; blk_a's own cocotb testbench loses its edge.
+    assert ("tb:verif/blk_a#tb_b_cocotb", "module:blk_a") in stitches
+    assert ("tb:verif/blk_a#tb_cocotb", "module:blk_a") not in stitches
+    assert dangling_targets(graph) == []
 
 
 def test_model_top_override_roots_the_export_and_the_config_stitch(

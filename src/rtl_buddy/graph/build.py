@@ -1344,25 +1344,52 @@ def build_graph(
         design_report.status = SKIPPED
         design_report.detail = f"no models found under {rel_path(root, search_design)}"
     else:
+        # #479: a model that declares `graph: false` has no elaborable
+        # root — an SV `interface` published as a library entry, a
+        # filelist of vendored IP with no module named after the model.
+        # It is recorded as skipped and never handed to the viewer, so
+        # the project stops carrying a permanent failure row it cannot
+        # silence. The config tier still emits its `model:` node.
+        #
+        # The whole partition happens *before* the viewer version gate:
+        # what is left after it is the answer to "does this tier need the
+        # viewer at all", and an outdated viewer must not fail a tier that
+        # was never going to invoke it. Target discovery is config reading
+        # only — the config tier reads the same files a few lines below.
+        graphable = [model for model in models if model.graph]
+        design_report.skipped.extend(
+            {"model": model.name, "reason": GRAPH_OPT_OUT}
+            for model in models
+            if not model.graph
+        )
+        tb_targets: list[TestbenchTarget] = []
+        run_targets: list[FlowRunTarget] = []
+        if tb:
+            tb_targets, opted_out = _split_opted_out(
+                testbenches_from_suites(root, search_verif, models), "testbench"
+            )
+            design_report.skipped.extend(opted_out)
+        if flow_tops:
+            run_targets, opted_out = _split_opted_out(
+                flow_runs_from_regressions(root, models), "run"
+            )
+            design_report.skipped.extend(opted_out)
+
         gate = check_view_supports_graph(view_version)
-        if gate is not None:
+        if not (graphable or tb_targets or run_targets):
+            # Everything in scope opted out. Nothing broke, so the tier is
+            # skipped rather than failed — a project whose design dir holds
+            # only library models must still exit 0, whatever viewer it has.
+            design_report.status = SKIPPED
+            design_report.detail = (
+                f"every model in scope opted out ({len(design_report.skipped)} skipped)"
+            )
+        elif gate is not None:
             design_report.status = FAILED
             design_report.detail = gate
         else:
             tools["rtl-buddy-view"] = view_version
             sources: list[str] = []
-            # #479: a model that declares `graph: false` has no elaborable
-            # root — an SV `interface` published as a library entry, a
-            # filelist of vendored IP with no module named after the model.
-            # It is recorded as skipped and never handed to the viewer, so
-            # the project stops carrying a permanent failure row it cannot
-            # silence. The config tier still emits its `model:` node.
-            graphable = [model for model in models if model.graph]
-            design_report.skipped.extend(
-                {"model": model.name, "reason": GRAPH_OPT_OUT}
-                for model in models
-                if not model.graph
-            )
             for model, exporter in _design_exporters(
                 root,
                 graphable,
@@ -1383,11 +1410,7 @@ def build_graph(
             # same filelist machinery, one extra `--tb-top`. Their
             # sources join the tier's input hashes, which is what keeps
             # the no-op check honest when only a testbench changed.
-            if tb:
-                tb_targets, opted_out = _split_opted_out(
-                    testbenches_from_suites(root, search_verif, models), "testbench"
-                )
-                design_report.skipped.extend(opted_out)
+            if tb_targets:
                 for target, exporter in _tb_exporters(
                     root,
                     tb_targets,
@@ -1409,11 +1432,7 @@ def build_graph(
             # model filelist + the flow's own sources. Those sources
             # join the tier's input hashes too, so editing a properties
             # file invalidates the cached graph.
-            if flow_tops:
-                run_targets, opted_out = _split_opted_out(
-                    flow_runs_from_regressions(root, models), "run"
-                )
-                design_report.skipped.extend(opted_out)
+            if run_targets:
                 for target, exporter in _flow_exporters(
                     root,
                     run_targets,
@@ -1432,18 +1451,11 @@ def build_graph(
                     flow_exporters.append((target, exporter))
             design_report.inputs = hash_inputs(root, sources)
             if not exporters and not tb_exporters and not flow_exporters:
-                if design_report.skipped and not design_report.failures:
-                    # Everything in scope opted out. Nothing broke, so the
-                    # tier is skipped rather than failed — a project whose
-                    # design dir holds only library models must still exit 0.
-                    design_report.status = SKIPPED
-                    design_report.detail = (
-                        f"every model in scope opted out "
-                        f"({len(design_report.skipped)} skipped)"
-                    )
-                else:
-                    design_report.status = FAILED
-                    design_report.detail = "no model produced a filelist"
+                # Reachable only when something in scope *was* graphable
+                # and none of it produced a filelist — the all-opted-out
+                # case short-circuited to SKIPPED before the gate above.
+                design_report.status = FAILED
+                design_report.detail = "no model produced a filelist"
     reports[DESIGN_TIER] = design_report
 
     # --- config tier ----------------------------------------------------

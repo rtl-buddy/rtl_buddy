@@ -33,7 +33,7 @@ verifications:
     reglvl: 1000
 ```
 
-Paths are relative to `fpv.yaml`. `top` defaults to the model name, `depth` to 20, and `engines` to `smtbmc yices`. `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Modes are `bmc`, `prove`, `cover`, and `live`.
+Paths are relative to `fpv.yaml`. `top` defaults to the model's root module (its `top:` in `models.yaml`, itself defaulting to the model name), `depth` to 20, and `engines` to `smtbmc yices`. `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Modes are `bmc`, `prove`, `cover`, and `live`.
 
 Optional run controls include:
 

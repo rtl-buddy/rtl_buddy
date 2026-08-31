@@ -40,7 +40,9 @@ The design tier roots each model's export at the model's `top:`, defaulting to t
 
 An opted-out model, and any testbench or non-simulation run rooted at it, is listed under the design tier's `skipped` entries in the envelope and in `graph-meta.json`, never under `failures`. `skipped` does not affect the exit code, including under `--strict`. If every model in scope opts out, the tier itself is `skipped`.
 
-The config tier still emits the model node, carrying `graph: false`, so `spec:` and test cross-references resolve. It emits no `maps_to` edge for it, and no `elaborates_as` or `targets` edge from a testbench or run whose top is that model's root, because the design tier will not define those `module:` nodes. Give the model a `top:` instead when the filelist elaborates and only the root module name differs.
+The config tier still emits the model node, carrying `graph: false`, so `spec:` and test cross-references resolve. It emits no `maps_to` edge for it, and no `elaborates_as` or `targets` edge from a testbench or run over it, because the design tier will not define those `module:` nodes. A testbench is judged by the models its tests name, not by the module it tops at, so a graphable model's testbench keeps its edge even when the two models share a root module. Give the model a `top:` instead when the filelist elaborates and only the root module name differs.
+
+The opt-out is design-tier-only. `rb hier`, `rb hier-query`, and `rb axi-profile` still elaborate the model and still fail if its root does not resolve.
 
 Unchanged inputs, tool versions, and schema produce a cached no-op build. A failure remains cached until an input or tool version changes, or `--force` is used.
 

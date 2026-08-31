@@ -78,7 +78,12 @@ def _resolve_cdc_analysis(model_cfg: ModelConfig) -> CdcConfig | None:
     # Otherwise pick the analysis whose ``model:`` field matches
     # this model's name. Ambiguity (multiple analyses for the same
     # model) is the user's bug — tell them to add a #fragment.
-    matches = [a for a in suite.get_analyses() if a.get_top() == model_cfg.name]
+    #
+    # Matched on the model's *identity*, never on ``get_top()``: since
+    # #479 an analysis's top follows the model's ``top:`` override, so a
+    # model with ``top: axi_xbar`` would match nothing here and the hub
+    # would refuse to start with "no analysis there has model:".
+    matches = [a for a in suite.get_analyses() if a.get_model().name == model_cfg.name]
     if len(matches) == 0:
         names = ", ".join(suite.get_analysis_names()) or "(none)"
         raise FatalRtlBuddyError(
