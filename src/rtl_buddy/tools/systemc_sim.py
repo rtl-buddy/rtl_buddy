@@ -127,9 +127,17 @@ class SystemCSim(VlogSim):
             "--build",
             "-j",
             "0",
-            "--top-module",
-            self.testbench.toplevel,
         ]
+        # The cosim top, unless the builder's own compile-time opts already
+        # pin one. Generating it unconditionally put it AFTER the user's on
+        # the command line, where Verilator's last-wins precedence handed it
+        # the victory over an explicitly configured `--top` — and, because
+        # the base plumbing then saw our flag rather than theirs, no
+        # conflict warning was emitted either (#511 review). The configured
+        # top wins here like everywhere else; the base logs the WARNING.
+        configured_top = self._user_configured_top()
+        if configured_top is None:
+            flags += ["--top-module", self.testbench.toplevel]
 
         pin_flag = self._pin_style_flag()
         if pin_flag is not None:
@@ -148,6 +156,7 @@ class SystemCSim(VlogSim):
             "systemc.compile_flags",
             test=self.test_name,
             toplevel=self.testbench.toplevel,
+            configured_top=configured_top[1] if configured_top else None,
             sc_main=sc_cfg.sc_main,
             sc_extra=sc_cfg.sc_extra,
             pin_style=sc_cfg.pin_style,

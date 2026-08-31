@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -10,10 +11,26 @@ import pytest
 from rtl_buddy.config.systemc import SystemCConfig
 from rtl_buddy.config.test import SystemCTestbenchConfig
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.tools import vlog_sim as vlog_sim_module
 from rtl_buddy.tools.systemc_sim import SystemCSim
 
 
+@pytest.fixture(autouse=True)
+def _forget_toplevel_conflicts():
+    """`compile.toplevel_conflict` is claimed once per fact per PROCESS."""
+    vlog_sim_module._reset_toplevel_conflicts()
+    yield
+    vlog_sim_module._reset_toplevel_conflicts()
+
+
 class _DummyBuilderCfg:
+    def __init__(self, compile_opts=None):
+        self._compile_opts = (
+            list(compile_opts)
+            if compile_opts is not None
+            else ["--binary", "-sv", "-o", "simv"]
+        )
+
     def get_exe(self):
         return "verilator"
 
@@ -30,21 +47,22 @@ class _DummyBuilderCfg:
         return "verilator"
 
     def get_compile_time_opts(self, _m):
-        return ["--binary", "-sv", "-o", "simv"]
+        return list(self._compile_opts)
 
     def get_run_time_opts(self, _m, seed=None):
         return []
 
 
 class _DummyRootCfg:
-    def __init__(self, systemc_cfg: SystemCConfig | None):
+    def __init__(self, systemc_cfg: SystemCConfig | None, compile_opts=None):
         self._systemc_cfg = systemc_cfg
+        self._builder = _DummyBuilderCfg(compile_opts)
 
     def get_rtl_builder_cfg(self):
-        return _DummyBuilderCfg()
+        return self._builder
 
     def resolve_rtl_builder_cfg(self, _test_builder_name=None):
-        return _DummyBuilderCfg()
+        return self._builder
 
     def get_use_lcov(self, _):
         return False
@@ -106,10 +124,10 @@ class _DummyTestCfg:
         return None
 
 
-def _make_sim(tmp_path, sc_cfg, *, systemc_cfg=None):
+def _make_sim(tmp_path, sc_cfg, *, systemc_cfg=None, compile_opts=None):
     return SystemCSim(
         name="rtl_buddy/systemc_sim",
-        root_cfg=_DummyRootCfg(systemc_cfg),
+        root_cfg=_DummyRootCfg(systemc_cfg, compile_opts),
         test_cfg=_DummyTestCfg(sc_cfg),
         rtl_builder_mode="sim",
         sim_mode={"sim_to_stdout": True},
@@ -377,3 +395,96 @@ def test_base_top_plumbing_does_not_double_the_systemc_flag(tmp_path):
         sim.rtl_builder_cfg.get_compile_time_opts("sim")
     )
     assert sim._get_top_module_flags(builder_opts, extra) == []
+
+
+def test_configured_top_suppresses_the_generated_one_and_warns(tmp_path, caplog):
+    """A user `--top` in compile-time opts wins, and says so (#511 review).
+
+    Generating the cosim top unconditionally put it AFTER the user's on the
+    command line, where Verilator's last-wins precedence handed it the
+    victory; and because the base plumbing scanned the generated flags too,
+    it saw OUR flag agreeing with `toplevel:` and stayed silent about the
+    override.
+    """
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(
+        tmp_path,
+        sc,
+        systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None),
+        compile_opts=["--binary", "-sv", "-o", "simv", "--top", "other_top"],
+    )
+    builder_opts = sim._filter_builder_opts(
+        sim.rtl_builder_cfg.get_compile_time_opts("sim")
+    )
+    with caplog.at_level(logging.WARNING):
+        extra = sim._get_extra_compile_flags()
+        top_flags = sim._get_top_module_flags(builder_opts, extra)
+
+    # SystemC generated nothing, and the base added nothing.
+    assert "--top-module" not in extra
+    assert top_flags == []
+
+    # Exactly one top on the whole command line, and it is the user's.
+    line = builder_opts + extra + top_flags
+    tops = [
+        (tok, line[i + 1])
+        for i, tok in enumerate(line)
+        if tok in vlog_sim_module.TOP_MODULE_FLAGS["verilator"].aliases
+    ]
+    assert tops == [("--top", "other_top")]
+
+    conflict = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+    ]
+    assert len(conflict) == 1
+    assert conflict[0].rtl_fields["configured"] == "other_top"
+    assert conflict[0].rtl_fields["toplevel"] == "my_dut"
+
+
+def test_generated_top_is_unchanged_without_a_configured_one(tmp_path, caplog):
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))
+    builder_opts = sim._filter_builder_opts(
+        sim.rtl_builder_cfg.get_compile_time_opts("sim")
+    )
+    with caplog.at_level(logging.DEBUG):
+        extra = sim._get_extra_compile_flags()
+        assert sim._get_top_module_flags(builder_opts, extra) == []
+    assert extra.count("--top-module") == 1
+    assert extra[extra.index("--top-module") + 1] == "my_dut"
+    pinned = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_already_pinned"
+    ]
+    # Recorded as ours, not as something the user configured.
+    assert pinned and pinned[-1].rtl_fields["source"] == "backend"
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+    ]
+
+
+def test_configured_top_that_agrees_generates_nothing_and_is_quiet(tmp_path, caplog):
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(
+        tmp_path,
+        sc,
+        systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None),
+        compile_opts=["--binary", "-sv", "--top-module", "my_dut"],
+    )
+    builder_opts = sim._filter_builder_opts(
+        sim.rtl_builder_cfg.get_compile_time_opts("sim")
+    )
+    with caplog.at_level(logging.WARNING):
+        extra = sim._get_extra_compile_flags()
+        assert sim._get_top_module_flags(builder_opts, extra) == []
+    assert "--top-module" not in extra
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+    ]

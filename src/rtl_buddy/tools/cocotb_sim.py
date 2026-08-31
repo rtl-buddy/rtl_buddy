@@ -146,8 +146,11 @@ class CocotbSim(VlogSim):
         duplicated. The de-dup is token-level (not substring): any
         ``-debug_access*`` or ``+acc*`` token the user configured is taken as
         "already enables VPI access" so we don't inject our own — see
-        docs/known-issues.md. ``-top`` takes the module as a separate token,
-        so an exact-token check is the right "did the user pin a top?" test.
+        docs/known-issues.md. The top is asked of
+        :meth:`VlogSim._user_configured_top`, which knows every spelling the
+        family accepts; generating one next to a configured ``-top`` would
+        place ours later on the command line and override the user's choice
+        without warning (#511 review).
         """
         vpi_lib = _cocotb_config("--lib-name-path", "vpi", "vcs")
         opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
@@ -157,7 +160,7 @@ class CocotbSim(VlogSim):
         if not any(o.startswith("+acc") for o in opts):
             flags.append("+acc+3")
         flags += ["-LDFLAGS", "-Wl,--no-as-needed", "-load", vpi_lib]
-        if "-top" not in opts:
+        if self._user_configured_top() is None:
             flags += ["-top", self.testbench.toplevel]
         return flags
 

@@ -210,9 +210,59 @@ def test_top_flag_disagreement_warns_and_config_wins(tmp_path, caplog):
 
 def test_top_flag_not_doubled_when_extra_compile_flags_pin_it(tmp_path):
     # The SystemC and cocotb-on-VCS subclasses emit their own top flag from
-    # _get_extra_compile_flags(); the base must see those too.
+    # _get_extra_compile_flags(); the base must see those too — for the
+    # don't-double check only. The conflict is judged on the user's opts
+    # alone; see test_generated_top_never_shadows_a_configured_one.
     sim = _make_sim(tmp_path, toplevel="my_dut", family="vcs")
     assert sim._get_top_module_flags([], ["-top", "my_dut"]) == []
+
+
+def test_generated_top_never_shadows_a_configured_one(tmp_path, caplog):
+    # The two sources answer different questions (#511 review). A backend's
+    # generated top lands LATER on the command line, so scanning it for the
+    # conflict would find it, call it agreement, and stay silent while
+    # Verilator's last-wins handed it the victory over the user's pin.
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="verilator")
+    with caplog.at_level(logging.WARNING):
+        assert (
+            sim._get_top_module_flags(
+                ["--top", "other_top"], ["--top-module", "tb_top"]
+            )
+            == []
+        )
+    conflict = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+    ]
+    assert len(conflict) == 1
+    assert conflict[0].rtl_fields["configured"] == "other_top"
+
+
+def test_backend_generated_top_is_recorded_as_ours(tmp_path, caplog):
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="verilator")
+    with caplog.at_level(logging.DEBUG):
+        assert sim._get_top_module_flags([], ["--top-module", "tb_top"]) == []
+    pinned = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_already_pinned"
+    ]
+    assert len(pinned) == 1
+    assert pinned[0].rtl_fields["source"] == "backend"
+
+
+def test_configured_top_is_recorded_as_the_users(tmp_path, caplog):
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="verilator")
+    with caplog.at_level(logging.DEBUG):
+        assert sim._get_top_module_flags(["--top-module", "tb_top"], []) == []
+    pinned = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_already_pinned"
+    ]
+    assert len(pinned) == 1
+    assert pinned[0].rtl_fields["source"] == "builder-opts"
 
 
 def test_top_flag_dedup_is_token_level_not_substring(tmp_path):

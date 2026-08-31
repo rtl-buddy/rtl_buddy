@@ -1225,6 +1225,27 @@ class VlogSim:
             extras.append("--coverage-user")
         return extras
 
+    def _user_configured_top(self):
+        """The top the builder's own ``compile-time`` opts pin, or ``None``.
+
+        Returns ``(flag_as_written, module_or_None)``. USER opts only, and
+        filtered exactly as :meth:`_build_compile_plan` filters them, so a
+        subclass can ask "did the user already choose a top?" before
+        generating one of its own. A backend that generated unconditionally
+        would place its flag *after* the user's on the command line and win
+        on Verilator's last-wins precedence, silently overriding the
+        configured top and suppressing the conflict warning (#511 review).
+        """
+        spec = TOP_MODULE_FLAGS.get(self._get_simulator_family())
+        if spec is None:
+            return None
+        return _find_configured_top(
+            spec,
+            self._filter_builder_opts(
+                self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+            ),
+        )
+
     def _get_top_module_flags(
         self, builder_opts: list, extra_compile_flags: list
     ) -> list:
@@ -1244,24 +1265,33 @@ class VlogSim:
         — ``toplevel:`` stays the explicit knob.
 
         Idempotent in the same spirit as
-        :meth:`_get_verilator_assertion_flags`, and against BOTH sources of
-        compile flags: the builder's configured ``compile-time`` opts and
-        the subclass' :meth:`_get_extra_compile_flags` (SystemC always emits
-        ``--top-module``; cocotb on VCS emits ``-top``). "Already pinned" is
-        matched across every spelling the family accepts, not just the one
-        rtl_buddy emits (see :class:`_TopFlagSpec`): a project that worked
-        around #508 with ``--top spare_top`` in ``compile-time`` would
-        otherwise get a second, later ``--top-module`` that Verilator's
-        last-wins precedence hands the win to.
+        :meth:`_get_verilator_assertion_flags`. "Already pinned" is matched
+        across every spelling the family accepts, not just the one rtl_buddy
+        emits (see :class:`_TopFlagSpec`): a project that worked around #508
+        with ``--top spare_top`` in ``compile-time`` would otherwise get a
+        second, later ``--top-module`` that Verilator's last-wins precedence
+        hands the win to.
 
-        A configured flag wins — it is the more specific statement about
-        this build — and a configured top that *disagrees* with the
-        testbench's is a WARNING, because that combination is how a suite
-        silently simulates a different design than its config names. The
-        warning is claimed once per (family, configured top, declared top)
-        per process: the fact belongs to the builder config, which every
-        test of the suite shares, so warning per test would be N copies of
-        one line.
+        The two flag sources are consulted for DIFFERENT questions, and
+        keeping them apart is the point:
+
+        * ``builder_opts`` — the user's ``compile-time`` — answers "did the
+          user pin a top?". A configured top wins, because it is the more
+          specific statement about this build, and one that *disagrees* with
+          ``toplevel:`` is a WARNING: that combination is how a suite
+          silently simulates a different design than its config names. The
+          warning is claimed once per (family, configured top, declared top)
+          per process — the fact belongs to the builder config every test of
+          the suite shares, so warning per test would be N copies of one line.
+        * ``extra_compile_flags`` — what the SystemC / cocotb subclass
+          generated — answers only "would a second flag be a duplicate?".
+          Scanning it for the *conflict* would let our own generated flag
+          shadow the user's: it lands later on the command line, so the scan
+          would find it, call it agreement, and suppress the warning while
+          Verilator's last-wins handed the generated top the victory (#511
+          review). Those subclasses now suppress their own generated flag
+          when the user pinned one, so this branch only fires when there is
+          nothing of the user's to conflict with.
         """
         toplevel = getattr(self.testbench, "toplevel", None)
         if not toplevel:
@@ -1279,9 +1309,7 @@ class VlogSim:
             )
             return []
 
-        pinned = _find_configured_top(
-            spec, list(builder_opts) + list(extra_compile_flags)
-        )
+        pinned = _find_configured_top(spec, builder_opts)
         if pinned is not None:
             written, existing = pinned
             if existing == toplevel:
@@ -1293,6 +1321,7 @@ class VlogSim:
                     simulator=family,
                     flag=written,
                     toplevel=toplevel,
+                    source="builder-opts",
                 )
             elif _claim_toplevel_conflict((family, written, existing, toplevel)):
                 log_event(
@@ -1307,6 +1336,23 @@ class VlogSim:
                     # message can say "with no value" instead of "None".
                     configured=existing,
                 )
+            return []
+
+        generated = _find_configured_top(spec, extra_compile_flags)
+        if generated is not None:
+            # Ours, not the user's: never a conflict, only a duplicate to
+            # avoid. Reached when the backend generated a top and the user
+            # pinned none.
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.toplevel_already_pinned",
+                test=self.test_name,
+                simulator=family,
+                flag=generated[0],
+                toplevel=toplevel,
+                source="backend",
+            )
             return []
 
         log_event(
