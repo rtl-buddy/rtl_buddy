@@ -1477,6 +1477,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"is missing from the graph and its `targets` edge is left "
                 f"dangling, the DUT's hierarchy is not; see {fields.get('log')}"
             )
+        case "graph_build.duplicate_design_top":
+            return (
+                f"graph build: models {fields.get('models')} "
+                f"({fields.get('paths')}) are all rooted at top "
+                f"{fields.get('top')} — `module:<top>` is a global id, so "
+                "their exports would merge into one hybrid hierarchy; give "
+                "them distinct `top:` roots in models.yaml, or set "
+                "`graph: false` on the one that is not the design of record"
+            )
         case "graph_build.tb_id_collision":
             return (
                 f"graph build: {fields.get('ids')} design-tier id(s) are "

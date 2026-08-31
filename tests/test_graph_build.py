@@ -51,6 +51,7 @@ from rtl_buddy.graph import (
     merge_graphs,
     stitch_points,
 )
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.graph.merge import fingerprint, hash_inputs
 from rtl_buddy.rtl_buddy import RtlBuddy
 
@@ -2057,6 +2058,91 @@ def test_a_shared_top_does_not_leak_one_models_opt_out_onto_another(
     assert dangling_targets(graph) == []
 
 
+def test_two_graphable_models_sharing_a_top_are_refused_before_any_export(
+    graph_project: Path, tmp_path: Path
+):
+    """`module:<top>` is a global id, so one top cannot mean two designs.
+
+    DUT ids are the one thing suite qualification never rewrites — they
+    are the weld a TB or run export merges onto — so two such exports do
+    not stay apart: the merge keeps the first node's attributes and
+    unions both link sets, and the graph ends up claiming one module
+    instantiates both designs. Nothing downstream can spot that, so the
+    build refuses the input instead of writing it.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    view, record = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    message = str(excinfo.value)
+    # Both models, both models.yaml paths, the shared top, and both ways out.
+    assert "blk_a" in message and "blk_b" in message
+    assert "design/blk_a/models.yaml" in message
+    assert "design/blk_b/models.yaml" in message
+    assert "graph: false" in message and "top:" in message
+    # Refused *before* any export: nothing was handed to the viewer and
+    # no half-written graph is left behind.
+    assert _argv_lines(record) == []
+    assert not (graph_project / "artefacts" / "graph" / "graph.json").is_file()
+
+
+def test_a_shared_top_is_allowed_when_one_of_the_two_models_opts_out(
+    graph_project: Path, tmp_path: Path
+):
+    """A `graph: false` model is never exported, so it cannot collide.
+
+    This is the documented way out of the refusal above, so it has to
+    actually work — and the surviving model must still export normally.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    _rewrite_model(graph_project, "blk_b", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "built"
+    assert design.failures == []
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+    graph = json.loads(build.graph_path.read_text())
+    assert _nodes(graph)["module:blk_a"]["file"] == "design/blk_a/blk_a.sv"
+    assert dangling_targets(graph) == []
+
+
+def test_the_duplicate_top_refusal_ignores_models_out_of_scope(
+    graph_project: Path, tmp_path: Path
+):
+    """`--model` / `-c` narrow the tier, so they narrow the check too.
+
+    Only what would actually be exported can collide; refusing on a
+    model the user excluded would make the selector unusable.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    only_a = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_a"
+    ]
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        models=only_a,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+    assert next(t for t in build.tiers if t.tier == DESIGN_TIER).status == "built"
+
+
 def test_model_top_override_roots_the_export_and_the_config_stitch(
     graph_project: Path, tmp_path: Path
 ):
@@ -2165,6 +2251,26 @@ def test_end_to_end_with_the_installed_viewer(graph_project: Path):
     # The merged envelope is loadable by NetworkX readers.
     assert graph["graph"]["schema_version"] == SCHEMA_VERSION
     assert graph["directed"] is True and graph["multigraph"] is True
+
+
+def test_the_duplicate_design_top_event_has_a_human_message_case():
+    """Guidelines → Logging: an ERROR event needs its own case, or
+    `rtl_buddy.log` renders `graph build duplicate_design_top` with none
+    of the fields that say which models to go and edit."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.duplicate_design_top",
+        {
+            "top": "blk_a",
+            "models": "blk_a, blk_b",
+            "paths": "design/blk_a/models.yaml, design/blk_b/models.yaml",
+        },
+    )
+    assert msg != "graph build duplicate_design_top"
+    assert "blk_a, blk_b" in msg
+    assert "design/blk_b/models.yaml" in msg
+    assert "graph: false" in msg
 
 
 def test_the_new_warning_events_have_human_message_cases():

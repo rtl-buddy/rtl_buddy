@@ -840,6 +840,70 @@ def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
     return keep, skipped
 
 
+def _reject_duplicate_tops(project_root: Path, models: list[ModelConfig]) -> None:
+    """Refuse to export two models rooted at the same module (#479).
+
+    A design-tier export's ids are **global** by contract —
+    ``module:<top>``, ``inst:<top>/…`` — and DUT ids are deliberately the
+    one thing suite qualification never touches: they are the weld a TB
+    or run export merges onto (see the id-collision section below). So
+    two models exporting the same top do not produce two hierarchies.
+    :func:`~rtl_buddy.graph.merge.merge_graphs` keeps the first node's
+    attributes and unions both link sets, and what lands in
+    ``graph.json`` is one module node wearing one model's file and line
+    while instantiating both designs' children. Nothing downstream can
+    detect that, which is exactly why it has to be refused here: a wrong
+    graph that reads as a right one is worse than no graph.
+
+    ``top:`` is what makes this reachable on purpose, but the same
+    collision has always been possible with two ``models.yaml`` files
+    that happen to declare the same model ``name:`` — a duplicate *within*
+    one file is already fatal in
+    :class:`~rtl_buddy.config.model.ModelConfigLoader`, and this is the
+    across-files half of that rule.
+
+    Only graphable models are considered: a ``graph: false`` model is
+    never handed to the viewer, so it cannot collide with anything.
+
+    Raises:
+      FatalRtlBuddyError: naming every model that claims a shared top,
+        the ``models.yaml`` each comes from, and the two ways out.
+    """
+    by_top: dict[str, list[ModelConfig]] = {}
+    for model in models:
+        by_top.setdefault(model.get_top(), []).append(model)
+    clashes = {top: ms for top, ms in sorted(by_top.items()) if len(ms) > 1}
+    if not clashes:
+        return
+
+    lines = []
+    for top, claimants in clashes.items():
+        who = ", ".join(
+            f"{m.name} ({rel_path(project_root, m.path) if m.path else '?'})"
+            for m in claimants
+        )
+        lines.append(f"  top {top!r} is claimed by: {who}")
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.duplicate_design_top",
+            top=top,
+            models=", ".join(m.name for m in claimants),
+            paths=", ".join(
+                rel_path(project_root, m.path) for m in claimants if m.path
+            ),
+        )
+    raise FatalRtlBuddyError(
+        "graph build: two or more models would be exported with the same "
+        "top module, which the design tier cannot keep apart — "
+        "`module:<top>` is a global id, so the exports would merge into "
+        "one hybrid hierarchy:\n"
+        + "\n".join(lines)
+        + "\nGive them distinct roots with `top:` in models.yaml, or set "
+        "`graph: false` on the one that is not the design of record."
+    )
+
+
 def _stitch_link(node_id: str, module_node_id: str, link_type: str) -> dict:
     """``<config node> --elaborates_as|targets--> module:<top>``.
 
@@ -1314,7 +1378,8 @@ def build_graph(
     Never raises for a tier that could not be built — inspect
     ``failed_tiers()`` / ``has_failures()``. Only a genuinely
     unrecoverable setup problem (unreadable regression config, unwritable
-    output directory) propagates.
+    output directory, two graphable models rooted at the same module)
+    propagates.
     """
     root = Path(os.path.realpath(str(project_root)))
     search_spec = Path(spec_dir) if spec_dir is not None else root / "spec"
@@ -1362,6 +1427,9 @@ def build_graph(
             for model in models
             if not model.graph
         )
+        # Before anything is planned, let alone exported: two graphable
+        # models rooted at one module cannot both be in the design tier.
+        _reject_duplicate_tops(root, graphable)
         tb_targets: list[TestbenchTarget] = []
         run_targets: list[FlowRunTarget] = []
         if tb:
