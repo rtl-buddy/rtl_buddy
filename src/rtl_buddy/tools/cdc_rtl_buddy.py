@@ -198,6 +198,28 @@ class RtlBuddyCdc:
     # --- run ----------------------------------------------------------------
 
     def run(self) -> CdcResults:
+        # Configuration is validated first, before the availability check
+        # below: a broken analysis is broken on every machine, and reporting
+        # it as "analyzer not installed" on a box that merely lacks the tool
+        # would send the user after the wrong problem. These all raise.
+        fl_path = self._write_filelist()
+        sources = self._source_files_from_filelist(fl_path)
+        if not sources:
+            raise FatalRtlBuddyError(
+                f"{self.cdc_cfg.get_name()}: filelist {fl_path} produced no sources"
+            )
+
+        sdc_path = self.cdc_cfg.get_constraints()
+        if not os.path.isfile(sdc_path):
+            raise FatalRtlBuddyError(
+                f"{self.cdc_cfg.get_name()}: SDC not found: {sdc_path}"
+            )
+        waivers_path = self.cdc_cfg.get_waivers()
+        if waivers_path is not None and not os.path.isfile(waivers_path):
+            raise FatalRtlBuddyError(
+                f"{self.cdc_cfg.get_name()}: waivers file not found: {waivers_path}"
+            )
+
         executable = self.tool_cfg.get_executable() or "rtl-buddy-cdc"
         if not shutil.which(executable):
             # Ahead of the clear, mirroring the Vivado backend: a box without
@@ -221,10 +243,9 @@ class RtlBuddyCdc:
                 ),
             )
 
-        # Everything past the skip is a run of this analysis, however it ends:
-        # an analysis that dies in a config error is still a run, and leaving
-        # the previous run's report beside it is the same lie this fix
-        # removes (#469).
+        # Everything past the skip is a run of this analysis, however it ends,
+        # so the previous run's reports go now rather than being left to be
+        # read as this run's (#469).
         stale = self._clear_stale_outputs()
         if stale:
             log_event(
@@ -233,24 +254,6 @@ class RtlBuddyCdc:
                 "cdc.stale_artefacts_removed",
                 analysis=self.cdc_cfg.get_name(),
                 paths=stale,
-            )
-
-        fl_path = self._write_filelist()
-        sources = self._source_files_from_filelist(fl_path)
-        if not sources:
-            raise FatalRtlBuddyError(
-                f"{self.cdc_cfg.get_name()}: filelist {fl_path} produced no sources"
-            )
-
-        sdc_path = self.cdc_cfg.get_constraints()
-        if not os.path.isfile(sdc_path):
-            raise FatalRtlBuddyError(
-                f"{self.cdc_cfg.get_name()}: SDC not found: {sdc_path}"
-            )
-        waivers_path = self.cdc_cfg.get_waivers()
-        if waivers_path is not None and not os.path.isfile(waivers_path):
-            raise FatalRtlBuddyError(
-                f"{self.cdc_cfg.get_name()}: waivers file not found: {waivers_path}"
             )
 
         # Always emit JSON so we can parse violation counts; also keep a

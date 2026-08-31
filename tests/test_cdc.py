@@ -806,3 +806,40 @@ def test_lint_missing_analyzer_skips_and_keeps_the_previous_reports(
     assert calls == []
     assert kept.exists()
     assert kept_txt.exists()
+
+
+def test_lint_config_error_beats_the_missing_analyzer_skip(tmp_path, monkeypatch):
+    """A broken analysis is broken on every machine. Reporting it as "analyzer
+    not installed" on a box that merely lacks the tool would send the user
+    after the wrong problem, so the config validation runs first (#469)."""
+    import os
+
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+
+    # The analysis names an SDC that does not exist.
+    os.unlink(wrapper.cdc_cfg.get_constraints())
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        wrapper.run()
+
+
+def test_lint_missing_analyzer_skip_still_fires_for_a_valid_analysis(
+    tmp_path, monkeypatch
+):
+    """The reorder must not cost the skip: a well-configured analysis on a box
+    without the analyzer still skips with its reports intact (#469)."""
+    from rtl_buddy.runner.cdc_results import CdcSkipResults
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+
+    kept = Path(wrapper.artefact_dir) / "cdc.json"
+    kept.write_text('{"summary": {"violations": 3}}')
+
+    res = wrapper.run()
+
+    assert isinstance(res, CdcSkipResults)
+    assert kept.exists()

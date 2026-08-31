@@ -1004,3 +1004,66 @@ def test_clear_managed_outputs_removes_a_dangling_symlink(tmp_path):
 
     assert [os.path.basename(p) for p in removed] == ["top.bit"]
     assert not link.is_symlink()
+
+
+def test_protected_names_are_outputs_a_flow_really_writes():
+    """Drift guard: every sibling name in the protected set has to be one a
+    flow actually writes into `artefacts/<name>/`, or the set is stale and
+    protecting nothing (#469)."""
+    from rtl_buddy.tools.artifact_paths import SIBLING_OUTPUT_NAMES
+
+    sources = "\n".join(
+        (
+            Path(__file__).parent.parent / "src" / "rtl_buddy" / "tools" / name
+        ).read_text()
+        for name in (
+            "cdc_rtl_buddy.py",
+            "cdc_vivado.py",
+            "power_openroad.py",
+            "pnr_openroad.py",
+            "synth_yosys.py",
+            "synth_openroad.py",
+            "axi_profile_rtl_buddy.py",
+        )
+    )
+    # `cdc.json` / `cdc.txt` are built as f"cdc.{fmt}"; check the stem.
+    unwritten = [
+        name
+        for name in SIBLING_OUTPUT_NAMES
+        if name not in sources and not name.startswith("cdc.")
+    ]
+    assert not unwritten, f"protected but written by nobody: {unwritten}"
+
+
+def test_a_suffix_clear_spares_every_protected_name_but_takes_its_own():
+    """The protected set must stop a flow eating a *sibling's* outputs without
+    stopping it clearing its own. Every flow that clears by suffix names its
+    outputs after the design's top, so none of them is a fixed name and none
+    can be protected by accident (#469)."""
+    import tempfile
+    from rtl_buddy.tools import fpga_openxc7, pnr_openroad
+    from rtl_buddy.tools.artifact_paths import (
+        PROTECTED_OUTPUT_PATTERNS,
+        clear_managed_outputs,
+    )
+
+    for suffixes in (
+        fpga_openxc7._MANAGED_OUTPUT_SUFFIXES,
+        pnr_openroad._MANAGED_OUTPUT_SUFFIXES,
+        (".bit",),
+    ):
+        d = Path(tempfile.mkdtemp())
+        protected = [n for n in PROTECTED_OUTPUT_PATTERNS if "*" not in n]
+        for name in protected:
+            (d / name).write_text("sibling output\n")
+        # The flow's own outputs, named after this run's top.
+        mine = [f"demo_top{suffix}" for suffix in suffixes]
+        for name in mine:
+            (d / name).write_text("mine\n")
+
+        clear_managed_outputs(d, suffixes, owner="demo")
+
+        for name in protected:
+            assert (d / name).exists(), f"{name} was eaten by a {suffixes} clear"
+        for name in mine:
+            assert not (d / name).exists(), f"{name} should have been cleared"

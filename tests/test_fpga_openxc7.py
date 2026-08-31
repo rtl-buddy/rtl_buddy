@@ -660,3 +660,59 @@ def test_openxc7_clear_spares_the_test_runners_result_json(tmp_path, monkeypatch
     assert result_json.read_text() == '{"result": "PASS", "name": "demo_fpga"}'
     assert dispatch_envelope.exists()
     assert not stale_netlist.exists()
+
+
+def test_openxc7_clear_spares_a_co_named_cdc_analysis(tmp_path, monkeypatch):
+    """Artefact directories are keyed on a run's name, so an FPGA run and a
+    CDC analysis called the same thing share `artefacts/<name>/`. The `.json`
+    suffix clear must not eat the analyzer's report or its domain maps (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    siblings = {
+        "cdc.json": '{"summary": {"violations": 3}}',
+        "cdc.txt": "3 violations\n",
+        "domain_map.json": '{"clocks": []}',
+        "reset_map.json": '{"reset_synchronizers": []}',
+    }
+    for name, body in siblings.items():
+        (artefacts / name).write_text(body)
+    stale_netlist = artefacts / "old_top.json"
+    stale_netlist.write_text('{"stale": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name, body in siblings.items():
+        assert (artefacts / name).read_text() == body, name
+    assert not stale_netlist.exists()
+
+
+def test_openxc7_stage_failure_removes_the_earlier_stages_outputs(
+    tmp_path, monkeypatch
+):
+    """Each stage writes its output before the next reads it, so a pipeline
+    that dies at `fasm2frames` leaves the netlist and FASM its predecessors
+    wrote. A run that reports FAIL publishes nothing (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+    artefacts = Path(backend.artefact_dir)
+
+    def _dies_at_fasm2frames(cmd, **kwargs):
+        if os.path.basename(cmd[0]) == "fasm2frames":
+            return ManagedProcessResult(returncode=1)
+        return _fake_pipeline()(cmd, **kwargs)
+
+    _mock_toolchain(monkeypatch, _dies_at_fasm2frames)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "fasm2frames exited with code 1" in res.results["desc"]
+    # yosys and nextpnr had already published these.
+    assert not (artefacts / "demo_top.json").exists()
+    assert not (artefacts / "demo_top.fasm").exists()
+    assert not (artefacts / "demo_top.bit").exists()

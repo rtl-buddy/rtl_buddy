@@ -261,6 +261,20 @@ class OpenXc7Fpga(BaseFpga):
                 paths=stale,
             )
 
+    def _fail_after_stage(self, result: FpgaFailResults) -> FpgaFailResults:
+        """Fail a run whose stages have started, publishing nothing.
+
+        Every stage writes its output before the next one reads it, so a
+        pipeline that dies at `fasm2frames` or `xc7frames2bit` leaves the
+        `<top>.json` and `<top>.fasm` its predecessors wrote — and possibly a
+        partial `<top>.bit` — sitting at the fixed paths a later run, or a
+        later `--bitstream` rerun, resolves (#469). A run that reports FAIL
+        publishes nothing. Every post-stage failure return goes through here,
+        so a new stage or gate inherits the cleanup by using it.
+        """
+        self._clear_managed_outputs()
+        return result
+
     def run(self) -> FpgaResults:
         top = self.fpga_cfg.get_top()
 
@@ -373,7 +387,7 @@ class OpenXc7Fpga(BaseFpga):
                 "yosys.log",
             )
             if fail is not None:
-                return fail
+                return self._fail_after_stage(fail)
 
             nextpnr_cmd = [self._nextpnr, "--chipdb", chipdb]
             for xdc in target.xdc_files:
@@ -381,7 +395,7 @@ class OpenXc7Fpga(BaseFpga):
             nextpnr_cmd += ["--json", f"{top}.json", "--fasm", f"{top}.fasm"]
             fail = self._run_stage("nextpnr-xilinx", nextpnr_cmd, "nextpnr.log")
             if fail is not None:
-                return fail
+                return self._fail_after_stage(fail)
 
             bitstream: str | None = None
             if self.emit_bitstream:
@@ -401,7 +415,7 @@ class OpenXc7Fpga(BaseFpga):
                     stdout_path=frames_path,
                 )
                 if fail is not None:
-                    return fail
+                    return self._fail_after_stage(fail)
                 fail = self._run_stage(
                     "xc7frames2bit",
                     [
@@ -418,12 +432,14 @@ class OpenXc7Fpga(BaseFpga):
                     "xc7frames2bit.log",
                 )
                 if fail is not None:
-                    return fail
+                    return self._fail_after_stage(fail)
                 bit_path = self._bitstream_path()
                 if not os.path.isfile(bit_path):
-                    return FpgaFailResults(
-                        name=self.name + "/results",
-                        desc=f"bitstream not produced at {bit_path}",
+                    return self._fail_after_stage(
+                        FpgaFailResults(
+                            name=self.name + "/results",
+                            desc=f"bitstream not produced at {bit_path}",
+                        )
                     )
                 bitstream = bit_path
 
@@ -431,9 +447,11 @@ class OpenXc7Fpga(BaseFpga):
         try:
             metrics = parse_nextpnr_log(Path(nextpnr_log).read_text())
         except (OSError, ValueError) as e:
-            return FpgaFailResults(
-                name=self.name + "/results",
-                desc=f"failed to parse nextpnr log: {e}",
+            return self._fail_after_stage(
+                FpgaFailResults(
+                    name=self.name + "/results",
+                    desc=f"failed to parse nextpnr log: {e}",
+                )
             )
 
         log_event(

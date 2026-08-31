@@ -47,7 +47,50 @@ DISPATCH_OUTPUT_PATTERNS = (
 #: `result.json` (#469). Enforced inside :func:`clear_managed_outputs`
 #: rather than left to each caller's ``keep``, because a caller that
 #: forgets is precisely the bug.
-PROTECTED_OUTPUT_PATTERNS = (RESULT_JSON_NAME, *DISPATCH_OUTPUT_PATTERNS)
+#: The fixed-name durable outputs the *other* commands write into
+#: ``artefacts/<name>/`` and read back later. An artefact directory is keyed
+#: on a run's name and names need not be unique across commands, so a CDC
+#: analysis and an FPGA run called the same thing share one directory — where
+#: the FPGA backend's ``.json`` suffix clear would otherwise eat ``cdc.json``
+#: and the domain maps (#469). Listed here, not at each call site, because a
+#: suffix clear cannot tell whose file it is looking at.
+#:
+#: Only *fixed* names belong here. Every flow clears its own fixed-name
+#: outputs through :func:`clear_stale_artefacts`, which does not consult this
+#: set, so protecting them costs an owner nothing; the outputs a flow does
+#: clear by suffix are all named after its design's top and so cannot be
+#: spelled as constants anyway. ``tests/test_vlog_sim_paths.py`` pins both
+#: halves of that: every name below is one a flow really writes, and none of
+#: them is one a flow clears by suffix.
+SIBLING_OUTPUT_NAMES = (
+    # rb cdc, open analyzer (tools/cdc_rtl_buddy.py)
+    "cdc.json",
+    "cdc.txt",
+    "domain_map.json",
+    "reset_map.json",
+    # rb cdc, Vivado backend (tools/cdc_vivado.py)
+    "cdc.rpt",
+    # rb power (tools/power_openroad.py)
+    "power.rpt",
+    # rb pnr's design-independent reports (tools/pnr_openroad.py)
+    "route.drc.rpt",
+    "timing.rpt",
+    # rb synth (tools/synth_yosys.py, tools/synth_openroad.py)
+    "synth_netlist.v",
+    "synth.rtlil",
+    # rb axi-profile (tools/axi_profile_rtl_buddy.py). Lives in its own
+    # `artefacts/axi/<name>/` subtree today, so nothing can reach it — listed
+    # so that stays true if a flow ever globs `.json` there.
+    "axi-perf.json",
+)
+
+#: Everything :func:`clear_managed_outputs` must never remove: rtl_buddy's own
+#: bookkeeping plus the sibling commands' durable outputs above.
+PROTECTED_OUTPUT_PATTERNS = (
+    RESULT_JSON_NAME,
+    *DISPATCH_OUTPUT_PATTERNS,
+    *SIBLING_OUTPUT_NAMES,
+)
 
 
 def sanitize_artifact_component(name: str) -> str:

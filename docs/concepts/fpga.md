@@ -174,6 +174,8 @@ The bitstream goes even when the run was not asked to build one: a run without `
 
 A run that cannot find its backend tool is the exception: it deletes nothing, because a machine without the tool never ran it and has no business removing what a machine that has it produced. A configuration error is not a skip — an unknown `platform:`, or a part the backend cannot build, is reported whether or not the toolchain is present, and clears the outputs on its way out.
 
+Name FPGA runs distinctly from other commands' entries. An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names. Names that collide with a CDC analysis or a simulation test are safe for artifact clearing — those outputs are protected — but a shared directory is still easier to read when one run owns it.
+
 ## Interpret pass, fail, and skip
 
 A run passes when every backend stage exits zero, logs contain no backend error records, required reports parse, and a requested bitstream exists. It fails otherwise and names the failing stage or output.
