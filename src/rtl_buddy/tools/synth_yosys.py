@@ -7,6 +7,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
 from ..config.synth import (
     SynthConfig,
@@ -404,6 +405,27 @@ class YosysSynth:
             synth=self.synth_cfg.get_name(),
             cmd=" ".join(cmd),
         )
+
+        # `synth_netlist.v` / `synth.rtlil` are this flow's real product and
+        # the fixed-path *inputs* of `rb pnr` and `rb power`, which guard them
+        # with `isfile` only. A failed rerun would otherwise leave the last
+        # successful run's netlist in place, byte-identical, and the
+        # downstream commands would place, route and power-analyse it as
+        # though it were current (#469). Both spellings are cleared because
+        # which one the script writes depends on whether a Liberty resolved,
+        # and that can change between runs. The log is truncated below.
+        stale = clear_stale_artefacts(
+            [self._netlist_path(mapped=True), self._netlist_path()],
+            owner=self.synth_cfg.get_name(),
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.stale_artefacts_removed",
+                synth=self.synth_cfg.get_name(),
+                paths=stale,
+            )
 
         with task_status(f"synth {self.synth_cfg.get_name()}"):
             with open(log_path, "w") as log_f:

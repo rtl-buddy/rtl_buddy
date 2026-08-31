@@ -95,4 +95,4 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `<top>.gds`, `<top>.png` | Optional KLayout outputs |
 | `klayout.*.log` | Optional conversion logs |
 
-Every file above except the logs is deleted before each run, so a run that dies short of routing leaves the outputs it never wrote absent rather than the previous run's. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.
+Every file above except the logs is deleted before each run — including the optional KLayout outputs, which are cleared up front rather than at the streamout step, so a run that dies inside OpenROAD or on a host without KLayout leaves no older layout behind. A run that dies short of routing therefore leaves the outputs it never wrote absent rather than the previous run's. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.

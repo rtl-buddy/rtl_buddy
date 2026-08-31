@@ -310,9 +310,9 @@ def test_openxc7_bitstream_runs_prjxray_stages(tmp_path, monkeypatch):
 
 
 def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
-    """xc7frames2bit exiting 0 without writing must not promote the .bit an
-    earlier run left behind — nor the netlist/FASM handed between stages
-    (#469)."""
+    """xc7frames2bit exiting 0 without writing must not promote the `.bit` an
+    earlier run left behind, and each stage must consume the handoff file this
+    run's predecessor wrote rather than a previous run's (#469)."""
     backend = _make_backend(
         tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -323,12 +323,20 @@ def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
     (artefacts / "demo_top.json").write_text('{"stale": true}')
     (artefacts / "demo_top.fasm").write_text("# stale fasm\n")
 
+    # The stage handoffs are cleared too, so what nextpnr and fasm2frames
+    # consume is what this run's yosys / nextpnr actually wrote.
+    seen: dict[str, str] = {}
+
     def _no_bitstream(cmd, **kwargs):
         # Every stage "succeeds" but xc7frames2bit writes nothing.
-        base = _fake_pipeline()
-        if os.path.basename(cmd[0]) == "xc7frames2bit":
+        exe = os.path.basename(cmd[0])
+        if exe == "nextpnr-xilinx":
+            seen["json"] = (artefacts / "demo_top.json").read_text()
+        if exe == "fasm2frames":
+            seen["fasm"] = (artefacts / "demo_top.fasm").read_text()
+        if exe == "xc7frames2bit":
             return ManagedProcessResult(returncode=0)
-        return base(cmd, **kwargs)
+        return _fake_pipeline()(cmd, **kwargs)
 
     _mock_toolchain(monkeypatch, _no_bitstream)
     res = backend.run()
@@ -336,6 +344,28 @@ def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
     assert isinstance(res, FpgaFailResults)
     assert "bitstream not produced" in res.results["desc"]
     assert not (artefacts / "demo_top.bit").exists()
+    # Neither downstream stage saw the previous run's handoff files.
+    assert seen["json"] == "{}"
+    assert seen["fasm"] == "# fasm\n"
+
+
+def test_openxc7_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypatch):
+    """Matches the Vivado backend: a run not asked for a bitstream still
+    removes a previous one, so the artefact dir describes the latest run
+    (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert res.results.get("bitstream") is None
+    assert not stale_bit.exists()
 
 
 def test_openxc7_failing_timing_still_passes_with_loop_fields(tmp_path, monkeypatch):

@@ -722,6 +722,31 @@ def test_vivado_fpga_ignores_a_previous_runs_reports(tmp_path, monkeypatch):
         assert not (artefacts / filename).exists()
 
 
+def test_vivado_fpga_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypatch):
+    """The bitstream is cleared even on a run that was not asked to build one
+    (#469): the artefact dir describes the latest run, and a run reporting no
+    bitstream beside a deployable `.bit` from an older run is the same trap.
+    Rerun with `--bitstream` to regenerate it."""
+    backend = _make_backend(tmp_path, emit_bitstream=False)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    monkeypatch.setattr(
+        fpga_vivado_module, "run_managed_process", _fake_vivado(drop_bitstream=False)
+    )
+    res = backend.run()
+
+    # The run itself still passes — it produced every report it was asked for.
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert res.results.get("bitstream") is None
+    assert not stale_bit.exists()
+
+
 def test_vivado_fpga_uses_failing_timing_fixture(tmp_path, monkeypatch):
     """A routed-but-timing-failed run still passes; metrics carry the truth."""
     backend = _make_backend(tmp_path)

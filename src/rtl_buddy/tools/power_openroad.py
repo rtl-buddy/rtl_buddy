@@ -310,7 +310,17 @@ class OpenRoadPower(BasePower):
         # OpenROAD exiting 0 with no [ERROR] does not prove it rewrote it.
         # Clear it so the "power report not produced" path below stays
         # reachable instead of quoting a previous run's watts (#469).
-        clear_stale_artefacts([self._report_path()], owner=self.power_cfg.get_name())
+        stale = clear_stale_artefacts(
+            [self._report_path()], owner=self.power_cfg.get_name()
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "power.stale_artefacts_removed",
+                power=self.power_cfg.get_name(),
+                paths=stale,
+            )
 
         with task_status(f"power {self.power_cfg.get_name()} [openroad]"):
             result = subprocess.run(

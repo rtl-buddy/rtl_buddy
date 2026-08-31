@@ -16,6 +16,37 @@ from .artifact_paths import clear_stale_artefacts
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
+
+# Every non-log file `flow.tcl.template` writes under `$OUT_DIR`, as
+# `{design}`-templated basenames. Kept here rather than spelled out at the
+# call site so the clear list cannot drift away from the template — the
+# `.log` targets are deliberately absent (a log is the one artefact worth
+# keeping when the tool dies early), and `test_pnr.py` asserts this tuple
+# still covers every non-log write target the template contains.
+_FLOW_OUTPUT_NAMES = (
+    "route.drc.rpt",
+    "timing.rpt",
+    "{design}.def",
+    "{design}.routed.v",
+    "{design}.routed.sdc",
+    "{design}.routed.odb",
+)
+
+# KLayout's streamout / render outputs. Written after the OpenROAD run, but
+# cleared with it: a rerun that dies inside OpenROAD — or one on a host with
+# no KLayout — never reaches the helpers below, so an old layout would
+# otherwise survive a run that produced no layout at all.
+_KLAYOUT_OUTPUT_NAMES = ("{design}.gds", "{design}.png")
+
+
+def run_output_paths(artefact_dir: str, design: str) -> list[str]:
+    """Absolute paths of every non-log artefact one pnr run produces."""
+    return [
+        os.path.join(artefact_dir, name.format(design=design))
+        for name in _FLOW_OUTPUT_NAMES + _KLAYOUT_OUTPUT_NAMES
+    ]
+
+
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
 
 # Minimum OpenROAD release we test against. Older builds may still work for
@@ -469,26 +500,28 @@ class OpenRoadPnr:
             cmd=" ".join(cmd),
         )
 
-        # Everything the flow.tcl writes. `_count_drcs` reads the routing
-        # DRC report off a fixed path and treats a missing file as "zero
-        # violations", and the DEF / ODB are handed on to KLayout streamout
-        # and to `rb power` respectively — so a run that dies short of
-        # routing would otherwise be scored, streamed and power-analysed on
-        # a previous run's outputs. Clearing them first keeps a missing
-        # output missing (#469). The log is left to OpenROAD's own `-log`,
-        # which truncates it.
+        # Everything a run produces bar the logs. `_count_drcs` reads the
+        # routing DRC report off a fixed path and treats a missing file as
+        # "zero violations", the DEF / ODB are handed on to KLayout streamout
+        # and to `rb power` respectively, and the GDS / PNG are judged purely
+        # by "did a file appear" — so a run that dies short of routing would
+        # otherwise be scored, streamed and power-analysed on a previous
+        # run's outputs. Clearing them here, before anything can fail, keeps
+        # a missing output missing (#469); the log is left to OpenROAD's own
+        # `-log`, which truncates it.
         design = self.pnr_cfg.resolve_synth_cfg().get_top()
-        clear_stale_artefacts(
-            [
-                self._drc_report_path(),
-                os.path.join(self.artefact_dir, "timing.rpt"),
-                os.path.join(self.artefact_dir, f"{design}.def"),
-                os.path.join(self.artefact_dir, f"{design}.routed.v"),
-                os.path.join(self.artefact_dir, f"{design}.routed.sdc"),
-                os.path.join(self.artefact_dir, f"{design}.routed.odb"),
-            ],
+        stale = clear_stale_artefacts(
+            run_output_paths(self.artefact_dir, design),
             owner=self.pnr_cfg.get_name(),
         )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "pnr.stale_artefacts_removed",
+                pnr=self.pnr_cfg.get_name(),
+                paths=stale,
+            )
 
         with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad]"):
             result = subprocess.run(

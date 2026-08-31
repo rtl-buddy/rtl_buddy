@@ -6,6 +6,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
 from .synth_yosys import emit_frontend_read_cmds, slang_handles_params
 from ..config.synth import (
@@ -229,6 +230,28 @@ class OpenRoadSynth:
             synth=self.synth_cfg.get_name(),
             cmd=" ".join(cmd),
         )
+
+        # Stage 2 reads stage 1's netlist back off a fixed path, having
+        # judged stage 1 by exit code and ERROR lines alone — and the same
+        # netlist is the input `rb pnr` / `rb power` resolve. A failed rerun
+        # would leave the previous successful run's netlist for both to
+        # consume (#469). Cleared before stage 1 so stage 2 and the
+        # downstream commands see only what this run produced.
+        stale = clear_stale_artefacts(
+            [
+                self._yosys_netlist_path(),
+                os.path.join(self.artefact_dir, "synth.rtlil"),
+            ],
+            owner=self.synth_cfg.get_name(),
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.stale_artefacts_removed",
+                synth=self.synth_cfg.get_name(),
+                paths=stale,
+            )
 
         with task_status(f"synth {self.synth_cfg.get_name()} [yosys]"):
             with open(log_path, "w") as log_f:

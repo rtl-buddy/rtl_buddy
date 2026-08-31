@@ -297,7 +297,7 @@ class RtlBuddyCdc:
             log_event(
                 logger,
                 logging.DEBUG,
-                "cdc.stale_artefacts.removed",
+                "cdc.stale_artefacts_removed",
                 analysis=self.cdc_cfg.get_name(),
                 paths=stale,
             )

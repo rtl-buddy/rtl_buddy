@@ -1,5 +1,7 @@
 """Tests for the P&R config schema, OpenRoadPnr backend, and rb pnr wiring."""
 
+import os
+from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
 from unittest.mock import MagicMock, patch
@@ -600,3 +602,104 @@ def test_pnr_suite_loads_xfail_flags(tmp_path):
     assert suite.get_runs("pnr_xfail_strict")[0].is_xfail() is True
     assert suite.get_runs("pnr_xfail_strict")[0].get_xfail_strict() is True
     assert suite.get_runs("pnr_normal")[0].is_xfail() is False
+
+
+# ---------------------------------------------------------------------------
+# Pre-run artefact clearing (#469)
+# ---------------------------------------------------------------------------
+
+
+def test_pnr_clear_list_covers_every_non_log_template_output():
+    """`run_output_paths` and `flow.tcl.template` must not drift apart: every
+    non-log file the template writes under `$OUT_DIR` has to be cleared before
+    the run, or a failed rerun leaves it behind at its fixed path (#469)."""
+    import re
+    from importlib.resources import files
+    from rtl_buddy.tools import pnr_openroad
+
+    template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
+    written = set(re.findall(r"\$OUT_DIR/(\S+)", template))
+    # Logs are deliberately exempt — each is the one artefact worth keeping
+    # when the tool dies early.
+    written = {name for name in written if not name.endswith(".log")}
+    assert written, "no $OUT_DIR write targets found; did the template move?"
+
+    cleared = {
+        os.path.basename(p)
+        for p in pnr_openroad.run_output_paths("/artefacts", "${DESIGN}")
+    }
+    assert written <= cleared, f"not cleared before a run: {sorted(written - cleared)}"
+
+
+def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
+    """A run that reaches OpenROAD but writes nothing must score zero DRCs
+    rather than a previous run's violation count, and must not leave the
+    previous ODB for `rb power` to analyse (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    # `_make_pnr_cfg` points at `<tmp>/synth.yaml::demo_synth`; the run
+    # resolves it to name the design's artefacts.
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    artefacts = Path(backend.artefact_dir)
+    stale_drc = artefacts / "route.drc.rpt"
+    stale_drc.write_text("violation 1\nviolation 2\nviolation 3\n")
+    stale_odb = artefacts / "demo_top.routed.odb"
+    stale_odb.write_bytes(b"\x00stale odb\x00")
+    stale_gds = artefacts / "demo_top.gds"
+    stale_gds.write_bytes(b"\x00stale gds\x00")
+
+    def _fake_run(cmd, **_kwargs):
+        # OpenROAD exits 0 and writes only its log.
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    res = backend.run()
+
+    assert res.results["drc_count"] == 0
+    assert not stale_drc.exists()
+    assert not stale_odb.exists()
+    assert not stale_gds.exists()

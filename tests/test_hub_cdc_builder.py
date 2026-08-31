@@ -239,3 +239,55 @@ def test_build_domain_map_tolerates_violations_exit_1(tmp_path, monkeypatch):
     result = cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
     assert result is not None
     assert result.is_file()
+
+
+def test_build_domain_map_ignores_a_previous_builds_cache(tmp_path, monkeypatch):
+    """The domain map lives in the persistent `.rtl-buddy/cache/`, so a warm
+    cache outlives the build that filled it. Exit 1 is tolerated (rule
+    violations still emit a map), so a crash exiting 1 must not leave the hub
+    rendering the previous build's map (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+
+    stale = cdc_builder.domain_map_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "clocks": ["stale_clk"]}')
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        # Crashes with the "rule violations found" code, writing nothing.
+        return type("R", (), {"returncode": 1})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    with pytest.raises(FatalRtlBuddyError, match="produced no domain map"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+    assert not stale.exists()
+
+
+def test_build_domain_map_still_accepts_a_map_this_build_wrote(tmp_path, monkeypatch):
+    """The pre-run clear must not break the tolerated exit-1 path: a map the
+    current invocation writes is still returned (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+
+    stale = cdc_builder.domain_map_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"clocks": ["stale_clk"]}')
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        out = cmd[cmd.index("--emit-domain-map") + 1]
+        Path(out).write_text('{"clocks": ["fresh_clk"]}')
+        return type("R", (), {"returncode": 1})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    result = cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+    assert "fresh_clk" in result.read_text()

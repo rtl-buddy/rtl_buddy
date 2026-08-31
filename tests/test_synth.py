@@ -2373,3 +2373,104 @@ def test_synth_override_human_messages_are_specific(event, fields, expected_subs
     assert msg != event.replace(".", " ")
     for sub in expected_substrings:
         assert sub in msg, f"{event}: {sub!r} not in {msg!r}"
+
+
+# ---------------------------------------------------------------------------
+# Synthesis netlists are cleared before each run (#469)
+# ---------------------------------------------------------------------------
+
+
+def test_yosys_failed_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
+    """`synth_netlist.v` / `synth.rtlil` are the fixed-path INPUTS `rb pnr`
+    and `rb power` resolve, guarded by `isfile` alone. A failed rerun must
+    not leave the last successful run's netlist for them to consume (#469)."""
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(ys.artefact_dir) / "synth.rtlil"
+    mapped.write_text("module stale_top(); endmodule\n")
+    rtlil.write_text("# stale rtlil\n")
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _fake_managed_process(returncode=1)
+    )
+
+    result = ys.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_openroad_failed_yosys_stage_leaves_no_stale_netlist(tmp_path, monkeypatch):
+    """Stage 2 reads stage 1's netlist off a fixed path having judged stage 1
+    by exit code alone, and `rb pnr` / `rb power` read the same file. A failed
+    stage 1 must leave neither behind (#469)."""
+    from rtl_buddy.tools import synth_openroad as synth_openroad_module
+
+    model = _setup_run(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="openroad",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform="mylib",
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=synth_cfg,
+        root_cfg=_FakeRootCfgOR(
+            lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+        ),
+    )
+
+    mapped = Path(or_synth.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(or_synth.artefact_dir) / "synth.rtlil"
+    mapped.write_text("module stale_top(); endmodule\n")
+    rtlil.write_text("# stale rtlil\n")
+
+    monkeypatch.setattr(
+        synth_openroad_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+
+    def _yosys_dies(cmd, **kwargs):
+        class _R:
+            returncode = 1
+
+        return _R()
+
+    monkeypatch.setattr(synth_openroad_module.subprocess, "run", _yosys_dies)
+
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "Yosys stage failed" in result.results["desc"]
+    assert not mapped.exists()
+    assert not rtlil.exists()

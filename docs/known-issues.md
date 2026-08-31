@@ -76,9 +76,11 @@ The lock is intentionally coarse across command families and is not assumed to c
 
 ## Tool flows delete their previous outputs before running
 
-`rb cdc`, `rb fpga`, `rb pnr`, and `rb power` remove the outputs they are about to write — reports, domain maps, netlists, DEF/ODB, GDS/PNG, bitstream — from the run's artifact directory before invoking the tool. An exit code cannot distinguish "produced nothing to report" from "crashed before writing" (rtl-buddy-cdc's exit 1 means rule violations were found), so a report left by an earlier run would otherwise be parsed and its counts reported as the current result. Clearing first makes an absent report absent, and the flow then says so and names its log.
+`rb cdc`, `rb synth`, `rb fpga`, `rb pnr`, and `rb power` remove the outputs they are about to write — reports, domain maps, synthesis netlists, DEF/ODB, GDS/PNG, bitstream — from the run's artifact directory before invoking the tool. `rb hub` does the same for the `view.json` and domain map it caches under `.rtl-buddy/cache/`, which outlive the build that filled them. An exit code cannot distinguish "produced nothing to report" from "crashed before writing" (rtl-buddy-cdc's exit 1 means rule violations were found), so a report left by an earlier run would otherwise be parsed and its counts reported as the current result. Clearing first makes an absent report absent, and the flow then says so and names its log.
 
-Consequently a failed rerun leaves no output at all rather than the previous run's. Copy an artifact you want to compare against out of `artefacts/<name>/` before rerunning. Logs are exempt: each flow truncates its own log, so a crashed run still has one to read.
+Consequently a failed rerun leaves no output at all rather than the previous run's. This propagates: a failed `rb synth` leaves no netlist, so `rb pnr` and `rb power` report that you need to run `rb synth` first instead of consuming the previous netlist. An `rb fpga` run without `--bitstream` likewise removes a previously built `<top>.bit`. Copy an artifact you want to compare against out of `artefacts/<name>/` before rerunning. Logs are exempt: each flow truncates its own log, so a crashed run still has one to read.
+
+An artifact that cannot be deleted — a permissions problem, or a directory where a file belongs — fails the run with a fatal error rather than letting it proceed, since continuing would risk reporting the previous run's numbers.
 
 ## Dispatch changes build behavior
 

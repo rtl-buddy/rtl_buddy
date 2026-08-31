@@ -25,6 +25,7 @@ from ..config.model import ModelConfig
 from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..tools.artifact_paths import clear_stale_artefacts
 from ..tools.hier_rtl_buddy_view import RtlBuddyView
 from .resolver import SUPPORTED_VIEW_SCHEMA_MAJOR
 
@@ -191,6 +192,20 @@ def build_view_json(
         if test_cfg is not None
         else f"rb hub --model {model_cfg.name}"
     )
+    # Same persistent-cache hazard as the domain map above: `view.json`
+    # outlives the run that wrote it, so the `is_file()` gate below is only
+    # meaningful if nothing older can satisfy it. Narrower than the CDC case
+    # (a non-zero rc already raises), but a viewer that exits 0 without
+    # writing would otherwise leave the SPA rendering the previous build (#469).
+    removed = clear_stale_artefacts([out_path], owner=label)
+    if removed:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "hub.view_builder.stale_artefacts_removed",
+            model=model_cfg.name,
+            paths=removed,
+        )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():
         raise FatalRtlBuddyError(

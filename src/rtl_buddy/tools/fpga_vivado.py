@@ -219,14 +219,26 @@ class VivadoFpga(BaseFpga):
         # not proof that it rewrote them. Clear them so `_parse_reports`
         # either sees this run's numbers or takes its "not produced" path
         # instead of quoting a previous run's utilization/WNS/power (#469).
-        clear_stale_artefacts(
+        # The bitstream goes even without `--bitstream`: the artefact dir
+        # describes the latest run, and a run reporting "no bitstream" while
+        # a deployable `<top>.bit` from an older run sits beside it is the
+        # same trap. Rerun with `--bitstream` to regenerate it.
+        stale = clear_stale_artefacts(
             [
                 os.path.join(self.artefact_dir, filename)
                 for filename in REPORT_FILES.values()
             ]
-            + [self._bitstream_path() if self.emit_bitstream else None],
+            + [self._bitstream_path()],
             owner=self.fpga_cfg.get_name(),
         )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "fpga.stale_artefacts_removed",
+                fpga=self.fpga_cfg.get_name(),
+                paths=stale,
+            )
 
         with task_status(f"fpga {self.fpga_cfg.get_name()} [vivado]"):
             result = run_managed_process(

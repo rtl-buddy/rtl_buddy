@@ -316,16 +316,27 @@ class OpenXc7Fpga(BaseFpga):
         # bitstream check at the end is a plain `isfile`, so a stage that
         # exits 0 without writing would silently promote a previous run's
         # netlist / FASM / bitstream. Clear them so a missing output stays
-        # missing (#469); every stage log is truncated by `_run_stage`.
-        clear_stale_artefacts(
+        # missing (#469). The bitstream goes even without `--bitstream`, to
+        # match the Vivado backend: the artefact dir describes the latest
+        # run. `<top>.frames` is absent here because its stage redirects
+        # stdout into it (`open(..., "wb")`), which truncates it at write
+        # time; every stage log is likewise truncated by `_run_stage`.
+        stale = clear_stale_artefacts(
             [
                 os.path.join(self.artefact_dir, f"{top}.json"),
                 os.path.join(self.artefact_dir, f"{top}.fasm"),
-                os.path.join(self.artefact_dir, f"{top}.frames"),
                 self._bitstream_path(),
             ],
             owner=self.fpga_cfg.get_name(),
         )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "fpga.stale_artefacts_removed",
+                fpga=self.fpga_cfg.get_name(),
+                paths=stale,
+            )
 
         with task_status(f"fpga {self.fpga_cfg.get_name()} [openxc7]"):
             fail = self._run_stage(

@@ -32,6 +32,7 @@ from ..config.cdc import CdcConfig, CdcSuiteConfig
 from ..config.model import ModelConfig, resolve_back_pointer
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..tools.artifact_paths import clear_stale_artefacts
 from ..tools.vlog_filelist import VlogFilelist
 from .view_builder import cache_dir
 
@@ -229,6 +230,22 @@ def build_domain_map(
         analysis=analysis.get_name(),
         path=str(out_path),
     )
+    # The domain map lives in the *persistent* `.rtl-buddy/cache/`, not in a
+    # per-run artefact dir, so a warm cache long outlives the run that filled
+    # it. Exit 1 is tolerated below (rule violations still emit a map), so a
+    # crash exiting 1 would leave the `is_file()` gate satisfied by the
+    # previous build's map and the hub would render it with no error (#469).
+    # Removing it first makes that gate mean "this invocation wrote one".
+    removed = clear_stale_artefacts([out_path], owner=analysis.get_name())
+    if removed:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "hub.cdc_builder.stale_artefacts_removed",
+            model=model_cfg.name,
+            analysis=analysis.get_name(),
+            paths=removed,
+        )
     with open(log_path, "w") as logf:
         logf.write("$ " + " ".join(cmd) + "\n")
         logf.flush()
