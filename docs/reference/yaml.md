@@ -329,7 +329,7 @@ Models in a `rb graph build` selection must not collide, and the build refuses e
 
 Models the build is not selecting are not considered by either rule.
 
-Set `graph: false` for a model with no elaborable root — an SV `interface` published as a library entry, or a filelist of vendored IP with no module named after the model. `rb graph build` then records the model, and any testbench or non-simulation run rooted at it, under the design tier's `skipped` list instead of attempting an export that can only fail. The config tier still emits the model node, so `spec:` and test cross-references keep resolving; it carries `graph: false` and no `maps_to` edge. The opt-out is design-tier-only: `rb hier`, `rb hier-query`, and `rb axi-profile` still run against the model and still fail if its root does not elaborate. Prefer `top:` when the filelist does elaborate and only the root module name differs.
+Set `graph: false` for a model with no elaborable root — an SV `interface` published as a library entry, or a filelist of vendored IP with no module named after the model. `rb graph build` then records the model, and every testbench and non-simulation run rooted at it, under the design tier's `skipped` list instead of attempting an export that can only fail. The config tier still emits the model node, so `spec:` and test cross-references keep resolving; it carries `graph: false` and no `maps_to` edge. The opt-out is design-tier-only: `rb hier`, `rb hier-query`, and `rb axi-profile` still run against the model and still fail if its root does not elaborate. Prefer `top:` when the filelist does elaborate and only the root module name differs.
 
 ```yaml
 models:

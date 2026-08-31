@@ -1892,17 +1892,30 @@ def test_graph_false_model_skips_its_testbench_and_run_exports(
 
     design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
     assert design.failures == []
+    # Everything rooted at the opted-out model, in one place: the model,
+    # both of its testbenches, and every non-simulation run over it. The
+    # DUT-rooted ones (`tb_cocotb`, whose `toplevel:` IS the model root,
+    # and the synth/cdc/fpv runs that default their top to it) are
+    # normally dropped as redundant with the DUT export — but there is no
+    # DUT export here, so dropping them silently would understate what
+    # the opt-out cost.
     assert design.skipped == [
         {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
+        {
+            "testbench": "verif/blk_a#tb_cocotb",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
         {
             "testbench": "verif/blk_a#tb_hdl",
             "model": "blk_a",
             "reason": graph_build.GRAPH_OPT_OUT,
         },
-        # One record per DECLARED run, not per export: the fpv suite
-        # proves one checker under `bmc` and `prove`, which de-duplicate
-        # into a single export — but both are runs the user wrote down,
-        # and a skip list that named only the first would lose one.
+        {
+            "run": "fpv/blk_a#blk_a_safety",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
         {
             "run": "fpv/blk_a_chk#chk_bmc",
             "model": "blk_a",
@@ -1910,6 +1923,16 @@ def test_graph_false_model_skips_its_testbench_and_run_exports(
         },
         {
             "run": "fpv/blk_a_chk#chk_prove",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_generic",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_lint",
             "model": "blk_a",
             "reason": graph_build.GRAPH_OPT_OUT,
         },
@@ -1931,6 +1954,64 @@ def test_graph_false_model_skips_its_testbench_and_run_exports(
         if link["target"] == "module:blk_a"
     )
     assert "module:blk_a_chk" not in _nodes(graph)
+
+
+def test_a_dut_rooted_tb_and_run_are_reported_when_their_model_opts_out(
+    graph_project: Path, tmp_path: Path
+):
+    """The dedup that hides a same-root testbench must not hide a skip.
+
+    A cocotb testbench whose ``toplevel:`` IS the model root, and a synth
+    or cdc run whose top defaults to it, are normally dropped before the
+    tier ever sees them: the DUT export already covers that hierarchy, so
+    re-elaborating it would only produce the same nodes twice. When the
+    model opts out there is no DUT export to defer to, and dropping them
+    silently would contradict the promise that everything rooted at an
+    opted-out model is listed under ``skipped`` — and would understate
+    the count in the tier's summary line.
+
+    The other half is the same fixture without the opt-out: the dedup is
+    unchanged there, so those items are neither exported nor skipped.
+    """
+    view, record = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+
+    graphable = build_graph(graph_project, **common)
+    design = next(t for t in graphable.tiers if t.tier == DESIGN_TIER)
+    # `tb_cocotb` tops at blk_a, and so do the fpv/synth/cdc runs: one
+    # DUT export covers all four, and none of them is a skip.
+    assert design.skipped == []
+    assert _tb_calls(record) == [
+        argv for argv in _tb_calls(record) if "tb_hdl" in " ".join(argv)
+    ]
+    assert len(_dut_calls(record)) == 2
+    assert _run_calls(record) == []
+
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    second = tmp_path / "second"
+    second.mkdir()
+    view2, record2 = _fake_view(second)
+    opted = build_graph(
+        graph_project, force=True, **{**common, "view_executable": str(view2)}
+    )
+    design = next(t for t in opted.tiers if t.tier == DESIGN_TIER)
+    reported = {
+        record.get("testbench") or record.get("run") or record["model"]
+        for record in design.skipped
+    }
+    # The DUT-rooted testbench and the model-topped runs, which the dedup
+    # would otherwise have swallowed before the tier could report them.
+    assert "verif/blk_a#tb_cocotb" in reported
+    assert "impl/blk_a#blk_a_generic" in reported
+    assert "impl/blk_a#blk_a_lint" in reported
+    assert "fpv/blk_a#blk_a_safety" in reported
+    # Reported, never exported: blk_b is the only thing the viewer saw.
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record2)] == ["blk_b"]
+    assert _tb_calls(record2) == [] and _run_calls(record2) == []
+    assert design.failures == []
+    assert design.row_detail().endswith(f"{len(design.skipped)} skipped")
 
 
 def test_every_model_opting_out_skips_the_tier_without_failing_it(
@@ -2327,7 +2408,27 @@ def test_narrowing_an_all_opted_out_build_refreshes_the_skipped_list(
         {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
         {"model": "blk_b", "reason": graph_build.GRAPH_OPT_OUT},
         {
+            "testbench": "verif/blk_a#tb_cocotb",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
             "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a#blk_a_safety",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_generic",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_lint",
             "model": "blk_a",
             "reason": graph_build.GRAPH_OPT_OUT,
         },
@@ -2349,7 +2450,27 @@ def test_narrowing_an_all_opted_out_build_refreshes_the_skipped_list(
     assert narrow_skipped == [
         {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
         {
+            "testbench": "verif/blk_a#tb_cocotb",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
             "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a#blk_a_safety",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_generic",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_lint",
             "model": "blk_a",
             "reason": graph_build.GRAPH_OPT_OUT,
         },

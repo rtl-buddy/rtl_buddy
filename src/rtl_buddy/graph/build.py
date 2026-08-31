@@ -474,6 +474,15 @@ def testbenches_from_suites(
     is the cocotb/SystemC case, where ``toplevel:`` is required *and*
     names the DUT — there is no SV testbench above it to add.
 
+    That drop is conditional on the model being graphable. There is no
+    DUT export to defer to when the model opted out (#479), and the
+    contract is that *everything* rooted at an opted-out model is listed
+    under the design tier's ``skipped``. So a same-root testbench of an
+    opted-out model is returned here and refused one step later by
+    :func:`_split_opted_out`, which is what turns it into a skip record.
+    It is never exported either way — the two paths differ only in
+    whether the user is told.
+
     Args:
       project_root: Root that ``suite_rel`` is relative to.
       verif_dir: Tree walked for ``tests.yaml``.
@@ -508,7 +517,7 @@ def testbenches_from_suites(
             if allowed is not None and _model_key(model) not in allowed:
                 continue
             tb_top = tb.toplevel or tb.get_name()
-            if tb_top == model.get_top():
+            if tb_top == model.get_top() and model.graph:
                 continue
             key = (
                 suite_dir,
@@ -664,6 +673,11 @@ def flow_runs_from_regressions(
     construction). What remains is the formal case — a checker top
     defined in the flow's own filelist.
 
+    As with :func:`testbenches_from_suites`, that drop applies only to a
+    graphable model: an opted-out one has no DUT export to defer to, and
+    its runs are owed a skip record (#479). They are returned here and
+    refused by :func:`_split_opted_out`, never exported.
+
     Two runs are the same export when they resolve to the same
     ``(suite dir, model, flow sources, top)``: that tuple is the entire
     input to the viewer, exactly as testbench de-duplication reasons.
@@ -691,7 +705,9 @@ def flow_runs_from_regressions(
         for entry in getattr(suite_cfg, entries_attr)():
             model = entry.get_model()
             top = entry.get_top()
-            if not top or top == model.get_top():
+            if not top:
+                continue
+            if top == model.get_top() and model.graph:
                 continue
             if allowed is not None and _model_key(model) not in allowed:
                 continue
