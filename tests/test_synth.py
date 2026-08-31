@@ -3936,19 +3936,16 @@ def test_ifdef_synthesis_region_is_still_scanned(tmp_path, monkeypatch):
 
 
 def test_lifetime_scan_inputs_seeds_the_implicit_defines(tmp_path):
-    from rtl_buddy.tools.synth_yosys import (
-        YOSYS_IMPLICIT_DEFINES,
-        lifetime_scan_inputs,
-    )
+    from rtl_buddy.tools.synth_yosys import implicit_defines, lifetime_scan_inputs
 
     fl = tmp_path / "synth.f"
     fl.write_text("+incdir+inc\n+define+FROM_FILELIST=1\n-v top.sv\n")
-    incdirs, defines = lifetime_scan_inputs(str(fl), "s", {"FROM_RUN": 2})
+    incdirs, defines = lifetime_scan_inputs(str(fl), "s", {"FROM_RUN": 2}, "verilog")
     assert incdirs == [str(tmp_path / "inc")]
     # Filelist macros are reported, never applied.
     assert "FROM_FILELIST" not in defines
     assert defines["FROM_RUN"] == "2"
-    assert defines["SYNTHESIS"] == YOSYS_IMPLICIT_DEFINES["SYNTHESIS"]
+    assert defines["SYNTHESIS"] == implicit_defines("verilog")["SYNTHESIS"]
 
 
 # ---------------------------------------------------------------------------
@@ -4265,3 +4262,237 @@ def test_a_failing_filelist_with_valid_modes_is_still_an_ordinary_failure(
     result = ys.run()
     assert isinstance(result, SynthFailResults)
     assert "Filelist error" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Implicit defines are frontend-specific (review round 7, item 1)
+# ---------------------------------------------------------------------------
+
+
+def test_implicit_defines_differ_by_frontend():
+    """`read_verilog` predefines YOSYS (preproc.cc define_map_t ctor) as well
+    as SYNTHESIS; slang predefines SYNTHESIS plus its own built-ins, and no
+    YOSYS. Both confirmed with a syntax error inside the guarded region."""
+    from rtl_buddy.tools.synth_yosys import implicit_defines
+
+    verilog = implicit_defines("verilog")
+    slang = implicit_defines("slang")
+    assert verilog["YOSYS"] == "1"
+    assert verilog["SYNTHESIS"] == "1"
+    assert "YOSYS" not in slang
+    assert slang["SYNTHESIS"] == "1"
+    assert "__slang__" in slang
+    assert "__slang__" not in verilog
+    # Callers mutate the result, so it must be a fresh dict each time.
+    verilog["SCRATCH"] = "1"
+    assert "SCRATCH" not in implicit_defines("verilog")
+
+
+_IFNDEF_YOSYS_SRC = dedent("""\
+    module my_module;
+    `ifndef YOSYS
+      function bit dbg(input bit x); return x; endfunction
+    `endif
+    endmodule
+""")
+
+
+def test_ifndef_yosys_is_not_reported_under_the_verilog_frontend(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _IFNDEF_YOSYS_SRC,
+        opts_overrides={"frontend": "verilog", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_ifndef_yosys_is_reported_under_the_slang_frontend(tmp_path, monkeypatch):
+    """slang does not define YOSYS, so the guarded helper really is compiled."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _IFNDEF_YOSYS_SRC,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_ifndef_slang_builtin_is_not_reported_under_slang(tmp_path, monkeypatch):
+    src = dedent("""\
+        module my_module;
+        `ifndef __slang__
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_ifdef_yosys_region_is_scanned_under_the_verilog_frontend(
+    tmp_path, monkeypatch
+):
+    """The other side: an `` `ifdef YOSYS `` region IS compiled there."""
+    src = dedent("""\
+        module my_module;
+        `ifdef YOSYS
+          function bit yosys_only(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={"frontend": "verilog", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function yosys_only" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Frontend config errors stay fatal (review round 7, item 3)
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_frontend_is_fatal_even_with_a_static_function(tmp_path, monkeypatch):
+    """The gate's early return precedes `_write_script()`, so the frontend
+    check has to happen in `run()` or a config error becomes a plain FAIL."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        opts_overrides={"frontend": "slangg", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        ys.run()
+
+
+def test_slang_without_a_plugin_is_fatal_even_with_a_static_function(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        opts_overrides={"frontend": "slang", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="requires opts.plugin-path"):
+        ys.run()
+
+
+def test_unknown_frontend_is_fatal_before_the_filelist_too(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"frontend": "vlog"}
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        ys.run()
+
+
+def test_openroad_unknown_frontend_is_fatal_before_the_liberty_check(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad",
+            tool="openroad",
+            opts=SynthToolOptsFile(frontend="slangg"),
+        )
+    )
+    or_synth = OpenRoadSynth(
+        name="t",
+        synth_cfg=_make_synth_cfg(platform=None),
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,
+        yosys_executable="yosys",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        or_synth.run()
+
+
+def test_openroad_slang_without_a_plugin_is_fatal_before_stage_one(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad", tool="openroad", opts=SynthToolOptsFile(frontend="slang")
+        )
+    )
+    or_synth = OpenRoadSynth(
+        name="t",
+        synth_cfg=_make_synth_cfg(platform=None),
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,
+        yosys_executable="yosys",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="requires opts.plugin-path"):
+        or_synth.run()
+
+
+def test_validate_frontend_returns_the_resolved_plugin_path(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOpts
+    from rtl_buddy.tools.synth_yosys import validate_frontend
+
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+    assert validate_frontend(SynthToolOpts(frontend="verilog"), None) is None
+    assert validate_frontend(
+        SynthToolOpts(frontend="slang", plugin_path=str(plugin)), None
+    ) == str(plugin)
+
+
+def test_a_valid_frontend_still_reaches_the_gate(tmp_path, monkeypatch):
+    """The new check must not swallow the finding it precedes."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function inc" in result.results["desc"]

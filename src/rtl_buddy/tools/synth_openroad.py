@@ -14,6 +14,7 @@ from .synth_yosys import (
     find_conflicting_driver_warnings,
     lifetime_scan_inputs,
     slang_handles_params,
+    validate_frontend,
 )
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
@@ -168,7 +169,10 @@ class OpenRoadSynth:
     ) -> list[LifetimeFinding]:
         """Same pre-elaboration gate as the Yosys backend; see YosysSynth."""
         incdirs, defines = lifetime_scan_inputs(
-            fl_path, self.synth_cfg.get_name(), self.synth_cfg.get_defines()
+            fl_path,
+            self.synth_cfg.get_name(),
+            self.synth_cfg.get_defines(),
+            opts.frontend,
         )
         if resolve_static_functions_mode(opts) == "allow":
             return []
@@ -737,6 +741,10 @@ class OpenRoadSynth:
         opts = self._resolve_yosys_opts()
         resolve_static_functions_mode(opts)
         resolve_conflicting_drivers_mode(opts)
+        # An unknown frontend or a missing slang plugin is a config error too,
+        # and stage 1's gates return before _write_yosys_script() would have
+        # reached the same check inside emit_frontend_read_cmds().
+        validate_frontend(opts, self.root_cfg)
 
         lib_paths = self._resolve_lib_paths()
         lef_paths = self._resolve_lef_paths()

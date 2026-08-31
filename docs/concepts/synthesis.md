@@ -202,9 +202,14 @@ invocation exactly:
 
 - the run's `defines:`, which is all `rb synth` passes to `read_verilog -D` /
   `read_slang -D`;
-- `SYNTHESIS`, which both Yosys frontends define for themselves — so a
-  `` `ifndef SYNTHESIS `` simulation-only helper is never reported, and an
-  `` `ifdef SYNTHESIS `` region is.
+- the macros the selected frontend defines for itself, which differ:
+  `read_verilog` predefines `SYNTHESIS` and `YOSYS`, while `read_slang`
+  predefines `SYNTHESIS` and slang's own built-ins (`__slang__`, the
+  `SV_COV_*` constants) but **not** `YOSYS`. So a `` `ifndef SYNTHESIS ``
+  simulation-only helper is never reported under either, an
+  `` `ifdef SYNTHESIS `` region always is, and a `` `ifndef YOSYS `` helper is
+  reported only under `frontend: slang`, which is the frontend that compiles
+  it.
 
 `+define+` entries in the generated filelist are **not** included, because the
 synthesis flow does not pass them to Yosys either; seeding the scan with them
@@ -221,6 +226,10 @@ survives; Yosys's `read_verilog` clears its command-line cache as well, so
 nothing does. A `` `ifndef `` guarded on a `defines:` macro after an
 `` `undefineall `` is therefore compiled under `frontend: verilog` and not
 under `frontend: slang`, and the scan reports it accordingly.
+
+An `` `include `` chain deeper than 1024 — slang's own limit — fails the run
+with the tail of the chain named, rather than silently skipping the header and
+losing whatever it declares.
 
 The macro table follows the compilation-unit boundary the frontend actually
 uses. With `single-unit: false` — the default — each source is its own
@@ -242,6 +251,7 @@ directions:
 | Macro bodies are skipped at their `` `define `` | A declaration produced by a macro is never reported, in either direction; macros are expanded by the compiler, not by the scan |
 | `-y` library directories are not scanned | The filelist never names their contents, so declarations there are missed |
 | An unresolvable `` `include `` is logged at DEBUG and skipped | That header's declarations are missed; the run is not failed |
+| An unknown `frontend` or a missing slang plugin | Fails the run as a configuration error (exit 2) before the gates, not as a synthesis `FAIL` |
 | `` `if `` expression evaluation is not implemented | Only definedness is evaluated. This is not SystemVerilog anyway, so it costs nothing in practice |
 | Scope nesting is tracked by keyword pairing | Pathological but legal code can change which declarations are exempt, in either direction |
 

@@ -1081,3 +1081,77 @@ def test_undefineall_reaches_the_next_source_under_single_unit(tmp_path):
     paths = [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
     findings = scan_files(paths, defines={"SYNTHESIS": "1"}, single_unit=True)
     assert [f.name for f in findings] == ["hidden"]
+
+
+# ---------------------------------------------------------------------------
+# Include depth is bounded loudly, never silently (review round 7, item 2)
+# ---------------------------------------------------------------------------
+
+
+def _include_chain(tmp_path, length, *, leaf_body):
+    """`f0.sv` includes `f1.svh` includes ... includes the leaf."""
+    for i in range(length):
+        nxt = f"f{i + 1}.svh"
+        (tmp_path / (f"f{i}.sv" if i == 0 else f"f{i}.svh")).write_text(
+            f'`include "{nxt}"\n'
+        )
+    (tmp_path / f"f{length}.svh").write_text(leaf_body)
+    return str(tmp_path / "f0.sv")
+
+
+def test_a_deep_acyclic_include_chain_is_followed(tmp_path):
+    """The old cap silently dropped the leaf of a chain the compiler would
+    happily keep preprocessing."""
+    top = _include_chain(
+        tmp_path, 60, leaf_body="function int deep; return 1; endfunction\n"
+    )
+    findings = scan_files([str(top)])
+    assert [f.name for f in findings] == ["deep"]
+    assert findings[0].path.endswith("f60.svh")
+
+
+def test_exceeding_the_include_depth_raises_instead_of_dropping(tmp_path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools import sv_lifetime_scan
+
+    monkey_depth = 4
+    original = sv_lifetime_scan.MAX_INCLUDE_DEPTH
+    sv_lifetime_scan.MAX_INCLUDE_DEPTH = monkey_depth
+    try:
+        top = _include_chain(
+            tmp_path,
+            monkey_depth + 3,
+            leaf_body="function int deep; return 1; endfunction\n",
+        )
+        with pytest.raises(FatalRtlBuddyError, match="include nesting deeper than"):
+            scan_files([str(top)])
+    finally:
+        sv_lifetime_scan.MAX_INCLUDE_DEPTH = original
+
+
+def test_the_depth_error_names_the_chain(tmp_path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools import sv_lifetime_scan
+
+    original = sv_lifetime_scan.MAX_INCLUDE_DEPTH
+    sv_lifetime_scan.MAX_INCLUDE_DEPTH = 2
+    try:
+        top = _include_chain(tmp_path, 6, leaf_body="// nothing\n")
+        with pytest.raises(FatalRtlBuddyError) as excinfo:
+            scan_files([str(top)])
+    finally:
+        sv_lifetime_scan.MAX_INCLUDE_DEPTH = original
+    assert ".svh" in str(excinfo.value)
+    assert " -> " in str(excinfo.value)
+
+
+def test_a_cycle_is_still_stopped_quietly(tmp_path):
+    """A cycle is not an error — an include guard re-including its own file is
+    ordinary — so it must not be reported as a depth overflow."""
+    (tmp_path / "a.svh").write_text('`include "b.svh"\n')
+    (tmp_path / "b.svh").write_text(
+        '`include "a.svh"\nfunction int f; return 1; endfunction\n'
+    )
+    top = tmp_path / "top.sv"
+    top.write_text('module m;\n`include "a.svh"\nendmodule\n')
+    assert [f.name for f in scan_files([str(top)])] == ["f"]

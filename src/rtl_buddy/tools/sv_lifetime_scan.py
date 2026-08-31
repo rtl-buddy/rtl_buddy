@@ -61,6 +61,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
 logger = logging.getLogger(__name__)
@@ -124,8 +125,14 @@ _STATEMENT_RESET = frozenset({"begin"})
 # Separators that make a subroutine name a qualified, out-of-body definition.
 _NAME_QUALIFIERS = ("::", ".")
 
-# Guard against an `include cycle the realpath dedupe somehow lets through.
-_MAX_INCLUDE_DEPTH = 32
+# Runaway guard only: a real `include cycle is already stopped by the active
+# path check in _expand_file, so anything that reaches this limit is a chain
+# deeper than any compiler would accept. Matched to slang's own
+# PreprocessorOptions::maxIncludeDepth so the scan does not give up on
+# anything slang would still preprocess. Exceeding it raises rather than
+# silently dropping the header: a skipped file is a missed finding, and this
+# gate exists because missed findings are invisible.
+MAX_INCLUDE_DEPTH = 1024
 
 
 @dataclass(frozen=True)
@@ -260,8 +267,16 @@ def _expand_file(path: str, state: _ScanState, depth: int = 0) -> list[_Token]:
     """Tokens for `path` and everything it includes, with inactive
     `` `ifdef `` regions and macro bodies removed."""
     real = os.path.realpath(path)
-    if real in state.active or depth > _MAX_INCLUDE_DEPTH:
+    # A cycle is not an error: `\`include` of a file already on the path is
+    # how include guards behave, and the guarded body is empty the second time.
+    if real in state.active:
         return []
+    if depth > MAX_INCLUDE_DEPTH:
+        chain = " -> ".join(state.active[-5:] + [path])
+        raise FatalRtlBuddyError(
+            f"`include nesting deeper than {MAX_INCLUDE_DEPTH} while scanning "
+            f"for static-lifetime subroutines; last of the chain: {chain}"
+        )
     text = _read(path)
     if text is None:
         return []

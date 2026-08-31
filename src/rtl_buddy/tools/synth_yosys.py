@@ -140,17 +140,59 @@ def filelist_scan_context(fl_path: str) -> tuple[list[str], dict[str, str]]:
     return incdirs, defines
 
 
-# Both Yosys frontends define this themselves, so every synthesis elaboration
-# sees it whether or not the project asks for it: `read_verilog` sets it in
-# verilog_frontend.cc, and yosys-slang pushes `SYNTHESIS=1` unless
-# `--no-synthesis-define` is given, which rtl_buddy never passes. The scan has
-# to agree, or every `\`ifndef SYNTHESIS` simulation-only helper -- a very
-# common idiom -- becomes a finding for code synthesis never compiles.
-YOSYS_IMPLICIT_DEFINES: dict[str, str] = {"SYNTHESIS": "1"}
+# Macros each frontend defines for itself, so every synthesis elaboration sees
+# them whether or not the project asks for them. The scan has to agree, or a
+# guarded region the compiler never reads -- `\`ifndef SYNTHESIS` around a
+# simulation-only helper is a very common idiom -- becomes a finding.
+#
+# Verified by source and then confirmed with a deliberate syntax error inside
+# the guarded region, per frontend:
+#
+#   read_verilog  SYNTHESIS=1 (verilog_frontend.cc:494, unless -formal, which
+#                 rtl_buddy never passes) and YOSYS=1, added by the
+#                 define_map_t constructor in preproc.cc:335.
+#   read_slang    SYNTHESIS=1, pushed by yosys-slang (slang_frontend.cc:3299)
+#                 unless --no-synthesis-define, which rtl_buddy never passes,
+#                 plus slang's own built-ins. YOSYS is NOT defined here.
+_VERILOG_IMPLICIT_DEFINES: dict[str, str] = {"SYNTHESIS": "1", "YOSYS": "1"}
+
+_SLANG_IMPLICIT_DEFINES: dict[str, str] = {
+    "SYNTHESIS": "1",
+    # slang built-ins, re-added by Preprocessor::undefineAll().
+    "__slang__": "1",
+    "__slang_major__": "1",
+    "__slang_minor__": "1",
+    "__FILE__": "",
+    "__LINE__": "",
+    # LRM coverage constants slang predefines; guarding on one is unusual but
+    # legal, and a spurious finding is worse than a redundant entry.
+    "SV_COV_START": "0",
+    "SV_COV_STOP": "1",
+    "SV_COV_RESET": "2",
+    "SV_COV_CHECK": "3",
+    "SV_COV_MODULE": "10",
+    "SV_COV_HIER": "11",
+    "SV_COV_ASSERTION": "20",
+    "SV_COV_FSM_STATE": "21",
+    "SV_COV_STATEMENT": "22",
+    "SV_COV_TOGGLE": "23",
+    "SV_COV_OVERFLOW": "-2",
+    "SV_COV_ERROR": "-1",
+    "SV_COV_NOCOV": "0",
+    "SV_COV_OK": "1",
+    "SV_COV_PARTIAL": "2",
+}
+
+
+def implicit_defines(frontend: str) -> dict[str, str]:
+    """Macros `frontend` defines for itself, before any `-D` is applied."""
+    if frontend == "slang":
+        return dict(_SLANG_IMPLICIT_DEFINES)
+    return dict(_VERILOG_IMPLICIT_DEFINES)
 
 
 def lifetime_scan_inputs(
-    fl_path: str, synth_name: str, run_defines: dict | None
+    fl_path: str, synth_name: str, run_defines: dict | None, frontend: str
 ) -> tuple[list[str], dict[str, str]]:
     """Include dirs and macros for the lifetime scan, matching what Yosys sees.
 
@@ -161,16 +203,16 @@ def lifetime_scan_inputs(
     therefore make it evaluate `` `ifdef `` regions differently from Yosys and
     silently skip a static-lifetime declaration that really is elaborated.
 
-    So the macro table comes from the run's ``defines:`` plus the macros the
-    Yosys frontends define for themselves (:data:`YOSYS_IMPLICIT_DEFINES`).
-    The filelist
-    macros the synth flow ignores are reported once per run instead: that
+    So the macro table comes from the run's ``defines:`` plus whatever the
+    selected frontend defines for itself (:func:`implicit_defines`). The
+    filelist macros the synth flow ignores are reported once per run instead:
+    that
     divergence from the simulation flow (which does apply them) predates this
     gate and is a separate fix — quietly starting to forward them here would
     change existing synthesis results.
     """
     incdirs, filelist_defines = filelist_scan_context(fl_path)
-    defines = dict(YOSYS_IMPLICIT_DEFINES)
+    defines = implicit_defines(frontend)
     defines.update({str(k): str(v) for k, v in (run_defines or {}).items()})
     ignored = sorted(name for name in filelist_defines if name not in defines)
     if ignored:
@@ -218,6 +260,35 @@ def resolve_plugin_path(plugin_path: str | None, root_cfg) -> str | None:
     if root_cfg is None:
         return str(p.resolve())
     return str((Path(root_cfg.get_project_rootdir()) / p).resolve())
+
+
+def validate_frontend(opts: SynthToolOpts, root_cfg) -> str | None:
+    """Check the frontend selection, returning the resolved plugin path.
+
+    Raises :class:`FatalRtlBuddyError` for an unknown ``frontend`` and for
+    ``frontend: slang`` with no plugin to load. These are configuration
+    errors, so they must exit 2 rather than become a per-run ``FAIL`` -- and
+    the correctness gates return before ``_write_script()`` ever calls
+    :func:`emit_frontend_read_cmds`, so ``run()`` calls this up front instead
+    of relying on elaboration to reach the same checks.
+
+    Returns the absolute plugin path for slang, and None for the verilog
+    frontend, which needs no plugin.
+    """
+    if opts.frontend == "verilog":
+        return None
+    if opts.frontend == "slang":
+        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
+        if not plugin_abs:
+            raise FatalRtlBuddyError(
+                "frontend: slang requires opts.plugin-path to be set "
+                "(path to yosys-slang's slang.so), or the "
+                f"{SLANG_PLUGIN_ENV} environment variable to point at it"
+            )
+        return plugin_abs
+    raise FatalRtlBuddyError(
+        f"unknown synth frontend {opts.frontend!r}; expected 'verilog' or 'slang'"
+    )
 
 
 def emit_frontend_read_cmds(
@@ -274,13 +345,7 @@ def emit_frontend_read_cmds(
         return cmds
 
     if opts.frontend == "slang":
-        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
-        if not plugin_abs:
-            raise FatalRtlBuddyError(
-                "frontend: slang requires opts.plugin-path to be set "
-                "(path to yosys-slang's slang.so), or the "
-                f"{SLANG_PLUGIN_ENV} environment variable to point at it"
-            )
+        plugin_abs = validate_frontend(opts, root_cfg)
         cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
         flags: list[str] = []
         if defines:
@@ -296,9 +361,8 @@ def emit_frontend_read_cmds(
         )
         return cmds
 
-    raise FatalRtlBuddyError(
-        f"unknown synth frontend {opts.frontend!r}; expected 'verilog' or 'slang'"
-    )
+    validate_frontend(opts, root_cfg)
+    raise AssertionError("unreachable: validate_frontend rejects other frontends")
 
 
 def slang_handles_params(opts: SynthToolOpts) -> bool:
@@ -462,7 +526,10 @@ class YosysSynth:
         # Resolved before the mode check so the filelist-defines warning is
         # reported even when the gate itself is switched off.
         incdirs, defines = lifetime_scan_inputs(
-            fl_path, self.synth_cfg.get_name(), self.synth_cfg.get_defines()
+            fl_path,
+            self.synth_cfg.get_name(),
+            self.synth_cfg.get_defines(),
+            opts.frontend,
         )
         if resolve_static_functions_mode(opts) == "allow":
             return []
@@ -634,6 +701,10 @@ class YosysSynth:
         opts = self._resolve_opts()
         static_mode = resolve_static_functions_mode(opts)
         conflicting_mode = resolve_conflicting_drivers_mode(opts)
+        # Same reason: an unknown frontend or a missing slang plugin is a
+        # config error, and the gates below return before `_write_script()`
+        # would have reached the same check inside emit_frontend_read_cmds().
+        validate_frontend(opts, self.root_cfg)
 
         try:
             fl_path = self._write_filelist()
