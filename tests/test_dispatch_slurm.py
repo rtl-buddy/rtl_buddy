@@ -28,6 +28,14 @@ def _no_tool_check(monkeypatch):
     monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_cluster(monkeypatch):
+    # $SBATCH_CLUSTERS selects a cluster exactly as `--clusters` does
+    # (#509), so a developer or CI host that exports it would otherwise
+    # change what every probe in this module asks for.
+    monkeypatch.delenv("SBATCH_CLUSTERS", raising=False)
+
+
 def _spec(**overrides) -> TestJobSpec:
     defaults = dict(
         test_name="basic",
@@ -1722,3 +1730,135 @@ def test_an_ambiguous_cluster_still_earns_the_submit_failure_hint(
             [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
         )
     assert "cfg-dispatch.max-array-size" in str(excinfo.value)
+
+
+def _probe_recording_run(calls, results, *, max_array_size, probes):
+    """A fake subprocess.run that RECORDS the scontrol probe argv."""
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probes.append(list(argv))
+            return _scontrol_result(max_array_size)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    return run
+
+
+def test_the_cluster_can_come_from_the_environment(monkeypatch, tmp_path):
+    """Slurm reads $SBATCH_CLUSTERS as `--clusters`, so the probe must too."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "from-env")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.cluster == "from-env"
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "-M", "from-env", "show", "config"]]
+
+
+def test_sbatch_args_beat_the_environment(monkeypatch, tmp_path):
+    """Slurm gives the command line precedence; so does the probe."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "from-env")
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=from-args"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.cluster == "from-args"
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "-M", "from-args", "show", "config"]]
+
+
+def test_a_blank_environment_selection_means_the_local_cluster(monkeypatch):
+    """An exported-but-empty variable selects nothing, as it does for sbatch."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "   ")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.cluster is None
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "show", "config"]]
+
+
+def test_several_clusters_in_the_environment_leave_the_limit_unknown(
+    monkeypatch, caplog
+):
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=1001, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "alpha,beta")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        assert backend._max_elements_per_array(cwd="/proj/verif/blk") is None
+    assert probes == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert fields["cluster"] == "alpha,beta"
+
+
+def test_the_reserved_all_selection_leaves_the_limit_unknown(monkeypatch, caplog):
+    """`--clusters=all` names no single cluster (#509 review).
+
+    `scontrol -M all show config` answers with one config block per
+    cluster, so a first-match regex would pin whichever sorted first — a
+    limit belonging to a cluster the array may never be submitted to.
+    """
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=1001, probes=probes),
+    )
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=all"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("INFO"):
+        assert backend._max_elements_per_array(cwd="/proj/verif/blk") is None
+    assert probes == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert fields["cluster"] == "all"
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args,env,expected",
+    [
+        ([], None, None),
+        (["-M", "remote"], None, "remote"),
+        ([], "from-env", "from-env"),
+        (["--clusters=alpha,beta"], None, None),
+        (["--clusters=all"], None, None),
+        (["--clusters=ALL"], None, None),
+        ([], "alpha,beta", None),
+    ],
+)
+def test_cluster_property_names_one_cluster_or_nothing(
+    monkeypatch, sbatch_args, env, expected
+):
+    """`backend.cluster` is the single cluster a `-M` may name, or None.
+
+    Any per-cluster scheduler query (squeue, sacct, scontrol) reads this,
+    so a multi-cluster selection has to resolve to None: qualifying a query
+    with one name out of several would ask about a cluster nothing was
+    necessarily submitted to.
+    """
+    if env is not None:
+        monkeypatch.setenv("SBATCH_CLUSTERS", env)
+    cfg = DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    assert SlurmDispatchBackend(cfg).cluster == expected

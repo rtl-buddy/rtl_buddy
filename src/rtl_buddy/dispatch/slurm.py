@@ -29,6 +29,7 @@ head process cwd is re-anchored per suite during a regression.
 
 import logging
 import math
+import os
 import re
 import shlex
 import subprocess
@@ -111,6 +112,26 @@ _SCONTROL_TIMEOUT_S = 30
 # the LOCAL slurmctld, whose MaxArraySize says nothing about the cluster
 # the arrays are actually submitted to (#509 review).
 _CLUSTER_OPTS = ("-M", "--clusters", "--cluster")
+# Slurm documents this as the equivalent of `--clusters`, with the command
+# line winning — so `sbatch-args` is consulted first and this only fills in
+# for a site that exports the selection instead of writing it (#509 review).
+_CLUSTER_ENV = "SBATCH_CLUSTERS"
+# The reserved value: query EVERY registered cluster and submit to whichever
+# can start first. Like a comma-separated list it names no single cluster.
+_CLUSTER_ALL = "all"
+
+
+def _is_multi_cluster(value: str) -> bool:
+    """Does this selection name more than one cluster?
+
+    Both spellings Slurm gives for "let the scheduler choose": an explicit
+    ``a,b`` list and the reserved ``all``. Which cluster runs the array is
+    then decided at submit, so no single ``MaxArraySize`` describes it —
+    and ``scontrol -M all show config`` answers with one config block per
+    cluster, where a first-match regex would silently pick a limit
+    belonging to whichever cluster sorted first.
+    """
+    return "," in value or value.strip().lower() == _CLUSTER_ALL
 
 
 def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
@@ -309,10 +330,10 @@ class SlurmDispatchBackend(DispatchBackend):
         # _max_elements_per_array — so constructing a backend never shells
         # out, and a run with no array never probes at all.
         self.max_array_size = getattr(dispatch_cfg, "max_array_size", None)
-        # ...and which cluster to ask for it, when `sbatch-args` submits
-        # somewhere other than the local one. Cached per cluster: the answer
-        # is a property of the cluster probed, not of this process.
-        self.cluster = _selected_cluster(self.sbatch_args)
+        # ...cached per cluster selection: the answer is a property of the
+        # cluster probed, not of this process. The selection itself is
+        # resolved on demand (see `cluster`), not frozen here, because
+        # $SBATCH_CLUSTERS is part of it and is read when the probe runs.
         self._elements_per_array_by_cluster: dict[str | None, int | None] = {}
         self._acct_interval_s = self._resolve_accounting_frequency()
 
@@ -528,6 +549,45 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return JobHandle(job_id=job_id, spec=spec)
 
+    def _cluster_selection(self) -> str | None:
+        """Cluster selection as written, or ``None`` for the local cluster.
+
+        ``sbatch-args`` first, then ``$SBATCH_CLUSTERS``: Slurm documents
+        the variable as the equivalent of ``--clusters`` with the command
+        line taking precedence, and this backend passes ``sbatch-args``
+        verbatim to sbatch, so the same precedence has to hold here or the
+        probe would describe a different cluster than the submit. Read at
+        probe time rather than frozen at construction, since the
+        environment a head runs in is not this object's to snapshot. An
+        empty or whitespace-only variable selects nothing, exactly as it
+        does for sbatch.
+
+        Multi-cluster values (``a,b``, ``all``) come back verbatim — they
+        are still what the user wrote, and the diagnostics name them.
+        """
+        selected = _selected_cluster(self.sbatch_args)
+        if selected is not None:
+            return selected
+        return (os.environ.get(_CLUSTER_ENV) or "").strip() or None
+
+    @property
+    def cluster(self) -> str | None:
+        """The ONE cluster this backend addresses, or ``None``.
+
+        ``None`` covers three cases that a per-cluster scheduler query must
+        treat alike: no selection (the local cluster), a comma-separated
+        list, and the reserved ``all``. In the latter two Slurm picks the
+        cluster at submit, so there is no single name any probe could be
+        qualified with — a caller that appended ``-M <this>`` to a query
+        would be asking about a cluster nothing was necessarily submitted
+        to. Read :meth:`_cluster_selection` for what the user actually
+        wrote.
+        """
+        selection = self._cluster_selection()
+        if selection is None or _is_multi_cluster(selection):
+            return None
+        return selection
+
     def _max_elements_per_array(self, *, cwd: str | None) -> int | None:
         """Elements one array may hold, resolved once per backend instance.
 
@@ -546,13 +606,15 @@ class SlurmDispatchBackend(DispatchBackend):
         before #509 — because guessing a ceiling would split groups on
         clusters that never needed it.
         """
-        if self.cluster not in self._elements_per_array_by_cluster:
-            self._elements_per_array_by_cluster[self.cluster] = (
-                self._probe_max_elements(cwd=cwd)
+        selection = self._cluster_selection()
+        if selection not in self._elements_per_array_by_cluster:
+            self._elements_per_array_by_cluster[selection] = self._probe_max_elements(
+                cwd=cwd
             )
-        return self._elements_per_array_by_cluster[self.cluster]
+        return self._elements_per_array_by_cluster[selection]
 
     def _probe_max_elements(self, *, cwd: str | None) -> int | None:
+        selection = self._cluster_selection()
         if self.max_array_size is not None:
             log_event(
                 logger,
@@ -562,21 +624,23 @@ class SlurmDispatchBackend(DispatchBackend):
                 max_array_size=self.max_array_size,
                 max_elements=self.max_array_size - 1,
                 source="config",
-                cluster=self.cluster,
+                cluster=selection,
             )
             return self.max_array_size - 1
-        if self.cluster is not None and "," in self.cluster:
-            # `--clusters=a,b` lets SLURM pick whichever can run the job
-            # soonest, and the decision is made at submit. Probing either
-            # one would pin a limit the other may not have, so the honest
-            # answer is "unknown" and the pinned config value.
+        if selection is not None and _is_multi_cluster(selection):
+            # `--clusters=a,b` (and the reserved `all`) let Slurm pick
+            # whichever can run the job soonest, and the decision is made at
+            # submit. Probing one of them would pin a limit the others may
+            # not have — and `-M all` answers with several config blocks, so
+            # the regex would take whichever came first. The honest answer
+            # is "unknown", recovered by the pinned config value.
             self._log_unknown(
-                f"sbatch-args select several clusters ({self.cluster}); which "
-                "one runs the array is decided at submit, so no single "
+                f"the cluster selection ({selection}) names several clusters; "
+                "which one runs the array is decided at submit, so no single "
                 "MaxArraySize applies"
             )
             return None
-        cluster_argv = [] if self.cluster is None else ["-M", self.cluster]
+        cluster_argv = [] if selection is None else ["-M", selection]
         try:
             proc = subprocess.run(
                 ["scontrol", *cluster_argv, "show", "config"],
@@ -601,7 +665,7 @@ class SlurmDispatchBackend(DispatchBackend):
                     max_array_size=value,
                     max_elements=value - 1,
                     source="scontrol",
-                    cluster=self.cluster,
+                    cluster=selection,
                 )
                 return value - 1
             # A cluster reporting MaxArraySize < 2 has arrays disabled; no
@@ -622,7 +686,9 @@ class SlurmDispatchBackend(DispatchBackend):
             "dispatch.max_array_size_unknown",
             backend=self.name,
             error=reason,
-            cluster=self.cluster,
+            # As written, not the resolved single cluster: a multi-cluster
+            # selection resolves to None and naming it is the diagnosis.
+            cluster=self._cluster_selection(),
             # An oversized group is what this probe exists to split, so say
             # how to get chunking back when the cluster cannot be asked.
             hint="set cfg-dispatch.max-array-size to split oversized groups",
@@ -647,7 +713,8 @@ class SlurmDispatchBackend(DispatchBackend):
         array" rather than on the full sentence, so a Slurm that words the
         rest of it differently still gets the hint.
         """
-        if self._elements_per_array_by_cluster.get(self.cluster) is not None:
+        resolved = self._elements_per_array_by_cluster.get(self._cluster_selection())
+        if resolved is not None:
             return ""
         if "job array" not in stderr.lower():
             return ""
