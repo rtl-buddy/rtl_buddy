@@ -357,8 +357,30 @@ def pinned_simv_path(builder_cfg):
 # Matches the option prefixes VlogFilelist emits into run.f (see
 # VlogFilelist._extract): `+incdir+`, `+libext+`, `+define+`, `-v `, `-y `,
 # `-F `. A `+define+` entry never resolves to a file, so it stamps as a raw
-# line — enough for the fingerprint to notice when the defines change.
-_FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*)$")
+# line — enough for the fingerprint to notice when the defines change. The
+# option is captured as well as the path: `+incdir+` and `-y ` are the two
+# that name a *directory*, and they are stamped by listing it (#478).
+_FILELIST_OPTION_RE = re.compile(r"^(\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*)$")
+
+_INCDIR_OPTION = "+incdir+"
+_LIBEXT_OPTION = "+libext+"
+_LIBRARY_DIR_OPTION = "-y"
+
+# What `-y` will try when it resolves a module name, absent any `+libext+`
+# in the filelist. The union of the families rtl_buddy drives rather than a
+# per-family table: Verilator defaults to `+libext+.v+.sv`, VCS and Icarus
+# to `.v` alone, and the listing must over-approximate — a suffix left out
+# is a file that can appear in a library dir without invalidating anything,
+# which is the failure this stamp exists to stop.
+_DEFAULT_LIB_EXTENSIONS = (".v", ".sv")
+
+# A directory-valued source entry is `[line, None, None, None, listing]`:
+# four elements of the ordinary `[path, size, mtime_ns, sha]` shape, all
+# empty because a directory has no content of its own, plus the listing of
+# the regular files inside it. The extra element is deliberate — a stamp
+# written before #478 has four, so it cannot compare equal and fails closed
+# into exactly one rebuild (the #494 precedent).
+_DIRECTORY_ENTRY_LEN = 5
 
 # Verilator writes a make-style dependency file naming every input the
 # verilation consumed — sources, headers reached through `+incdir+`/`-y`,
@@ -702,6 +724,43 @@ def _hashed_stat_entry(
     ]
 
 
+def _filelist_lib_extensions(lines) -> tuple[str, ...]:
+    """The suffixes a ``-y`` search could resolve, from the filelist's ``+libext+``.
+
+    ``+libext+`` is filelist-wide rather than positional, so this reads the
+    whole file once before any entry is stamped. Both spellings are
+    accepted: one suffix per directive, and the ``+``-joined form
+    (``+libext+.v+.sv``) every simulator also takes.
+
+    With no directive at all the simulators' own defaults apply, and
+    :data:`_DEFAULT_LIB_EXTENSIONS` over-approximates them on purpose — see
+    that constant.
+    """
+    extensions: dict[str, None] = {}
+    for line in lines:
+        if not line.startswith(_LIBEXT_OPTION):
+            continue
+        for suffix in line[len(_LIBEXT_OPTION) :].split("+"):
+            if suffix:
+                extensions.setdefault(suffix, None)
+    return tuple(extensions) or _DEFAULT_LIB_EXTENSIONS
+
+
+def _is_directory_entry(entry) -> bool:
+    """Is ``entry`` a ``+incdir+``/``-y`` entry carrying a directory listing?
+
+    The listing is the last element and is itself a list of ordinary
+    tracked-input entries, keyed by *file name* rather than path so the
+    stamp stays portable between the tests that share one build (each has
+    its own ``run.f`` directory, and the directory line is relative to it).
+    """
+    return (
+        isinstance(entry, list)
+        and len(entry) == _DIRECTORY_ENTRY_LEN
+        and isinstance(entry[-1], list)
+    )
+
+
 def _entry_matches(stored, current: list) -> bool:
     """Does a stored stamp entry still describe what ``current`` describes?
 
@@ -718,9 +777,17 @@ def _entry_matches(stored, current: list) -> bool:
     equality, which is fail-closed in both directions: a stamp that recorded
     a hash for a file we can no longer hash counts as changed.
 
+    **A directory entry compares by its listing.** An entry for a
+    ``+incdir+`` or ``-y`` directory (see :func:`_is_directory_entry`)
+    carries the files inside it instead of stats of its own, and matches
+    only when that whole listing does — so a file added to, removed from, or
+    edited inside such a directory is a change for every builder, whether or
+    not it emits a dependency file (#478).
+
     Anything that is not an entry of this version's shape — a 3-element
-    entry from a stamp written before #494, say — is "we do not know", and
-    the only honest reading of that is one rebuild.
+    entry from a stamp written before #494, or a 4-element one where #478
+    now records a listing — is "we do not know", and the only honest reading
+    of that is one rebuild.
     """
     if not isinstance(stored, list) or len(stored) != len(current):
         return False
@@ -731,6 +798,16 @@ def _entry_matches(stored, current: list) -> bool:
         return False
     if stored[0] != current[0]:
         return False
+    if len(stored) == _DIRECTORY_ENTRY_LEN:
+        # A directory entry's last element is a listing, not a hash, so the
+        # generic tail comparison below would compare it by equality and
+        # re-introduce exactly the mtime sensitivity #494 removed. Recurse
+        # instead: the same content-decides rule, one level down. A
+        # five-element entry that is not a listing is a shape this version
+        # did not write, and fails closed.
+        if not (_is_directory_entry(stored) and _is_directory_entry(current)):
+            return False
+        return _entry_lists_match(stored[-1], current[-1])
     stored_sha, current_sha = stored[-1], current[-1]
     if stored_sha is not None and current_sha is not None:
         # A size mismatch under equal content hashes cannot happen for a
@@ -769,6 +846,12 @@ def _first_entry_mismatch(stored, current):
         return f"(entry count {len(stored)} -> {len(current)})"
     for stored_entry, current_entry in zip(stored, current):
         if not _entry_matches(stored_entry, current_entry):
+            if _is_directory_entry(stored_entry) and _is_directory_entry(current_entry):
+                # "+incdir+../../inc" alone does not answer "why did this
+                # recompile" when the directory is what is stamped, so the
+                # line names the file inside it as well (#478).
+                inner = _first_entry_mismatch(stored_entry[-1], current_entry[-1])
+                return f"{current_entry[0]} :: {inner}"
             if isinstance(current_entry, list) and current_entry:
                 return current_entry[0]
             if isinstance(stored_entry, list) and stored_entry:
@@ -797,6 +880,10 @@ def _entry_identity(entry):
     Anything that is not an entry of this version's shape is passed through
     untouched: an unrecognised shape is "we do not know" on both sides.
     """
+    if _is_directory_entry(entry):
+        # Same reduction one level down, so a `touch` inside an include
+        # directory does not move the sha either.
+        return [entry[0], [_entry_identity(inner) for inner in entry[-1]]]
     if isinstance(entry, list) and len(entry) == 4 and entry[-1] is not None:
         return [entry[0], entry[-1]]
     return entry
@@ -1529,6 +1616,57 @@ class VlogSim:
             toolchain_prefix=self._get_toolchain_prefix(),
         )
 
+    def _directory_listing(self, dir_path, extensions):
+        """A flat listing of the regular files in ``dir_path``, or ``None``.
+
+        Each file is stamped with the same ``[name, size, mtime_ns, sha]``
+        shape :meth:`_tracked_entry` gives a source, so the whole listing
+        goes through :func:`_entry_matches` and is decided by content where
+        the hashing policy allows it — the point of #494 applies inside an
+        include directory too, and on the NFS mounts that motivated it a
+        listing compared by mtime would be no more trustworthy than the
+        stats it replaced.
+
+        **Flat, not recursive**, because ``+incdir+`` resolution is not
+        recursive: a subdirectory's contents are not reachable through this
+        entry, and walking them would charge the stamp for files no compile
+        can see. **Name, not path**, because the directory line in ``run.f``
+        is relative to the test's own artefact directory while the stamp is
+        shared by every test with the same compile key.
+
+        ``extensions`` bounds the cost for a ``-y`` library directory, which
+        can be large: only the suffixes the search could actually resolve
+        are listed. ``None`` means list everything, which is what an
+        ``+incdir+`` needs — any name at all can be `` `include ``d.
+
+        ``None`` comes back when the directory cannot be read. That degrades
+        to the pre-#478 untracked entry rather than to an empty listing,
+        which would claim the directory *is* empty and validate a reuse on
+        the strength of it.
+        """
+        try:
+            with os.scandir(dir_path) as scan:
+                # `is_file` follows symlinks (a symlinked-in header is a
+                # perfectly ordinary input) and answers from the dirent
+                # where the platform supplies one, so this costs at most the
+                # one `stat` per file `_tracked_entry` needs anyway.
+                names = sorted(entry.name for entry in scan if entry.is_file())
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.build_dir_unreadable",
+                test=self.test_name,
+                directory=str(dir_path),
+                error=str(e),
+            )
+            return None
+        return [
+            [name] + self._tracked_entry(os.path.join(dir_path, name))[1:]
+            for name in names
+            if extensions is None or name.endswith(extensions)
+        ]
+
     def _fingerprint_filelist_sources(self, filelist_path):
         """Per-entry (line, size, mtime_ns, sha) stamps for the generated run.f.
 
@@ -1539,9 +1677,26 @@ class VlogSim:
         reads ``entry[0]`` only, so an edit still rebuilds in place instead
         of stranding a new obj_dir per edit.
 
-        Entries that don't resolve to a plain file (+incdir+/-y directories,
-        +libext+ suffixes) keep only their raw line; changes inside include
-        directories are not tracked.
+        An entry that resolves to a **directory** — ``+incdir+``, ``-y`` —
+        gains a fifth element holding a listing of the files inside it
+        (:meth:`_directory_listing`), so a header edit reachable only
+        through an include path invalidates the stamp for *every* builder,
+        with or without a dependency file, and a file *appearing* in a
+        library directory does too. The latter is the case no depfile can
+        report at all: ``-y`` resolves by module name on demand, so a file
+        that changes tomorrow's elaboration was opened by nobody today
+        (#478). Where a builder does emit a dependency file it stays the
+        more precise record of what was consumed, and both are kept.
+
+        The listing is deliberately an over-approximation: it invalidates on
+        an edit to a header nothing includes. The two error directions are
+        not symmetric — over-invalidating costs one recompile, while
+        under-invalidating reports a stale binary as green — and this is a
+        stamp used to gate merges.
+
+        Entries that resolve to neither a file nor a directory (``+define+``,
+        ``+libext+`` suffixes, a path that no longer exists) keep only their
+        raw line.
 
         Quoted entries (emitted for paths containing whitespace) are unquoted
         here with ``shlex`` before stat'ing. This unquoting is independent of
@@ -1552,32 +1707,48 @@ class VlogSim:
         stamp, matching what ``run.f`` actually contains.
         """
         base = os.path.dirname(os.path.abspath(filelist_path))
-        stamps = []
         with open(filelist_path) as filelist_fp:
-            for raw_line in filelist_fp:
-                line = raw_line.strip()
-                if not line or line.startswith("//"):
-                    continue
-                option_match = _FILELIST_OPTION_RE.match(line)
-                entry_path = option_match.group(1) if option_match else line
-                if entry_path.startswith('"') and entry_path.endswith('"'):
-                    try:
-                        parsed = shlex.split(entry_path)
-                    except ValueError:
-                        # An unbalanced quote must degrade to [line, None,
-                        # None, None] like every other malformed entry, not
-                        # abort the compile from the stamping path.
-                        parsed = []
-                    if len(parsed) == 1:
-                        entry_path = parsed[0]
-                resolved = os.path.normpath(os.path.join(base, entry_path))
-                if os.path.isfile(resolved):
-                    # The raw line, not the resolved path, stays entry[0]:
-                    # it is what run.f contains and what the compile key
-                    # hashes.
-                    stamps.append([line] + self._tracked_entry(resolved)[1:])
-                else:
-                    stamps.append([line, None, None, None])
+            lines = [
+                stripped
+                for stripped in (raw_line.strip() for raw_line in filelist_fp)
+                if stripped and not stripped.startswith("//")
+            ]
+        lib_extensions = _filelist_lib_extensions(lines)
+        stamps = []
+        for line in lines:
+            option_match = _FILELIST_OPTION_RE.match(line)
+            option = (option_match.group(1) or "").strip() if option_match else ""
+            entry_path = option_match.group(2) if option_match else line
+            if entry_path.startswith('"') and entry_path.endswith('"'):
+                try:
+                    parsed = shlex.split(entry_path)
+                except ValueError:
+                    # An unbalanced quote must degrade to [line, None,
+                    # None, None] like every other malformed entry, not
+                    # abort the compile from the stamping path.
+                    parsed = []
+                if len(parsed) == 1:
+                    entry_path = parsed[0]
+            resolved = os.path.normpath(os.path.join(base, entry_path))
+            listing = None
+            if option in (_INCDIR_OPTION, _LIBRARY_DIR_OPTION) and os.path.isdir(
+                resolved
+            ):
+                listing = self._directory_listing(
+                    resolved,
+                    None if option == _INCDIR_OPTION else lib_extensions,
+                )
+            if listing is not None:
+                # The raw line stays entry[0] here too, so a listing that
+                # changes moves the stamp and never the compile key.
+                stamps.append([line, None, None, None, listing])
+            elif os.path.isfile(resolved):
+                # The raw line, not the resolved path, stays entry[0]:
+                # it is what run.f contains and what the compile key
+                # hashes.
+                stamps.append([line] + self._tracked_entry(resolved)[1:])
+            else:
+                stamps.append([line, None, None, None])
         return stamps
 
     def _fingerprint_toolchain(self, exe):
@@ -1963,8 +2134,12 @@ class VlogSim:
             return False
         deps = stored["deps"]
         if deps is None:
-            # The builder emitted no dependency file, so include-dir
-            # contents stay untracked for it (docs/known-issues.md).
+            # The builder emitted no dependency file. That used to mean the
+            # include directories were untracked for it, and reusing on "we
+            # do not know" is what #478 reported. It is sound now: `sources`
+            # above carries a listing of every `+incdir+`/`-y` directory,
+            # so the unknown this branch admits is bounded to what the
+            # filelist never named — see docs/known-issues.md.
             return True
         return self._deps_unchanged(test_name, deps, quiet=quiet)
 
