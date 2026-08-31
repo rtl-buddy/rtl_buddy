@@ -238,7 +238,9 @@ _DEFAULT_ACCT_INTERVAL_S = 1.0
 # with `--dependency=singleton`, which Slurm defines as "this job can begin
 # execution after any previously launched jobs sharing the same job name
 # and user have terminated". So one build identity admits one running
-# build job per user, cluster-side and atomically: a second run of the
+# build job per user and cluster, cluster-side and atomically (a
+# federation resolves it across its clusters unless the site sets
+# `DependencyParameters=disable_remote_singleton`): a second run of the
 # same suite queues behind the first run's build job instead of Verilating
 # into the same shared directory beside it. The in-job `flock` (#504)
 # already makes that safe, but only by parking the second builder inside a
@@ -696,11 +698,25 @@ class SlurmDispatchBackend(DispatchBackend):
             # `--clusters=a,b` lets Slurm pick which one runs the job, at
             # submit. Probing either would report ids from a queue this
             # build job may not be in — and a job id means nothing without
-            # the cluster it belongs to. The singleton is unaffected: it is
-            # resolved wherever the job lands.
+            # the cluster it belongs to.
+            #
+            # The same condition bounds the guarantee itself, which is why
+            # the line says so (#507 review): a federation resolves
+            # `singleton` across its clusters by default, but a site
+            # setting `DependencyParameters=disable_remote_singleton`
+            # fulfils it on the local cluster only — so two invocations
+            # routed to different clusters of one federation that shares
+            # this filesystem are not serialised against each other. This
+            # is the one DEBUG line that names that, and the condition is
+            # a property of `sbatch-args`, so saying it once per run is
+            # saying it as often as it can be true.
             return self._retire_dedup_probe(
                 f"sbatch-args select several clusters ({self.cluster}), so a job "
-                "id from any one of them would be ambiguous",
+                "id from any one of them would be ambiguous; note that with "
+                "DependencyParameters=disable_remote_singleton the build job's "
+                "singleton is fulfilled on its own cluster only, so builds "
+                "routed to different clusters are serialised by the shared "
+                "build directory's flock alone",
                 **fields,
             )
         try:

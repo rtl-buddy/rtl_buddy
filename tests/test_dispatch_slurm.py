@@ -3304,7 +3304,16 @@ def test_a_multi_cluster_selection_skips_the_probe(monkeypatch, caplog):
         for r in caplog.records
         if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
     ]
-    assert "several clusters (a,b)" in record.getMessage()
+    message = record.getMessage()
+    assert "several clusters (a,b)" in message
+    # ...and the same condition bounds the guarantee itself: a site with
+    # DependencyParameters=disable_remote_singleton fulfils `singleton` on
+    # the submitting cluster only, so builds routed to different clusters
+    # of one federation are left to the shared directory's flock. This is
+    # the one line that says so, and the selection cannot change under a
+    # run, so saying it once is saying it as often as it can be true.
+    assert "disable_remote_singleton" in message
+    assert "flock" in message
 
 
 def test_the_cluster_banner_is_not_read_as_a_job_id(monkeypatch, caplog):
