@@ -624,13 +624,65 @@ def test_undef_reverses_a_define():
     assert [f.name for f in scan_text(src, "m.sv")] == ["always_here"]
 
 
-def test_defines_carry_from_one_source_to_the_next(tmp_path):
+def _two_sources_sharing_a_define(tmp_path):
     (tmp_path / "a.sv").write_text("`define SHARED 1\n")
     (tmp_path / "b.sv").write_text(
         "module b;\n`ifndef SHARED\n"
         "  function int hidden; return 1; endfunction\n`endif\nendmodule\n"
     )
-    assert scan_files([str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]) == []
+    return [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
+
+
+def test_defines_do_not_carry_across_sources_by_default(tmp_path):
+    """Without `--single-unit` slang compiles each file as its own compilation
+    unit, so `SHARED` is not defined while b.sv is read and the guarded
+    function IS compiled. Carrying the macro over would hide a real hazard."""
+    paths = _two_sources_sharing_a_define(tmp_path)
+    assert [f.name for f in scan_files(paths)] == ["hidden"]
+
+
+def test_defines_carry_across_sources_under_single_unit(tmp_path):
+    paths = _two_sources_sharing_a_define(tmp_path)
+    assert scan_files(paths, single_unit=True) == []
+
+
+def test_single_unit_does_not_leak_a_define_backwards(tmp_path):
+    """Order still matters under single-unit: a `define in the *second* file
+    cannot suppress a guard in the first."""
+    (tmp_path / "a.sv").write_text(
+        "module a;\n`ifndef LATE\n"
+        "  function int early; return 1; endfunction\n`endif\nendmodule\n"
+    )
+    (tmp_path / "b.sv").write_text("`define LATE 1\n")
+    paths = [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
+    assert [f.name for f in scan_files(paths, single_unit=True)] == ["early"]
+
+
+def test_run_defines_reseed_every_source(tmp_path):
+    """The run's own `defines:` apply to every file, not only the first."""
+    for name in ("a.sv", "b.sv"):
+        (tmp_path / name).write_text(
+            f"module {name[0]};\n`ifndef SYNTHESIS\n"
+            "  function int hidden; return 1; endfunction\n`endif\nendmodule\n"
+        )
+    paths = [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
+    assert scan_files(paths, defines={"SYNTHESIS": 1}) == []
+    assert len(scan_files(paths)) == 2
+
+
+def test_undef_in_one_source_does_not_reach_the_next(tmp_path):
+    (tmp_path / "a.sv").write_text("`undef SYNTHESIS\n")
+    (tmp_path / "b.sv").write_text(
+        "module b;\n`ifndef SYNTHESIS\n"
+        "  function int hidden; return 1; endfunction\n`endif\nendmodule\n"
+    )
+    paths = [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
+    # b.sv is re-seeded from the run defines, so the `undef in a.sv is gone.
+    assert scan_files(paths, defines={"SYNTHESIS": 1}) == []
+    # ...but under single-unit the `undef really does reach b.sv.
+    assert [
+        f.name for f in scan_files(paths, defines={"SYNTHESIS": 1}, single_unit=True)
+    ] == ["hidden"]
 
 
 # ---------------------------------------------------------------------------
@@ -716,3 +768,99 @@ def test_a_scope_resolved_return_type_is_still_reported():
         endmodule
     """)
     assert _names(scan_text(src, "m.sv")) == [(2, "function", "decode")]
+
+
+# ---------------------------------------------------------------------------
+# Every inclusion is judged in its own context (review round 3, item 3)
+# ---------------------------------------------------------------------------
+
+
+def test_a_header_included_in_a_class_then_a_module_is_still_reported(tmp_path):
+    """The exempt context must not shadow the hazardous one.
+
+    A permanent already-scanned set would have taken the class inclusion,
+    found nothing (class methods are automatic by definition), and never
+    looked at the module inclusion that really does share storage.
+    """
+    (tmp_path / "fns.svh").write_text("function int helper; return 1; endfunction\n")
+    top = tmp_path / "top.sv"
+    top.write_text(
+        dedent("""\
+            class C;
+            `include "fns.svh"
+            endclass
+            module m;
+            `include "fns.svh"
+            endmodule
+        """)
+    )
+    findings = scan_files([str(top)])
+    assert _names(findings) == [(1, "function", "helper")]
+    assert findings[0].path.endswith("fns.svh")
+
+
+def test_a_header_included_in_module_automatic_then_a_plain_module(tmp_path):
+    (tmp_path / "fns.svh").write_text("function int helper; return 1; endfunction\n")
+    top = tmp_path / "top.sv"
+    top.write_text(
+        dedent("""\
+            module automatic a;
+            `include "fns.svh"
+            endmodule
+            module b;
+            `include "fns.svh"
+            endmodule
+        """)
+    )
+    assert _names(scan_files([str(top)])) == [(1, "function", "helper")]
+
+
+def test_a_header_exempt_in_every_context_reports_nothing(tmp_path):
+    (tmp_path / "fns.svh").write_text("function int helper; return 1; endfunction\n")
+    top = tmp_path / "top.sv"
+    top.write_text(
+        dedent("""\
+            module automatic a;
+            `include "fns.svh"
+            endmodule
+            class C;
+            `include "fns.svh"
+            endclass
+        """)
+    )
+    assert scan_files([str(top)]) == []
+
+
+def test_a_header_included_by_many_modules_reports_once(tmp_path):
+    """Scanned per inclusion, but one declaration is one finding."""
+    (tmp_path / "fns.svh").write_text("function int helper; return 1; endfunction\n")
+    for name in ("a.sv", "b.sv", "c.sv"):
+        (tmp_path / name).write_text(
+            f'module {name[0]};\n`include "fns.svh"\nendmodule\n'
+        )
+    paths = [str(tmp_path / n) for n in ("a.sv", "b.sv", "c.sv")]
+    assert _names(scan_files(paths)) == [(1, "function", "helper")]
+
+
+def test_distinct_declarations_in_one_header_are_all_kept(tmp_path):
+    (tmp_path / "fns.svh").write_text(
+        "function int one; return 1; endfunction\n"
+        "function int two; return 2; endfunction\n"
+    )
+    top = tmp_path / "top.sv"
+    top.write_text('module m;\n`include "fns.svh"\nendmodule\n')
+    assert _names(scan_files([str(top)])) == [
+        (1, "function", "one"),
+        (2, "function", "two"),
+    ]
+
+
+def test_two_headers_with_the_same_basename_are_both_scanned(tmp_path):
+    """Dedupe keys on the declaration, not the file name."""
+    for sub, fn in (("x", "from_x"), ("y", "from_y")):
+        d = tmp_path / sub
+        d.mkdir()
+        (d / "fns.svh").write_text(f"function int {fn}; return 1; endfunction\n")
+        (d / f"{sub}.sv").write_text(f'module {sub};\n`include "fns.svh"\nendmodule\n')
+    paths = [str(tmp_path / "x" / "x.sv"), str(tmp_path / "y" / "y.sv")]
+    assert sorted(f.name for f in scan_files(paths)) == ["from_x", "from_y"]

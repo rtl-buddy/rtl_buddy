@@ -176,6 +176,10 @@ class OpenRoadSynth:
             self._source_files_from_filelist(fl_path),
             incdirs=incdirs,
             defines=defines,
+            # Only slang honours --single-unit; with the verilog frontend the
+            # flag is ignored (with a warning), so each file is its own
+            # compilation unit either way.
+            single_unit=opts.single_unit and opts.frontend == "slang",
         )
 
     def _write_yosys_script(self, fl_path: str) -> str:
@@ -667,16 +671,17 @@ class OpenRoadSynth:
     # ------------------------------------------------------------------
 
     def _clear_stale_netlists(self) -> None:
-        """Drop the previous run's netlists. The FIRST thing `run` does.
+        """Remove the previous run's stage-1 netlists, before anything returns.
 
-        Stage 2 reads stage 1's netlist back off a fixed path having judged
-        stage 1 by exit code and ERROR lines alone, and the same file is the
-        input `rb pnr` (`_resolve_netlist_path`) and `rb power`
-        (`_resolve_inputs`) resolve, guarded by `isfile`. Every exit from
-        `run` therefore has to leave it absent — including the Liberty / LEF
-        gates and the filelist error, which return before yosys is reached
-        (#469). Both spellings go: which one stage 1 writes depends on
-        whether a Liberty resolved, and that can change between runs.
+        Stage 2 reads stage 1's netlist back off a fixed path, having judged
+        stage 1 by exit code and ERROR lines alone — and the same netlist is
+        the input `rb pnr` / `rb power` resolve. A failed rerun would leave the
+        previous successful run's netlist for all three to consume (#469).
+
+        This is the first action of `run()` so that every early return — a
+        missing Liberty or LEF, a filelist error, and the static-lifetime and
+        conflicting-driver gates, which fail before or without reading the
+        netlist — leaves no stale product behind.
         """
         stale = clear_stale_artefacts(
             [
@@ -709,6 +714,7 @@ class OpenRoadSynth:
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
+        self._clear_stale_netlists()
         log_event(
             logger,
             logging.INFO,
@@ -717,8 +723,6 @@ class OpenRoadSynth:
             tool=self.tool_cfg.get_executable(),
             top=self.synth_cfg.get_top(),
         )
-
-        self._clear_stale_netlists()
 
         lib_paths = self._resolve_lib_paths()
         lef_paths = self._resolve_lef_paths()

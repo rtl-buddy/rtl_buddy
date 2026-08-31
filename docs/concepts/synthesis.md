@@ -190,12 +190,23 @@ endfunction
 ### What the scan sees
 
 `` `include `` directives are followed, resolved against the including file's
-directory and then the filelist's `+incdir+` entries; a header included from
-two sources is scanned once. `` `ifdef `` / `` `ifndef `` / `` `elsif `` /
-`` `else `` / `` `endif `` are evaluated on definedness, seeded from the run's
-`defines:` and the filelist's `+define+` entries and updated by `` `define ``
-and `` `undef `` in the sources, so a simulation-only helper behind
-`` `ifndef SYNTHESIS `` is not reported when the run defines `SYNTHESIS`.
+directory and then the filelist's `+incdir+` entries. Each inclusion is scanned
+in its own context — a header included from a class is exempt there and still
+reported when the same header is included from an ordinary module — and one
+declaration is reported once however many places include it.
+
+`` `ifdef `` / `` `ifndef `` / `` `elsif `` / `` `else `` / `` `endif `` are
+evaluated on definedness, seeded from the run's `defines:` and the filelist's
+`+define+` entries and updated by `` `define `` and `` `undef `` in the
+sources, so a simulation-only helper behind `` `ifndef SYNTHESIS `` is not
+reported when the run defines `SYNTHESIS`.
+
+The macro table follows the compilation-unit boundary the frontend actually
+uses. With `single-unit: false` — the default — each source is its own
+compilation unit, so a `` `define `` in one file does not reach the next and
+the table is re-seeded from the run's defines for each; `single-unit: true`
+under `frontend: slang` shares it, matching `read_slang --single-unit`. A
+header always shares its includer's table, because `` `include `` is textual.
 
 Exempt: class methods — including out-of-body definitions such as
 `function int C::f(...)` — `extern` and `pure virtual` prototypes, DPI imports

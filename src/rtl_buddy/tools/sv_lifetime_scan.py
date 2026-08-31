@@ -27,6 +27,13 @@ Misses (a real hazard the scan does not report):
   directory or the filelist's `+incdir+` entries is logged at DEBUG and
   skipped, not failed.
 
+The macro table follows the compilation-unit boundary the frontend actually
+uses: reset per top-level source and re-seeded from the run's defines, unless
+the caller passes ``single_unit=True``. Headers share their includer's table,
+since `` `include `` is textual. Each inclusion of a header is scanned in its
+own context -- the same header is exempt inside a class and a finding inside an
+ordinary module -- and repeated declarations are collapsed afterwards.
+
 Spurious findings (something reported that is not a hazard):
 
 - `` `if `` expression evaluation is not implemented, and is not SystemVerilog
@@ -157,11 +164,19 @@ class _Cond:
 
 @dataclass
 class _ScanState:
-    """Preprocessor state shared across a file and everything it includes."""
+    """Preprocessor state shared across a file and everything it includes.
+
+    `active` is the chain of files currently open, used only to stop an
+    `` `include `` cycle. It is deliberately not a permanent "already scanned"
+    set: the same header included from a class and from an ordinary module is
+    exempt in the first context and a finding in the second, so every
+    inclusion has to be scanned in its own context. Repeats are collapsed
+    afterwards by :func:`_dedupe`, which keys on the declaration itself.
+    """
 
     defined: set[str] = field(default_factory=set)
     incdirs: tuple[str, ...] = ()
-    seen: set[str] = field(default_factory=set)
+    active: list[str] = field(default_factory=list)
 
 
 def _tokenize(text: str, path: str) -> list[_Token]:
@@ -234,13 +249,16 @@ def _expand_file(path: str, state: _ScanState, depth: int = 0) -> list[_Token]:
     """Tokens for `path` and everything it includes, with inactive
     `` `ifdef `` regions and macro bodies removed."""
     real = os.path.realpath(path)
-    if real in state.seen or depth > _MAX_INCLUDE_DEPTH:
+    if real in state.active or depth > _MAX_INCLUDE_DEPTH:
         return []
-    state.seen.add(real)
     text = _read(path)
     if text is None:
         return []
-    return _expand_text(text, path, state, depth)
+    state.active.append(real)
+    try:
+        return _expand_text(text, path, state, depth)
+    finally:
+        state.active.pop()
 
 
 def _expand_text(
@@ -537,6 +555,32 @@ def _next_word(tokens: list[_Token], index: int) -> str | None:
     return None
 
 
+def _dedupe(findings: list[LifetimeFinding]) -> list[LifetimeFinding]:
+    """Collapse repeats of the same declaration, keeping the first.
+
+    A header included from several modules is scanned once per inclusion, so
+    that each is judged in its own context, but the declaration inside it is
+    one declaration and is reported once.
+    """
+    seen: set[tuple[str, int, str, str]] = set()
+    out: list[LifetimeFinding] = []
+    for f in findings:
+        key = (f.path, f.line, f.kind, f.name)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f)
+    return out
+
+
+def _new_state(
+    defines: dict | None, incdirs: tuple[str, ...] | list[str]
+) -> _ScanState:
+    return _ScanState(
+        defined=set(str(k) for k in (defines or {})), incdirs=tuple(incdirs)
+    )
+
+
 def scan_text(
     text: str,
     path: str,
@@ -545,12 +589,9 @@ def scan_text(
     defines: dict | None = None,
 ) -> list[LifetimeFinding]:
     """Scan one source's text and return its static-lifetime findings."""
-    state = _ScanState(
-        defined=set(str(k) for k in (defines or {})),
-        incdirs=tuple(incdirs),
-        seen={os.path.realpath(path)},
-    )
-    return _walk(_expand_text(text, path, state))
+    state = _new_state(defines, incdirs)
+    state.active.append(os.path.realpath(path))
+    return _dedupe(_walk(_expand_text(text, path, state)))
 
 
 def scan_file(
@@ -562,14 +603,12 @@ def scan_file(
 ) -> list[LifetimeFinding]:
     """Scan one file and everything it includes.
 
-    Returns no findings when the file cannot be read. Pass `state` to share
-    macro definitions and the already-scanned set across several sources.
+    Returns no findings when the file cannot be read. Pass `state` to share a
+    macro table across several sources.
     """
     if state is None:
-        state = _ScanState(
-            defined=set(str(k) for k in (defines or {})), incdirs=tuple(incdirs)
-        )
-    return _walk(_expand_file(path, state))
+        state = _new_state(defines, incdirs)
+    return _dedupe(_walk(_expand_file(path, state)))
 
 
 def scan_files(
@@ -577,20 +616,27 @@ def scan_files(
     *,
     incdirs: tuple[str, ...] | list[str] = (),
     defines: dict | None = None,
+    single_unit: bool = False,
 ) -> list[LifetimeFinding]:
-    """Scan sources in order and return the concatenated findings.
+    """Scan sources in order and return their combined findings.
 
-    Macros defined by one source are visible to the next, matching a
-    single-compilation-unit read, and a header included from two sources is
-    scanned once (deduped by real path).
+    `single_unit` must match how the frontend actually reads the sources.
+    yosys-slang compiles each file as its own compilation unit unless
+    ``--single-unit`` is passed, so by default the macro table is reset per
+    top-level source and re-seeded from `defines` — carrying a `` `define ``
+    from one file into the next would suppress an `` `ifndef ``-guarded
+    declaration that the compiler does see. With `single_unit` the table is
+    shared, matching the one-compilation-unit read.
+
+    Headers always share their includer's macro table, because `` `include ``
+    is textual.
     """
-    state = _ScanState(
-        defined=set(str(k) for k in (defines or {})), incdirs=tuple(incdirs)
-    )
+    shared = _new_state(defines, incdirs) if single_unit else None
     findings: list[LifetimeFinding] = []
     for path in paths:
-        findings.extend(scan_file(path, state=state))
-    return findings
+        state = shared if shared is not None else _new_state(defines, incdirs)
+        findings.extend(_walk(_expand_file(path, state)))
+    return _dedupe(findings)
 
 
 def describe_findings(findings: list[LifetimeFinding], limit: int = 10) -> str:

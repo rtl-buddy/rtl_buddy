@@ -421,6 +421,10 @@ class YosysSynth:
             self._source_files_from_filelist(fl_path),
             incdirs=incdirs,
             defines=defines,
+            # Only slang honours --single-unit; with the verilog frontend the
+            # flag is ignored (with a warning), so each file is its own
+            # compilation unit either way.
+            single_unit=opts.single_unit and opts.frontend == "slang",
         )
 
     def _write_script(self, fl_path: str) -> str:
@@ -516,20 +520,21 @@ class YosysSynth:
         return script_path
 
     def _clear_stale_netlists(self) -> None:
-        """Drop the previous run's netlists. The FIRST thing `run` does.
+        """Remove the previous run's netlists, before anything can return.
 
         `synth_netlist.v` / `synth.rtlil` are this flow's real product and the
-        fixed-path *inputs* `rb pnr` (`_resolve_netlist_path`) and `rb power`
-        (`_resolve_inputs`) resolve, guarded by `isfile` alone. Any exit from
-        `run` that leaves the last successful run's netlist behind — a
-        filelist error, a missing tool, a gate that returns before yosys — has
-        those commands place, route and power-analyse a design the RTL no
-        longer describes (#469). Nothing before this point may return, so the
-        clear runs ahead of every validation rather than after it.
+        fixed-path *inputs* of `rb pnr` and `rb power`, which guard them with
+        `isfile` only. A failed rerun would otherwise leave the last
+        successful run's netlist in place, byte-identical, and the downstream
+        commands would place, route and power-analyse it as though it were
+        current (#469). Both spellings are cleared because which one the
+        script writes depends on whether a Liberty resolved, and that can
+        change between runs.
 
-        Both spellings go: which one the script writes depends on whether a
-        Liberty resolved, and that can change between runs. The log is
-        truncated by the `open(..., "w")` that captures the run.
+        This is the first action of `run()` so that *every* early return --
+        a filelist error, and the static-lifetime and conflicting-driver
+        gates, which fail before or without reading the netlist -- leaves no
+        stale product behind.
         """
         stale = clear_stale_artefacts(
             [self._netlist_path(mapped=True), self._netlist_path()],
@@ -560,6 +565,7 @@ class YosysSynth:
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
+        self._clear_stale_netlists()
         log_event(
             logger,
             logging.INFO,
@@ -568,8 +574,6 @@ class YosysSynth:
             tool=self.tool_cfg.get_executable(),
             top=self.synth_cfg.get_top(),
         )
-
-        self._clear_stale_netlists()
 
         try:
             fl_path = self._write_filelist()

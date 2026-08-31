@@ -3521,3 +3521,234 @@ def test_openroad_stage1_conflicting_drivers_allow(tmp_path, monkeypatch):
     _patch_openroad_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING)
     _, ok, desc = or_synth._run_yosys_stage(fl)
     assert (ok, desc) == (True, None)
+
+
+# ---------------------------------------------------------------------------
+# The gates must not outrun the stale-netlist cleanup (review round 3, item 1)
+# ---------------------------------------------------------------------------
+
+
+def test_yosys_gate_failure_on_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
+    """A rerun that fails the static-functions gate returns before yosys runs.
+
+    The cleanup is the first action of `run()` precisely so that early return
+    still clears the previous run's product: `rb pnr` / `rb power` resolve
+    `synth_netlist.v` by `isfile` alone and would otherwise consume a netlist
+    from a run whose RTL no longer exists (#469 + #472).
+    """
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(ys.artefact_dir) / "synth.rtlil"
+
+    def _yosys_writes_a_netlist(cmd, stdout, stderr, **kwargs):
+        mapped.write_text("module my_module(); endmodule\n")
+        rtlil.write_text("# rtlil\n")
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _yosys_writes_a_netlist
+    )
+    assert isinstance(ys.run(), SynthPassResults)
+    assert mapped.exists() and rtlil.exists()
+
+    # Rerun the same synthesis after the RTL grew a static-lifetime function.
+    rerun, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    assert rerun.artefact_dir == ys.artefact_dir
+    calls = []
+    _patch_yosys(monkeypatch, calls=calls)
+    result = rerun.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "explicit automatic lifetime" in result.results["desc"]
+    assert calls == []
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_yosys_conflicting_drivers_failure_leaves_no_stale_netlist(
+    tmp_path, monkeypatch
+):
+    """The conflicting-driver gate returns after yosys wrote a netlist from a
+    design whose shared net folded to `x`. That netlist must not survive."""
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+    mapped.write_text("module stale(); endmodule\n")
+
+    _patch_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING * 4)
+    result = ys.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "multiple conflicting drivers" in result.results["desc"]
+    assert not mapped.exists()
+
+
+def test_openroad_gate_failure_on_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
+    """Same ordering requirement for the OpenROAD backend's stage-1 gates."""
+    from rtl_buddy.tools import synth_openroad as or_module
+
+    or_synth, _, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    mapped = Path(or_synth.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(or_synth.artefact_dir) / "synth.rtlil"
+
+    class _Ok:
+        returncode = 0
+
+    def _tools_succeed(cmd, stdout=None, stderr=None, **kwargs):
+        if "yosys" in cmd[0]:
+            mapped.write_text("module my_module(); endmodule\n")
+            rtlil.write_text("# rtlil\n")
+        return _Ok()
+
+    monkeypatch.setattr(or_module, "task_status", lambda *a, **kw: nullcontext())
+    monkeypatch.setattr(or_module.subprocess, "run", _tools_succeed)
+    assert isinstance(or_synth.run(), SynthPassResults)
+    assert mapped.exists() and rtlil.exists()
+
+    rerun, _, _ = _gate_openroad(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    assert rerun.artefact_dir == or_synth.artefact_dir
+    calls = _patch_openroad_yosys(monkeypatch)
+    result = rerun.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "explicit automatic lifetime" in result.results["desc"]
+    assert calls == []
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_openroad_conflicting_drivers_failure_leaves_no_stale_netlist(
+    tmp_path, monkeypatch
+):
+    or_synth, _, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    mapped = Path(or_synth.artefact_dir) / "synth_netlist.v"
+    mapped.write_text("module stale(); endmodule\n")
+
+    _patch_openroad_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING * 2)
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "multiple conflicting drivers" in result.results["desc"]
+    assert not mapped.exists()
+
+
+# ---------------------------------------------------------------------------
+# The scan follows the frontend's compilation-unit boundary (round 3, item 2)
+# ---------------------------------------------------------------------------
+
+
+def _two_source_ifndef_model(tmp_path):
+    """Two sources: the first defines a macro the second guards on."""
+    a = tmp_path / "a.sv"
+    b = tmp_path / "b.sv"
+    a.write_text("`define SHARED 1\nmodule a; endmodule\n")
+    b.write_text(
+        "module my_module;\n`ifndef SHARED\n"
+        "  function bit dbg(input bit x); return x; endfunction\n"
+        "`endif\nendmodule\n"
+    )
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(
+        dedent(f"""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "my_module"
+            filelist: ["-v {a}", "-v {b}"]
+        """)
+    )
+    from rtl_buddy.config.model import ModelConfig
+
+    return ModelConfig(
+        name="my_module", filelist=[f"-v {a}", f"-v {b}"], path=str(models_yaml)
+    )
+
+
+def _yosys_for_model(tmp_path, model, opts_overrides):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys", tool="yosys", opts=SynthToolOptsFile(**opts_overrides)
+        )
+    )
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    return YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+    )
+
+
+def test_gate_does_not_carry_a_define_between_sources_without_single_unit(
+    tmp_path, monkeypatch
+):
+    """slang compiles each file separately by default, so `SHARED` is not
+    defined while b.sv is read and the guarded function IS compiled."""
+    model = _two_source_ifndef_model(tmp_path)
+    ys = _yosys_for_model(
+        tmp_path,
+        model,
+        {
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_gate_carries_a_define_between_sources_under_single_unit(tmp_path, monkeypatch):
+    model = _two_source_ifndef_model(tmp_path)
+    ys = _yosys_for_model(
+        tmp_path,
+        model,
+        {
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "single_unit": True,
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_verilog_frontend_ignores_single_unit_for_the_scan_too(tmp_path, monkeypatch):
+    """`single-unit` is slang-only; with the verilog frontend it is ignored
+    (with a warning), so the scan must not honour it either."""
+    model = _two_source_ifndef_model(tmp_path)
+    ys = _yosys_for_model(
+        tmp_path,
+        model,
+        {"frontend": "verilog", "single_unit": True, "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
