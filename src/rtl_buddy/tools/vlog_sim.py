@@ -108,18 +108,100 @@ COMPILE_RETRY_TRANSCRIPT_NAME = "compile.retry.log"
 # artefact dir (correct, just unshared).
 SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus"})
 
-# The flag each simulator family takes to pin the elaboration root, so a
-# testbench's declared `toplevel:` decides the top instead of whichever
-# source the composed filelist happens to name first (#506, #508). The value
-# is always a separate token after the flag, which is what makes the
-# "already configured?" check below an exact-token membership test rather
-# than a prefix match. A family absent here has no such flag rtl_buddy knows
-# of, and its builds keep electing a top the way they always did.
+
+@dataclass(frozen=True)
+class _TopFlagSpec:
+    """How one simulator family spells "elaborate from this module".
+
+    ``emit`` is the single spelling rtl_buddy writes. ``aliases`` is every
+    spelling that counts as *the user already pinned a top*, which is a
+    strictly larger set: Verilator documents ``--top-module`` and ``--top``
+    and accepts each with one or two leading dashes, so a project that
+    worked around #508 by putting ``--top spare_top`` in ``compile-time``
+    must be recognised — appending our own ``--top-module`` there would
+    silently win (Verilator takes the LAST top on the command line), which
+    is the exact inverse of the "configured flag wins" contract. Verified
+    against Verilator 5.050: all four spellings are accepted, ``--top-module=x``
+    is rejected outright, so no ``=``-glued form needs handling.
+
+    ``glued`` lists the prefixes whose value may be attached to the flag
+    (``iverilog -stb``); Verilator and VCS always take the module as a
+    separate token.
+    """
+
+    emit: str
+    aliases: tuple[str, ...]
+    glued: tuple[str, ...] = ()
+
+
+# The top-selection flag per simulator family, so a testbench's declared
+# `toplevel:` decides the elaboration root instead of whichever source the
+# composed filelist happens to name first (#506, #508). A family absent here
+# has no such flag rtl_buddy knows of, and its builds keep electing a top the
+# way they always did.
 TOP_MODULE_FLAGS = {
-    "verilator": "--top-module",
-    "vcs": "-top",
-    "icarus": "-s",
+    "verilator": _TopFlagSpec(
+        emit="--top-module",
+        aliases=("--top-module", "-top-module", "--top", "-top"),
+    ),
+    "vcs": _TopFlagSpec(emit="-top", aliases=("-top",)),
+    "icarus": _TopFlagSpec(emit="-s", aliases=("-s",), glued=("-s",)),
 }
+
+
+def _find_configured_top(spec, opts):
+    """The top the configured opts already pin, or ``None``.
+
+    Returns ``(flag_as_written, module_or_None)`` for the LAST occurrence,
+    because that is the one the simulator honours — Verilator's duplicate
+    options are last-wins, and scanning from the front would compare
+    ``toplevel:`` against a spelling the build overrides anyway.
+
+    The module is ``None`` for a flag with nothing usable after it: a
+    trailing bare ``--top``, or one followed by another option. That still
+    counts as pinned (rtl_buddy must not append a second top next to a
+    malformed one), there is simply no value to compare or to print.
+    """
+    found = None
+    for index, token in enumerate(opts):
+        if token in spec.aliases:
+            nxt = opts[index + 1] if index + 1 < len(opts) else None
+            # A module name never starts with `-`; anything that does is the
+            # next option, so the flag is bare.
+            value = nxt if (nxt and not nxt.startswith("-")) else None
+            found = (token, value)
+            continue
+        for prefix in spec.glued:
+            if token.startswith(prefix) and len(token) > len(prefix):
+                found = (prefix, token[len(prefix) :])
+                break
+    return found
+
+
+# Conflicts claimed by (family, configured top, declared toplevel) so a suite
+# of N tests over one misconfigured builder warns once rather than N times —
+# the same "one console line per distinct fact per process" discipline as
+# `_claim_rebuild` and `_first_reuse_announcement`. Keyed on the fact and not
+# on the test, because the fact is a property of the builder config every one
+# of those tests shares.
+_TOPLEVEL_CONFLICTS_LOCK = threading.Lock()
+_TOPLEVEL_CONFLICTS: set[tuple] = set()
+
+
+def _claim_toplevel_conflict(key: tuple) -> bool:
+    """Is this process's first warning about this conflict? Claims it."""
+    with _TOPLEVEL_CONFLICTS_LOCK:
+        if key in _TOPLEVEL_CONFLICTS:
+            return False
+        _TOPLEVEL_CONFLICTS.add(key)
+        return True
+
+
+def _reset_toplevel_conflicts() -> None:
+    """Forget every claim. Tests only — one pytest process is many runs."""
+    with _TOPLEVEL_CONFLICTS_LOCK:
+        _TOPLEVEL_CONFLICTS.clear()
+
 
 # The argv suffix that makes a simulator print its version cheaply, per
 # family, for the toolchain half of the shared-build stamp. A family absent
@@ -1165,18 +1247,28 @@ class VlogSim:
         :meth:`_get_verilator_assertion_flags`, and against BOTH sources of
         compile flags: the builder's configured ``compile-time`` opts and
         the subclass' :meth:`_get_extra_compile_flags` (SystemC always emits
-        ``--top-module``; cocotb on VCS emits ``-top``). A configured flag
-        wins — it is the more specific statement about this build — and a
-        configured top that *disagrees* with the testbench's is a WARNING,
-        because that combination is how a suite silently simulates a
-        different design than its config names.
+        ``--top-module``; cocotb on VCS emits ``-top``). "Already pinned" is
+        matched across every spelling the family accepts, not just the one
+        rtl_buddy emits (see :class:`_TopFlagSpec`): a project that worked
+        around #508 with ``--top spare_top`` in ``compile-time`` would
+        otherwise get a second, later ``--top-module`` that Verilator's
+        last-wins precedence hands the win to.
+
+        A configured flag wins — it is the more specific statement about
+        this build — and a configured top that *disagrees* with the
+        testbench's is a WARNING, because that combination is how a suite
+        silently simulates a different design than its config names. The
+        warning is claimed once per (family, configured top, declared top)
+        per process: the fact belongs to the builder config, which every
+        test of the suite shares, so warning per test would be N copies of
+        one line.
         """
         toplevel = getattr(self.testbench, "toplevel", None)
         if not toplevel:
             return []
         family = self._get_simulator_family()
-        flag = TOP_MODULE_FLAGS.get(family)
-        if flag is None:
+        spec = TOP_MODULE_FLAGS.get(family)
+        if spec is None:
             log_event(
                 logger,
                 logging.DEBUG,
@@ -1187,10 +1279,11 @@ class VlogSim:
             )
             return []
 
-        configured = list(builder_opts) + list(extra_compile_flags)
-        if flag in configured:
-            index = configured.index(flag)
-            existing = configured[index + 1] if index + 1 < len(configured) else None
+        pinned = _find_configured_top(
+            spec, list(builder_opts) + list(extra_compile_flags)
+        )
+        if pinned is not None:
+            written, existing = pinned
             if existing == toplevel:
                 log_event(
                     logger,
@@ -1198,18 +1291,20 @@ class VlogSim:
                     "compile.toplevel_already_pinned",
                     test=self.test_name,
                     simulator=family,
-                    flag=flag,
+                    flag=written,
                     toplevel=toplevel,
                 )
-            else:
+            elif _claim_toplevel_conflict((family, written, existing, toplevel)):
                 log_event(
                     logger,
                     logging.WARNING,
                     "compile.toplevel_conflict",
                     test=self.test_name,
                     simulator=family,
-                    flag=flag,
+                    flag=written,
                     toplevel=toplevel,
+                    # Omitted (not None) for a bare flag, so the human
+                    # message can say "with no value" instead of "None".
                     configured=existing,
                 )
             return []
@@ -1220,10 +1315,10 @@ class VlogSim:
             "compile.toplevel",
             test=self.test_name,
             simulator=family,
-            flag=flag,
+            flag=spec.emit,
             toplevel=toplevel,
         )
-        return [flag, toplevel]
+        return [spec.emit, toplevel]
 
     def _get_simulator_family(self):
         """

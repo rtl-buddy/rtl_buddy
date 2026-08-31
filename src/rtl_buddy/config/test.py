@@ -73,6 +73,10 @@ class TestbenchConfig:
         from filelist order, which also makes an uninstantiated module in an
         ordinary (non-``-v``) input a MULTITOP error. Not defaulted to
         ``name``: a testbench name is a config label, not necessarily a module.
+        For a plain SystemVerilog testbench this is the BENCH, not the DUT it
+        instantiates — a DUT-valued ``toplevel:`` left over from when the
+        field was only graph metadata elaborates the wrong root (see
+        docs/known-issues.md).
       cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
       systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
       resources (DispatchResourcesFile | None): default per-job reservation for

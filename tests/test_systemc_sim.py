@@ -372,5 +372,8 @@ def test_base_top_plumbing_does_not_double_the_systemc_flag(tmp_path):
     sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))
     extra = sim._get_extra_compile_flags()
     assert extra.count("--top-module") == 1
-    builder_opts = sim.rtl_builder_cfg.get_compile_time_opts("sim")
+    # Filtered, exactly as _build_compile_plan() hands them over.
+    builder_opts = sim._filter_builder_opts(
+        sim.rtl_builder_cfg.get_compile_time_opts("sim")
+    )
     assert sim._get_top_module_flags(builder_opts, extra) == []

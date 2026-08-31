@@ -99,6 +99,29 @@ def test_human_toplevel_conflict_names_both_tops(tmp_path):
     assert "tb_top" in file_text
 
 
+def test_human_toplevel_conflict_without_a_value_says_so(tmp_path):
+    # A bare configured flag (trailing `--top`, or one followed by another
+    # option) has no module to name; the line must not read "None".
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
+
+    log_event(
+        logger,
+        logging.WARNING,
+        "compile.toplevel_conflict",
+        test="basic",
+        simulator="verilator",
+        flag="--top",
+        toplevel="tb_top",
+        configured=None,
+    )
+
+    file_text = log_path.read_text()
+    assert "--top with no value" in file_text
+    assert "None" not in file_text
+
+
 def test_human_sim_failure_message_lists_artifacts(tmp_path):
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)

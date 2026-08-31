@@ -20,6 +20,18 @@ def _events(caplog):
     return [getattr(r, "rtl_event", None) for r in caplog.records]
 
 
+@pytest.fixture(autouse=True)
+def _forget_toplevel_conflicts():
+    """The conflict WARNING is claimed once per fact per PROCESS.
+
+    pytest is one process for the whole file, so a claim left standing by
+    one test would silence the next one's warning.
+    """
+    vlog_sim_module._reset_toplevel_conflicts()
+    yield
+    vlog_sim_module._reset_toplevel_conflicts()
+
+
 class _DummyBuilder:
     def __init__(self, *, family="verilator", exe=None, compile_opts=None):
         self.family = family
@@ -204,10 +216,146 @@ def test_top_flag_not_doubled_when_extra_compile_flags_pin_it(tmp_path):
 
 
 def test_top_flag_dedup_is_token_level_not_substring(tmp_path):
-    # `+define+X_top_Y` contains "-top" nowhere as a token; an opt that only
-    # looks like the flag must not suppress the real one.
+    # `+define+X-top-Y` contains "-top" as a substring but not as a token;
+    # an opt that only looks like the flag must not suppress the real one.
     sim = _make_sim(tmp_path, toplevel="my_dut", family="vcs")
     assert sim._get_top_module_flags(["+define+X-top-Y"], []) == ["-top", "my_dut"]
+
+
+# ---------------------------------------------------------------------------
+# Every spelling the family accepts counts as "already pinned"
+#
+# Verilator documents `--top-module` and `--top` and accepts each with one or
+# two dashes; iverilog accepts the module glued to `-s`. Checking only the
+# spelling rtl_buddy emits would append a second top next to the workaround
+# #508 documents, and Verilator's last-wins precedence would hand OUR flag
+# the win — the inverse of the "configured flag wins" contract. All spellings
+# below were verified against Verilator 5.050 / Icarus.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "opts",
+    [
+        ["--top-module", "spare_top"],
+        ["-top-module", "spare_top"],
+        ["--top", "spare_top"],
+        ["-top", "spare_top"],
+    ],
+)
+def test_verilator_top_aliases_all_count_as_pinned(tmp_path, caplog, opts):
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="verilator")
+    with caplog.at_level(logging.WARNING):
+        assert sim._get_top_module_flags(opts, []) == []
+    conflict = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+    ]
+    assert len(conflict) == 1
+    assert conflict[0].rtl_fields["configured"] == "spare_top"
+    # The flag is reported as the user wrote it, not as rtl_buddy spells it.
+    assert conflict[0].rtl_fields["flag"] == opts[0]
+
+
+def test_verilator_top_alias_that_agrees_is_debug_not_warning(tmp_path, caplog):
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="verilator")
+    with caplog.at_level(logging.DEBUG):
+        assert sim._get_top_module_flags(["--top", "tb_top"], []) == []
+    assert "compile.toplevel_already_pinned" in _events(caplog)
+    assert "compile.toplevel_conflict" not in _events(caplog)
+
+
+def test_icarus_glued_top_counts_as_pinned(tmp_path, caplog):
+    # `iverilog -stb` is `-s tb`.
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="icarus", exe="iverilog")
+    with caplog.at_level(logging.WARNING):
+        assert sim._get_top_module_flags(["-g2012", "-stb"], []) == []
+    conflict = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+    ]
+    assert len(conflict) == 1
+    assert conflict[0].rtl_fields["configured"] == "tb"
+
+
+def test_icarus_glued_top_that_agrees_is_debug(tmp_path, caplog):
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="icarus", exe="iverilog")
+    with caplog.at_level(logging.DEBUG):
+        assert sim._get_top_module_flags(["-stb_top"], []) == []
+    assert "compile.toplevel_already_pinned" in _events(caplog)
+
+
+def test_bare_dash_s_is_not_read_as_glued():
+    # `-s` alone is the separate-token spelling, not a zero-length glued
+    # value; with nothing after it there is no configured top to read.
+    assert vlog_sim_module._find_configured_top(
+        vlog_sim_module.TOP_MODULE_FLAGS["icarus"], ["-s"]
+    ) == ("-s", None)
+
+
+def test_repeated_top_flags_compare_against_the_last(tmp_path, caplog):
+    # Verilator is last-wins, so the last spelling is the one in force and
+    # the only one worth comparing `toplevel:` against.
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="verilator")
+    with caplog.at_level(logging.DEBUG):
+        assert (
+            sim._get_top_module_flags(
+                ["--top", "spare_top", "--top-module", "tb_top"], []
+            )
+            == []
+        )
+    # The last one agrees with `toplevel:`, so this is not a conflict.
+    assert "compile.toplevel_already_pinned" in _events(caplog)
+    assert "compile.toplevel_conflict" not in _events(caplog)
+
+
+def test_trailing_bare_top_flag_is_pinned_with_no_value(tmp_path, caplog):
+    # A malformed `compile-time` ending in a bare `--top` still means the
+    # user reached for a top flag: stand down rather than appending a second
+    # one, and never render the missing value as "None".
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="verilator")
+    with caplog.at_level(logging.WARNING):
+        assert sim._get_top_module_flags(["-sv", "--top"], []) == []
+    conflict = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+    ]
+    assert len(conflict) == 1
+    assert "configured" not in conflict[0].rtl_fields
+    assert "None" not in conflict[0].getMessage()
+    assert "with no value" in conflict[0].getMessage()
+
+
+def test_top_flag_followed_by_another_option_has_no_value():
+    assert vlog_sim_module._find_configured_top(
+        vlog_sim_module.TOP_MODULE_FLAGS["verilator"], ["--top", "--trace", "-sv"]
+    ) == ("--top", None)
+
+
+def test_conflict_warns_once_per_process(tmp_path, caplog):
+    # One builder config, N tests: the fact belongs to the config, so the
+    # console gets one line and not N.
+    opts = ["--top", "spare_top"]
+    with caplog.at_level(logging.WARNING):
+        for name in ("a", "b", "c"):
+            sim = _make_sim(
+                tmp_path / name, toplevel="tb_top", family="verilator", test_name=name
+            )
+            assert sim._get_top_module_flags(opts, []) == []
+    assert _events(caplog).count("compile.toplevel_conflict") == 1
+
+
+def test_a_different_conflict_still_warns(tmp_path, caplog):
+    # The claim is per fact, not per process-wide "already said something".
+    with caplog.at_level(logging.WARNING):
+        first = _make_sim(tmp_path / "a", toplevel="tb_top", family="verilator")
+        assert first._get_top_module_flags(["--top", "spare_top"], []) == []
+        second = _make_sim(tmp_path / "b", toplevel="tb_other", family="verilator")
+        assert second._get_top_module_flags(["--top", "spare_top"], []) == []
+    assert _events(caplog).count("compile.toplevel_conflict") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -266,12 +414,37 @@ def test_compile_key_matches_for_same_toplevel(tmp_path):
     assert a == b
 
 
-def test_compile_key_unchanged_when_no_toplevel_declared(tmp_path):
+def _key_without_top_plumbing(tmp_path, monkeypatch, **kwargs):
+    """The key this config would have had before #508 existed.
+
+    Neutralising :meth:`_get_top_module_flags` is the whole of the change as
+    far as the key is concerned, so a key computed with it silenced is
+    exactly the pre-change key for the same inputs. Comparing against that
+    pins the real hash rather than restating the implementation.
+    """
+    monkeypatch.setattr(
+        vlog_sim_module.VlogSim,
+        "_get_top_module_flags",
+        lambda self, builder_opts, extra_compile_flags: [],
+    )
+    return _key(tmp_path, **kwargs)
+
+
+def test_compile_key_unchanged_when_no_toplevel_declared(tmp_path, monkeypatch):
     # Backwards compatibility: a suite that never declared `toplevel:` must
-    # not be handed a new shared-build dir by this change. Pinned as "the
-    # key of a no-toplevel config equals the key of the same config computed
-    # with the top flags removed" — the flags contribute nothing.
-    sim = _make_sim(tmp_path, share_build=True, toplevel=None)
-    plan = sim._build_compile_plan()
-    assert plan.top_flags == []
-    assert "--top-module" not in plan.key_cmd
+    # not be handed a new shared-build dir by this change, so its key has to
+    # hash to what it hashed to before.
+    before = _key_without_top_plumbing(tmp_path, monkeypatch, toplevel=None)
+    monkeypatch.undo()
+    after = _key(tmp_path, toplevel=None)
+    assert after == before
+
+
+def test_compile_key_shifts_once_when_toplevel_is_declared(tmp_path, monkeypatch):
+    # The other half of the same contract, and the reason known-issues warns
+    # about one rebuild after upgrading: a testbench that DID declare
+    # `toplevel:` gets a different dir, because the flag changes the binary.
+    before = _key_without_top_plumbing(tmp_path, monkeypatch, toplevel="tb_one")
+    monkeypatch.undo()
+    after = _key(tmp_path, toplevel="tb_one")
+    assert after != before
