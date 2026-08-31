@@ -694,7 +694,12 @@ class SlurmDispatchBackend(DispatchBackend):
         if not self._dedup_probe_available:
             return []
         fields = {"job_name": job_name, "suite_dir": cwd}
-        if self.cluster is not None and "," in self.cluster:
+        # The RAW selection, not `self.cluster`: the property collapses any
+        # multi-cluster selection (`a,b`, `all`) to None, which is right for
+        # "which one cluster may I qualify a command with" and exactly wrong
+        # for "did the user select more than one" (#509 round 10).
+        selection = self._cluster_selection()
+        if selection is not None and _is_multi_cluster(selection):
             # `--clusters=a,b` lets Slurm pick which one runs the job, at
             # submit. Probing either would report ids from a queue this
             # build job may not be in — and a job id means nothing without
@@ -711,7 +716,7 @@ class SlurmDispatchBackend(DispatchBackend):
             # a property of `sbatch-args`, so saying it once per run is
             # saying it as often as it can be true.
             return self._retire_dedup_probe(
-                f"sbatch-args select several clusters ({self.cluster}), so a job "
+                f"sbatch-args select several clusters ({selection}), so a job "
                 "id from any one of them would be ambiguous; note that with "
                 "DependencyParameters=disable_remote_singleton the build job's "
                 "singleton is fulfilled on its own cluster only, so builds "
