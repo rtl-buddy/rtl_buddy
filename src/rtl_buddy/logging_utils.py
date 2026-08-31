@@ -1205,6 +1205,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "lifetime (no explicit `automatic`); its formals are shared "
                 "storage and are not portable across synthesis frontends"
             )
+        case "synth.filelist_defines_ignored":
+            names = fields.get("defines") or []
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                f"+define+ entr(ies) in the generated filelist are not passed "
+                f"to Yosys — {', '.join(str(n) for n in names)}; the synthesis "
+                "flow only applies the synth.yaml entry's `defines:`. Move "
+                "them there if the design needs them, or the elaborated RTL "
+                "will differ from the simulation flow's"
+            )
         case "synth.conflicting_drivers":
             return (
                 f'synthesis "{fields.get("synth")}": {fields.get("count")} '

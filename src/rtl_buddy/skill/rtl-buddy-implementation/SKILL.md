@@ -37,7 +37,13 @@ migration. Yosys `multiple conflicting drivers` warnings fail the run under
 `conflicting-drivers: error` (a tristate bus is exempt); they mean a net folded
 to `x` and may have taken registers with it, so never report the area or gate
 count from such a run. `static_function_findings` in a passing result means the
-gate ran in `warn` mode and the netlist may still be wrong.
+gate ran in `warn` mode and the netlist may still be wrong. A failed gate also
+deletes the netlist, so `rb pnr` / `rb power` cannot read it.
+
+A `synth.filelist_defines_ignored` warning means the model filelist carries
+`+define+` macros that `rb synth` does not pass to Yosys — only the synth.yaml
+entry's `defines:` reaches it. Move the macro there if synthesis needs it; the
+elaborated RTL otherwise differs from the simulation flow's.
 
 ## FPGA timing closure
 

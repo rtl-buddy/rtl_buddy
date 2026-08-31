@@ -196,10 +196,23 @@ reported when the same header is included from an ordinary module — and one
 declaration is reported once however many places include it.
 
 `` `ifdef `` / `` `ifndef `` / `` `elsif `` / `` `else `` / `` `endif `` are
-evaluated on definedness, seeded from the run's `defines:` and the filelist's
-`+define+` entries and updated by `` `define `` and `` `undef `` in the
-sources, so a simulation-only helper behind `` `ifndef SYNTHESIS `` is not
-reported when the run defines `SYNTHESIS`.
+evaluated on definedness and updated by `` `define `` and `` `undef `` in the
+sources. The macro table is seeded to match the Yosys invocation exactly:
+
+- the run's `defines:`, which is all `rb synth` passes to `read_verilog -D` /
+  `read_slang -D`;
+- `SYNTHESIS`, which both Yosys frontends define for themselves — so a
+  `` `ifndef SYNTHESIS `` simulation-only helper is never reported, and an
+  `` `ifdef SYNTHESIS `` region is.
+
+`+define+` entries in the generated filelist are **not** included, because the
+synthesis flow does not pass them to Yosys either; seeding the scan with them
+would make it skip a declaration that really is elaborated. A run whose
+filelist carries `+define+` macros the flow drops logs one
+`synth.filelist_defines_ignored` warning naming them. That divergence from the
+simulation flow, which does apply them, predates this gate and is tracked
+separately — move the macro to the synth.yaml entry's `defines:` if the design
+needs it.
 
 The macro table follows the compilation-unit boundary the frontend actually
 uses. With `single-unit: false` — the default — each source is its own

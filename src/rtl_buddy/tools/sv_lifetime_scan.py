@@ -369,6 +369,28 @@ def _expand_text(
     return out
 
 
+def _skip_parens(tokens: list[_Token], open_index: int) -> int:
+    """Index just past the `)` matching the `(` at `open_index`.
+
+    Returns the end of the token list when the group never closes, so a
+    truncated or malformed header terminates the header scan instead of
+    looping.
+    """
+    depth = 0
+    j = open_index
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok.kind == _PUNCT:
+            if tok.text == "(":
+                depth += 1
+            elif tok.text == ")":
+                depth -= 1
+                if depth == 0:
+                    return j + 1
+        j += 1
+    return j
+
+
 def _parse_subroutine_header(
     tokens: list[_Token], index: int
 ) -> tuple[str | None, str]:
@@ -379,7 +401,9 @@ def _parse_subroutine_header(
     bracket depth zero before the argument list or the terminating `;`, which
     handles `ptr_t inc(`, `bit [W-1:0] f;`, `pkg::t_e g(`, and `void run;`
     without needing a type grammar. A `::` or `.` binds into the name, so an
-    out-of-body definition such as `function int C::f(` comes back qualified.
+    out-of-body definition such as `function int C::f(` comes back qualified,
+    and a `#(...)` parameterisation on the return type is skipped rather than
+    mistaken for the argument list (`function R#(int) C::f(`).
     """
     explicit: str | None = None
     name = ""
@@ -393,6 +417,18 @@ def _parse_subroutine_header(
                 bracket += 1
             elif tok.text == "]":
                 bracket = max(0, bracket - 1)
+            elif (
+                bracket == 0
+                and tok.text == "#"
+                and j + 1 < len(tokens)
+                and tokens[j + 1].kind == _PUNCT
+                and tokens[j + 1].text == "("
+            ):
+                # `R#(int)` parameterises the *return type*; the real name is
+                # still to come. Skip the balanced group so its `(` is not
+                # read as the argument list.
+                j = _skip_parens(tokens, j + 1)
+                continue
             elif bracket == 0 and tok.text in ("(", ";"):
                 break
             elif bracket == 0 and tok.text == "." and name:

@@ -11,8 +11,8 @@ from .vlog_filelist import VlogFilelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
     emit_frontend_read_cmds,
-    filelist_scan_context,
     find_conflicting_driver_warnings,
+    lifetime_scan_inputs,
     slang_handles_params,
 )
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
@@ -167,11 +167,11 @@ class OpenRoadSynth:
         self, fl_path: str, opts: SynthToolOpts
     ) -> list[LifetimeFinding]:
         """Same pre-elaboration gate as the Yosys backend; see YosysSynth."""
+        incdirs, defines = lifetime_scan_inputs(
+            fl_path, self.synth_cfg.get_name(), self.synth_cfg.get_defines()
+        )
         if resolve_static_functions_mode(opts) == "allow":
             return []
-        incdirs, defines = filelist_scan_context(fl_path)
-        for key, value in (self.synth_cfg.get_defines() or {}).items():
-            defines[str(key)] = str(value)
         return scan_files(
             self._source_files_from_filelist(fl_path),
             incdirs=incdirs,
@@ -351,6 +351,10 @@ class OpenRoadSynth:
                 count=len(conflicting),
                 log=log_path,
             )
+            # Stage 1 already wrote its netlist; the start-of-run cleanup only
+            # removed the previous run's. Drop this one too, so stage 2 and
+            # `rb pnr` / `rb power` cannot read a design that folded to x.
+            self._clear_stale_netlists()
             return (
                 None,
                 False,
@@ -723,6 +727,13 @@ class OpenRoadSynth:
             tool=self.tool_cfg.get_executable(),
             top=self.synth_cfg.get_top(),
         )
+
+        # Both gate modes are resolved up front, ahead of the Liberty, LEF and
+        # filelist returns, so a misspelled value is fatal on every run rather
+        # than only on the runs that reach stage 1. Matches YosysSynth.run().
+        opts = self._resolve_yosys_opts()
+        resolve_static_functions_mode(opts)
+        resolve_conflicting_drivers_mode(opts)
 
         lib_paths = self._resolve_lib_paths()
         lef_paths = self._resolve_lef_paths()

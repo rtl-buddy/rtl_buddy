@@ -864,3 +864,65 @@ def test_two_headers_with_the_same_basename_are_both_scanned(tmp_path):
         (d / f"{sub}.sv").write_text(f'module {sub};\n`include "fns.svh"\nendmodule\n')
     paths = [str(tmp_path / "x" / "x.sv"), str(tmp_path / "y" / "y.sv")]
     assert sorted(f.name for f in scan_files(paths)) == ["from_x", "from_y"]
+
+
+# ---------------------------------------------------------------------------
+# Parameterised return types (review round 4, item 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "decl",
+    [
+        "function R#(int) C::f(); return null; endfunction",
+        "task T#(4) D::t(); endtask",
+        "function automatic q#(2) E::g(); return 0; endfunction",
+        "function pkg::box#(int, 8) F::h(); return null; endfunction",
+        "function R #(int) C::spaced(); return null; endfunction",
+    ],
+)
+def test_parameterised_return_type_on_an_out_of_body_definition_is_exempt(decl):
+    """`R#(int)` parameterises the return type. Stopping at its `(` read `R`
+    as the subroutine name and lost the `C::` that makes it a class method."""
+    src = (
+        f"module m;\n  {decl}\n  function int plain; return 1; endfunction\nendmodule\n"
+    )
+    assert [f.name for f in scan_text(src, "m.sv")] == ["plain"]
+
+
+def test_parameterised_return_type_on_a_free_function_still_reports_its_name():
+    """The other side: a module-scope function with a parameterised return
+    type is a finding, and must be named for itself, not for its type."""
+    src = dedent("""\
+        module m;
+          function R#(int) make_box(input int a); return null; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "make_box")]
+
+
+def test_nested_parameterisation_is_skipped_whole():
+    src = dedent("""\
+        module m;
+          function box#(pair#(int, bit), 4) build(input int a); return null; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "build")]
+
+
+def test_an_unclosed_parameterisation_does_not_hang_the_scan():
+    """A truncated header must terminate, not loop."""
+    src = "module m;\n  function R#(int make_box(input int a);\n"
+    # Whatever it decides to call the declaration, it must return.
+    assert isinstance(scan_text(src, "m.sv"), list)
+
+
+def test_a_hash_that_is_not_a_parameterisation_is_ignored():
+    """`#` also introduces a delay; only `#(` parameterises."""
+    src = dedent("""\
+        module m;
+          function int delayed(input int a); return a; endfunction
+          initial #5 $display("x");
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "delayed")]

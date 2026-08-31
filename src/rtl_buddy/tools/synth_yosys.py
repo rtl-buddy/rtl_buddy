@@ -110,10 +110,11 @@ def filelist_scan_context(fl_path: str) -> tuple[list[str], dict[str, str]]:
     """`+incdir+` directories and `+define+` macros from a synthesis filelist.
 
     `_source_files_from_filelist` drops both because Yosys is handed sources
-    only, but the lifetime scan needs them: a `` `include `` is resolved
-    through the incdirs, and `` `ifdef `` regions are evaluated against the
-    macros. Paths resolve relative to the filelist, matching the source
-    entries.
+    only. The incdirs are what the lifetime scan resolves `` `include ``
+    through. The defines are returned for *reporting* only — see
+    :func:`lifetime_scan_inputs` — because the synth flow does not pass them
+    to Yosys either. Paths resolve relative to the filelist, matching the
+    source entries.
     """
     fl_dir = os.path.dirname(os.path.abspath(fl_path))
     incdirs: list[str] = []
@@ -136,6 +137,52 @@ def filelist_scan_context(fl_path: str) -> tuple[list[str], dict[str, str]]:
                 name, _, value = entry.partition("=")
                 if name:
                     defines[name] = value
+    return incdirs, defines
+
+
+# Both Yosys frontends define this themselves, so every synthesis elaboration
+# sees it whether or not the project asks for it: `read_verilog` sets it in
+# verilog_frontend.cc, and yosys-slang pushes `SYNTHESIS=1` unless
+# `--no-synthesis-define` is given, which rtl_buddy never passes. The scan has
+# to agree, or every `\`ifndef SYNTHESIS` simulation-only helper -- a very
+# common idiom -- becomes a finding for code synthesis never compiles.
+YOSYS_IMPLICIT_DEFINES: dict[str, str] = {"SYNTHESIS": "1"}
+
+
+def lifetime_scan_inputs(
+    fl_path: str, synth_name: str, run_defines: dict | None
+) -> tuple[list[str], dict[str, str]]:
+    """Include dirs and macros for the lifetime scan, matching what Yosys sees.
+
+    The scan must model the *elaboration the flow actually performs*, not an
+    idealised one. `_write_script()` passes only the run's ``defines:`` to
+    ``read_verilog -D`` / ``read_slang -D``; a ``+define+`` in the generated
+    filelist is dropped. Seeding the scan from those filelist macros would
+    therefore make it evaluate `` `ifdef `` regions differently from Yosys and
+    silently skip a static-lifetime declaration that really is elaborated.
+
+    So the macro table comes from the run's ``defines:`` plus the macros the
+    Yosys frontends define for themselves (:data:`YOSYS_IMPLICIT_DEFINES`).
+    The filelist
+    macros the synth flow ignores are reported once per run instead: that
+    divergence from the simulation flow (which does apply them) predates this
+    gate and is a separate fix — quietly starting to forward them here would
+    change existing synthesis results.
+    """
+    incdirs, filelist_defines = filelist_scan_context(fl_path)
+    defines = dict(YOSYS_IMPLICIT_DEFINES)
+    defines.update({str(k): str(v) for k, v in (run_defines or {}).items()})
+    ignored = sorted(name for name in filelist_defines if name not in defines)
+    if ignored:
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.filelist_defines_ignored",
+            synth=synth_name,
+            defines=ignored,
+            count=len(ignored),
+            filelist=fl_path,
+        )
     return incdirs, defines
 
 
@@ -409,14 +456,16 @@ class YosysSynth:
         they `` `include `` are followed through the filelist's ``+incdir+``
         entries. A ``-y`` library directory contributes files the filelist
         never names, so its contents stay outside the scan. Macros come from
-        the filelist's ``+define+`` entries and the run's ``defines:``, so an
-        `` `ifdef `` region the compiler never sees is not reported.
+        the run's ``defines:`` alone, matching the Yosys invocation exactly —
+        see :func:`lifetime_scan_inputs`.
         """
+        # Resolved before the mode check so the filelist-defines warning is
+        # reported even when the gate itself is switched off.
+        incdirs, defines = lifetime_scan_inputs(
+            fl_path, self.synth_cfg.get_name(), self.synth_cfg.get_defines()
+        )
         if resolve_static_functions_mode(opts) == "allow":
             return []
-        incdirs, defines = filelist_scan_context(fl_path)
-        for key, value in (self.synth_cfg.get_defines() or {}).items():
-            defines[str(key)] = str(value)
         return scan_files(
             self._source_files_from_filelist(fl_path),
             incdirs=incdirs,
@@ -690,6 +739,12 @@ class YosysSynth:
                 count=len(conflicting),
                 log=log_path,
             )
+            # Yosys already ran write_verilog/write_rtlil, so the netlist at
+            # the fixed path is this failed run's own product — the
+            # start-of-run cleanup only removed the previous one. Drop it, or
+            # `rb pnr` / `rb power` would consume a netlist whose shared net
+            # folded to x.
+            self._clear_stale_netlists()
             return SynthFailResults(
                 name=self.name + "/results",
                 desc=(
