@@ -469,15 +469,26 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
 
 # sbatch options that change what a job REQUESTS in cpus, i.e. that can make
 # `ReqCPUS` differ from the cpus-per-task the head resolved. Two families:
-# the cpu counts themselves, and the task/node counts `ReqCPUS` multiplies
-# them by (`ReqCPUS` = tasks x cpus-per-task). Deliberately generous — a
-# false positive only costs right-sizing its best denominator, since it then
-# falls back to `ReqCPUS`, while a false negative makes it analyse a run
-# against cpus the job never had.
+# the cpu count itself, and the task/node counts `ReqCPUS` multiplies it by
+# (`ReqCPUS` = tasks x cpus-per-task).
 #
-# `--exclusive` and `--overcommit` are deliberately absent: they change what
-# is *allocated*, not what is requested, so `ReqCPUS` — the fallback — still
-# describes the reservation correctly.
+# The set is deliberately NARROW, because a false positive is not free: it
+# discards a request the head knows, retargets the edit hint away from the
+# YAML field that really governs, and disables the compile cpus floor. Only
+# options that Slurm documents as changing the cpu REQUEST belong here.
+# Three near misses, all excluded:
+#
+# - `--exclusive` and `--overcommit` change what is *allocated*, not what is
+#   requested, so `ReqCPUS` — the fallback — still describes the reservation.
+# - `--threads-per-core` and `-B`/`--extra-node-info` are node-SELECTION
+#   constraints: they restrict which nodes and hardware threads may be used,
+#   while the generated `--cpus-per-task` still states the request. The head
+#   therefore still knows it, and must not throw it away (#505 review).
+# - `--cpus-per-gpu` is documented as mutually exclusive with
+#   `--cpus-per-task`, which `SlurmDispatchBackend._reservation_argv` emits
+#   unconditionally on every job — so sbatch rejects the pair and the
+#   "override" can never take effect. Detecting it would only degrade the
+#   advice for a submission that never runs.
 #
 # Keyed by the long form, valued by the short one, because the two are the
 # SAME option: `[-c 4, --cpus-per-task=8]` is one option written twice (the
@@ -485,17 +496,12 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
 #
 # Split in two, because the difference decides whether advice can name one
 # of them: a DIRECT cpu count states the request outright, so a whole-job
-# suggestion can be written straight into it. Everything else — topology
-# and task/node counts — only *scales* it, so the suggested number is not a
-# value that argument takes (#505 review).
+# suggestion can be written straight into it. A task or node count only
+# *scales* it, so the suggested number is not a value that argument takes.
 _DIRECT_CPU_COUNT_OPTS = {
     "--cpus-per-task": "-c",
-    "--cpus-per-gpu": None,
 }
 _CPU_SCALING_OPTS = {
-    # Topology modifiers.
-    "--threads-per-core": None,
-    "--extra-node-info": "-B",
     # The task and node counts `ReqCPUS` multiplies the cpu count by.
     "--ntasks": "-n",
     "--ntasks-per-node": None,
@@ -513,13 +519,12 @@ _CPU_REQUEST_SHORT_TO_LONG = {
 def sbatch_arg_sets_cpu_count_directly(arg: str) -> bool:
     """Does this rendered ``sbatch-args`` entry state the cpu count itself?
 
-    ``--cpus-per-task`` and ``--cpus-per-gpu`` name a number of cpus, so a
-    whole-job suggestion can be written into one. ``--ntasks``,
-    ``--ntasks-per-node``, ``--nodes``, ``--threads-per-core`` and
-    ``-B``/``--extra-node-info`` are task counts and topology: they scale
-    the request rather than stating it, and telling a reader to put a cpu
-    count into one of them would be advice that cannot be applied (#505
-    review).
+    ``-c``/``--cpus-per-task`` names a number of cpus, so a whole-job
+    suggestion can be written straight into it. ``--ntasks``,
+    ``--ntasks-per-*`` and ``-N``/``--nodes`` are task and node counts:
+    they scale the request rather than stating it, and telling a reader to
+    put a cpu count into one of them would be advice that cannot be
+    applied (#505 review).
 
     Takes an entry as :func:`sbatch_args_cpu_request_options` renders it —
     ``--cpus-per-task=4``, ``--cpus-per-task 4``, ``-c 4``, ``-c4``,
@@ -548,13 +553,15 @@ def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:
     field it masks (#505 review).
 
     Two families of option qualify, because ``ReqCPUS`` is *tasks x
-    cpus-per-task*: the cpu counts (``-c``/``--cpus-per-task``,
-    ``--cpus-per-gpu``, ``--threads-per-core``, ``-B``/``--extra-node-info``)
-    and the task/node counts that multiply them (``-n``/``--ntasks``,
+    cpus-per-task*: the cpu count (``-c``/``--cpus-per-task``) and the
+    task/node counts that multiply it (``-n``/``--ntasks``,
     ``--ntasks-per-node``/``-core``/``-socket``/``-gpu``,
-    ``-N``/``--nodes``). ``--exclusive`` and ``--overcommit`` are not
-    included: they change what is allocated rather than what is requested,
-    so ``ReqCPUS`` still describes the reservation.
+    ``-N``/``--nodes``). Node-selection constraints
+    (``--threads-per-core``, ``-B``/``--extra-node-info``), allocation
+    modifiers (``--exclusive``, ``--overcommit``) and ``--cpus-per-gpu``
+    (which sbatch rejects alongside the ``--cpus-per-task`` every job
+    carries) are deliberately excluded — see the comment on
+    ``_CPU_REQUEST_OPTS``.
 
     Returns one entry per DISTINCT option, in order of first appearance,
     each rendered as written. Within an option the LAST occurrence wins,

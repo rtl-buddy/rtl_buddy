@@ -179,12 +179,12 @@ def _override_note(sbatch_args: list, masked_path: str) -> str:
     (#505 review).
 
     Only one shape can be handed the suggested number: a single DIRECT cpu
-    count (``--cpus-per-task``, ``--cpus-per-gpu``), which states the
+    count (``-c``/``--cpus-per-task``), which states the
     request outright. Two shapes cannot. Several arguments MULTIPLY —
     ``ReqCPUS`` is *tasks x cpus-per-task* — so none of them alone takes a
     whole-job figure. And a lone task or topology modifier (``--ntasks``,
-    ``--ntasks-per-node``, ``--nodes``, ``--threads-per-core``,
-    ``-B``) is not a cpu count at all: writing 3 into ``--ntasks`` asks for
+    ``--ntasks-per-node``, ``--nodes``) is not a cpu count at all:
+    writing 3 into ``--ntasks`` asks for
     three tasks, not three cpus. Telling a reader to do either would
     produce exactly the unappliable advice this rule exists to prevent, so
     the note states what the arguments do and hands the decomposition back

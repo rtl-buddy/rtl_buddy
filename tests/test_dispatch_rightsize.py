@@ -1912,14 +1912,13 @@ _MODIFIER_TELEMETRY = {
         "-n 4",
         "--ntasks-per-node=2",
         "--ntasks-per-core=2",
+        "--ntasks-per-socket=2",
+        "--ntasks-per-gpu=2",
         "--nodes=2",
         "-N 2",
-        "--threads-per-core=2",
-        "-B 2:4:1",
-        "--extra-node-info=2:4:1",
     ],
 )
-def test_a_lone_task_or_topology_modifier_does_not_take_the_suggestion(arg):
+def test_a_lone_task_or_node_count_does_not_take_the_suggestion(arg):
     """Writing 3 into `--ntasks` asks for three tasks, not three cpus.
 
     Only `--cpus-per-task`/`--cpus-per-gpu` state a cpu count outright. A
@@ -1949,11 +1948,9 @@ def test_a_lone_task_or_topology_modifier_does_not_take_the_suggestion(arg):
     assert "change it there" not in note
 
 
-@pytest.mark.parametrize(
-    "arg", ["--cpus-per-task=8", "-c 8", "-c8", "--cpus-per-gpu=8"]
-)
+@pytest.mark.parametrize("arg", ["--cpus-per-task=8", "-c 8", "-c8", "-c=8"])
 def test_a_lone_direct_cpu_count_still_takes_the_suggestion(arg):
-    """`--cpus-per-task` and `--cpus-per-gpu` name cpus, so write it in."""
+    """`--cpus-per-task` names a cpu count, so the number goes straight in."""
     rows = [_row("t", _MODIFIER_TELEMETRY, requested_cpus=None, cpus_override=[arg])]
     (cpu,) = [
         f

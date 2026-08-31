@@ -64,20 +64,21 @@ of the global reservation.
   `Reserved 4 (8 allocated)`; `allocated` is on every finding and is null
   except on such a `cpus` row. Edit the requested figure named in `Field`.
 - ...unless `cfg-dispatch.sbatch-args` carries an argument that sets the job's
-  cpu request: `-c`/`--cpus-per-task`, `--cpus-per-gpu`, `--threads-per-core`,
-  `-B`, or a task/node count `ReqCPUS` multiplies them by (`-n`/`--ntasks`,
-  `--ntasks-per-*`, `-N`/`--nodes`). Those are appended last and win — within
+  cpu request: `-c`/`--cpus-per-task`, or a task/node count `ReqCPUS`
+  multiplies it by (`-n`/`--ntasks`, `--ntasks-per-*`, `-N`/`--nodes`).
+  Node-selection constraints (`--threads-per-core`, `-B`) and `--exclusive`
+  do not count — they change what is selected or allocated, not what is
+  requested. Those are appended last and win — within
   one option the last occurrence, as for sbatch. The advice then falls back to
   `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line names the
   arguments, and the `cpus` row's `edit_hint` points at
   `cfg-dispatch.sbatch-args` with a note naming the field it masks — edit the
   argument, not that field. `mem` and `time` rows are unaffected.
 - `suggested` is always the whole-job cpu count, but only ONE shape of override
-  takes it: exactly one direct cpu count (`-c`/`--cpus-per-task`,
-  `--cpus-per-gpu`) — write it straight in. A lone task/topology modifier
-  (`--ntasks`, `--ntasks-per-*`, `--nodes`, `--threads-per-core`, `-B`) is not
-  a cpu count, and several arguments multiply, so in both cases the note says
-  the number is the whole-job figure and the decomposition is yours.
+  takes it: exactly one `-c`/`--cpus-per-task` — write it straight in. A lone
+  task or node count (`--ntasks`, `--ntasks-per-*`, `--nodes`) is not a cpu
+  count, and several arguments multiply, so in both cases the note says the
+  number is the whole-job figure and the decomposition is yours.
 - An override also disables the compile `cpus` floor: that floor bounds the
   generated `max(sim, compile)` reservation, which sbatch never saw, so leaving
   it in would clamp every suggestion up and then discard it. `mem` and `time`

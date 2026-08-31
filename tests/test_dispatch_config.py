@@ -732,12 +732,8 @@ def test_parallel_is_not_a_field_of_a_suite_level_compile_block(
         (["--ntasks-per-core=2"], "--ntasks-per-core=2"),
         (["--ntasks-per-socket=2"], "--ntasks-per-socket=2"),
         (["--ntasks-per-gpu=2"], "--ntasks-per-gpu=2"),
-        (["--cpus-per-gpu=4"], "--cpus-per-gpu=4"),
-        (["--threads-per-core=2"], "--threads-per-core=2"),
         (["--nodes=2"], "--nodes=2"),
         (["-N", "2"], "-N 2"),
-        (["-B", "2:4:1"], "-B 2:4:1"),
-        (["--extra-node-info=2:4:1"], "--extra-node-info=2:4:1"),
     ],
 )
 def test_a_cpus_override_in_sbatch_args_is_found(args, expected):
@@ -787,6 +783,11 @@ def test_the_last_occurrence_of_ONE_option_wins_like_sbatch(args, expected):
             ["--nodes=2", "--ntasks-per-node=4", "--cpus-per-task=2"],
             ["--nodes=2", "--ntasks-per-node=4", "--cpus-per-task=2"],
         ),
+        # An excluded neighbour alongside a real one changes nothing.
+        (
+            ["--threads-per-core=2", "--ntasks=4", "--cpus-per-task=2"],
+            ["--ntasks=4", "--cpus-per-task=2"],
+        ),
     ],
 )
 def test_distinct_cpu_options_multiply_instead_of_overriding(args, expected):
@@ -819,6 +820,19 @@ def test_distinct_cpu_options_multiply_instead_of_overriding(args, expected):
         # so the fallback is already right and there is nothing to retarget.
         ["--exclusive"],
         ["--overcommit"],
+        # Node SELECTION, not request: these restrict which nodes and
+        # hardware threads may be used while the generated `--cpus-per-task`
+        # still states the request, so the head still knows it and must not
+        # throw it away (#505 review).
+        ["--threads-per-core=2"],
+        ["--threads-per-core", "2"],
+        ["-B", "2:4:1"],
+        ["--extra-node-info=2:4:1"],
+        # Mutually exclusive with the `--cpus-per-task` every dispatched job
+        # carries, so sbatch rejects the pair: the "override" can never take
+        # effect, and a job that never runs has nothing to right-size.
+        ["--cpus-per-gpu=4"],
+        ["--cpus-per-gpu", "4"],
     ],
 )
 def test_args_that_do_not_touch_cpus_are_left_alone(args):

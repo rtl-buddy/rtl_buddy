@@ -247,11 +247,16 @@ One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **
 
 | | Options | |
 | --- | --- | --- |
-| direct cpu counts | `-c` / `--cpus-per-task`, `--cpus-per-gpu` | state the request |
-| topology modifiers | `--threads-per-core`, `-B` / `--extra-node-info` | scale it |
+| the cpu count | `-c` / `--cpus-per-task` | states the request |
 | task and node counts | `-n` / `--ntasks`, `--ntasks-per-node`, `--ntasks-per-core`, `--ntasks-per-socket`, `--ntasks-per-gpu`, `-N` / `--nodes` | scale it |
 
-All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: `--ntasks` and `--cpus-per-task` are orthogonal and the request is their product, so each distinct option is reported. `--exclusive` and `--overcommit` are deliberately not included: they change what is *allocated* rather than what is requested, so `ReqCPUS` still describes the reservation.
+All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: `--ntasks` and `--cpus-per-task` are orthogonal and the request is their product, so each distinct option is reported.
+
+The set is deliberately narrow, because a false positive is not free — it discards a request rtl_buddy knows, retargets the edit hint away from the field that really governs, and disables the compile floor. Three near misses are excluded:
+
+- `--exclusive` and `--overcommit` change what is *allocated*, not what is requested, so `ReqCPUS` still describes the reservation.
+- `--threads-per-core` and `-B` / `--extra-node-info` are **node-selection constraints**: they restrict which nodes and hardware threads may be used, while the generated `--cpus-per-task` still states the request. rtl_buddy therefore still knows it, and keeps using it.
+- `--cpus-per-gpu` is documented as mutually exclusive with `--cpus-per-task`, which every dispatched job carries, so sbatch rejects the pair. A job submitted that way never runs, and there is nothing to right-size.
 
 Where such an argument is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names the arguments responsible.
 
