@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from ..config.pnr import PnrConfig
 from ..logging_utils import log_event, task_status
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
+from .artifact_paths import clear_stale_artefacts
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -230,8 +231,11 @@ class OpenRoadPnr:
             return False
         return f"RB_HAS_CMD:{command}:yes" in (r.stdout or "")
 
+    def _drc_report_path(self) -> str:
+        return os.path.join(self.artefact_dir, "route.drc.rpt")
+
     def _count_drcs(self) -> int:
-        drc_path = os.path.join(self.artefact_dir, "route.drc.rpt")
+        drc_path = self._drc_report_path()
         if not os.path.isfile(drc_path):
             return 0
         try:
@@ -302,6 +306,10 @@ class OpenRoadPnr:
             script,
         ]
         log_path = os.path.join(self.artefact_dir, "klayout.def2stream.log")
+        # Streamout is judged purely by "did a non-empty GDS appear", so a
+        # previous run's GDS would mask a failure here and then be rendered
+        # and reported as this run's layout (#469).
+        clear_stale_artefacts([out_gds], owner=self.pnr_cfg.get_name())
         with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout gds]"):
             r = subprocess.run(cmd, capture_output=True, text=True, check=False)
         Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
@@ -358,6 +366,7 @@ class OpenRoadPnr:
             script,
         ]
         log_path = os.path.join(self.artefact_dir, "klayout.gds2png.log")
+        clear_stale_artefacts([out_png], owner=self.pnr_cfg.get_name())
         with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout png]"):
             r = subprocess.run(cmd, capture_output=True, text=True, check=False)
         Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
@@ -460,6 +469,27 @@ class OpenRoadPnr:
             cmd=" ".join(cmd),
         )
 
+        # Everything the flow.tcl writes. `_count_drcs` reads the routing
+        # DRC report off a fixed path and treats a missing file as "zero
+        # violations", and the DEF / ODB are handed on to KLayout streamout
+        # and to `rb power` respectively — so a run that dies short of
+        # routing would otherwise be scored, streamed and power-analysed on
+        # a previous run's outputs. Clearing them first keeps a missing
+        # output missing (#469). The log is left to OpenROAD's own `-log`,
+        # which truncates it.
+        design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        clear_stale_artefacts(
+            [
+                self._drc_report_path(),
+                os.path.join(self.artefact_dir, "timing.rpt"),
+                os.path.join(self.artefact_dir, f"{design}.def"),
+                os.path.join(self.artefact_dir, f"{design}.routed.v"),
+                os.path.join(self.artefact_dir, f"{design}.routed.sdc"),
+                os.path.join(self.artefact_dir, f"{design}.routed.odb"),
+            ],
+            owner=self.pnr_cfg.get_name(),
+        )
+
         with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad]"):
             result = subprocess.run(
                 cmd,
@@ -505,7 +535,6 @@ class OpenRoadPnr:
         gds_path: str | None = None
         png_path: str | None = None
         if self.emit_gds:
-            design = self.pnr_cfg.resolve_synth_cfg().get_top()
             gds_path = self._run_def2stream(platform, design)
             if gds_path and self.emit_png:
                 png_path = self._run_gds2png(platform, gds_path, design)

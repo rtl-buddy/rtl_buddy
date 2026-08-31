@@ -74,6 +74,12 @@ Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immedi
 
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
 
+## Tool flows delete their previous outputs before running
+
+`rb cdc`, `rb fpga`, `rb pnr`, and `rb power` remove the outputs they are about to write — reports, domain maps, netlists, DEF/ODB, GDS/PNG, bitstream — from the run's artifact directory before invoking the tool. An exit code cannot distinguish "produced nothing to report" from "crashed before writing" (rtl-buddy-cdc's exit 1 means rule violations were found), so a report left by an earlier run would otherwise be parsed and its counts reported as the current result. Clearing first makes an absent report absent, and the flow then says so and names its log.
+
+Consequently a failed rerun leaves no output at all rather than the previous run's. Copy an artifact you want to compare against out of `artefacts/<name>/` before rerunning. Logs are exempt: each flow truncates its own log, so a crashed run still has one to read.
+
 ## Dispatch changes build behavior
 
 `--dispatch` implies `--share-build` and rejects `--early-stop`. `cfg-dispatch.backend` defaults `regression` and `randtest`, but `rb test` remains local unless `--dispatch` is explicit. A one-seed `randtest` replay also stays local.

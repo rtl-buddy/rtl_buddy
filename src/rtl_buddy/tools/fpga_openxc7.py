@@ -16,6 +16,7 @@ from ..runner.fpga_results import (
     FpgaResults,
     FpgaSkipResults,
 )
+from .artifact_paths import clear_stale_artefacts
 from .fpga_base import BaseFpga, resolve_target
 from .fpga_openxc7_reports import parse_nextpnr_log
 
@@ -310,6 +311,21 @@ class OpenXc7Fpga(BaseFpga):
             )
 
         script_path = self._write_script(fl_path)
+
+        # Each stage hands its output file to the next by name and the
+        # bitstream check at the end is a plain `isfile`, so a stage that
+        # exits 0 without writing would silently promote a previous run's
+        # netlist / FASM / bitstream. Clear them so a missing output stays
+        # missing (#469); every stage log is truncated by `_run_stage`.
+        clear_stale_artefacts(
+            [
+                os.path.join(self.artefact_dir, f"{top}.json"),
+                os.path.join(self.artefact_dir, f"{top}.fasm"),
+                os.path.join(self.artefact_dir, f"{top}.frames"),
+                self._bitstream_path(),
+            ],
+            owner=self.fpga_cfg.get_name(),
+        )
 
         with task_status(f"fpga {self.fpga_cfg.get_name()} [openxc7]"):
             fail = self._run_stage(

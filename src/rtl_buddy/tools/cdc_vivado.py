@@ -28,6 +28,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
 from ..config.cdc import CdcConfig, CdcToolConfig
 from ..errors import FatalRtlBuddyError, FilelistError
@@ -392,6 +393,12 @@ class VivadoCdc:
             "-log",
             os.path.basename(log_path),
         ]
+
+        # Vivado can exit 0 with no matching ERROR line and still not have
+        # written report_cdc (an aborted implementation step, a Tcl edit).
+        # Clear the report first so the fixed-path read below cannot pick up
+        # an earlier run's crossings and report them as this run's (#469).
+        clear_stale_artefacts([self._report_path()], owner=self.cdc_cfg.get_name())
 
         with task_status(f"Running CDC {self.cdc_cfg.get_name()} [vivado]"):
             result = run_managed_process(

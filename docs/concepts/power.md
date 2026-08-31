@@ -117,4 +117,4 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | `power.log` | OpenROAD output |
 | `power.rpt` | Raw `report_power` report |
 
-On failure, inspect `power.log` for tool and input errors, then `power.rpt` for missing or malformed totals.
+On failure, inspect `power.log` for tool and input errors, then `power.rpt` for missing or malformed totals. `power.rpt` is deleted before each run, so a run that never got as far as `report_power` leaves none — read `power.log` in that case rather than an earlier run's numbers.

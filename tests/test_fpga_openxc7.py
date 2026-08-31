@@ -309,6 +309,35 @@ def test_openxc7_bitstream_runs_prjxray_stages(tmp_path, monkeypatch):
     assert (Path(backend.artefact_dir) / "demo_top.frames").read_bytes() != b""
 
 
+def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
+    """xc7frames2bit exiting 0 without writing must not promote the .bit an
+    earlier run left behind — nor the netlist/FASM handed between stages
+    (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+
+    artefacts = Path(backend.artefact_dir)
+    (artefacts / "demo_top.bit").write_bytes(b"\x00stale bitstream\x00")
+    (artefacts / "demo_top.json").write_text('{"stale": true}')
+    (artefacts / "demo_top.fasm").write_text("# stale fasm\n")
+
+    def _no_bitstream(cmd, **kwargs):
+        # Every stage "succeeds" but xc7frames2bit writes nothing.
+        base = _fake_pipeline()
+        if os.path.basename(cmd[0]) == "xc7frames2bit":
+            return ManagedProcessResult(returncode=0)
+        return base(cmd, **kwargs)
+
+    _mock_toolchain(monkeypatch, _no_bitstream)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "bitstream not produced" in res.results["desc"]
+    assert not (artefacts / "demo_top.bit").exists()
+
+
 def test_openxc7_failing_timing_still_passes_with_loop_fields(tmp_path, monkeypatch):
     backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
     _mock_toolchain(monkeypatch, _fake_pipeline(nextpnr_log="nextpnr_xilinx_fail.log"))

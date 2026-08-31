@@ -1,5 +1,8 @@
 from pathlib import Path
+from typing import Iterable
 import re
+
+from ..errors import FatalRtlBuddyError
 
 #: The suite-relative directory every rtl_buddy artefact tree is written
 #: into. Named here rather than spelled out at each use so consumers that
@@ -76,6 +79,61 @@ def shared_build_dir(suite_dir: str | Path, compile_key: str) -> Path:
         / SHARED_BUILDS_DIRNAME
         / f"{BUILD_DIR_PREFIX}_{compile_key}"
     )
+
+
+def clear_stale_artefacts(
+    paths: Iterable[str | Path | None], *, owner: str
+) -> list[str]:
+    """Delete a tool's outputs *before* invoking the tool that writes them.
+
+    Every tool flow in rtl_buddy runs a subprocess and then reads its
+    outputs back off fixed paths in the run's artefact directory. An exit
+    code cannot separate "ran clean and produced nothing to report" from
+    "crashed before writing" — rtl-buddy-cdc's exit 1 means "rule
+    violations found", so a crash that happens to exit 1 walks straight
+    past the returncode gate. When an earlier run's report is still lying
+    in the artefact dir, that stale file is parsed and its numbers are
+    reported as the current result (#469).
+
+    Clearing the outputs first makes presence proof of authorship: what
+    exists afterwards was written by this invocation, and what is absent
+    takes the flow's existing "not produced" path — which is the honest
+    answer and already points the user at the log.
+
+    Logs are deliberately *not* passed here: each flow either truncates
+    its own log (``open(path, "w")``) or hands the path to a tool that
+    does, and the log is the one artefact worth keeping if the tool dies
+    before it can write anything else.
+
+    Args:
+      paths: the outputs this invocation is expected to (re)write.
+        Entries that do not exist are ignored, and ``None`` entries are
+        skipped so callers can splice in conditional artefacts.
+      owner: the run/analysis name, used in the error message.
+
+    Returns:
+      The paths that actually existed, in the order given — for logging.
+
+    Raises:
+      FatalRtlBuddyError: an existing artefact could not be removed.
+        Running on would risk reporting a previous run's numbers, so this
+        fails loudly instead.
+    """
+    removed: list[str] = []
+    for entry in paths:
+        if entry is None:
+            continue
+        path = Path(entry)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            raise FatalRtlBuddyError(
+                f"{owner}: could not remove the previous run's artefact {path}: {e}"
+            ) from e
+        removed.append(str(path))
+    return removed
 
 
 test_artifact_dir.__test__ = False

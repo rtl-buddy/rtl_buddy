@@ -695,6 +695,33 @@ def test_vivado_fpga_fails_when_bitstream_missing(tmp_path, monkeypatch):
     assert "bitstream not produced" in res.results["desc"]
 
 
+def test_vivado_fpga_ignores_a_previous_runs_reports(tmp_path, monkeypatch):
+    """A run that writes no reports must not be scored off the reports (or
+    the bitstream) an earlier run left in the artefact dir (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    for filename in REPORT_FILES.values():
+        shutil.copy(FIXTURES / filename, artefacts / filename)
+    (artefacts / "demo_top.bit").write_bytes(b"\x00stale\x00")
+
+    monkeypatch.setattr(
+        fpga_vivado_module,
+        "run_managed_process",
+        _fake_vivado(drop_reports=False, drop_bitstream=False),
+    )
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "not produced" in res.results["desc"]
+    assert not (artefacts / "demo_top.bit").exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists()
+
+
 def test_vivado_fpga_uses_failing_timing_fixture(tmp_path, monkeypatch):
     """A routed-but-timing-failed run still passes; metrics carry the truth."""
     backend = _make_backend(tmp_path)

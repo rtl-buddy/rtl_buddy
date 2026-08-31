@@ -376,7 +376,9 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _setup_lint_run(tmp_path, frontend=None, single_unit=False, blackbox=None):
+def _setup_lint_run(
+    tmp_path, frontend=None, single_unit=False, blackbox=None, emit_maps=False
+):
     """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
     build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
 
@@ -420,7 +422,11 @@ def _setup_lint_run(tmp_path, frontend=None, single_unit=False, blackbox=None):
     )
 
     wrapper = RtlBuddyCdc(
-        name="t", cdc_cfg=cdc_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+        name="t",
+        cdc_cfg=cdc_cfg,
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        emit_maps=emit_maps,
     )
     json_report = Path(wrapper.artefact_dir) / "cdc.json"
 
@@ -671,3 +677,89 @@ def test_cdc_suite_config_loads_xfail_flags(tmp_path):
     assert cfg.get_analyses("cdc_xfail_strict")[0].is_xfail() is True
     assert cfg.get_analyses("cdc_xfail_strict")[0].get_xfail_strict() is True
     assert cfg.get_analyses("cdc_normal")[0].is_xfail() is False
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — stale-report masking (#469)
+# ---------------------------------------------------------------------------
+
+
+def test_lint_stale_json_report_is_not_reported_as_this_run(tmp_path, monkeypatch):
+    """A crash that exits 1 without writing a report must not resurrect the
+    previous run's cdc.json (#469).
+
+    Exit code 1 is the analyzer's "rule violations found" code, so a crash
+    that happens to exit 1 passes the returncode gate. Before the fix the
+    stale report left in the artefact dir was parsed and its counts were
+    reported as the current result.
+    """
+    wrapper, calls, _fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    stale = Path(wrapper.artefact_dir) / "cdc.json"
+    stale.write_text('{"summary": {"violations": 31, "crossings": 49}}')
+    stale_txt = Path(wrapper.artefact_dir) / "cdc.txt"
+    stale_txt.write_text("31 violations from a previous, unrelated run\n")
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    def _crash(cmd, stdout, stderr, **kwargs):
+        # Exits with the "violations found" code but writes no report.
+        return ManagedProcessResult(returncode=1)
+
+    monkeypatch.setattr(mod, "run_managed_process", _crash)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert "no JSON report produced" in res.results["desc"]
+    assert res.is_pass() is False
+    assert not stale.exists()
+    assert not stale_txt.exists()
+
+
+def test_lint_stale_domain_maps_are_cleared_when_emitting(tmp_path, monkeypatch):
+    """`--emit-constraints` reads domain_map.json / reset_map.json back off
+    disk; a crashed run must not hand it the previous run's maps (#469)."""
+    wrapper, calls, _fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+    reset_map = Path(wrapper.artefact_dir) / "reset_map.json"
+    domain_map.write_text('{"clocks": {"stale_clk": []}}')
+    reset_map.write_text('{"resets": {"stale_rst": []}}')
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    def _crash(cmd, stdout, stderr, **kwargs):
+        return ManagedProcessResult(returncode=2)
+
+    monkeypatch.setattr(mod, "run_managed_process", _crash)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert not domain_map.exists()
+    assert not reset_map.exists()
+    assert wrapper.read_emitted_maps() == (None, None)
+    assert wrapper.read_report() == {}
+
+
+def test_lint_fresh_report_from_this_run_is_still_consumed(tmp_path, monkeypatch):
+    """The pre-run cleanup must not break the happy path: a report the
+    current invocation writes is parsed normally (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    stale = Path(wrapper.artefact_dir) / "cdc.json"
+    stale.write_text('{"summary": {"violations": 31, "crossings": 49}}')
+
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert res.is_pass()

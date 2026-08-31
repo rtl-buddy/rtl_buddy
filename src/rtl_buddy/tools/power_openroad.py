@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
+from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
 
 
@@ -304,6 +305,12 @@ class OpenRoadPower(BasePower):
             power=self.power_cfg.get_name(),
             cmd=" ".join(cmd),
         )
+
+        # `report_power`'s output file is read back off a fixed path and
+        # OpenROAD exiting 0 with no [ERROR] does not prove it rewrote it.
+        # Clear it so the "power report not produced" path below stays
+        # reachable instead of quoting a previous run's watts (#469).
+        clear_stale_artefacts([self._report_path()], owner=self.power_cfg.get_name())
 
         with task_status(f"power {self.power_cfg.get_name()} [openroad]"):
             result = subprocess.run(

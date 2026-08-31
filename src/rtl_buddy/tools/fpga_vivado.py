@@ -17,6 +17,7 @@ from ..runner.fpga_results import (
     FpgaResults,
     FpgaSkipResults,
 )
+from .artifact_paths import clear_stale_artefacts
 from .fpga_base import BaseFpga, resolve_target
 from .fpga_vivado_flow import REPORT_FILES, render_flow_tcl
 from .fpga_vivado_reports import (
@@ -211,6 +212,20 @@ class VivadoFpga(BaseFpga):
             fpga=self.fpga_cfg.get_name(),
             cmd=" ".join(cmd),
             cwd=self.artefact_dir,
+        )
+
+        # The five post-route reports and the bitstream are read back off
+        # fixed paths after the run; Vivado exiting 0 with no ERROR line is
+        # not proof that it rewrote them. Clear them so `_parse_reports`
+        # either sees this run's numbers or takes its "not produced" path
+        # instead of quoting a previous run's utilization/WNS/power (#469).
+        clear_stale_artefacts(
+            [
+                os.path.join(self.artefact_dir, filename)
+                for filename in REPORT_FILES.values()
+            ]
+            + [self._bitstream_path() if self.emit_bitstream else None],
+            owner=self.fpga_cfg.get_name(),
         )
 
         with task_status(f"fpga {self.fpga_cfg.get_name()} [vivado]"):

@@ -19,6 +19,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
 from ..config.cdc import CdcConfig, CdcToolConfig
 from ..errors import FatalRtlBuddyError
@@ -169,6 +170,25 @@ class RtlBuddyCdc:
                 paths.append(os.path.normpath(os.path.join(fl_dir, line)))
         return paths
 
+    def _clear_stale_outputs(self) -> list[str]:
+        """Delete the analyzer-written artefacts before invoking it.
+
+        Exit 1 is rtl-buddy-cdc's "rule violations found" code, so a crash
+        that exits 1 passes the returncode gate below and the fixed-path
+        read then picks up whatever ``cdc.json`` the artefact dir already
+        held (#469). ``cdc.log`` is not cleared here because :meth:`_run`
+        truncates it (mode ``"w"``) on the first of the two invocations.
+        """
+        return clear_stale_artefacts(
+            [
+                self._report_path("json"),
+                self._report_path("txt"),
+                self._domain_map_path() if self.emit_maps else None,
+                self._reset_map_path() if self.emit_maps else None,
+            ],
+            owner=self.cdc_cfg.get_name(),
+        )
+
     # --- run ----------------------------------------------------------------
 
     def run(self) -> CdcResults:
@@ -268,6 +288,19 @@ class RtlBuddyCdc:
 
         cmd_text = _build_cmd("text", text_report)
         cmd_json = _build_cmd("json", json_report)
+
+        # Clear the previous run's outputs so anything present afterwards
+        # was written by this invocation (#469). Done after the fatal
+        # validations above, so a config error leaves the artefacts alone.
+        stale = self._clear_stale_outputs()
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cdc.stale_artefacts.removed",
+                analysis=self.cdc_cfg.get_name(),
+                paths=stale,
+            )
 
         with task_status(f"Running CDC {self.cdc_cfg.get_name()}"):
             log_event(

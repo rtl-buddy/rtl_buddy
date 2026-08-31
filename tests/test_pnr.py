@@ -523,6 +523,47 @@ def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
     assert returned is None
 
 
+def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
+    """A failed streamout must not return the GDS an earlier run left behind
+    — it would then be rendered and reported as this run's layout (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        klayout_tech="pdk/klayout/tech.lyt",
+        cell_gds="pdk/gds/cells.gds",
+    )
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+
+    stale_gds = Path(backend.artefact_dir) / "demo_top.gds"
+    stale_gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
+
+    def _fake_run(cmd, **_kwargs):
+        # KLayout dies before writing anything.
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "fatal: unable to load tech file"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    assert backend._run_def2stream(platform, "demo_top") is None
+    assert not stale_gds.exists()
+
+
 _PNR_XFAIL_YAML = dedent("""\
     rtl-buddy-filetype: pnr_config
 

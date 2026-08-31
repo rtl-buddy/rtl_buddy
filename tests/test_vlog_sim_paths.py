@@ -12,6 +12,7 @@ from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.seed_mode import SeedMode
 from rtl_buddy.tools.artifact_paths import (
+    clear_stale_artefacts,
     sanitize_artifact_component,
     test_artifact_dir,
     test_build_dir_name,
@@ -894,3 +895,33 @@ def test_license_marker_helpers_share_one_implementation():
     for text in ("Parsing design file", "", "...."):
         assert not vcs_license.has_license_queue_marker(text)
         assert not vcs_license._is_marker_line(text)
+
+
+# ---------------------------------------------------------------------------
+# clear_stale_artefacts (#469)
+# ---------------------------------------------------------------------------
+
+
+def test_clear_stale_artefacts_removes_only_what_exists(tmp_path):
+    present = tmp_path / "report.json"
+    present.write_text("{}")
+    absent = tmp_path / "never_written.json"
+
+    removed = clear_stale_artefacts([present, absent, None], owner="demo")
+
+    assert removed == [str(present)]
+    assert not present.exists()
+
+
+def test_clear_stale_artefacts_fails_loudly_when_removal_fails(tmp_path):
+    """An artefact we cannot delete would silently mask the run, so refuse to
+    run rather than risk reporting a previous run's numbers."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    # A directory at the artefact's path: unlink() raises, and no flow
+    # writes a directory there, so this stands in for any undeletable file.
+    blocked = tmp_path / "report.json"
+    blocked.mkdir()
+
+    with pytest.raises(FatalRtlBuddyError, match="could not remove"):
+        clear_stale_artefacts([blocked], owner="demo")

@@ -168,6 +168,8 @@ Vivado produces `fpga.f`, `flow.tcl`, `vivado.log`, utilization/timing/power/DRC
 
 openXC7 produces `fpga.f`, `synth.ys`, `yosys.log`, `<top>.json`, `nextpnr.log`, `<top>.fasm`, and optional prjxray stage logs plus `<top>.bit`.
 
+The reports, the netlist and FASM handed between stages, and the bitstream are deleted before each run, so a run that fails partway leaves what it never wrote absent instead of the previous run's copy. The logs are exempt: each is truncated by the stage that writes it.
+
 ## Interpret pass, fail, and skip
 
 A run passes when every backend stage exits zero, logs contain no backend error records, required reports parse, and a requested bitstream exists. It fails otherwise and names the failing stage or output.

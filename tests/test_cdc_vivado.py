@@ -266,6 +266,22 @@ def test_vivado_cdc_fails_when_report_missing(tmp_path, monkeypatch):
     assert "no CDC report produced" in res.results["desc"]
 
 
+def test_vivado_cdc_ignores_a_previous_runs_report(tmp_path, monkeypatch):
+    """A run that writes no report must not be scored off the cdc.rpt an
+    earlier run left in the artefact dir (#469)."""
+    backend = _make_backend(tmp_path)
+    stale = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", stale)
+
+    _mock_env(monkeypatch, _fake_vivado(fixture_name=None))
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "no CDC report produced" in res.results["desc"]
+    assert res.results["violations"] == 0
+    assert not stale.exists()
+
+
 # ---------------------------------------------------------------------------
 # CdcRunner dispatch
 # ---------------------------------------------------------------------------
