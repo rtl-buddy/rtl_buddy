@@ -21,7 +21,7 @@ from rtl_buddy.config.dispatch import (
     mem_to_bytes,
     resolve_compile_resources,
     resolve_resources,
-    sbatch_args_cpus_override,
+    sbatch_args_cpu_request_options,
     time_to_seconds,
 )
 from rtl_buddy.config.root import RootConfig
@@ -747,7 +747,7 @@ def test_a_cpus_override_in_sbatch_args_is_found(args, expected):
     to rather than the cpus it was submitted with — the same class of bug
     #505 fixed, arriving by the other door.
     """
-    assert sbatch_args_cpus_override(args) == expected
+    assert sbatch_args_cpu_request_options(args) == [expected]
 
 
 @pytest.mark.parametrize(
@@ -755,18 +755,48 @@ def test_a_cpus_override_in_sbatch_args_is_found(args, expected):
     [
         (["-c", "4", "--cpus-per-task=8"], "--cpus-per-task=8"),
         (["--cpus-per-task=8", "-c", "4"], "-c 4"),
-        (["--ntasks=2", "--cpus-per-task=8"], "--cpus-per-task=8"),
-        (["--cpus-per-task=8", "--ntasks=2"], "--ntasks=2"),
         (["-c4", "--partition=verif", "-c8"], "-c8"),
+        (["-n", "2", "--ntasks=8"], "--ntasks=8"),
     ],
 )
-def test_the_last_cpu_option_wins_like_sbatch(args, expected):
+def test_the_last_occurrence_of_ONE_option_wins_like_sbatch(args, expected):
     """sbatch obeys the FINAL occurrence, so the hint must name that one.
 
     `[-c, 4, --cpus-per-task=8]` runs with 8; naming the first would send a
-    reader to an argument that is not in force (#505 review).
+    reader to an argument that is not in force. The short and long spellings
+    are the SAME option, so this is one entry and not two (#505 review).
     """
-    assert sbatch_args_cpus_override(args) == expected
+    assert sbatch_args_cpu_request_options(args) == [expected]
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["--ntasks=4", "--cpus-per-task=2"], ["--ntasks=4", "--cpus-per-task=2"]),
+        # Order of first appearance, so the note reads back in the order the
+        # project wrote them.
+        (["--cpus-per-task=2", "--ntasks=4"], ["--cpus-per-task=2", "--ntasks=4"]),
+        (["-n", "4", "-c", "2"], ["-n 4", "-c 2"]),
+        # Repetition still collapses per option, and keeps that option's
+        # first position while carrying its last value.
+        (
+            ["-n", "4", "--cpus-per-task=2", "--ntasks=8"],
+            ["--ntasks=8", "--cpus-per-task=2"],
+        ),
+        (
+            ["--nodes=2", "--ntasks-per-node=4", "--cpus-per-task=2"],
+            ["--nodes=2", "--ntasks-per-node=4", "--cpus-per-task=2"],
+        ),
+    ],
+)
+def test_distinct_cpu_options_multiply_instead_of_overriding(args, expected):
+    """`--ntasks` and `--cpus-per-task` are orthogonal, not rivals.
+
+    `ReqCPUS` is their product, so "the last one wins" is simply wrong
+    across different options: neither is superseded, and neither alone can
+    be handed a whole-job suggestion (#505 review).
+    """
+    assert sbatch_args_cpu_request_options(args) == expected
 
 
 @pytest.mark.parametrize(
@@ -793,13 +823,14 @@ def test_the_last_cpu_option_wins_like_sbatch(args, expected):
 )
 def test_args_that_do_not_touch_cpus_are_left_alone(args):
     """`--constraint`/`--comment`/`--chdir` all start with `--c`."""
-    assert sbatch_args_cpus_override(args) is None
+    assert sbatch_args_cpu_request_options(args) == []
 
 
 def test_the_override_is_reported_verbatim_for_the_log_line():
-    assert sbatch_args_cpus_override(["--cpus-per-task=4"]) == "--cpus-per-task=4"
-    assert sbatch_args_cpus_override(["-c", "4"]) == "-c 4"
-    assert (
-        sbatch_args_cpus_override(["--x", "--cpus-per-task", "16"])
-        == "--cpus-per-task 16"
-    )
+    assert sbatch_args_cpu_request_options(["--cpus-per-task=4"]) == [
+        "--cpus-per-task=4"
+    ]
+    assert sbatch_args_cpu_request_options(["-c", "4"]) == ["-c 4"]
+    assert sbatch_args_cpu_request_options(["--x", "--cpus-per-task", "16"]) == [
+        "--cpus-per-task 16"
+    ]

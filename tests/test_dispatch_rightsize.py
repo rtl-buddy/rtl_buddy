@@ -1627,7 +1627,7 @@ def test_a_cpus_override_in_sbatch_args_withdraws_the_configured_request():
     (cpus_a,) = [
         f
         for f in _build_advice(
-            telemetry, parallel=1, cpus=2, cpus_override="--cpus-per-task=8"
+            telemetry, parallel=1, cpus=2, cpus_override=["--cpus-per-task=8"]
         )
         if f.resource == "cpus"
     ]
@@ -1651,7 +1651,7 @@ def test_a_cpus_override_in_sbatch_args_withdraws_the_configured_request():
     (time_a,) = [
         f
         for f in _build_advice(
-            telemetry, parallel=1, cpus=2, cpus_override="--cpus-per-task=8"
+            telemetry, parallel=1, cpus=2, cpus_override=["--cpus-per-task=8"]
         )
         if f.resource == "time"
     ]
@@ -1710,7 +1710,7 @@ def test_a_cpus_override_retargets_the_per_test_edit_hint():
                 "total_cpu_s": 1000.0,  # 0.25 efficiency against the 4
             },
             requested_cpus=None,  # withdrawn by the override
-            cpus_override="--cpus-per-task=4",
+            cpus_override=["--cpus-per-task=4"],
         )
     ]
     findings = _analyze(rows, root_config_path="root_config.yaml")
@@ -1751,7 +1751,7 @@ def test_an_overridden_in_job_compile_row_names_the_field_it_masks():
             telemetry,
             compile_in_job=True,
             governed_by={"cpus": "compile"},
-            cpus_override="-c 4",
+            cpus_override=["-c 4"],
         )
     ]
     (cpu,) = [
@@ -1769,7 +1769,7 @@ def test_an_overridden_in_job_compile_row_names_the_field_it_masks():
             telemetry,
             compile_in_job=True,
             governed_by={"cpus": "compile"},
-            cpus_override="-c 4",
+            cpus_override=["-c 4"],
         )
     ]
     (cpu,) = [
@@ -1782,3 +1782,109 @@ def test_an_overridden_in_job_compile_row_names_the_field_it_masks():
         if f.resource == "cpus"
     ]
     assert "superseding compile.cpus" in cpu.edit_hint["note"]
+
+
+# ------- #505 review: orthogonal cpu options multiply, so no one of them
+# ------- can be handed the suggestion
+
+
+def test_two_orthogonal_cpu_options_withhold_the_per_argument_suggestion():
+    """`--ntasks` x `--cpus-per-task` is a product, not a winner.
+
+    With one argument the whole-job suggestion goes straight into it. With
+    two the request is their product, so telling a reader to write 2 into
+    either would be wrong in both directions — and the finding would come
+    back on the next run, which is precisely the failure #505 is about. The
+    hint still names `sbatch-args` (that is where the edit belongs), states
+    the product, and hands the decomposition back.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 4 tasks x 2 cpus-per-task
+                "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+            },
+            requested_cpus=None,
+            cpus_override=["--ntasks=4", "--cpus-per-task=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "8"
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    note = cpu.edit_hint["note"]
+    assert "the product of `--ntasks=4` x `--cpus-per-task=2`" in note
+    assert "decompose it across those arguments yourself" in note
+    # ...and it must NOT claim any single argument takes the number.
+    assert "sets this job's cpu request" not in note
+    assert "change it there" not in note
+    # The masked field is still named, so the reader knows what was lost.
+    assert "tests[name=t].resources.cpus" in note
+
+
+def test_one_cpu_option_still_takes_the_suggestion_directly():
+    """The single-argument note is unchanged: there is nothing to split."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 2000.0,
+            },
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=8"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    note = cpu.edit_hint["note"]
+    assert "sbatch-args `--cpus-per-task=8` sets this job's cpu request" in note
+    assert "Suggested value is the whole-job cpu count." in note
+    assert "product" not in note
+
+
+def test_the_build_row_withholds_it_too_under_orthogonal_options():
+    """Same rule for the suite's build job (#495 row)."""
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "alloc_cpus": 8,
+        "req_cpus": 8,  # 4 tasks x 2 cpus-per-task
+        "total_cpu_s": 200,  # 0.25 efficiency against those 8
+    }
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            telemetry,
+            parallel=1,
+            cpus=2,
+            cpus_override=["--ntasks=4", "--cpus-per-task=2"],
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpus_a.reserved == "8"
+    assert cpus_a.suggested == "3"
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus_a.edit_hint["note"]
+    assert "the product of `--ntasks=4` x `--cpus-per-task=2`" in note
+    assert "decompose it across those arguments yourself" in note
+    assert "cfg-dispatch.compile.cpus" in note
+    # The superseded per-build decomposition stays gone.
+    assert "the build job reserved" not in note

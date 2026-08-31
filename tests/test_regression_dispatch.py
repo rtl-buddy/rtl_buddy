@@ -1616,7 +1616,7 @@ def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
         # `ReqCPUS` is tasks x cpus-per-task, so four tasks of the resolved
         # one cpu is a four-cpu job that `requested_cpus` would call one.
         ("[--ntasks=4]", "--ntasks=4"),
-        # sbatch obeys the LAST occurrence, and so must the hint.
+        # sbatch obeys the LAST occurrence of one option, and so must the hint.
         ("[--cpus-per-task=2, --cpus-per-task=4]", "--cpus-per-task=4"),
     ],
 )
@@ -1698,6 +1698,67 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     assert "sbatch-args" in result.output
     assert named in result.output
     assert "ReqCPUS" in result.output
+
+
+def test_orthogonal_sbatch_args_cpu_options_withhold_the_per_argument_edit(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--ntasks` x `--cpus-per-task` is a product, so neither takes the number.
+
+    End to end: the request is 4 tasks of 2 cpus, the run uses a quarter of
+    it, and the advice still has to reach the reader — but pointing at
+    either argument alone would be wrong in both directions and the finding
+    would recur (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n  sbatch-args: [--ntasks=4, --cpus-per-task=2]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 4 x 2
+                "total_cpu_s": 200.0,  # 0.25 efficiency against those 8
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "-D",
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "8"  # the product, from ReqCPUS
+    assert cpus["suggested"] == "3"  # ceil(8 x 0.25 x 1.5), whole-job
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus["edit_hint"]["note"]
+    assert "the product of `--ntasks=4` x `--cpus-per-task=2`" in note
+    assert "decompose it across those arguments yourself" in note
+    # The DEBUG line lists both arguments, for the same reason.
+    assert "`--ntasks=4` x `--cpus-per-task=2`" in result.output
 
 
 def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(

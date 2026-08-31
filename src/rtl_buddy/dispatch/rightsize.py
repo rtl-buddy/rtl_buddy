@@ -163,7 +163,7 @@ def format_time(seconds: float) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
 
 
-def _override_note(sbatch_arg: str, masked_path: str) -> str:
+def _override_note(sbatch_args: list, masked_path: str) -> str:
     """Why a cpus finding names ``sbatch-args`` instead of a YAML field.
 
     ``cfg-dispatch.sbatch-args`` is appended after the generated reservation
@@ -173,11 +173,27 @@ def _override_note(sbatch_arg: str, masked_path: str) -> str:
     that named the masked field would be unappliable: the edit lands, the
     next job is submitted with the same argument, and the finding returns
     (#505 review).
+
+    One such argument is the whole request, so the suggestion can be
+    written straight into it. Several MULTIPLY — ``ReqCPUS`` is *tasks x
+    cpus-per-task* — so no single one of them can be told to take the
+    suggested number, and saying otherwise would produce exactly the
+    unappliable advice this rule exists to prevent. The note then states
+    the product and hands the decomposition back to the reader, who is the
+    only party that knows which factor is the one to shrink (#505 review).
     """
+    quoted = [f"`{arg}`" for arg in sbatch_args]
+    if len(quoted) == 1:
+        return (
+            f"sbatch-args {quoted[0]} sets this job's cpu request, "
+            f"superseding {masked_path}; change it there. Suggested value "
+            "is the whole-job cpu count."
+        )
     return (
-        f"sbatch-args `{sbatch_arg}` sets this job's cpu request, "
-        f"superseding {masked_path}; change it there. Suggested value is "
-        "the whole-job cpu count."
+        f"sbatch-args supersedes {masked_path}: this job's cpu request is "
+        f"the product of {' x '.join(quoted)}. Suggested value is the "
+        "whole-job cpu count — decompose it across those arguments "
+        "yourself; no single one of them takes it."
     )
 
 
@@ -208,10 +224,11 @@ def _aggregate(rows):
                 # post-rounding, and `ReqCPUS` is post-rounding too on a
                 # Slurm that normalizes it before accounting (#505).
                 "requested_cpus": row.get("requested_cpus"),
-                # The `sbatch-args` entry that superseded it, if any: the
+                # The `sbatch-args` entries that superseded it, if any: the
                 # denominator falls back to the scheduler, and the edit hint
-                # has to name the argument rather than a YAML field the
-                # override masks (#505 review).
+                # has to name them rather than a YAML field they mask. More
+                # than one means they multiply, and no single one of them
+                # can be handed the suggestion (#505 review).
                 "cpus_override": row.get("cpus_override"),
             },
         )
@@ -310,12 +327,15 @@ def analyze_build_reservation(
     scaled by ``parallel`` — the job's own ``--cpus-per-task`` — then
     ``ReqCPUS``, then ``AllocCPUS`` (#505). ``cpus_override`` withdraws
     the first of those: ``cfg-dispatch.sbatch-args`` is appended after
-    the generated flags and wins, so a ``--cpus-per-task`` written there
-    means the resolved value was never submitted and may state neither
-    the ratio nor the decomposition. It is the argument itself, so the
-    cpus row's ``edit_hint`` can name ``cfg-dispatch.sbatch-args`` and say
-    which field it masks. Empty telemetry (a local-parallel backend
-    reports none) yields no advice at all.
+    the generated flags and wins, so an argument written there that sets
+    the cpu request means the resolved value was never submitted and may
+    state neither the ratio nor the decomposition. It is the LIST of such
+    arguments (see
+    :func:`~rtl_buddy.config.dispatch.sbatch_args_cpu_request_options`), so
+    the cpus row's ``edit_hint`` can name ``cfg-dispatch.sbatch-args``, say
+    which field it masks, and — where several of them multiply — decline to
+    put the suggestion on any one of them. Empty telemetry (a
+    local-parallel backend reports none) yields no advice at all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -400,10 +420,10 @@ def analyze_build_reservation(
 
     def hint(resource_field, note=None):
         # `cfg-dispatch.sbatch-args` is appended after the generated
-        # reservation flags and wins, so a `--cpus-per-task` there masks
-        # every cpus field the layering below could name. Advice that named
-        # one would be unappliable, and would come back on the next run
-        # (#505 review).
+        # reservation flags and wins, so an argument there that sets the cpu
+        # request masks every cpus field the layering below could name.
+        # Advice that named one would be unappliable, and would come back on
+        # the next run (#505 review).
         if resource_field == "cpus" and cpus_override:
             masked = (
                 "compile.cpus"
@@ -721,11 +741,12 @@ def analyze_suite_reservations(
             _cpus_override=cpus_override,
         ):
             # `cfg-dispatch.sbatch-args` is appended after the generated
-            # reservation flags and wins, so a `--cpus-per-task` written
-            # there masks every cpus field in the YAML. Naming one of them
-            # would be advice that cannot be applied: the edit lands, the
-            # next job is submitted with the same override, and the finding
-            # comes back — the very shape #505 exists to stop.
+            # reservation flags and wins, so an argument written there that
+            # sets the cpu request masks every cpus field in the YAML.
+            # Naming one of them would be advice that cannot be applied: the
+            # edit lands, the next job is submitted with the same override,
+            # and the finding comes back — the very shape #505 exists to
+            # stop.
             if resource_field == "cpus" and _cpus_override:
                 edit = {
                     "path": "cfg-dispatch.sbatch-args",

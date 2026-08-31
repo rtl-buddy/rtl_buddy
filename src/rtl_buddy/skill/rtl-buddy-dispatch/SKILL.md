@@ -66,12 +66,16 @@ of the global reservation.
 - ...unless `cfg-dispatch.sbatch-args` carries an argument that sets the job's
   cpu request: `-c`/`--cpus-per-task`, `--cpus-per-gpu`, `--threads-per-core`,
   `-B`, or a task/node count `ReqCPUS` multiplies them by (`-n`/`--ntasks`,
-  `--ntasks-per-*`, `-N`/`--nodes`). Those are appended last and win, the last
-  one of them deciding, as for sbatch. The advice then falls back to `ReqCPUS`,
-  a DEBUG `rightsize request_from_scheduler` line names the argument, and the
-  `cpus` row's `edit_hint` points at `cfg-dispatch.sbatch-args` with a note
-  naming the field it masks — edit the argument, not that field. `mem` and
-  `time` rows are unaffected.
+  `--ntasks-per-*`, `-N`/`--nodes`). Those are appended last and win — within
+  one option the last occurrence, as for sbatch. The advice then falls back to
+  `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line names the
+  arguments, and the `cpus` row's `edit_hint` points at
+  `cfg-dispatch.sbatch-args` with a note naming the field it masks — edit the
+  argument, not that field. `mem` and `time` rows are unaffected.
+- Distinct cpu options multiply (`ReqCPUS` = tasks x cpus-per-task), so with
+  more than one present no single argument takes the suggestion: `suggested` is
+  the whole-job cpu count and the note says to decompose it across them
+  yourself. With exactly one, write it straight into that argument.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 

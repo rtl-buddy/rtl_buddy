@@ -529,13 +529,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "`--acctg-freq=task=<seconds>` to control it."
             )
         case "rightsize.request_from_scheduler":
+            args = fields.get("sbatch_args") or []
+            # Several arguments MULTIPLY (ReqCPUS = tasks x cpus-per-task),
+            # so they are listed as a product rather than as alternatives.
+            named = " x ".join(f"`{a}`" for a in args)
             return (
-                f"cfg-dispatch.sbatch-args sets `{fields.get('sbatch_arg')}`, "
-                "which is appended after the generated flags and wins — so "
-                "the resolved cpus is not this job's cpu request. "
-                "CPU-efficiency advice for this suite is measured against "
-                "the scheduler's own ReqCPUS instead, and its edit hint "
-                "names sbatch-args."
+                f"cfg-dispatch.sbatch-args sets {named}, which is appended "
+                "after the generated flags and wins — so the resolved cpus "
+                "is not this job's cpu request. CPU-efficiency advice for "
+                "this suite is measured against the scheduler's own ReqCPUS "
+                "instead, and its edit hint names sbatch-args."
             )
         case "rightsize.mem_advice_unsampled":
             tests = fields.get("tests") or []

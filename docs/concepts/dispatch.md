@@ -250,9 +250,9 @@ One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **
 | cpu counts | `-c` / `--cpus-per-task`, `--cpus-per-gpu`, `--threads-per-core`, `-B` / `--extra-node-info` |
 | task and node counts that multiply them | `-n` / `--ntasks`, `--ntasks-per-node`, `--ntasks-per-core`, `--ntasks-per-socket`, `--ntasks-per-gpu`, `-N` / `--nodes` |
 
-All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`), and the **last** occurrence is the one reported, because that is the one sbatch obeys. `--exclusive` and `--overcommit` are deliberately not included: they change what is *allocated* rather than what is requested, so `ReqCPUS` still describes the reservation.
+All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: `--ntasks` and `--cpus-per-task` are orthogonal and the request is their product, so each distinct option is reported. `--exclusive` and `--overcommit` are deliberately not included: they change what is *allocated* rather than what is requested, so `ReqCPUS` still describes the reservation.
 
-Where such an argument is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names the argument responsible.
+Where such an argument is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names the arguments responsible.
 
 The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at `root_config.yaml`) and its `note` says which field was superseded, for example:
 
@@ -260,6 +260,15 @@ The `edit_hint` follows. An override masks every cpus field the layering could n
 sbatch-args `--ntasks=4` sets this job's cpu request, superseding
 tests[name=wr_single].resources.cpus; change it there. Suggested value is
 the whole-job cpu count.
+```
+
+`suggested` is always the whole-job cpu count. Where exactly one argument sets the request, that is the number to write into it. Where several do, they multiply, so no single one of them can take it — the note says so and hands the decomposition back, because only the reader knows which factor is the one to shrink:
+
+```
+sbatch-args supersedes tests[name=wr_single].resources.cpus: this job's cpu
+request is the product of `--ntasks=4` x `--cpus-per-task=2`. Suggested value
+is the whole-job cpu count — decompose it across those arguments yourself; no
+single one of them takes it.
 ```
 
 Only `cpus` is retargeted: none of these arguments supersedes a `mem` or `time` field, so those findings keep naming the reservation that governs them.
