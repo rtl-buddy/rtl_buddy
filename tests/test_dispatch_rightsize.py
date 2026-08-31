@@ -1292,3 +1292,191 @@ def test_the_per_build_clause_only_appears_under_a_build_cpus_row(monkeypatch):
         [_finding("compile"), _finding("compile", resource="cpus")], monkeypatch
     )
     assert any("cpus suggestion is per-build" in line for line in with_cpus)
+
+
+# ---------------------------- #505: cpus advice is judged against the REQUEST
+
+
+def test_whole_core_rounding_does_not_produce_cpus_advice():
+    """A single-threaded test on a whole-core site is not over-reserved.
+
+    `SelectTypeParameters=NONE` with `ThreadsPerCore=2` hands a job that
+    asked for one cpu two of them, so sacct reports `AllocCPUS=2` against
+    `ReqCPUS=1`. Judged against the allocation a single-threaded sim cannot
+    beat 0.5 efficiency and every test in the suite is advised down to the
+    `cpus: 1` its tests.yaml already says — advice no edit can retire
+    (#505). The request is the number the project controls, so it is the
+    number the ratio is taken against.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 2,  # the scheduler rounded 1 up to a whole core
+                "req_cpus": 1,
+                "total_cpu_s": 500.0,  # 0.25 eff vs the allocation, 0.5 vs 1 cpu
+            },
+        )
+    ]
+    assert [f for f in _analyze(rows) if f.resource == "cpus"] == []
+
+
+def test_cpu_efficiency_is_measured_against_the_requested_cpus():
+    """Rounding is the scheduler's; the reservation is doing fine.
+
+    4 allocated against 2 requested, with 1.2 cpu-seconds per wall second:
+    0.3 efficiency against the allocation (under the 0.5 threshold) but 0.6
+    against the request. Only the second number is about a reservation
+    anyone can edit.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 2,
+                "total_cpu_s": 1200.0,
+            },
+        )
+    ]
+    assert [f for f in _analyze(rows) if f.resource == "cpus"] == []
+
+
+def test_a_genuinely_over_reserved_test_still_gets_cpus_advice():
+    """Nothing rounded, nothing to excuse: 4 asked for, 4 given, 25% used."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,
+            },
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.direction == "reduce"
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"  # ceil(4 x 0.25 x 1.5)
+    # Request and allocation agree, so there is nothing extra to reconcile.
+    assert cpu.allocated is None
+    assert cpu.as_event()["allocated"] is None
+
+
+def test_a_cpus_finding_names_the_request_and_carries_the_allocation():
+    """`reserved` has to be the number the named Field holds.
+
+    8 allocated against 4 requested and a quarter of the request used: the
+    advice is real, but a row saying `Reserved 8` sends the reader to a
+    tests.yaml that says 4. The allocated figure is additive, so `sacct`
+    and `squeue` still reconcile.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,  # 0.25 eff against the requested 4
+            },
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.reserved == "4"
+    assert cpu.allocated == "8"
+    assert cpu.suggested == "2"
+    assert cpu.utilization == 0.25
+    assert cpu.as_event()["allocated"] == "8"
+
+
+def test_telemetry_without_a_request_still_ratios_against_the_allocation():
+    """Older telemetry (and any backend that reports only what it gave)."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "total_cpu_s": 1000.0,
+            },
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.reserved == "8"
+    assert cpu.allocated is None
+    assert cpu.suggested == "2"  # ceil(8 x 0.125 x 1.5)
+
+
+def test_a_build_job_is_also_judged_against_its_request():
+    """Same rounding, same fix, for the suite's build job (#495 row)."""
+    retired = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 2,
+            "req_cpus": 1,
+            "total_cpu_s": 50,  # 0.25 eff vs the allocation, 0.5 vs the request
+        },
+        parallel=1,
+        cpus=1,
+    )
+    assert [f for f in retired if f.resource == "cpus"] == []
+
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,  # rounded up to a whole node's cores
+            "req_cpus": 4,
+            "total_cpu_s": 100,  # 0.25 eff against the requested 4
+        },
+        parallel=1,
+        cpus=4,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert cpus_a.reserved == "4"
+    assert cpus_a.allocated == "8"
+    assert cpus_a.suggested == "2"  # ceil(4 x 0.25 x 1.5)
+    note = cpus_a.edit_hint["note"]
+    assert "the build job reserved 4" in note
+    assert "the scheduler reported 8 allocated" in note
+
+
+def _rendered_rows(findings, monkeypatch):
+    """The rows `_render_reservation_advice` hands to the table."""
+    import rtl_buddy.rtl_buddy as rbmod
+
+    captured = {}
+    monkeypatch.setattr(rbmod, "render_summary", lambda **kw: captured.update(kw))
+    rbmod.RtlBuddy._render_reservation_advice(object(), findings)
+    return captured["rows"], captured["metadata"]
+
+
+def test_the_table_shows_the_allocation_beside_the_request(monkeypatch):
+    plain = _finding("sim", resource="cpus")
+    rows, metadata = _rendered_rows([plain], monkeypatch)
+    assert rows[0]["reserved"] == "02:00:00"
+    assert not any("allocated" in line for line in metadata)
+
+    rounded = _finding("sim", resource="cpus")
+    rounded.reserved = "4"
+    rounded.allocated = "8"
+    rows, metadata = _rendered_rows([rounded], monkeypatch)
+    assert rows[0]["reserved"] == "4 (8 allocated)"
+    assert any("whole cores" in line for line in metadata)

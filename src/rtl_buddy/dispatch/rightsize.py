@@ -36,6 +36,17 @@ Semantics:
   ``OUT_OF_MEMORY`` kill still raises, being a fact about the reservation
   rather than a measurement of it — the same rule the ``TIMEOUT`` case
   follows for time.
+- Cpu efficiency is measured against the *requested* cpus, not the
+  allocated ones (rtl-buddy/rtl_buddy#505). A site that allocates whole
+  cores reports ``AllocCPUS=2`` for a job that asked for one, so a
+  single-threaded test judged against the allocation cannot beat 0.5
+  efficiency and is advised down to the ``cpus: 1`` its tests.yaml already
+  says — every run, forever, because no edit can retire it. The request is
+  what a ``resources:`` field controls, so it is the denominator and it is
+  what a finding reports as ``reserved``; the allocated figure rides along
+  in ``allocated`` when it differs, so ``squeue``/``sacct`` still
+  reconcile. Backends that report no request (and telemetry predating the
+  field) fall back to the allocation.
 - Advice is labeled with the run count and regression level it was
   derived from — a smoke-level run must not be used to shrink a
   nightly test's reservation.
@@ -53,7 +64,8 @@ Semantics:
   asks the same two questions of it — wall clock against the limit, cpu
   time against the allocation. Its cpus suggestion is divided back down by
   ``cfg-dispatch.compile.parallel``, because the field a project edits is
-  per-build while the reservation the head submitted was the product. Its
+  per-build while the reservation the head submitted was the product — and
+  its denominator is the requested cpus, for the same reason a test's is. Its
   ``reduce`` needs the build envelope to say a compile actually ran: a
   re-run of an unchanged suite short-circuits every build on its stamp, and
   reading those seconds as "the compile is fast" would advise a limit the
@@ -101,6 +113,13 @@ class RightsizeFinding:
     # "compile+sim" when the builder could not share a build and the compile
     # therefore ran inside the job (#358).
     phase: str = "sim"
+    # What the scheduler actually handed out, when that is not what the
+    # reservation asked for — a site allocating whole cores gives a job that
+    # requested 1 cpu 2 of them (#505). `reserved` is always the requested
+    # figure, because that is the one the named edit hint can move; this is
+    # additive, and None whenever the two agree or nothing reported an
+    # allocation. Only ever set on a `cpus` finding.
+    allocated: str | None = None
 
     def as_event(self) -> dict:
         return {
@@ -118,6 +137,7 @@ class RightsizeFinding:
             "states": list(self.states),
             "edit_hint": dict(self.edit_hint),
             "phase": self.phase,
+            "allocated": self.allocated,
         }
 
 
@@ -166,6 +186,7 @@ def _aggregate(rows):
             "elapsed_s",
             "timelimit_s",
             "alloc_cpus",
+            "req_cpus",
             "req_mem_bytes",
             "total_cpu_s",
             "max_rss_bytes",
@@ -178,7 +199,12 @@ def _aggregate(rows):
         # best (max) kept — deriving it from independently-maxed numerator
         # and denominator would mix numbers from different seeds and could
         # advise shrinking a reservation the busiest run actually saturated.
-        cpus = telemetry.get("alloc_cpus")
+        # ...and against the REQUESTED cpus, which is what the reservation
+        # asked for and the only number a tests.yaml edit moves. A site
+        # allocating whole cores hands out more than that, and rationing a
+        # single-threaded job against the surplus advises a reduction to the
+        # value already in the YAML (#505).
+        cpus = telemetry.get("req_cpus") or telemetry.get("alloc_cpus")
         cpu_time = telemetry.get("total_cpu_s")
         elapsed = telemetry.get("elapsed_s")
         if cpus and cpu_time is not None and elapsed:
@@ -234,8 +260,11 @@ def analyze_build_reservation(
     Its resolved ``cpus`` is what the advice *names* as the current
     per-build value, in preference to dividing AllocCPUS: a site where the
     scheduler reports more cpus than were requested would otherwise be
-    shown a decomposition that does not match its YAML. Empty telemetry (a
-    local-parallel backend reports none) yields no advice at all.
+    shown a decomposition that does not match its YAML. The efficiency
+    ratio follows the same rule and is taken against ``ReqCPUS``, falling
+    back to ``AllocCPUS`` where the request is unknown (#505). Empty
+    telemetry (a local-parallel backend reports none) yields no advice at
+    all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -397,7 +426,11 @@ def analyze_build_reservation(
             )
 
     # --- cpus (efficiency; only ever suggests reducing) --------------
-    cpus = build_telemetry.get("alloc_cpus")
+    alloc_cpus = build_telemetry.get("alloc_cpus")
+    # The scheduler's ReqCPUS first: a site allocating whole cores hands a
+    # build job more cpus than it asked for, and rationing against the
+    # surplus advises a per-build value the config already holds (#505).
+    cpus = build_telemetry.get("req_cpus") or alloc_cpus
     if not cpus and compile_resources is not None:
         # No allocation reported: fall back to what the head asked for, so
         # a backend that reports usage but not the reservation still gets
@@ -467,23 +500,28 @@ def analyze_build_reservation(
             )
             per_build_now = resolved_per_build or math.ceil(cpus / parallel)
             requested_total = per_build_now * parallel
+            # Say both numbers rather than pick one: the reader needs the
+            # per-build figure to edit and the allocated figure to reconcile
+            # with `squeue`/`sacct`. Only when they differ — a matching pair
+            # explains nothing.
+            alloc_clause = (
+                f" (the scheduler reported {alloc_cpus} allocated)"
+                if alloc_cpus and alloc_cpus != requested_total
+                else ""
+            )
             if requested_total == cpus and parallel == 1:
                 # One build slot, so there is no product to decompose: the
                 # reservation IS the per-build figure.
-                decomposition = f"the build job reserved {per_build_now}"
+                decomposition = f"the build job reserved {per_build_now}{alloc_clause}"
             elif requested_total == cpus:
                 decomposition = (
                     f"the build job reserved {cpus} = {per_build_now} "
-                    f"x compile.parallel {parallel}"
+                    f"x compile.parallel {parallel}{alloc_clause}"
                 )
             else:
-                # Say both numbers rather than pick one: the reader needs
-                # the per-build figure to edit and the allocated figure to
-                # reconcile with `squeue`/`sacct`.
                 decomposition = (
                     f"the build job asked for {requested_total} = "
-                    f"{per_build_now} x compile.parallel {parallel} "
-                    f"(the scheduler reported {cpus} allocated)"
+                    f"{per_build_now} x compile.parallel {parallel}{alloc_clause}"
                 )
             # The `parallel` lever only exists when it is above 1, and this
             # advice is only reachable at an effective 1 — so the sentence
@@ -505,11 +543,17 @@ def analyze_build_reservation(
                 findings.append(
                     RightsizeFinding(
                         resource="cpus",
-                        # The scaled number the head actually asked for: it
-                        # is what sacct reports and what a person sees in
-                        # `squeue`, so reporting the per-build figure here
-                        # would not match anything they can look up.
+                        # The scaled number the head actually asked for —
+                        # the request, not the allocation, so a whole-core
+                        # site is not shown a reservation it never wrote.
                         reserved=str(cpus),
+                        # ...with what the scheduler gave beside it, so
+                        # `squeue`/`sacct` still reconcile (#505).
+                        allocated=(
+                            str(alloc_cpus)
+                            if alloc_cpus and alloc_cpus != cpus
+                            else None
+                        ),
                         peak=f"{efficiency:.2f} eff",
                         utilization=efficiency,
                         direction="reduce",
@@ -743,7 +787,13 @@ def analyze_suite_reservations(
         # --- cpus (efficiency; only ever suggests reducing) -----------
         # Use the best per-run efficiency (computed in _aggregate), so a
         # single fully-utilized run vetoes shrinking the reservation.
-        cpus = agg.get("alloc_cpus")
+        # The requested cpus, falling back to the allocation for telemetry
+        # that carries no request. Both the ratio and the reported
+        # `reserved` are the request: a site allocating whole cores gives a
+        # `cpus: 1` test 2, and advising it down to 1 from a `Reserved 2`
+        # the tests.yaml never said is advice that can never retire (#505).
+        alloc_cpus = agg.get("alloc_cpus")
+        cpus = agg.get("req_cpus") or alloc_cpus
         efficiency = agg.get("cpu_efficiency")
         if cpus and cpus > 1 and efficiency is not None:
             if efficiency < rightsize_cfg.over_threshold:
@@ -762,6 +812,14 @@ def analyze_suite_reservations(
                         RightsizeFinding(
                             resource="cpus",
                             reserved=str(cpus),
+                            # Additive, and only when the two differ: the
+                            # reader needs the requested figure to edit and
+                            # the allocated one to reconcile with `squeue`.
+                            allocated=(
+                                str(alloc_cpus)
+                                if alloc_cpus and alloc_cpus != cpus
+                                else None
+                            ),
                             peak=f"{efficiency:.2f} eff",
                             utilization=efficiency,
                             direction="reduce",

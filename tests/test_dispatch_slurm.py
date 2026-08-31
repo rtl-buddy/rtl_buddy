@@ -353,13 +353,14 @@ def test_wait_and_cancel_use_base_array_ids(monkeypatch):
 def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
     sacct_out = "\n".join(
         [
-            # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqMem|TotalCPU|MaxRSS
-            "500_1|COMPLETED|75|60|2|4G||",
-            "500_1.batch|COMPLETED|75||2||01:02.500|2948K",
-            "500_2|TIMEOUT|3600|60|2|4G||",
-            "500_2.batch|CANCELLED|3600||2||59:00.000|1.5G",
-            "42|COMPLETED|10|1|1|500M||",
-            "42.batch|COMPLETED|10||1||00:03.250|10240K",
+            # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqCPUS|ReqMem|TotalCPU|MaxRSS
+            "500_1|COMPLETED|75|60|2|2|4G||",
+            "500_1.batch|COMPLETED|75||2|2||01:02.500|2948K",
+            "500_2|TIMEOUT|3600|60|2|2|4G||",
+            "500_2.batch|CANCELLED|3600||2|2||59:00.000|1.5G",
+            # A whole-core site: one cpu asked for, two handed out (#505).
+            "42|COMPLETED|10|1|2|1|500M||",
+            "42.batch|COMPLETED|10||2|1||00:03.250|10240K",
         ]
     )
     calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]
@@ -381,6 +382,7 @@ def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
     assert t1["elapsed_s"] == 75
     assert t1["timelimit_s"] == 3600  # TimelimitRaw is minutes
     assert t1["alloc_cpus"] == 2
+    assert t1["req_cpus"] == 2
     assert t1["req_mem_bytes"] == 4 * 2**30
     assert t1["max_rss_bytes"] == 2948 * 1024
     assert t1["total_cpu_s"] == 62.5
@@ -390,6 +392,11 @@ def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
     assert t2["max_rss_bytes"] == int(1.5 * 2**30)
 
     assert telemetry["42"]["total_cpu_s"] == 3.25
+    # The requested cpus are carried alongside the allocated ones: right-sizing
+    # judges efficiency against what the reservation asked for, because that is
+    # the number a tests.yaml edit can move (#505).
+    assert telemetry["42"]["alloc_cpus"] == 2
+    assert telemetry["42"]["req_cpus"] == 1
 
 
 def test_collect_telemetry_no_accounting_degrades_to_empty(monkeypatch):
@@ -425,9 +432,9 @@ def test_collect_telemetry_sums_cpu_time_across_steps(monkeypatch):
     # while MaxRSS stays a high-water max.
     sacct_out = "\n".join(
         [
-            "9|COMPLETED|100|60|4|4G||",
-            "9.batch|COMPLETED|100||4||00:10.000|500M",
-            "9.0|COMPLETED|100||4||01:30.000|900M",
+            "9|COMPLETED|100|60|4|4|4G||",
+            "9.batch|COMPLETED|100||4|4||00:10.000|500M",
+            "9.0|COMPLETED|100||4|4||01:30.000|900M",
         ]
     )
     calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]

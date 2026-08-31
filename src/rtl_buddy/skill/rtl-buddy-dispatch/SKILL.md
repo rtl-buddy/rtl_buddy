@@ -56,6 +56,11 @@ of the global reservation.
   run. A `reduce` is withheld (`rightsize.build_advice_withheld`) when no build
   actually compiled, or when the job left no record of what it built, so
   right-size the build job from a run that rebuilt.
+- `cpus` advice is judged against the cpus the job **requested**, not the cpus
+  Slurm allocated: a site that hands out whole cores charges a `cpus: 1` job two
+  and no reservation edit can change that. Where the two differ the table reads
+  `Reserved 4 (8 allocated)` and the finding carries an extra `allocated` field;
+  edit the requested figure named in `Field`.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 

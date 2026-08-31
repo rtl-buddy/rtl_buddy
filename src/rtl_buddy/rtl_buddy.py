@@ -4195,7 +4195,14 @@ class RtlBuddy:
                 "test": f.test,
                 "resource": f.resource,
                 "phase": f.phase,
-                "reserved": f.reserved,
+                # The requested reservation, with what the scheduler handed
+                # out beside it when the two differ — whole-core rounding is
+                # not something an edit to the named Field can move (#505).
+                "reserved": (
+                    f"{f.reserved} ({f.allocated} allocated)"
+                    if f.allocated
+                    else f.reserved
+                ),
                 "peak": f.peak,
                 "utilization": f"{f.utilization:.0%}",
                 "advice": f"{f.direction} → {f.suggested}",
@@ -4214,6 +4221,15 @@ class RtlBuddy:
             metadata.append(
                 "compile+sim rows measure a job that also compiled (its "
                 "builder cannot share a build), so the peak spans both phases"
+            )
+        if any(f.allocated for f in findings):
+            # Without this the parenthesised number reads as a second
+            # reservation to edit, when it is the scheduler's rounding.
+            metadata.append(
+                "Reserved is what the reservation asked for; the "
+                "parenthesised figure is what the scheduler allocated — a "
+                "site that hands out whole cores gives more than was "
+                "requested, and no edit to Field changes that"
             )
         compile_rows = [f for f in findings if f.phase == "compile"]
         if compile_rows:

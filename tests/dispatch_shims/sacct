@@ -20,7 +20,7 @@ match() {
 while read -r jid; do
   [ -z "$jid" ] && continue
   match "$jid" || continue
-  # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqMem|TotalCPU|MaxRSS
-  echo "${jid}|COMPLETED|5|60|1|512M||"
-  echo "${jid}.batch|COMPLETED|5||1||00:04.000|20480K"
+  # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqCPUS|ReqMem|TotalCPU|MaxRSS
+  echo "${jid}|COMPLETED|5|60|1|1|512M||"
+  echo "${jid}.batch|COMPLETED|5||1|1||00:04.000|20480K"
 done < "$db"
