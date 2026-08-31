@@ -40,10 +40,19 @@ def _spec(**overrides) -> TestJobSpec:
     return TestJobSpec(**defaults)
 
 
-def _fake_run(calls, results):
-    """subprocess.run stand-in: records argv, pops canned results."""
+def _fake_run(calls, results, *, max_array_size=None):
+    """subprocess.run stand-in: records argv, pops canned results.
+
+    The ``scontrol show config`` MaxArraySize probe (#509) is answered from
+    ``max_array_size`` instead — neither recorded nor popped — so a test
+    about sbatch argv keeps asserting on sbatch calls alone. ``None`` (the
+    default) makes the probe fail, i.e. no chunking. The probe itself is
+    covered by the tests in the chunking section, which record it.
+    """
 
     def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            return _scontrol_result(max_array_size)
         calls.append(list(argv))
         result = (
             results.pop(0)
@@ -53,6 +62,24 @@ def _fake_run(calls, results):
         return result
 
     return run
+
+
+def _scontrol_result(max_array_size):
+    """`scontrol show config` output, or a failure when the limit is unknown."""
+    if max_array_size is None:
+        return SimpleNamespace(
+            returncode=1, stdout="", stderr="scontrol: error: Unable to contact slurm"
+        )
+    return SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "Configuration data as of 2026-08-31T12:00:00\n"
+            "MaxArrayJobs            = 20\n"
+            f"MaxArraySize            = {max_array_size}\n"
+            "MaxDBDMsgs              = 20000\n"
+        ),
+        stderr="",
+    )
 
 
 def test_submit_builds_sbatch_argv_and_parses_job_id(monkeypatch):
@@ -1221,3 +1248,256 @@ def test_effective_sbatch_args_is_what_the_backend_will_append():
 
     bare = SlurmDispatchBackend(DispatchConfigFile().initialise())
     assert not [a for a in bare.effective_sbatch_args if not a.startswith("--acctg")]
+
+
+# ------------------------------------- MaxArraySize chunking (#509)
+
+
+def _array_ranges(calls):
+    """The `--array=` value of every sbatch call, in submission order."""
+    return [
+        arg.split("=", 1)[1]
+        for argv in calls
+        for arg in argv
+        if arg.startswith("--array=")
+    ]
+
+
+def test_a_group_larger_than_max_array_size_is_split_across_arrays(
+    monkeypatch, tmp_path
+):
+    """`sbatch --array=1-1128` on a MaxArraySize=1001 cluster is refused and
+    the whole run dies; the group must be chunked instead (#509)."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    # max-array-size is Slurm's MaxArraySize: the largest task index is one
+    # below it, so 5 means at most four elements per array.
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    specs = [_spec(run_id=i) for i in range(1, 11)]
+    array_dir = tmp_path / "array-001"
+    handles = backend.submit_array(specs, array_dir=array_dir)
+
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    # Concatenated in spec order, so collection sees one logical group.
+    assert [h.job_id for h in handles] == [
+        "100_1",
+        "100_2",
+        "100_3",
+        "100_4",
+        "101_1",
+        "101_2",
+        "101_3",
+        "101_4",
+        "102_1",
+        "102_2",
+    ]
+    assert [h.spec for h in handles] == specs
+
+    # One manifest per slice, each covering exactly its own elements, so %a
+    # still maps 1:1 onto a manifest line.
+    for index, expected in ((1, 4), (2, 4), (3, 2)):
+        slice_dir = array_dir / f"slice-{index}"
+        assert len((slice_dir / "manifest.txt").read_text().splitlines()) == expected
+        assert (slice_dir / "array.sh").read_text().startswith("#!/bin/bash")
+        assert f"--output={slice_dir}/slurm-%a.log" in calls[index - 1]
+        assert calls[index - 1][-2:] == [
+            str(slice_dir / "array.sh"),
+            str(slice_dir / "manifest.txt"),
+        ]
+    assert "--run-id 5" in (array_dir / "slice-2" / "manifest.txt").read_text()
+
+    # Element logs never collide across slices: each is under its own slice.
+    assert specs[0].log_path == array_dir / "slice-1" / "slurm-1.log"
+    assert specs[4].log_path == array_dir / "slice-2" / "slurm-1.log"
+    assert specs[9].log_path == array_dir / "slice-3" / "slurm-2.log"
+
+    # The job name says which slice of the group this array is.
+    names = [a for argv in calls for a in argv if a.startswith("--job-name=")]
+    assert names == [
+        "--job-name=rb:basic+3/1",
+        "--job-name=rb:basic+3/2",
+        "--job-name=rb:basic+1/3",
+    ]
+
+
+def test_a_group_within_the_limit_keeps_todays_single_array_layout(
+    monkeypatch, tmp_path
+):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=11).initialise())
+
+    specs = [_spec(run_id=i) for i in range(1, 11)]
+    array_dir = tmp_path / "array-001"
+    backend.submit_array(specs, array_dir=array_dir)
+
+    assert _array_ranges(calls) == ["1-10"]
+    # No slice-N/ subdirectory: unchunked artefact paths do not move.
+    assert (array_dir / "manifest.txt").exists()
+    assert not (array_dir / "slice-1").exists()
+    assert specs[0].log_path == array_dir / "slurm-1.log"
+
+
+def test_an_unknown_limit_submits_one_array_as_before(monkeypatch, tmp_path, caplog):
+    """No `scontrol` and no config override: chunking is off, not guessed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+
+    assert _array_ranges(calls) == ["1-10"]
+    assert [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.max_array_size_unknown"
+    ]
+    # ...and the single-array event still reports itself as one slice of one.
+    (submitted,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.array_submitted"
+    ]
+    fields = submitted.__dict__["rtl_fields"]
+    assert (fields["slice"], fields["slices"]) == (1, 1)
+
+
+def test_the_throttle_applies_per_slice(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)],
+        array_dir=tmp_path / "arr",
+        max_parallel=3,
+    )
+    # %N caps each array, so the group's peak concurrency is slices x N; the
+    # last slice is smaller than the cap and needs no throttle at all.
+    assert _array_ranges(calls) == ["1-4%3", "1-4%3", "1-2"]
+
+
+def test_max_array_size_is_read_from_scontrol_once_per_backend(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102, 103)
+    ]
+    probes = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            probes.append((list(argv), cwd, timeout))
+            return _scontrol_result(4)
+        return _fake_run(calls, results)(
+            argv, capture_output=capture_output, text=text, cwd=cwd, timeout=timeout
+        )
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+    backend.submit_array(
+        [_spec(run_id=i) for i in (5, 6, 7, 8)], array_dir=tmp_path / "b"
+    )
+
+    # MaxArraySize 4 => task indices 0..3 => at most three 1-based elements.
+    assert _array_ranges(calls) == ["1-3", "1-1", "1-3", "1-1"]
+    # Resolved once and cached: the second group re-uses the first probe.
+    assert len(probes) == 1
+    argv, cwd, timeout = probes[0]
+    assert argv == ["scontrol", "show", "config"]
+    assert cwd == "/proj/verif/blk"  # explicit, per the engineering guidelines
+    assert timeout is not None  # time-boxed: a wedged scontrol must not hang
+
+
+def test_the_configured_limit_wins_over_scontrol(monkeypatch, tmp_path):
+    """A site whose submit host has no usable `scontrol` pins the value."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=3).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+    assert probed == []
+
+
+def test_an_unusable_scontrol_answer_disables_chunking_loudly(monkeypatch, tmp_path):
+    """rc=0 but no MaxArraySize line: unknown, and said so once."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            return SimpleNamespace(
+                returncode=0, stdout="SlurmVersion = 24.05\n", stderr=""
+            )
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array([_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a")
+    assert _array_ranges(calls) == ["1-3"]
+
+
+def test_a_wedged_scontrol_does_not_fail_the_submit(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            raise slurm_module.subprocess.TimeoutExpired(cmd=argv, timeout=timeout or 0)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array([_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a")
+    assert _array_ranges(calls) == ["1-3"]
+
+
+def test_a_failed_slice_cancels_the_slices_already_submitted(monkeypatch, tmp_path):
+    """The caller only learns of handles this call RETURNS, so a mid-group
+    failure has to clean up its own earlier slices or orphan them."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="Invalid job array"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="sbatch array submit failed"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+
+    assert calls[-1] == ["scancel", "100"]

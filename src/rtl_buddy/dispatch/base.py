@@ -168,11 +168,15 @@ class DispatchBackend(ABC):
         """Submit a group of jobs with identical resolved resources.
 
         Backends with native array support (Slurm) override this to
-        submit one array job; the default just loops :meth:`submit`.
+        submit the group as one array — or as several, where the group is
+        larger than the scheduler's own array limit (#509); the default
+        just loops :meth:`submit`. Either way the returned handles are in
+        spec order and describe one logical group.
         ``array_dir`` is a scratch directory on the shared filesystem
         for the array's manifest/script/logs; ``max_parallel`` caps how
-        many elements run concurrently; ``dependency`` (a build-job id)
-        gates every element on that job succeeding.
+        many elements run concurrently **per submitted array**;
+        ``dependency`` (a build-job id) gates every element on that job
+        succeeding.
         """
         return [self.submit(spec, dependency=dependency) for spec in specs]
 

@@ -1040,3 +1040,25 @@ def test_an_explicit_ntasks_reverses_the_derivation(args, env):
     found = cpu_request_overrides(args, env)
     assert [f for f in found if "ntasks-per-gpu" in f.lower()] == []
     assert any(f.endswith("8") for f in found)
+
+
+def test_max_array_size_defaults_to_probing_the_cluster():
+    """Unset means "ask scontrol", not "no limit" — see SlurmDispatchBackend."""
+    assert DispatchConfigFile().initialise().max_array_size is None
+
+
+@pytest.mark.parametrize("value", [1, 0, -1])
+def test_max_array_size_below_two_rejected(value):
+    # It is Slurm's MaxArraySize, an EXCLUSIVE bound on the task index, so 1
+    # would permit arrays of zero elements.
+    with pytest.raises(FatalRtlBuddyError, match="max-array-size must be >= 2"):
+        DispatchConfigFile(max_array_size=value).initialise()
+
+
+def test_root_config_parses_max_array_size(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text() + "\ncfg-dispatch:\n  max-array-size: 1001\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.max_array_size == 1001

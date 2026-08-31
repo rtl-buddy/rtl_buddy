@@ -88,6 +88,12 @@ The `local-parallel` backend ignores CPU, memory, time, array-throttle, and righ
 
 Normal interruption terminates the worker process groups. `SIGKILL` of the head process cannot run cleanup and can orphan `rb _test-job` children; inspect and stop them after a hard CI timeout or `kill -9`.
 
+## Oversized resource groups are split into several arrays
+
+A resource group larger than the cluster's Slurm `MaxArraySize` cannot be one job array. rtl_buddy submits it as several, each holding at most `MaxArraySize - 1` elements. Two consequences are worth planning for: `max-jobs-per-array` throttles each slice, so the group's peak concurrency is that throttle multiplied by the number of slices; and a slice's manifest and element logs live under `slice-N/` in the run's dispatch directory instead of directly in it. A group that fits in a single array keeps the flat layout.
+
+The limit is read from `scontrol show config` once per run. Where the submit host cannot run `scontrol`, nothing is split and sbatch refuses an oversized group with `Invalid job array specification`; set `cfg-dispatch.max-array-size` to the cluster's value. `dispatch.max_array_size_unknown` in the run log names that case.
+
 ## Quote dispatch time values
 
 YAML 1.1 parses an unquoted value such as `time: 4:00:00` as an integer. rtl_buddy rejects it rather than submit a 10-day Slurm reservation. Use `time: "4:00:00"` or a quoted minute count everywhere `resources:` appears.

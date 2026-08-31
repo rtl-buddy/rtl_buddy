@@ -29,6 +29,7 @@ head process cwd is re-anchored per suite during a regression.
 
 import logging
 import math
+import re
 import shlex
 import subprocess
 import time
@@ -97,6 +98,17 @@ _SACCT_FORMAT = (
 # forever (#505). `ReqCPUS` is the number the project's YAML controls, so it
 # is carried alongside and right-sizing ratios against it; the allocated
 # figure stays, because it is what `squeue`/`sacct` show.
+
+# `scontrol show config` renders one `Key = Value` per line, padded. The
+# value that matters here is the cluster's job-array ceiling (#509).
+_MAX_ARRAY_SIZE_RE = re.compile(r"^MaxArraySize\s*=\s*(\d+)\s*$", re.MULTILINE)
+# The probe is a courtesy, not a dependency: a slurmctld that is slow or
+# unreachable must cost a bounded wait and then leave chunking off, never
+# hang the head before it has submitted anything.
+_SCONTROL_TIMEOUT_S = 30
+# Sentinel for "the limit has not been probed yet", distinct from a probe
+# that ran and found nothing (`None`, i.e. do not chunk).
+_UNPROBED = object()
 
 # `MaxRSS` is a high-water mark over samples, so a job shorter than the
 # sampling interval reports whatever the first sample caught — near zero.
@@ -262,6 +274,12 @@ class SlurmDispatchBackend(DispatchBackend):
         # an unbounded wait, i.e. today's behaviour plus a heartbeat.
         self.progress_interval = getattr(dispatch_cfg, "progress_interval", 60.0)
         self.max_wait = getattr(dispatch_cfg, "max_wait", None)
+        # The cluster's MaxArraySize, when the project pinned one (#509).
+        # Resolution itself is deferred to the first array submit — see
+        # _max_elements_per_array — so constructing a backend never shells
+        # out, and a run with no array never probes at all.
+        self.max_array_size = getattr(dispatch_cfg, "max_array_size", None)
+        self._elements_per_array = _UNPROBED
         self._acct_interval_s = self._resolve_accounting_frequency()
 
     def _resolve_accounting_frequency(self) -> float | None:
@@ -476,6 +494,86 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return JobHandle(job_id=job_id, spec=spec)
 
+    def _max_elements_per_array(self, *, cwd: str | None) -> int | None:
+        """Elements one array may hold, resolved once per backend instance.
+
+        Slurm's ``MaxArraySize`` bounds the task *index* exclusively — "the
+        maximum job array task index value will be one less than
+        MaxArraySize to allow for an index value of zero" (slurm.conf(5)) —
+        and this backend's manifests are 1-based, since ``%a`` is a manifest
+        line number. The largest array it may submit is therefore
+        ``1-(MaxArraySize-1)``: ``MaxArraySize - 1`` elements, not
+        ``MaxArraySize``.
+
+        ``cfg-dispatch.max-array-size`` wins where it is set (a submit host
+        with no working ``scontrol``, or a site that wants a finer split);
+        otherwise the value is read from ``scontrol show config``.
+        ``None`` means "unknown" — submit the group whole, exactly as
+        before #509 — because guessing a ceiling would split groups on
+        clusters that never needed it.
+        """
+        if self._elements_per_array is _UNPROBED:
+            self._elements_per_array = self._probe_max_elements(cwd=cwd)
+        return self._elements_per_array
+
+    def _probe_max_elements(self, *, cwd: str | None) -> int | None:
+        if self.max_array_size is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.max_array_size",
+                backend=self.name,
+                max_array_size=self.max_array_size,
+                max_elements=self.max_array_size - 1,
+                source="config",
+            )
+            return self.max_array_size - 1
+        try:
+            proc = subprocess.run(
+                ["scontrol", "show", "config"],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=_SCONTROL_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            reason = str(e)[:200]
+        else:
+            match = (
+                _MAX_ARRAY_SIZE_RE.search(proc.stdout) if proc.returncode == 0 else None
+            )
+            value = int(match.group(1)) if match is not None else 0
+            if value >= 2:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "dispatch.max_array_size",
+                    backend=self.name,
+                    max_array_size=value,
+                    max_elements=value - 1,
+                    source="scontrol",
+                )
+                return value - 1
+            # A cluster reporting MaxArraySize < 2 has arrays disabled; no
+            # slice size would submit, so treat that as unknown too and let
+            # sbatch give the authoritative refusal.
+            reason = (
+                proc.stderr.strip()
+                or "no usable MaxArraySize in `scontrol show config` "
+                f"(rc={proc.returncode})"
+            )[:200]
+        log_event(
+            logger,
+            logging.INFO,
+            "dispatch.max_array_size_unknown",
+            backend=self.name,
+            error=reason,
+            # An oversized group is what this probe exists to split, so say
+            # how to get chunking back when the cluster cannot be asked.
+            hint="set cfg-dispatch.max-array-size to split oversized groups",
+        )
+        return None
+
     def submit_array(
         self,
         specs: list[TestJobSpec],
@@ -484,10 +582,61 @@ class SlurmDispatchBackend(DispatchBackend):
         max_parallel: int | None = None,
         dependency: str | None = None,
     ) -> list[JobHandle]:
+        """Submit one resource group, split across arrays if it must be (#509).
+
+        A group larger than the cluster's ``MaxArraySize`` is not a legal
+        ``--array=1-N``: sbatch refuses it outright, which used to fail the
+        whole run at the first oversized group. It is submitted as several
+        arrays instead, each with its own manifest, and the handles are
+        returned concatenated in spec order so collection, cancellation and
+        the right-sizing table still see one logical group.
+        """
         if len(specs) <= 1:
             return [self.submit(spec, dependency=dependency) for spec in specs]
 
         array_dir = Path(array_dir)
+        limit = self._max_elements_per_array(cwd=specs[0].suite_dir)
+        if limit is None or len(specs) <= limit:
+            slices = [specs]
+        else:
+            slices = [specs[i : i + limit] for i in range(0, len(specs), limit)]
+
+        handles: list[JobHandle] = []
+        for index, slice_specs in enumerate(slices, start=1):
+            # One subdirectory per slice when chunked, so `%a` keeps mapping
+            # 1:1 onto a manifest line and `slurm-%a.log` cannot collide
+            # between slices. A group that fits in one array keeps exactly
+            # today's layout — no `slice-1/` — so unchunked artefact paths
+            # do not move.
+            slice_dir = array_dir if len(slices) == 1 else array_dir / f"slice-{index}"
+            try:
+                handles += self._submit_one_array(
+                    slice_specs,
+                    array_dir=slice_dir,
+                    max_parallel=max_parallel,
+                    dependency=dependency,
+                    slice_index=index,
+                    slice_count=len(slices),
+                )
+            except BaseException:
+                # The caller only learns of the handles this call RETURNS, so
+                # its own cancel-on-failure cannot cover slices submitted
+                # here. Cancelling them is this method's job.
+                if handles:
+                    self.cancel_all(handles)
+                raise
+        return handles
+
+    def _submit_one_array(
+        self,
+        specs: list[TestJobSpec],
+        *,
+        array_dir: Path,
+        max_parallel: int | None,
+        dependency: str | None,
+        slice_index: int,
+        slice_count: int,
+    ) -> list[JobHandle]:
         array_dir.mkdir(parents=True, exist_ok=True)
         manifest = array_dir / "manifest.txt"
         manifest.write_text(
@@ -502,14 +651,21 @@ class SlurmDispatchBackend(DispatchBackend):
             spec.log_path = array_dir / f"slurm-{i}.log"
 
         array_range = f"1-{len(specs)}"
+        # The throttle caps each ARRAY, so a chunked group's peak
+        # concurrency is slices x max_parallel — documented, not hidden.
         if max_parallel is not None and max_parallel < len(specs):
             array_range += f"%{max_parallel}"
+        # `/k` names the slice, so a split group is legible in squeue
+        # instead of looking like several unrelated arrays.
+        job_name = f"rb:{specs[0].test_name}+{len(specs) - 1}"
+        if slice_count > 1:
+            job_name += f"/{slice_index}"
         resources = specs[0].resources
         cmd = [
             "sbatch",
             "--parsable",
             f"--array={array_range}",
-            f"--job-name=rb:{specs[0].test_name}+{len(specs) - 1}",
+            f"--job-name={job_name}",
             f"--chdir={specs[0].suite_dir}",
             f"--time={resources.time}",
             f"--cpus-per-task={resources.cpus}",
@@ -525,14 +681,17 @@ class SlurmDispatchBackend(DispatchBackend):
         proc = subprocess.run(
             cmd, capture_output=True, text=True, cwd=specs[0].suite_dir
         )
+        where = f" (slice {slice_index}/{slice_count})" if slice_count > 1 else ""
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
-                f"sbatch array submit failed ({len(specs)} jobs, "
+                f"sbatch array submit failed{where} ({len(specs)} jobs, "
                 f"rc={proc.returncode}): {proc.stderr.strip()}"
             )
         base_id = proc.stdout.strip().split(";")[0]
         if not base_id:
-            raise FatalRtlBuddyError("sbatch returned no job id for array submit")
+            raise FatalRtlBuddyError(
+                f"sbatch returned no job id for array submit{where}"
+            )
         log_event(
             logger,
             logging.INFO,
@@ -544,6 +703,10 @@ class SlurmDispatchBackend(DispatchBackend):
             time=resources.time,
             cpus=resources.cpus,
             mem=resources.mem,
+            # Additive: 1/1 for a group that fits in one array, so a reader
+            # (and the log) can always tell a split from a whole group.
+            slice=slice_index,
+            slices=slice_count,
         )
         return [
             JobHandle(job_id=f"{base_id}_{i}", spec=spec)

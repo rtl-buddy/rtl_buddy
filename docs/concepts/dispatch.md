@@ -67,6 +67,8 @@ Preprocessing hooks always run serially, and their position relative to compilat
 
 Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. `max-jobs-per-array` is a `%N` throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.
 
+A group larger than the cluster's Slurm `MaxArraySize` is not a legal array, so it is submitted as several. rtl_buddy reads `MaxArraySize` once per run from `scontrol show config`, or from `cfg-dispatch.max-array-size` when that is set, and slices the group into arrays of at most `MaxArraySize - 1` elements — Slurm's largest task index is one below the limit, and rtl_buddy's array elements are numbered from 1. Each slice is its own array with its own manifest and logs under `slice-N/` in the run's dispatch directory, its job name carries a `/N` suffix, and every slice waits on the same build job. The handles are collected as one logical group, so the summary, cancellation, and the reservation advice are unchanged by the split. `max-jobs-per-array` throttles each slice, so a split group's peak concurrency is the throttle multiplied by the number of slices. When neither `scontrol` nor `cfg-dispatch.max-array-size` gives a limit, the group is submitted whole and an oversized one is refused by sbatch; `dispatch.max_array_size_unknown` records that in the run log. A group that fits in one array is submitted exactly as before, with no `slice-N/` level.
+
 Verilator, VCS, and Icarus can place outputs in a shared compile-key directory. Other builders, and builders with an absolute `builder-simv`, keep the build under the test artefact directory:
 
 - Without shared-capable tests or seed fan-out, no separate build job is submitted; each simulation job compiles in its own directory.
@@ -110,6 +112,8 @@ cfg-dispatch:
     - --partition=verif
     - --account=chip
   max-jobs-per-array: 200
+  max-array-size: 1001   # the cluster's Slurm MaxArraySize; omit it to read
+                         # the value from `scontrol show config`
   poll-interval: 10
   progress-interval: 60
   max-wait: 7200
@@ -126,7 +130,7 @@ cfg-dispatch:
     margin: 1.5
 ```
 
-`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array. See [YAML formats](../reference/yaml.md#root_configyaml) for defaults and validation.
+`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array, and `max-array-size` controls how large one array may be before the group is split. See [YAML formats](../reference/yaml.md#root_configyaml) for defaults and validation.
 
 Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations.
 
