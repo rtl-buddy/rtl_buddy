@@ -9,42 +9,63 @@ per formal that every call site shares. Two call sites in one combinational
 process then alias their arguments — no error, no warning, and a wrong netlist
 (rtl-buddy/rtl_buddy#472).
 
-The scan is a tokenizer, not a parser: rtl_buddy has no pyslang dependency, so
-there is no elaborated AST to ask. It is deliberately conservative and its
-limits are worth stating:
+The scan is a tokenizer with a definedness-only preprocessor, not a parser:
+rtl_buddy has no pyslang dependency, so there is no elaborated AST to ask. It
+follows `` `include `` directives and honours `` `ifdef `` / `` `ifndef `` /
+`` `elsif `` / `` `else `` / `` `endif `` so it does not report code the
+compiler never sees, but it is not a preprocessor and its limits run in both
+directions:
 
-- It does not run the preprocessor. A declaration produced by a macro is
-  reported at the macro's *definition* line, and one whose `function` keyword
-  or `automatic` qualifier is itself hidden inside a macro is missed entirely.
-- `include` files are scanned only when the synthesis filelist names them as
-  sources; `-y` library directories are not walked (their contents are not in
-  the filelist).
+Misses (a real hazard the scan does not report):
+
+- Macro bodies are skipped at their `` `define ``, not at expansion, so a
+  declaration produced by a macro is never reported. Its `function` keyword or
+  `automatic` qualifier may also be hidden inside the macro.
+- `-y` library directories are not scanned: they contribute files the
+  synthesis filelist never names.
+- An `` `include `` whose path cannot be resolved against the including file's
+  directory or the filelist's `+incdir+` entries is logged at DEBUG and
+  skipped, not failed.
+
+Spurious findings (something reported that is not a hazard):
+
+- `` `if `` expression evaluation is not implemented, and is not SystemVerilog
+  anyway: only definedness is evaluated. A branch selected by a macro *value*
+  rather than by its existence is not modelled.
 - Scope tracking pairs keywords (`module`/`endmodule`, `class`/`endclass`, …)
   rather than parsing declarations, so pathological but legal code can confuse
-  the nesting. A confused scope changes which declarations are *exempt*, never
-  whether the file parses.
+  the nesting and change which declarations are exempt.
 
-Exemptions follow the language, not taste: class methods are automatic by
-definition, `extern` / `pure virtual` prototypes and DPI imports/exports have
-no body here, and a `module automatic` (or `package`/`interface`/`program`
-`automatic`) header makes its unqualified subroutines automatic. An explicit
+Exemptions follow the language, not taste: class methods (including out-of-body
+definitions such as `function int C::f(...)`) are automatic by definition,
+`extern` / `pure virtual` prototypes and DPI imports/exports have no body here,
+and a `module automatic` (or `package`/`interface`/`program` `automatic`)
+header makes its unqualified subroutines automatic. An explicit
 `function static` outside a class is reported: it is the same shared storage,
 written on purpose.
 """
 
+import logging
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from ..logging_utils import log_event
+
+logger = logging.getLogger(__name__)
 
 # Token kinds produced by _tokenize.
 _WORD = "word"
 _STRING = "string"
 _PUNCT = "punct"
+_DIRECTIVE = "directive"
 
 _TOKEN_RE = re.compile(
     r"""
       (?P<line_comment> // [^\n]* )
     | (?P<block_comment> /\* .*? \*/ )
     | (?P<string> " (?: \\. | [^"\\\n] )* " )
+    | (?P<directive> ` [A-Za-z_] [A-Za-z0-9_$]* )
     | (?P<escaped_id> \\ \S+ )
     | (?P<word> [A-Za-z_$] [A-Za-z0-9_$]* )
     | (?P<ws> \s+ )
@@ -89,6 +110,12 @@ _PROTOTYPE_QUALIFIERS = frozenset({"extern", "pure", "import", "export"})
 # A statement boundary resets the pending-qualifier window.
 _STATEMENT_RESET = frozenset({"begin"})
 
+# Separators that make a subroutine name a qualified, out-of-body definition.
+_NAME_QUALIFIERS = ("::", ".")
+
+# Guard against an `include cycle the realpath dedupe somehow lets through.
+_MAX_INCLUDE_DEPTH = 32
+
 
 @dataclass(frozen=True)
 class LifetimeFinding:
@@ -110,15 +137,43 @@ class _Scope:
     automatic: bool
 
 
-def _tokenize(text: str) -> list[tuple[str, str, int]]:
-    """Split SystemVerilog text into `(kind, text, line)` tokens.
+@dataclass
+class _Token:
+    kind: str
+    text: str
+    line: int
+    path: str
+    escaped: bool = False
 
-    Comments and whitespace are dropped. String literals survive as a single
-    `_STRING` token because `import "DPI-C"` has to stay recognisable, but
-    their contents are never inspected, so a keyword inside a string cannot
-    become a finding.
+
+@dataclass
+class _Cond:
+    """One `` `ifdef `` frame: whether this branch is live and whether a
+    previous branch of the same chain already was."""
+
+    active: bool
+    taken: bool
+
+
+@dataclass
+class _ScanState:
+    """Preprocessor state shared across a file and everything it includes."""
+
+    defined: set[str] = field(default_factory=set)
+    incdirs: tuple[str, ...] = ()
+    seen: set[str] = field(default_factory=set)
+
+
+def _tokenize(text: str, path: str) -> list[_Token]:
+    """Split SystemVerilog text into tokens tagged with their source line.
+
+    Comments and whitespace are dropped. String literals survive as one
+    `_STRING` token because `import "DPI-C"` and `` `include "x.svh" `` have to
+    stay recognisable, but their contents are never inspected, so a keyword
+    inside a string cannot become a finding. Escaped identifiers are marked so
+    a `\\begin` or `\\endmodule` cannot be mistaken for the keyword.
     """
-    tokens: list[tuple[str, str, int]] = []
+    tokens: list[_Token] = []
     line = 1
     for m in _TOKEN_RE.finditer(text):
         kind = m.lastgroup
@@ -128,28 +183,176 @@ def _tokenize(text: str) -> list[tuple[str, str, int]]:
         if kind in ("line_comment", "block_comment", "ws"):
             continue
         if kind == "string":
-            tokens.append((_STRING, value, start_line))
+            tokens.append(_Token(_STRING, value, start_line, path))
+        elif kind == "directive":
+            tokens.append(_Token(_DIRECTIVE, value[1:], start_line, path))
         elif kind == "word":
-            tokens.append((_WORD, value, start_line))
+            tokens.append(_Token(_WORD, value, start_line, path))
         elif kind == "escaped_id":
-            # \escaped.identifier — the leading backslash is not part of the name.
-            tokens.append((_WORD, value[1:], start_line))
+            # \escaped.identifier — the leading backslash is not part of the
+            # name, and the name is never a keyword however it is spelled.
+            tokens.append(_Token(_WORD, value[1:], start_line, path, escaped=True))
         else:
-            tokens.append((_PUNCT, value, start_line))
+            tokens.append(_Token(_PUNCT, value, start_line, path))
     return tokens
 
 
-def _next_word(tokens: list[tuple[str, str, int]], index: int) -> str | None:
-    """Text of the next `_WORD` token, or None if the next token is not one."""
-    if index + 1 < len(tokens):
-        kind, value, _ = tokens[index + 1]
-        if kind == _WORD:
-            return value
+def _define_body_end(lines: list[str], start_index: int) -> int:
+    """1-based line number where the `` `define `` starting at `start_index` ends.
+
+    A macro body continues while the line ends with a backslash.
+    """
+    i = start_index
+    while i < len(lines) and lines[i].rstrip().endswith("\\"):
+        i += 1
+    return i + 1
+
+
+def _resolve_include(
+    target: str, from_path: str, incdirs: tuple[str, ...]
+) -> str | None:
+    """Resolve an `` `include `` against the including file, then the incdirs."""
+    if os.path.isabs(target):
+        return target if os.path.isfile(target) else None
+    candidates = [os.path.join(os.path.dirname(os.path.abspath(from_path)), target)]
+    candidates.extend(os.path.join(d, target) for d in incdirs)
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return os.path.normpath(candidate)
     return None
 
 
+def _read(path: str) -> str | None:
+    try:
+        with open(path, "r", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _expand_file(path: str, state: _ScanState, depth: int = 0) -> list[_Token]:
+    """Tokens for `path` and everything it includes, with inactive
+    `` `ifdef `` regions and macro bodies removed."""
+    real = os.path.realpath(path)
+    if real in state.seen or depth > _MAX_INCLUDE_DEPTH:
+        return []
+    state.seen.add(real)
+    text = _read(path)
+    if text is None:
+        return []
+    return _expand_text(text, path, state, depth)
+
+
+def _expand_text(
+    text: str, path: str, state: _ScanState, depth: int = 0
+) -> list[_Token]:
+    lines = text.splitlines()
+    tokens = _tokenize(text, path)
+    out: list[_Token] = []
+    conds: list[_Cond] = []
+    i = 0
+
+    def active() -> bool:
+        return all(c.active for c in conds)
+
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.kind != _DIRECTIVE:
+            if active():
+                out.append(tok)
+            i += 1
+            continue
+
+        name = tok.text
+        # Conditional directives are processed even inside an inactive region,
+        # so nesting stays balanced.
+        if name in ("ifdef", "ifndef"):
+            macro = tokens[i + 1].text if i + 1 < len(tokens) else ""
+            want = (
+                (macro in state.defined)
+                if name == "ifdef"
+                else (macro not in state.defined)
+            )
+            live = active() and want
+            conds.append(_Cond(active=live, taken=live))
+            i += 2 if i + 1 < len(tokens) else 1
+            continue
+        if name == "elsif":
+            macro = tokens[i + 1].text if i + 1 < len(tokens) else ""
+            if conds:
+                frame = conds[-1]
+                outer = all(c.active for c in conds[:-1])
+                live = outer and not frame.taken and macro in state.defined
+                frame.active = live
+                frame.taken = frame.taken or live
+            i += 2 if i + 1 < len(tokens) else 1
+            continue
+        if name == "else":
+            if conds:
+                frame = conds[-1]
+                outer = all(c.active for c in conds[:-1])
+                live = outer and not frame.taken
+                frame.active = live
+                frame.taken = frame.taken or live
+            i += 1
+            continue
+        if name == "endif":
+            if conds:
+                conds.pop()
+            i += 1
+            continue
+
+        if not active():
+            i += 1
+            continue
+
+        if name == "define":
+            # Register the macro name, then skip its whole body: a macro is
+            # scanned where it expands, and rtl_buddy does not expand macros.
+            if i + 1 < len(tokens):
+                state.defined.add(tokens[i + 1].text)
+            end_line = _define_body_end(lines, tok.line - 1)
+            i += 1
+            while i < len(tokens) and tokens[i].line <= end_line:
+                i += 1
+            continue
+
+        if name == "undef":
+            if i + 1 < len(tokens):
+                state.defined.discard(tokens[i + 1].text)
+            i += 2 if i + 1 < len(tokens) else 1
+            continue
+
+        if name == "include":
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+            i += 1
+            if nxt is not None and nxt.kind == _STRING:
+                i += 1
+                target = nxt.text[1:-1]
+                resolved = _resolve_include(target, path, state.incdirs)
+                if resolved is None:
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "synth.lifetime_scan_include_unresolved",
+                        path=path,
+                        line=nxt.line,
+                        include=target,
+                    )
+                else:
+                    out.extend(_expand_file(resolved, state, depth + 1))
+            # An `include of a macro or an angle-bracket path is left alone.
+            continue
+
+        # Any other directive (`timescale, `celldefine, a macro use) is not a
+        # declaration and carries no scope.
+        i += 1
+
+    return out
+
+
 def _parse_subroutine_header(
-    tokens: list[tuple[str, str, int]], index: int
+    tokens: list[_Token], index: int
 ) -> tuple[str | None, str]:
     """Read a `function`/`task` header starting at `index`.
 
@@ -157,28 +360,53 @@ def _parse_subroutine_header(
     ``"automatic"``, ``"static"``, or None. The name is the last identifier at
     bracket depth zero before the argument list or the terminating `;`, which
     handles `ptr_t inc(`, `bit [W-1:0] f;`, `pkg::t_e g(`, and `void run;`
-    without needing a type grammar.
+    without needing a type grammar. A `::` or `.` binds into the name, so an
+    out-of-body definition such as `function int C::f(` comes back qualified.
     """
     explicit: str | None = None
     name = ""
     bracket = 0
+    qualify = False
     j = index + 1
     while j < len(tokens):
-        kind, value, _ = tokens[j]
-        if kind == _PUNCT:
-            if value == "[":
+        tok = tokens[j]
+        if tok.kind == _PUNCT:
+            if tok.text == "[":
                 bracket += 1
-            elif value == "]":
+            elif tok.text == "]":
                 bracket = max(0, bracket - 1)
-            elif bracket == 0 and value in ("(", ";"):
+            elif bracket == 0 and tok.text in ("(", ";"):
                 break
-        elif kind == _WORD and bracket == 0:
-            if value in ("automatic", "static") and explicit is None and not name:
-                explicit = value
+            elif bracket == 0 and tok.text == "." and name:
+                qualify = True
+                name += "."
+            elif (
+                bracket == 0
+                and tok.text == ":"
+                and name
+                and j + 1 < len(tokens)
+                and tokens[j + 1].kind == _PUNCT
+                and tokens[j + 1].text == ":"
+            ):
+                # `::` arrives as two punct tokens; consume both.
+                qualify = True
+                name += "::"
+                j += 1
+        elif tok.kind == _WORD and bracket == 0:
+            if (
+                not tok.escaped
+                and tok.text in ("automatic", "static")
+                and explicit is None
+                and not name
+            ):
+                explicit = tok.text
+            elif qualify:
+                name += tok.text
+                qualify = False
             else:
-                name = value
+                name = tok.text
         j += 1
-    return explicit, name or "<unnamed>"
+    return explicit, name.rstrip(":.") or "<unnamed>"
 
 
 def _is_class_method(stack: list[_Scope]) -> bool:
@@ -191,28 +419,35 @@ def _is_class_method(stack: list[_Scope]) -> bool:
     return False
 
 
-def scan_text(text: str, path: str) -> list[LifetimeFinding]:
-    """Scan one source's text and return its static-lifetime findings."""
-    tokens = _tokenize(text)
+def _walk(tokens: list[_Token]) -> list[LifetimeFinding]:
     findings: list[LifetimeFinding] = []
     stack: list[_Scope] = []
     pending: list[str] = []
     paren_depth = 0
 
-    for i, (kind, value, line) in enumerate(tokens):
-        if kind == _PUNCT:
-            if value == "(":
+    for i, tok in enumerate(tokens):
+        if tok.kind == _PUNCT:
+            if tok.text == "(":
                 paren_depth += 1
-            elif value == ")":
+            elif tok.text == ")":
                 paren_depth = max(0, paren_depth - 1)
-            elif value == ";":
+            elif tok.text == ";":
                 pending.clear()
             continue
 
-        if kind == _STRING:
+        if tok.kind == _STRING:
             # Only the presence of a string matters (the `"DPI-C"` in an
             # import/export), never its contents.
             pending.append('""')
+            continue
+
+        if tok.kind != _WORD:
+            continue
+
+        value = tok.text
+        # An escaped identifier is never a keyword, however it is spelled.
+        if tok.escaped:
+            pending.append(value)
             continue
 
         if value in _END_KEYWORDS:
@@ -236,7 +471,10 @@ def scan_text(text: str, path: str) -> list[LifetimeFinding]:
                 if prototype:
                     # No body, so no `endfunction` to pair with: do not push.
                     continue
-                if _is_class_method(stack) or "virtual" in pending:
+                external = any(sep in name for sep in _NAME_QUALIFIERS)
+                if _is_class_method(stack) or "virtual" in pending or external:
+                    # An out-of-body `function int C::f(...)` defines a class
+                    # method; the class it belongs to is elsewhere.
                     automatic = True
                 elif explicit == "automatic":
                     automatic = True
@@ -246,7 +484,9 @@ def scan_text(text: str, path: str) -> list[LifetimeFinding]:
                     automatic = stack[-1].automatic if stack else False
                 if not automatic:
                     findings.append(
-                        LifetimeFinding(path=path, line=line, kind=value, name=name)
+                        LifetimeFinding(
+                            path=tok.path, line=tok.line, kind=value, name=name
+                        )
                     )
                 stack.append(_Scope(keyword=value, automatic=automatic))
                 pending.clear()
@@ -266,12 +506,10 @@ def scan_text(text: str, path: str) -> list[LifetimeFinding]:
             if value == "interface" and declares_scope:
                 # `virtual interface bus_if h;` declares a variable, and
                 # `interface class C;` is opened by the `class` that follows.
-                if "virtual" not in pending and _next_word(tokens, i) != "class":
+                nxt = _next_word(tokens, i)
+                if "virtual" not in pending and nxt != "class":
                     stack.append(
-                        _Scope(
-                            keyword="interface",
-                            automatic=_next_word(tokens, i) == "automatic",
-                        )
+                        _Scope(keyword="interface", automatic=nxt == "automatic")
                     )
                     pending.clear()
                     continue
@@ -279,8 +517,7 @@ def scan_text(text: str, path: str) -> list[LifetimeFinding]:
             if value in _CONTAINER_SCOPES and declares_scope:
                 stack.append(
                     _Scope(
-                        keyword=value,
-                        automatic=_next_word(tokens, i) == "automatic",
+                        keyword=value, automatic=_next_word(tokens, i) == "automatic"
                     )
                 )
                 pending.clear()
@@ -291,21 +528,68 @@ def scan_text(text: str, path: str) -> list[LifetimeFinding]:
     return findings
 
 
-def scan_file(path: str) -> list[LifetimeFinding]:
-    """Scan one file. Returns no findings when the file cannot be read."""
-    try:
-        with open(path, "r", errors="replace") as f:
-            text = f.read()
-    except OSError:
-        return []
-    return scan_text(text, path)
+def _next_word(tokens: list[_Token], index: int) -> str | None:
+    """Text of the next `_WORD` token, or None if the next token is not one."""
+    if index + 1 < len(tokens):
+        nxt = tokens[index + 1]
+        if nxt.kind == _WORD and not nxt.escaped:
+            return nxt.text
+    return None
 
 
-def scan_files(paths: list[str]) -> list[LifetimeFinding]:
-    """Scan sources in order and return the concatenated findings."""
+def scan_text(
+    text: str,
+    path: str,
+    *,
+    incdirs: tuple[str, ...] | list[str] = (),
+    defines: dict | None = None,
+) -> list[LifetimeFinding]:
+    """Scan one source's text and return its static-lifetime findings."""
+    state = _ScanState(
+        defined=set(str(k) for k in (defines or {})),
+        incdirs=tuple(incdirs),
+        seen={os.path.realpath(path)},
+    )
+    return _walk(_expand_text(text, path, state))
+
+
+def scan_file(
+    path: str,
+    *,
+    incdirs: tuple[str, ...] | list[str] = (),
+    defines: dict | None = None,
+    state: _ScanState | None = None,
+) -> list[LifetimeFinding]:
+    """Scan one file and everything it includes.
+
+    Returns no findings when the file cannot be read. Pass `state` to share
+    macro definitions and the already-scanned set across several sources.
+    """
+    if state is None:
+        state = _ScanState(
+            defined=set(str(k) for k in (defines or {})), incdirs=tuple(incdirs)
+        )
+    return _walk(_expand_file(path, state))
+
+
+def scan_files(
+    paths: list[str],
+    *,
+    incdirs: tuple[str, ...] | list[str] = (),
+    defines: dict | None = None,
+) -> list[LifetimeFinding]:
+    """Scan sources in order and return the concatenated findings.
+
+    Macros defined by one source are visible to the next, matching a
+    single-compilation-unit read, and a header included from two sources is
+    scanned once (deduped by real path).
+    """
+    state = _ScanState(
+        defined=set(str(k) for k in (defines or {})), incdirs=tuple(incdirs)
+    )
     findings: list[LifetimeFinding] = []
     for path in paths:
-        findings.extend(scan_file(path))
+        findings.extend(scan_file(path, state=state))
     return findings
 
 

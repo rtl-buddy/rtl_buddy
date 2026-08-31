@@ -1174,14 +1174,29 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "synth.static_functions":
             findings = fields.get("findings") or []
+            listed = "; ".join(str(f) for f in findings)
+            truncated = fields.get("truncated") or 0
+            if truncated:
+                listed += f"; and {truncated} more"
+            # Only slang miscompiles these. The legacy verilog frontend inlines
+            # per call site, so a user who opted into `error` there is being
+            # told about portability, not corruption.
+            if fields.get("frontend") == "slang":
+                why = (
+                    "the slang frontend shares one storage location per formal "
+                    "across every call site, which silently merges registers"
+                )
+            else:
+                why = (
+                    f'the "{fields.get("frontend")}" frontend inlines each call '
+                    "site, so this design is correct here but not portable — "
+                    "the slang frontend silently merges registers"
+                )
             return (
                 f'synthesis "{fields.get("synth")}": {fields.get("count")} '
                 "function/task declaration(s) without an explicit automatic "
-                f"lifetime — {'; '.join(str(f) for f in findings)}; the "
-                f'"{fields.get("frontend")}" frontend shares one storage '
-                "location per formal across every call site, which silently "
-                "merges registers. Add `automatic`, or set synth option "
-                "static-functions: warn|allow to proceed"
+                f"lifetime — {listed}; {why}. Add `automatic`, or set synth "
+                "option static-functions: warn|allow to proceed"
             )
         case "synth.static_function":
             return (

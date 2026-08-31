@@ -26,15 +26,18 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
 
 ## Synthesis correctness gates
 
-`rb synth` (`tool: yosys`) fails on two silent-corruption shapes before
+`rb synth` (both backends) fails on two silent-corruption shapes before
 reporting PPA. A `function`/`task` without an explicit `automatic` lifetime
 shares one storage location per formal across call sites; the gate names each
-`file:line: function <name>`. Fix the RTL by adding `automatic` — do not reach
-for `static-functions: allow`. Yosys `multiple conflicting drivers` warnings in
-`synth.log` fail the run under `conflicting-drivers: error`; they mean a net
-folded to `x` and may have taken registers with it, so never report the area or
-gate count from such a run. `static_function_findings` in a passing result means
-the gate ran in `warn` mode and the netlist may still be wrong.
+`file:line: function <name>`, following `` `include ``s and honouring
+`` `ifdef ``. Fix the RTL by adding `automatic` — do not reach for
+`static-functions: allow`. This gate is new and defaults to `error` under
+`frontend: slang`, so a previously passing run can now fail; `warn` stages the
+migration. Yosys `multiple conflicting drivers` warnings fail the run under
+`conflicting-drivers: error` (a tristate bus is exempt); they mean a net folded
+to `x` and may have taken registers with it, so never report the area or gate
+count from such a run. `static_function_findings` in a passing result means the
+gate ran in `warn` mode and the netlist may still be wrong.
 
 ## FPGA timing closure
 

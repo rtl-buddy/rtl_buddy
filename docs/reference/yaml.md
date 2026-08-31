@@ -108,7 +108,7 @@ cfg-synth-tools:
       frontend: verilog
       plugin-path: ""
       single-unit: false
-      static-functions: ""
+      static-functions: error
       conflicting-drivers: error
 
 cfg-pdks:
@@ -144,14 +144,14 @@ cfg-pnr-platforms:
 
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` is slang-only and must be a boolean. In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`; unknown keys warn and are ignored, while a non-mapping override or wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
-`static-functions` and `conflicting-drivers` are correctness gates on the `tool: yosys` backend:
+`static-functions` and `conflicting-drivers` are correctness gates on the Yosys elaboration stage, which both the `yosys` and the `openroad` backend use. Omit either option to take its default:
 
 | Option | Values | Default | Behavior |
 |---|---|---|---|
-| `static-functions` | `error`, `warn`, `allow` | `error` with `frontend: slang`, `warn` with `frontend: verilog` | Scans the synthesis filelist's own sources before Yosys starts for `function`/`task` declarations with no explicit `automatic` lifetime. `error` fails the run and names each `file:line: function <name>`; `warn` logs one warning per finding and records `static_function_findings` in the result envelope; `allow` skips the scan |
-| `conflicting-drivers` | `error`, `allow` | `error` | After Yosys exits, fails the run when `synth.log` contains Yosys `multiple conflicting drivers` warnings, reporting the count and the log path |
+| `static-functions` | `error`, `warn`, `allow` | `error` with `frontend: slang`, `warn` with `frontend: verilog` | Before Yosys starts, scans the filelist's sources and the headers they `` `include ``, for `function`/`task` declarations with no explicit `automatic` lifetime. `error` fails the run and names each `file:line: function <name>`; `warn` logs one warning per finding and records `static_function_findings` in the result envelope and machine output; `allow` skips the scan |
+| `conflicting-drivers` | `error`, `allow` | `error` | After Yosys exits, fails the run when the log contains Yosys `multiple conflicting drivers` warnings, reporting the count and the log path. Warnings whose drivers are all tristate buffers and module ports are a working multi-driver bus and are not counted |
 
-An unrecognized value for either option is fatal. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
+The scan resolves `` `include `` against the including file's directory and then the filelist's `+incdir+` entries, and evaluates `` `ifdef ``/`` `ifndef ``/`` `elsif ``/`` `else ``/`` `endif `` against the run's `defines:` plus the filelist's `+define+` entries, so code the compiler never sees is not reported. An unrecognized value for either option is fatal. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
 
 ### FPGA tools and platforms
 

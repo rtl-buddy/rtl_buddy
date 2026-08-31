@@ -32,6 +32,10 @@ _ABC_SCRIPT_NO_TIMING = (
 # Same but with stime -p appended to report critical-path delay
 _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
 
+# A machine-log line carries at most this many findings; the full count and the
+# number dropped travel alongside, so nothing is silently lost.
+MAX_EVENT_FINDINGS = 25
+
 
 # Yosys `check` (run inside `synth`) reports a shared net taking incompatible
 # drivers as `Warning: multiple conflicting drivers for <mod>.<sig> [n]:`, from
@@ -39,17 +43,100 @@ _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
 # the line. Anchoring on it keeps the `check -h` help text ("two or more
 # conflicting drivers for one wire") and any echo of the phrase in a script or
 # command line from being counted.
+#
+# The sibling `Drivers conflicting with a constant <s> driver:` message from
+# the same pass is deliberately NOT matched: it fires when something drives a
+# constant bit, which is a different condition from the shared-formal
+# corruption this gate exists for, and neither repro shape in #472 produces it.
 _CONFLICTING_DRIVERS_RE = re.compile(
-    r"^(?:\S+:\d+:\s*)?Warning:\s*multiple conflicting drivers\b",
-    re.MULTILINE,
+    r"^(?:\S+:\d+:\s*)?Warning:\s*multiple conflicting drivers\b"
 )
+
+# Indented driver lines follow each warning, one per driver, in the three forms
+# check.cc emits: `port <P>[n] of cell <name> (<type>)`, `module input <w>[n]`,
+# and `action <lhs> <= <rhs> (... rule) in process <p>`.
+_TRISTATE_DRIVER_RE = re.compile(
+    r"^\s+port \S+ of cell \S+ \((?:\$tribuf|\$_TBUF_)\)\s*$"
+)
+_PORT_DRIVER_RE = re.compile(r"^\s+module (?:input|output|inout) \S+\s*$")
+
+
+def _is_tristate_bus(driver_lines: list[str]) -> bool:
+    """Whether a warning's drivers are a legitimate tristate bus.
+
+    Two `assign bus = en ? d : 8'bz;` on an `inout wire` elaborate to a pair of
+    `$tribuf` cells plus the module port, and yosys `check` reports every bit
+    of the bus as conflicting. That is a working multi-driver design, not the
+    silent corruption this gate is for, so a warning whose drivers are all
+    tristate buffers and module ports is skipped. One driver of any other kind
+    (a `$dff`, a process action) means the warning is counted.
+    """
+    if not driver_lines:
+        return False
+    saw_tristate = False
+    for line in driver_lines:
+        if _TRISTATE_DRIVER_RE.match(line):
+            saw_tristate = True
+        elif not _PORT_DRIVER_RE.match(line):
+            return False
+    return saw_tristate
 
 
 def find_conflicting_driver_warnings(log_text: str) -> list[str]:
-    """Yosys "multiple conflicting drivers" warning lines in a synthesis log."""
-    return [
-        line for line in log_text.splitlines() if _CONFLICTING_DRIVERS_RE.match(line)
-    ]
+    """Yosys "multiple conflicting drivers" warnings that are real conflicts.
+
+    Returns the header line of each warning, with legitimate tristate buses
+    filtered out; see :func:`_is_tristate_bus`.
+    """
+    lines = log_text.splitlines()
+    hits: list[str] = []
+    i = 0
+    while i < len(lines):
+        if not _CONFLICTING_DRIVERS_RE.match(lines[i]):
+            i += 1
+            continue
+        header = lines[i]
+        i += 1
+        drivers: list[str] = []
+        while i < len(lines) and lines[i][:1].isspace() and lines[i].strip():
+            drivers.append(lines[i])
+            i += 1
+        if not _is_tristate_bus(drivers):
+            hits.append(header)
+    return hits
+
+
+def filelist_scan_context(fl_path: str) -> tuple[list[str], dict[str, str]]:
+    """`+incdir+` directories and `+define+` macros from a synthesis filelist.
+
+    `_source_files_from_filelist` drops both because Yosys is handed sources
+    only, but the lifetime scan needs them: a `` `include `` is resolved
+    through the incdirs, and `` `ifdef `` regions are evaluated against the
+    macros. Paths resolve relative to the filelist, matching the source
+    entries.
+    """
+    fl_dir = os.path.dirname(os.path.abspath(fl_path))
+    incdirs: list[str] = []
+    defines: dict[str, str] = {}
+    try:
+        with open(fl_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return incdirs, defines
+    for line in lines:
+        line = line.strip()
+        if line.startswith("+incdir+"):
+            for entry in line[len("+incdir+") :].split("+"):
+                if entry:
+                    incdirs.append(os.path.normpath(os.path.join(fl_dir, entry)))
+        elif line.startswith("+define+"):
+            for entry in line[len("+define+") :].split("+"):
+                if not entry:
+                    continue
+                name, _, value = entry.partition("=")
+                if name:
+                    defines[name] = value
+    return incdirs, defines
 
 
 # Machine-level fallback for the yosys-slang plugin location, so toolchain
@@ -316,15 +403,25 @@ class YosysSynth:
     def _scan_static_lifetimes(
         self, fl_path: str, opts: SynthToolOpts
     ) -> list[LifetimeFinding]:
-        """Findings for the filelist's own sources, or [] when the gate is off.
+        """Findings for the filelist's sources, or [] when the gate is off.
 
-        Only the bare and ``-v`` entries of ``synth.f`` are scanned: a ``-y``
-        library directory contributes files the filelist never names, so its
-        contents are outside the scan.
+        The bare and ``-v`` entries of ``synth.f`` are the scan roots; headers
+        they `` `include `` are followed through the filelist's ``+incdir+``
+        entries. A ``-y`` library directory contributes files the filelist
+        never names, so its contents stay outside the scan. Macros come from
+        the filelist's ``+define+`` entries and the run's ``defines:``, so an
+        `` `ifdef `` region the compiler never sees is not reported.
         """
         if resolve_static_functions_mode(opts) == "allow":
             return []
-        return scan_files(self._source_files_from_filelist(fl_path))
+        incdirs, defines = filelist_scan_context(fl_path)
+        for key, value in (self.synth_cfg.get_defines() or {}).items():
+            defines[str(key)] = str(value)
+        return scan_files(
+            self._source_files_from_filelist(fl_path),
+            incdirs=incdirs,
+            defines=defines,
+        )
 
     def _write_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
@@ -490,6 +587,9 @@ class YosysSynth:
 
         opts = self._resolve_opts()
         static_mode = resolve_static_functions_mode(opts)
+        # Both gate modes are resolved up front, so a misspelled value is fatal
+        # on every run rather than only on runs that reach the gate.
+        conflicting_mode = resolve_conflicting_drivers_mode(opts)
         findings = self._scan_static_lifetimes(fl_path, opts)
         if findings:
             detail = describe_findings(findings)
@@ -501,7 +601,8 @@ class YosysSynth:
                     synth=self.synth_cfg.get_name(),
                     frontend=opts.frontend,
                     count=len(findings),
-                    findings=[f.describe() for f in findings],
+                    findings=[f.describe() for f in findings[:MAX_EVENT_FINDINGS]],
+                    truncated=max(0, len(findings) - MAX_EVENT_FINDINGS),
                 )
                 return SynthFailResults(
                     name=self.name + "/results",
@@ -575,9 +676,6 @@ class YosysSynth:
                 f"{len(error_lines)} ERROR(s) in synthesis log"
             )
 
-        # Resolved unconditionally so a misspelled mode is fatal on every run,
-        # not only on the runs that happen to trip the gate.
-        conflicting_mode = resolve_conflicting_drivers_mode(opts)
         conflicting = find_conflicting_driver_warnings(log_text)
         if conflicting and conflicting_mode == "error":
             log_event(

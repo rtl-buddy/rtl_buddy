@@ -7130,7 +7130,13 @@ class RtlBuddy:
         row = {"name": r["synth_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("gate_count", "area_um2", "wns_ps", "tns_ps"):
+        for k in (
+            "gate_count",
+            "area_um2",
+            "wns_ps",
+            "tns_ps",
+            "static_function_findings",
+        ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row

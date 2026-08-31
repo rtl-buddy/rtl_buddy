@@ -160,8 +160,9 @@ yosys-slang lowers the declaration literally and gives every call site the same
 net per formal. Two calls in one combinational process then alias their
 arguments and the netlist is wrong with no error and no warning.
 
-RTL Buddy scans the sources named by the synthesis filelist before Yosys
-starts, and reports each declaration as `file:line: function <name>`:
+RTL Buddy scans the sources named by the synthesis filelist, and the headers
+they `` `include ``, before Yosys starts, and reports each declaration as
+`file:line: function <name>`:
 
 ```yaml
 cfg-synth-tools:
@@ -186,25 +187,64 @@ function automatic ptr_t inc(input ptr_t p);
 endfunction
 ```
 
-The scan is a tokenizer, not an elaborator. Class methods, `extern` and
-`pure virtual` prototypes, DPI imports and exports, and any scope declared
-`module automatic` (or `package`/`interface`/`program` `automatic`) are exempt.
-A declaration whose `function` keyword or `automatic` qualifier is hidden
-inside a macro is missed, and `-y` library directories are not scanned because
-the filelist never names their contents. Use Verible's
-`explicit-function-lifetime` rule through `rb lint` and `cfg-verible` as the
-style-lint complement covering testbench and non-synthesisable sources.
+### What the scan sees
+
+`` `include `` directives are followed, resolved against the including file's
+directory and then the filelist's `+incdir+` entries; a header included from
+two sources is scanned once. `` `ifdef `` / `` `ifndef `` / `` `elsif `` /
+`` `else `` / `` `endif `` are evaluated on definedness, seeded from the run's
+`defines:` and the filelist's `+define+` entries and updated by `` `define ``
+and `` `undef `` in the sources, so a simulation-only helper behind
+`` `ifndef SYNTHESIS `` is not reported when the run defines `SYNTHESIS`.
+
+Exempt: class methods — including out-of-body definitions such as
+`function int C::f(...)` — `extern` and `pure virtual` prototypes, DPI imports
+and exports, and any scope declared `module automatic` (or
+`package`/`interface`/`program` `automatic`).
+
+The scan is a tokenizer, not an elaborator, and its limits run in both
+directions:
+
+| Limit | Effect |
+| --- | --- |
+| Macro bodies are skipped at their `` `define `` | A declaration produced by a macro is never reported, in either direction; macros are expanded by the compiler, not by the scan |
+| `-y` library directories are not scanned | The filelist never names their contents, so declarations there are missed |
+| An unresolvable `` `include `` is logged at DEBUG and skipped | That header's declarations are missed; the run is not failed |
+| `` `if `` expression evaluation is not implemented | Only definedness is evaluated. This is not SystemVerilog anyway, so it costs nothing in practice |
+| Scope nesting is tracked by keyword pairing | Pathological but legal code can change which declarations are exempt, in either direction |
+
+Use Verible's `explicit-function-lifetime` rule through `rb lint` and
+`cfg-verible` as the style-lint complement covering testbench and
+non-synthesisable sources.
+
+## Gate conflicting drivers
 
 When call sites are split across a combinational and a clocked process, the
 shared net takes conflicting drivers and folds to `x`, taking its register and
 everything downstream with it. Yosys reports this as a
 `multiple conflicting drivers` warning and still exits 0.
-`conflicting-drivers: error`, the default, turns those warnings in `synth.log`
-into a failed run naming the count and the log path. Set `allow` only when the
-warnings are understood and accepted.
+`conflicting-drivers: error`, the default, turns those warnings into a failed
+run naming the count and the log path. Set `allow` only when the warnings are
+understood and accepted.
 
-Both gates apply to the `tool: yosys` backend. An unrecognized value for
-either option is fatal.
+A legitimate multi-driver tristate bus produces the same warning, one per bit.
+Those are not counted: a warning whose drivers are all `$tribuf` / `$_TBUF_`
+cells and module ports is a working design, and only a warning with at least
+one other driver — a flop, a process action — fails the run.
+
+Both gates apply to the Yosys elaboration stage, which the `yosys` and
+`openroad` backends share. An unrecognized value for either option is fatal.
+
+### Upgrading
+
+These gates are new, and `static-functions` defaults to `error` under
+`frontend: slang`. A slang synthesis run that passed before can now **fail**,
+including one whose subroutines have a single call site and whose netlist
+happens to be correct — the scan reports the declaration, not the aliasing.
+That default is deliberate: the failure mode it guards is a silently corrupted
+netlist with plausible area and timing numbers. To stage the migration, set
+`static-functions: warn` while the declarations are fixed; each run then still
+reports `static_function_findings` in its machine output.
 
 ## Select an effort
 
