@@ -925,3 +925,48 @@ def test_clear_stale_artefacts_fails_loudly_when_removal_fails(tmp_path):
 
     with pytest.raises(FatalRtlBuddyError, match="could not remove"):
         clear_stale_artefacts([blocked], owner="demo")
+
+
+def test_clear_managed_outputs_matches_by_suffix_only(tmp_path):
+    """Suffix matching is what makes the clear independent of the design's
+    top; everything else in the artefact dir must survive (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "old_top.bit").write_bytes(b"\x00")
+    (tmp_path / "new_top.bit").write_bytes(b"\x00")
+    (tmp_path / "fpga.f").write_text("-v a.sv\n")
+    (tmp_path / "yosys.log").write_text("log\n")
+    nested = tmp_path / "sby_workdir"
+    nested.mkdir()
+    (nested / "inner.bit").write_bytes(b"\x00")
+
+    removed = clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+
+    assert sorted(os.path.basename(p) for p in removed) == [
+        "new_top.bit",
+        "old_top.bit",
+    ]
+    assert (tmp_path / "fpga.f").exists()
+    assert (tmp_path / "yosys.log").exists()
+    # Never recursive: a nested workdir a tool owns is left alone.
+    assert (nested / "inner.bit").exists()
+
+
+def test_clear_managed_outputs_honours_keep(tmp_path):
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "top.json").write_text("{}")
+    (tmp_path / "results.json").write_text("{}")
+
+    removed = clear_managed_outputs(
+        tmp_path, (".json",), owner="demo", keep=("results.json",)
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["top.json"]
+    assert (tmp_path / "results.json").exists()
+
+
+def test_clear_managed_outputs_missing_dir_is_not_an_error(tmp_path):
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    assert clear_managed_outputs(tmp_path / "never-made", (".bit",), owner="d") == []

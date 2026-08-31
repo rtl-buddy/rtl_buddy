@@ -2546,3 +2546,60 @@ def test_openroad_pre_yosys_gate_still_clears_the_netlist(tmp_path):
     assert "requires Liberty" in result.results["desc"]
     assert not mapped.exists()
     assert not rtlil.exists()
+
+
+def test_openroad_failed_sta_stage_removes_the_netlist(tmp_path, monkeypatch):
+    """Stage 1 can succeed and write a netlist before stage 2 fails on
+    `link_design` or the SDC. `rb synth` reports FAIL, so it must not leave
+    that netlist at the path `rb pnr` / `rb power` resolve (#469)."""
+    from rtl_buddy.tools import synth_openroad as synth_openroad_module
+
+    model = _setup_run(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="openroad",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform="mylib",
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=synth_cfg,
+        root_cfg=_FakeRootCfgOR(
+            lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+        ),
+    )
+    netlist = Path(or_synth.artefact_dir) / "synth_netlist.v"
+
+    monkeypatch.setattr(
+        synth_openroad_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+
+    def _stages(cmd, **kwargs):
+        class _R:
+            returncode = 0
+
+        exe = str(cmd[0])
+        if "yosys" in exe:
+            # Stage 1 succeeds and publishes the netlist.
+            netlist.write_text("module demo_top(); endmodule\n")
+            return _R()
+        # Stage 2 (OpenROAD STA) dies.
+        _R.returncode = 1
+        return _R()
+
+    monkeypatch.setattr(synth_openroad_module.subprocess, "run", _stages)
+
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert netlist.exists() is False, "a failed synthesis must publish no netlist"

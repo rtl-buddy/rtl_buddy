@@ -146,21 +146,44 @@ def build_view_json(
     DUT subtree, which appears in TB elaboration too.
     """
 
-    # Build the domain map FIRST so a misconfigured cdc: back-pointer
-    # fails before we spend cycles on rtl-buddy-view. Import locally
-    # to avoid a hub→cdc import cycle.
-    from . import cdc_builder
-
-    domain_map = cdc_builder.build_domain_map(
-        project_root=project_root, model_cfg=model_cfg
-    )
-
     cache = cache_dir(project_root)
     cache.mkdir(parents=True, exist_ok=True)
     if test_cfg is not None:
         out_path = view_json_path_for_tb(project_root, model_cfg.name, test_cfg.tb.name)
     else:
         out_path = view_json_path(project_root, model_cfg.name)
+    label = (
+        f"rb hub --model {model_cfg.name} --test {test_cfg.name}"
+        if test_cfg is not None
+        else f"rb hub --model {model_cfg.name}"
+    )
+
+    # Before anything that can raise. `view.json` lives in the *persistent*
+    # `.rtl-buddy/cache/`, and `viewer_http._serve_active_view_json` serves
+    # whatever is at this path with a 200 — so a rebuild that dies in
+    # `build_domain_map` (a bad `cdc:` back-pointer) or in
+    # `_resolve_viewer_executable` (no viewer installed) would leave the SPA
+    # happily serving the previous build's hierarchy for the active model,
+    # with no indication that the rebuild failed (#469). Clearing first makes
+    # a failed rebuild show as a missing view rather than a stale one.
+    removed = clear_stale_artefacts([out_path], owner=label)
+    if removed:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "hub.view_builder.stale_artefacts_removed",
+            model=model_cfg.name,
+            paths=removed,
+        )
+
+    # Build the domain map before invoking the viewer so a misconfigured
+    # cdc: back-pointer fails before we spend cycles on rtl-buddy-view.
+    # Import locally to avoid a hub→cdc import cycle.
+    from . import cdc_builder
+
+    domain_map = cdc_builder.build_domain_map(
+        project_root=project_root, model_cfg=model_cfg
+    )
 
     viewer_exe = _resolve_viewer_executable()
 
@@ -187,25 +210,6 @@ def build_view_json(
         test_cfg=test_cfg,
         test_suite_dir=str(test_suite_dir) if test_suite_dir is not None else None,
     )
-    label = (
-        f"rb hub --model {model_cfg.name} --test {test_cfg.name}"
-        if test_cfg is not None
-        else f"rb hub --model {model_cfg.name}"
-    )
-    # Same persistent-cache hazard as the domain map above: `view.json`
-    # outlives the run that wrote it, so the `is_file()` gate below is only
-    # meaningful if nothing older can satisfy it. Narrower than the CDC case
-    # (a non-zero rc already raises), but a viewer that exits 0 without
-    # writing would otherwise leave the SPA rendering the previous build (#469).
-    removed = clear_stale_artefacts([out_path], owner=label)
-    if removed:
-        log_event(
-            logger,
-            logging.DEBUG,
-            "hub.view_builder.stale_artefacts_removed",
-            model=model_cfg.name,
-            paths=removed,
-        )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():
         raise FatalRtlBuddyError(

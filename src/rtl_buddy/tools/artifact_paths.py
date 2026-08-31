@@ -153,5 +153,56 @@ def clear_stale_artefacts(
     return removed
 
 
+def clear_managed_outputs(
+    artefact_dir: str | Path,
+    suffixes: Iterable[str],
+    *,
+    owner: str,
+    keep: Iterable[str] = (),
+) -> list[str]:
+    """Clear a run's outputs by *suffix* rather than by exact name.
+
+    :func:`clear_stale_artefacts` can only remove paths it can name, and
+    several flows name their outputs after the design's top module —
+    ``<top>.bit``, ``<design>.routed.odb``. Editing a run's ``model:`` or
+    ``top:`` therefore renamed the outputs and left the previous top's
+    files behind in the same directory, still at the fixed paths a later
+    command or a later edit-back would resolve (#469).
+
+    Matching on the suffix instead makes the clear independent of the top,
+    which is safe here because an artefact directory belongs to exactly one
+    run: everything in it was put there by that run, so anything carrying a
+    suffix this flow manages is by definition this flow's own output. Only
+    the directory itself is scanned — never recursively, so a nested
+    workdir a tool owns is untouched.
+
+    Args:
+      artefact_dir: the run's artefact directory. A missing directory is
+        not an error; there is simply nothing to clear.
+      suffixes: the filename suffixes this flow writes (``".bit"``,
+        ``".routed.odb"``). Include the dot. Match a *log* suffix here and
+        you defeat the log exemption, so don't.
+      owner: the run/analysis name, for the error message.
+      keep: exact filenames to leave alone even when they match — for a
+        fixed-name artefact that happens to share a managed suffix.
+
+    Returns:
+      The paths removed, sorted, for logging.
+    """
+    directory = Path(artefact_dir)
+    suffixes = tuple(suffixes)
+    keep = set(keep)
+    try:
+        entries = sorted(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    doomed = [
+        entry
+        for entry in entries
+        if entry.is_file() and entry.name not in keep and entry.name.endswith(suffixes)
+    ]
+    return clear_stale_artefacts(doomed, owner=owner)
+
+
 test_artifact_dir.__test__ = False
 test_build_dir_name.__test__ = False

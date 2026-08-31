@@ -624,11 +624,19 @@ def test_pnr_clear_list_covers_every_non_log_template_output():
     written = {name for name in written if not name.endswith(".log")}
     assert written, "no $OUT_DIR write targets found; did the template move?"
 
-    cleared = {
+    fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES)
+    suffixes = pnr_openroad._MANAGED_OUTPUT_SUFFIXES
+    missed = {
+        name for name in written if name not in fixed and not name.endswith(suffixes)
+    }
+    assert not missed, f"not cleared before a run: {sorted(missed)}"
+
+    # `run_output_paths` documents the same set by name; keep it in step.
+    named = {
         os.path.basename(p)
         for p in pnr_openroad.run_output_paths("/artefacts", "${DESIGN}")
     }
-    assert written <= cleared, f"not cleared before a run: {sorted(written - cleared)}"
+    assert written <= named, f"undocumented output: {sorted(written - named)}"
 
 
 def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
@@ -770,13 +778,30 @@ def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
         suite_dir=str(tmp_path),
         root_cfg=MagicMock(),
     )
-    stale_drc = Path(backend.artefact_dir) / "route.drc.rpt"
+    artefacts = Path(backend.artefact_dir)
+    stale_drc = artefacts / "route.drc.rpt"
     stale_drc.write_text("violation\n")
+    # Design-named outputs cannot be named without the synth reference, but
+    # `rb power` accepts the ODB by existence alone, so they must go anyway.
+    design_named = {
+        name: artefacts / name
+        for name in (
+            "old_top.routed.odb",
+            "old_top.routed.v",
+            "old_top.routed.sdc",
+            "old_top.def",
+            "old_top.gds",
+            "old_top.png",
+        )
+    }
+    for path in design_named.values():
+        path.write_bytes(b"\x00stale\x00")
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
 
     res = backend.run()
 
     assert "not found" in res.results["desc"]
-    # The design-independent outputs are still cleared.
     assert not stale_drc.exists()
+    for name, path in design_named.items():
+        assert not path.exists(), name

@@ -17,7 +17,7 @@ from ..runner.fpga_results import (
     FpgaResults,
     FpgaSkipResults,
 )
-from .artifact_paths import clear_stale_artefacts
+from .artifact_paths import clear_managed_outputs, clear_stale_artefacts
 from .fpga_base import BaseFpga, resolve_target
 from .fpga_vivado_flow import REPORT_FILES, render_flow_tcl
 from .fpga_vivado_reports import (
@@ -182,9 +182,15 @@ class VivadoFpga(BaseFpga):
             [
                 os.path.join(self.artefact_dir, filename)
                 for filename in REPORT_FILES.values()
-            ]
-            + [self._bitstream_path()],
+            ],
             owner=self.fpga_cfg.get_name(),
+        )
+        # The bitstream is the one output named after the top, so it goes by
+        # suffix: editing the run's model or top would otherwise strand the
+        # previous top's `.bit` here. The reports above have fixed names
+        # (`util.rpt` and friends) and carry no `.bit` suffix.
+        stale += clear_managed_outputs(
+            self.artefact_dir, (".bit",), owner=self.fpga_cfg.get_name()
         )
         if stale:
             log_event(

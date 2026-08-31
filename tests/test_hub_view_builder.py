@@ -361,3 +361,50 @@ def test_build_view_json_rejects_unparseable_schema(tmp_path, monkeypatch):
     )
     with pytest.raises(FatalRtlBuddyError, match=r"schema_version unparseable"):
         view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+
+def test_build_view_json_clears_the_cache_before_domain_map_generation(
+    tmp_path, monkeypatch
+):
+    """`view.json` lives in the persistent cache and `viewer_http` serves
+    whatever is at that path with a 200. A rebuild that dies in
+    `build_domain_map` must therefore not leave the previous build's view for
+    the SPA to keep serving (#469)."""
+    from rtl_buddy.hub import cdc_builder
+
+    model = _model(tmp_path)
+    stale = view_builder.view_json_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "name": "stale build"}')
+
+    def _boom(**kwargs):
+        raise FatalRtlBuddyError("cdc analysis 'demo_cdc': SDC not found")
+
+    monkeypatch.setattr(cdc_builder, "build_domain_map", _boom)
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_view_json_clears_the_cache_before_resolving_the_viewer(
+    tmp_path, monkeypatch
+):
+    """Same for the other pre-run raise: no viewer on PATH must not leave the
+    previous build's view.json being served (#469)."""
+    from rtl_buddy.hub import cdc_builder
+
+    model = _model(tmp_path)
+    stale = view_builder.view_json_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "name": "stale build"}')
+
+    monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: None)
+
+    with pytest.raises(FatalRtlBuddyError):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()

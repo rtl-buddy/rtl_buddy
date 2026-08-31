@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 from ..config.pnr import PnrConfig
 from ..logging_utils import log_event, task_status
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
-from .artifact_paths import clear_stale_artefacts
+from .artifact_paths import clear_managed_outputs, clear_stale_artefacts
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -37,6 +37,26 @@ _FLOW_OUTPUT_NAMES = (
 # no KLayout — never reaches the helpers below, so an old layout would
 # otherwise survive a run that produced no layout at all.
 _KLAYOUT_OUTPUT_NAMES = ("{design}.gds", "{design}.png")
+
+# The same outputs as a suffix set. The design-named ones are cleared by
+# suffix rather than by name so the clear does not depend on resolving the
+# synth back-reference that supplies `{design}` — and so that editing a run's
+# design leaves nothing of the previous one behind. Safe because an artefact
+# directory belongs to exactly one pnr run; the KLayout helper scripts it also
+# holds are `.py`, and the logs are deliberately absent from this set.
+_MANAGED_OUTPUT_SUFFIXES = (
+    ".def",
+    ".routed.v",
+    ".routed.sdc",
+    ".routed.odb",
+    ".gds",
+    ".png",
+)
+
+# Outputs whose names carry no design, cleared by exact name.
+_FIXED_OUTPUT_NAMES = tuple(
+    name for name in _FLOW_OUTPUT_NAMES if "{design}" not in name
+)
 
 
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
@@ -430,34 +450,22 @@ class OpenRoadPnr:
         reached (#469). The logs are left to OpenROAD's own `-log`, which
         truncates them.
 
-        Naming the design-specific outputs needs the synth back-reference.
-        A broken one is reported by the normal flow further down, with the
-        message it has always used, so a failure to resolve it here is only
-        noted at DEBUG and the design-independent outputs are cleared anyway
-        — this runs before the tool-availability check and must not preempt
-        any of the existing error surfaces.
+        The design-named outputs go by *suffix*. Naming them needs the synth
+        back-reference, and resolving that here either preempts the error
+        messages the run would otherwise give (when it is broken) or leaves
+        `<top>.routed.odb` behind for `rb power` to accept by existence.
+        Matching on the suffix also means editing a run's design does not
+        strand the previous design's ODB in the same directory.
         """
-        try:
-            design = self.pnr_cfg.resolve_synth_cfg().get_top()
-        except Exception as e:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "pnr.stale_artefacts_design_unresolved",
-                pnr=self.pnr_cfg.get_name(),
-                error=str(e),
-            )
-            design = None
-
-        paths = [
-            os.path.join(self.artefact_dir, name)
-            for name in _FLOW_OUTPUT_NAMES
-            if "{design}" not in name
-        ]
-        if design is not None:
-            paths = run_output_paths(self.artefact_dir, design)
-
-        stale = clear_stale_artefacts(paths, owner=self.pnr_cfg.get_name())
+        stale = clear_stale_artefacts(
+            [os.path.join(self.artefact_dir, name) for name in _FIXED_OUTPUT_NAMES],
+            owner=self.pnr_cfg.get_name(),
+        )
+        stale += clear_managed_outputs(
+            self.artefact_dir,
+            _MANAGED_OUTPUT_SUFFIXES,
+            owner=self.pnr_cfg.get_name(),
+        )
         if stale:
             log_event(
                 logger,

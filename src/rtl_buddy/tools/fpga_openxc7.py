@@ -16,7 +16,7 @@ from ..runner.fpga_results import (
     FpgaResults,
     FpgaSkipResults,
 )
-from .artifact_paths import clear_stale_artefacts
+from .artifact_paths import clear_managed_outputs
 from .fpga_base import BaseFpga, resolve_target
 from .fpga_openxc7_reports import parse_nextpnr_log
 
@@ -30,6 +30,13 @@ _PRJXRAY_FAMILIES: dict[str, str] = {
     "xc7v": "virtex7",
     "xc7z": "zynq7",
 }
+
+
+# Everything one openXC7 run writes that is named after the design's top, as
+# a suffix set. An artefact directory belongs to exactly one run, so anything
+# carrying one of these is this run's own output; the fixed-name files it also
+# holds (`fpga.f`, `synth.ys`, the stage logs) carry none of them.
+_MANAGED_OUTPUT_SUFFIXES = (".json", ".fasm", ".frames", ".bit")
 
 
 class OpenXc7Fpga(BaseFpga):
@@ -306,16 +313,15 @@ class OpenXc7Fpga(BaseFpga):
         # run without `--bitstream` never reaches that stage at all, and a
         # bitstream rerun that dies earlier never reaches it either. The
         # bitstream goes even without `--bitstream`, matching the Vivado
-        # backend — the artefact dir describes the latest run. Stage logs are
-        # truncated by `_run_stage`. Deliberately *after* the skips: a box
-        # without the toolchain never ran anything.
-        stale = clear_stale_artefacts(
-            [
-                os.path.join(self.artefact_dir, f"{top}.json"),
-                os.path.join(self.artefact_dir, f"{top}.fasm"),
-                os.path.join(self.artefact_dir, f"{top}.frames"),
-                self._bitstream_path(),
-            ],
+        # backend — the artefact dir describes the latest run. Matched by
+        # suffix rather than by `<top>` so that editing the run's model or
+        # top does not strand the previous top's files here, still at the
+        # paths a later edit-back would resolve. Stage logs are truncated by
+        # `_run_stage` and carry none of these suffixes. Deliberately *after*
+        # the skips: a box without the toolchain never ran anything.
+        stale = clear_managed_outputs(
+            self.artefact_dir,
+            _MANAGED_OUTPUT_SUFFIXES,
             owner=self.fpga_cfg.get_name(),
         )
         if stale:

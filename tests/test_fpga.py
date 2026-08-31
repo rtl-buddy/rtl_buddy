@@ -794,6 +794,26 @@ def test_vivado_fpga_skip_keeps_a_previous_runs_artefacts(tmp_path, monkeypatch)
     assert kept.exists()
 
 
+def test_vivado_fpga_clears_a_previous_tops_bitstream(tmp_path, monkeypatch):
+    """The bitstream is the one top-named Vivado output, so it goes by suffix:
+    editing the run's model or top must not strand the old `.bit` (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    old_bit = artefacts / "old_top.bit"
+    old_bit.write_bytes(b"\x00previous top\x00")
+
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _fake_vivado())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert not old_bit.exists()
+    assert res.results["bitstream"].endswith("demo_top.bit")
+
+
 def test_vivado_fpga_uses_failing_timing_fixture(tmp_path, monkeypatch):
     """A routed-but-timing-failed run still passes; metrics carry the truth."""
     backend = _make_backend(tmp_path)

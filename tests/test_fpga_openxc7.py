@@ -420,6 +420,38 @@ def test_openxc7_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
         assert not path.exists(), name
 
 
+def test_openxc7_clears_a_previous_tops_artefacts(tmp_path, monkeypatch):
+    """The outputs are named after the design's top, so editing a run's model
+    or top would strand the previous top's files in the same artefact dir —
+    still at the paths an edit-back would resolve. They go by suffix (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    old_top = {
+        name: artefacts / name
+        for name in (
+            "old_top.bit",
+            "old_top.json",
+            "old_top.fasm",
+            "old_top.frames",
+        )
+    }
+    for path in old_top.values():
+        path.write_bytes(b"\x00previous top\x00")
+    # Fixed-name inputs the run owns must survive: they carry no managed suffix.
+    kept = artefacts / "synth.ys"
+    kept.write_text("# generated script\n")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name, path in old_top.items():
+        assert not path.exists(), name
+    assert kept.exists()
+
+
 def test_openxc7_failing_timing_still_passes_with_loop_fields(tmp_path, monkeypatch):
     backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
     _mock_toolchain(monkeypatch, _fake_pipeline(nextpnr_log="nextpnr_xilinx_fail.log"))

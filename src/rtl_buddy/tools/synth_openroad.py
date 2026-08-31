@@ -668,4 +668,13 @@ class OpenRoadSynth:
                 desc="Yosys stage failed; see synth_yosys.log",
             )
 
-        return self._run_or_stage(gate_count, lef_paths, lib_paths)
+        result = self._run_or_stage(gate_count, lef_paths, lib_paths)
+        if isinstance(result, SynthFailResults):
+            # Stage 1 may well have written a netlist before stage 2 failed
+            # on `link_design` or the SDC. `rb synth` reports FAIL, but the
+            # netlist is sitting at exactly the fixed path `rb pnr` and
+            # `rb power` resolve — so a failing synthesis would still hand
+            # them a design to place and power-analyse (#469). A run that
+            # fails publishes nothing.
+            self._clear_stale_netlists()
+        return result
