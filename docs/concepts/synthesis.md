@@ -238,6 +238,9 @@ the table is re-seeded from the run's defines for each; `single-unit: true`
 under `frontend: slang` shares it, matching `read_slang --single-unit`. A
 header always shares its includer's table, because `` `include `` is textual.
 
+`(* ... *)` attributes are ignored wholesale, so an identifier inside one
+never qualifies the declaration it decorates.
+
 Exempt: class methods — including out-of-body definitions such as
 `function int C::f(...)` — `extern` and `pure virtual` prototypes, DPI imports
 and exports, and any scope declared `module automatic` (or

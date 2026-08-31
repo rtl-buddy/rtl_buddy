@@ -47,6 +47,11 @@ Spurious findings (something reported that is not a hazard):
   rather than parsing declarations, so pathological but legal code can confuse
   the nesting and change which declarations are exempt.
 
+`(* ... *)` attribute instances are dropped whole. They carry arbitrary user
+identifiers, some of which collide with keywords (`(* keep *)`, and legally
+`(* extern *)` or an escaped `(* \extern *)`), and none of them qualify the
+declaration they decorate.
+
 Exemptions follow the language, not taste: class methods (including out-of-body
 definitions such as `function int C::f(...)`) are automatic by definition,
 `extern` / `pure virtual` prototypes and DPI imports/exports have no body here,
@@ -509,7 +514,65 @@ def _is_class_method(stack: list[_Scope]) -> bool:
     return False
 
 
+def _attribute_end(tokens: list[_Token], open_index: int) -> int:
+    """Index just past the `*)` closing the attribute opened at `open_index`.
+
+    Returns `open_index` when the group is not actually an attribute (a `(`
+    that closes without a `*`) or never closes, so the caller leaves it alone.
+    """
+    depth = 0
+    j = open_index
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok.kind == _PUNCT:
+            if tok.text == "(":
+                depth += 1
+            elif tok.text == ")":
+                depth -= 1
+                if depth == 0:
+                    prev = tokens[j - 1]
+                    if prev.kind == _PUNCT and prev.text == "*":
+                        return j + 1
+                    return open_index
+        j += 1
+    return open_index
+
+
+def _strip_attributes(tokens: list[_Token]) -> list[_Token]:
+    """Drop `(* ... *)` attribute instances from the stream.
+
+    An attribute carries arbitrary user identifiers -- `(* keep *)`,
+    `(* ram_style = "block" *)`, and legally even `(* extern *)` -- none of
+    which are declarations or qualifiers. Leaving them in let a name that
+    happens to collide with a keyword reach the pending-qualifier window and
+    exempt the very declaration the attribute was decorating. Removing the
+    whole group is the robust rule, and it removes a balanced pair of
+    parentheses so the paren depth the walker tracks is unaffected.
+    """
+    out: list[_Token] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if (
+            tok.kind == _PUNCT
+            and tok.text == "("
+            and i + 1 < len(tokens)
+            and tokens[i + 1].kind == _PUNCT
+            and tokens[i + 1].text == "*"
+        ):
+            end = _attribute_end(tokens, i)
+            if end > i:
+                i = end
+                continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 def _walk(tokens: list[_Token]) -> list[LifetimeFinding]:
+    # Stripped before the walk, not skipped during it, so the header parser
+    # indexing into the same list cannot see an attribute either.
+    tokens = _strip_attributes(tokens)
     findings: list[LifetimeFinding] = []
     stack: list[_Scope] = []
     pending: list[str] = []
@@ -535,9 +598,12 @@ def _walk(tokens: list[_Token]) -> list[LifetimeFinding]:
             continue
 
         value = tok.text
-        # An escaped identifier is never a keyword, however it is spelled.
+        # An escaped identifier is never a keyword, however it is spelled, so
+        # it must not match one through the pending window either -- a
+        # `\\extern` is a name. Kept in `pending` with its backslash so the
+        # window still records that something stood here.
         if tok.escaped:
-            pending.append(value)
+            pending.append("\\" + value)
             continue
 
         if value in _END_KEYWORDS:

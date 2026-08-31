@@ -4496,3 +4496,34 @@ def test_a_valid_frontend_still_reaches_the_gate(tmp_path, monkeypatch):
     result = ys.run()
     assert isinstance(result, SynthFailResults)
     assert "function inc" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Attributes do not exempt a declaration (review round 9)
+# ---------------------------------------------------------------------------
+
+
+def test_an_attributed_static_function_still_fails_the_gate(tmp_path, monkeypatch):
+    """`(* \\extern = 1 *)` is an attribute carrying a user identifier, not an
+    `extern` prototype. It used to exempt the declaration it decorated."""
+    src = dedent("""\
+        module my_module;
+          (* \\extern = 1 *) function bit dbg(input bit x); return x; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_a_keep_attribute_does_not_change_the_gate_verdict(tmp_path, monkeypatch):
+    src = dedent("""\
+        module my_module;
+          (* keep *) function automatic bit ok(input bit x); return x; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)

@@ -1155,3 +1155,135 @@ def test_a_cycle_is_still_stopped_quietly(tmp_path):
     top = tmp_path / "top.sv"
     top.write_text('module m;\n`include "a.svh"\nendmodule\n')
     assert [f.name for f in scan_files([str(top)])] == ["f"]
+
+
+# ---------------------------------------------------------------------------
+# Attribute instances are not qualifiers (review round 9)
+# ---------------------------------------------------------------------------
+
+
+def _attributed(attr):
+    return dedent(f"""\
+        module m;
+          {attr} function int f(input int a); return a; endfunction
+        endmodule
+    """)
+
+
+def test_escaped_identifier_in_an_attribute_does_not_exempt_the_function():
+    """The reported case: `\\extern` is a *name*, not the keyword. It used to
+    lose its escaped status in the pending window, so the real function body
+    was taken for an extern prototype and silently exempted."""
+    assert _names(scan_text(_attributed(r"(* \extern = 1 *)"), "m.sv")) == [
+        (2, "function", "f")
+    ]
+
+
+@pytest.mark.parametrize(
+    "attr",
+    [
+        "(* keep *)",
+        "(* extern *)",
+        "(* pure *)",
+        "(* virtual *)",
+        "(* import *)",
+        "(* typedef *)",
+        '(* ram_style = "block" *)',
+        "(* keep, dont_touch *)",
+        "(* n = (1 + 2) *)",
+        r"(* \extern *)",
+        r"(* \automatic = 1 *)",
+    ],
+)
+def test_an_attribute_never_changes_the_verdict(attr):
+    assert _names(scan_text(_attributed(attr), "m.sv")) == [(2, "function", "f")]
+
+
+def test_attribute_automatic_is_not_a_lifetime():
+    """`(* automatic *)` decorates the declaration; the lifetime keyword has
+    to sit between `function` and the name to count."""
+    assert _names(scan_text(_attributed("(* automatic *)"), "m.sv")) == [
+        (2, "function", "f")
+    ]
+    # ...and the real keyword still exempts it.
+    src = dedent("""\
+        module m;
+          (* keep *) function automatic int f(input int a); return a; endfunction
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_a_real_extern_prototype_is_still_exempt():
+    """The fix must not stop `extern` working where it is the keyword."""
+    src = dedent("""\
+        class C;
+          extern function int g(input int a);
+        endclass
+        module m;
+          function int f(input int a); return a; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["f"]
+
+
+def test_an_attributed_declaration_does_not_corrupt_scope_tracking():
+    """The bogus-prototype path returned without pushing a scope, so the
+    declaration's `endfunction` popped the enclosing module instead."""
+    src = dedent("""\
+        module automatic m;
+          (* extern *) function int a(input int x); return x; endfunction
+          function int b(input int x); return x; endfunction
+        endmodule
+        module n;
+          function int c(input int x); return x; endfunction
+        endmodule
+    """)
+    # a and b are inside `module automatic`; only c is a finding.
+    assert [f.name for f in scan_text(src, "m.sv")] == ["c"]
+
+
+def test_an_attribute_on_a_module_header_is_ignored():
+    src = dedent("""\
+        (* keep_hierarchy *)
+        module m;
+          function int f(input int a); return a; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
+
+
+def test_a_wildcard_sensitivity_list_is_not_mistaken_for_an_attribute():
+    src = dedent("""\
+        module m;
+          always @(*) begin end
+          function int f(input int a); return a; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
+
+
+def test_an_unterminated_attribute_is_left_alone():
+    """`(` that never closes must not swallow the rest of the file."""
+    src = "module m;\n  (* keep\n  function int f(input int a); return a; endfunction\n"
+    assert isinstance(scan_text(src, "m.sv"), list)
+
+
+def test_a_parenthesised_expression_is_not_treated_as_an_attribute():
+    src = dedent("""\
+        module m;
+          localparam int P = (4) * (2);
+          function int f(input int a); return a; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
+
+
+def test_an_escaped_identifier_named_like_a_qualifier_outside_an_attribute():
+    src = dedent("""\
+        module m;
+          logic \\extern ;
+          function int f(input int a); return a; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
