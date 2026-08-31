@@ -108,6 +108,8 @@ cfg-synth-tools:
       frontend: verilog
       plugin-path: ""
       single-unit: false
+      static-functions: ""
+      conflicting-drivers: error
 
 cfg-pdks:
   - name: sky130hd
@@ -132,7 +134,7 @@ cfg-pnr-platforms:
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, and `single-unit`. OpenROAD additionally accepts `strategy` |
+| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `static-functions`, and `conflicting-drivers`. OpenROAD additionally accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, and `fill-cells`. Paths resolve from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
 | `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer` and `routing-layers.signal`/`.clock` |
@@ -141,6 +143,15 @@ cfg-pnr-platforms:
 | `cfg-power-tools` | `name`, `tool` |
 
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` is slang-only and must be a boolean. In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`; unknown keys warn and are ignored, while a non-mapping override or wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
+
+`static-functions` and `conflicting-drivers` are correctness gates on the `tool: yosys` backend:
+
+| Option | Values | Default | Behavior |
+|---|---|---|---|
+| `static-functions` | `error`, `warn`, `allow` | `error` with `frontend: slang`, `warn` with `frontend: verilog` | Scans the synthesis filelist's own sources before Yosys starts for `function`/`task` declarations with no explicit `automatic` lifetime. `error` fails the run and names each `file:line: function <name>`; `warn` logs one warning per finding and records `static_function_findings` in the result envelope; `allow` skips the scan |
+| `conflicting-drivers` | `error`, `allow` | `error` | After Yosys exits, fails the run when `synth.log` contains Yosys `multiple conflicting drivers` warnings, reporting the count and the log path |
+
+An unrecognized value for either option is fatal. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
 
 ### FPGA tools and platforms
 
@@ -463,7 +474,7 @@ syntheses:
 | `platform` | Optional | `cfg-synth-platforms` entry; enables technology mapping |
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF/Liberty files appended after platform data |
 | `reglvl` | Optional | Regression level |
-| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit` |
+| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `static_functions`, `conflicting_drivers` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry; CLI `--effort` wins |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 

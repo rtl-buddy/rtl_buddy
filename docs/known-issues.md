@@ -210,6 +210,12 @@ Yosys script parsing is not shell parsing: whitespace splits tokens, `#` starts 
 
 String-valued parameter overrides require SystemVerilog quotes inside the YAML scalar; ordinary numeric values must not be quoted as strings.
 
+## Static-lifetime functions corrupt the netlist under the slang frontend
+
+A `function` or `task` declared without `automatic` outside a class has static lifetime, so all of its call sites share one storage location per formal. yosys-slang models this literally: two calls in one combinational process alias their arguments, and calls split across a combinational and a clocked process leave the shared net with conflicting drivers, which folds to `x` and can drop a register and everything downstream. Simulation is unaffected, so the design can carry the defect indefinitely.
+
+`rb synth` scans the filelist's sources before Yosys runs and fails with `frontend: slang` (`static-functions: error`), or warns with the legacy `verilog` frontend, which inlines per call site. Add `automatic` to the declaration. The scan is a tokenizer: it misses declarations hidden inside macros and does not walk `-y` library directories. Add Verible's `explicit-function-lifetime` rule through `rb lint` and `cfg-verible` to cover testbench and non-synthesisable sources. Yosys `multiple conflicting drivers` warnings in `synth.log` fail the run unless `conflicting-drivers: allow` is set. Both gates cover the `tool: yosys` backend; the OpenROAD backend's Yosys elaboration stage is not gated yet. See [Synthesis](concepts/synthesis.md#gate-static-lifetime-subroutines).
+
 ## Unknown synthesis overrides are ignored after a warning
 
 `synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs `synth_tool_config.unknown_override` and the run uses the default. A non-mapping override block or non-boolean `single_unit` is fatal. See [Synthesis](concepts/synthesis.md).

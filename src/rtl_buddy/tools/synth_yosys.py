@@ -9,12 +9,15 @@ logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
+from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
     SynthConfig,
     SynthToolConfig,
     SynthToolOpts,
     SynthEffortConfig,
     default_effort_config,
+    resolve_conflicting_drivers_mode,
+    resolve_static_functions_mode,
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
@@ -28,6 +31,25 @@ _ABC_SCRIPT_NO_TIMING = (
 )
 # Same but with stime -p appended to report critical-path delay
 _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
+
+
+# Yosys `check` (run inside `synth`) reports a shared net taking incompatible
+# drivers as `Warning: multiple conflicting drivers for <mod>.<sig> [n]:`, from
+# log_warning(), so the "Warning: " prefix is always present and always starts
+# the line. Anchoring on it keeps the `check -h` help text ("two or more
+# conflicting drivers for one wire") and any echo of the phrase in a script or
+# command line from being counted.
+_CONFLICTING_DRIVERS_RE = re.compile(
+    r"^(?:\S+:\d+:\s*)?Warning:\s*multiple conflicting drivers\b",
+    re.MULTILINE,
+)
+
+
+def find_conflicting_driver_warnings(log_text: str) -> list[str]:
+    """Yosys "multiple conflicting drivers" warning lines in a synthesis log."""
+    return [
+        line for line in log_text.splitlines() if _CONFLICTING_DRIVERS_RE.match(line)
+    ]
 
 
 # Machine-level fallback for the yosys-slang plugin location, so toolchain
@@ -171,6 +193,7 @@ class YosysSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._period_ps: int | None = None
+        self._opts: SynthToolOpts | None = None
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -267,12 +290,18 @@ class YosysSynth:
         m = re.search(r"Delay\s*=\s*([\d.]+)\s*ps", log_text)
         return float(m.group(1)) if m else None
 
-    def _write_script(self, fl_path: str) -> str:
-        top = self.synth_cfg.get_top()
+    def _resolve_opts(self) -> SynthToolOpts:
+        """Tool options with per-synthesis overrides and the effort applied.
+
+        Effort-level knobs take precedence over tool-level defaults but are
+        outranked by per-synthesis ``tool_overrides``. Memoised because
+        resolving the overrides emits validation warnings, and both the gates
+        and the script writer need the same answer.
+        """
+        if self._opts is not None:
+            return self._opts
         overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         opts = self.tool_cfg.get_opts(overrides)
-        # Effort-level knobs take precedence over tool-level defaults but are
-        # outranked by per-synthesis tool_overrides (already applied above).
         if not overrides or "synth_args" not in overrides:
             eff_synth = self.effort_cfg.get_yosys_synth_args()
             if eff_synth:
@@ -281,6 +310,25 @@ class YosysSynth:
             eff_abc = self.effort_cfg.get_yosys_abc_args()
             if eff_abc:
                 opts.abc_args = eff_abc
+        self._opts = opts
+        return opts
+
+    def _scan_static_lifetimes(
+        self, fl_path: str, opts: SynthToolOpts
+    ) -> list[LifetimeFinding]:
+        """Findings for the filelist's own sources, or [] when the gate is off.
+
+        Only the bare and ``-v`` entries of ``synth.f`` are scanned: a ``-y``
+        library directory contributes files the filelist never names, so its
+        contents are outside the scan.
+        """
+        if resolve_static_functions_mode(opts) == "allow":
+            return []
+        return scan_files(self._source_files_from_filelist(fl_path))
+
+    def _write_script(self, fl_path: str) -> str:
+        top = self.synth_cfg.get_top()
+        opts = self._resolve_opts()
         params = self.synth_cfg.get_params()
         lib_paths = self._resolve_lib_paths()
         mapped = bool(lib_paths)
@@ -440,6 +488,41 @@ class YosysSynth:
                 name=self.name + "/results", desc=f"Filelist error: {e}"
             )
 
+        opts = self._resolve_opts()
+        static_mode = resolve_static_functions_mode(opts)
+        findings = self._scan_static_lifetimes(fl_path, opts)
+        if findings:
+            detail = describe_findings(findings)
+            if static_mode == "error":
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth.static_functions",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    count=len(findings),
+                    findings=[f.describe() for f in findings],
+                )
+                return SynthFailResults(
+                    name=self.name + "/results",
+                    desc=(
+                        f"{len(findings)} subroutine(s) declared without an "
+                        f"explicit automatic lifetime: {detail}"
+                    ),
+                )
+            for finding in findings:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.static_function",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    path=finding.path,
+                    line=finding.line,
+                    kind=finding.kind,
+                    subroutine=finding.name,
+                )
+
         script_path = self._write_script(fl_path)
         log_path = self._log_path()
 
@@ -492,6 +575,27 @@ class YosysSynth:
                 f"{len(error_lines)} ERROR(s) in synthesis log"
             )
 
+        # Resolved unconditionally so a misspelled mode is fatal on every run,
+        # not only on the runs that happen to trip the gate.
+        conflicting_mode = resolve_conflicting_drivers_mode(opts)
+        conflicting = find_conflicting_driver_warnings(log_text)
+        if conflicting and conflicting_mode == "error":
+            log_event(
+                logger,
+                logging.ERROR,
+                "synth.conflicting_drivers",
+                synth=self.synth_cfg.get_name(),
+                count=len(conflicting),
+                log=log_path,
+            )
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"{len(conflicting)} 'multiple conflicting drivers' "
+                    f"warning(s) in {log_path}"
+                ),
+            )
+
         area_um2 = self._parse_area_um2(log_text)
         gate_count = self._parse_gate_count(log_text)
         crit_path_ps = self._parse_critical_path_ps(log_text)
@@ -516,4 +620,5 @@ class YosysSynth:
             area_um2=area_um2,
             gate_count=gate_count,
             wns_ps=wns_ps,
+            static_function_findings=len(findings) or None,
         )

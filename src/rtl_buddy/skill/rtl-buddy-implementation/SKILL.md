@@ -24,6 +24,18 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `SKIP`, `XFAIL`, and non-strict `XPASS` count as successful. XPLR verbs exit 0
   on success and 2 on fatal errors.
 
+## Synthesis correctness gates
+
+`rb synth` (`tool: yosys`) fails on two silent-corruption shapes before
+reporting PPA. A `function`/`task` without an explicit `automatic` lifetime
+shares one storage location per formal across call sites; the gate names each
+`file:line: function <name>`. Fix the RTL by adding `automatic` — do not reach
+for `static-functions: allow`. Yosys `multiple conflicting drivers` warnings in
+`synth.log` fail the run under `conflicting-drivers: error`; they mean a net
+folded to `x` and may have taken registers with it, so never report the area or
+gate count from such a run. `static_function_findings` in a passing result means
+the gate ran in `warn` mode and the netlist may still be wrong.
+
 ## FPGA timing closure
 
 `timing_met: false` is a completed result, not necessarily a tool crash. Start

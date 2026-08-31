@@ -31,6 +31,7 @@ class SynthPassResults(SynthResults):
         gate_count: int | None = None,
         wns_ps: float | None = None,
         tns_ps: float | None = None,
+        static_function_findings: int | None = None,
     ):
         super().__init__(
             name=name,
@@ -44,6 +45,10 @@ class SynthPassResults(SynthResults):
             self.results["wns_ps"] = wns_ps
         if tns_ps is not None:
             self.results["tns_ps"] = tns_ps
+        # Present only when the static-lifetime gate ran in `warn` mode and
+        # found something: a passing run whose netlist may still be wrong.
+        if static_function_findings:
+            self.results["static_function_findings"] = static_function_findings
 
 
 class SynthFailResults(SynthResults):

@@ -150,6 +150,62 @@ Under `cfg-synth-tools.opts`, fields use kebab case such as `plugin-path` and `s
 
 The override key remains `yosys` even when the run's backend is `openroad`, because Yosys owns elaboration.
 
+## Gate static-lifetime subroutines
+
+A `function` or `task` declared at module, interface, package, program, or
+compilation-unit scope without an explicit `automatic` lifetime has *static*
+lifetime: every formal argument is one shared storage location. Simulation is
+unaffected, because a call completes atomically inside a process, but
+yosys-slang lowers the declaration literally and gives every call site the same
+net per formal. Two calls in one combinational process then alias their
+arguments and the netlist is wrong with no error and no warning.
+
+RTL Buddy scans the sources named by the synthesis filelist before Yosys
+starts, and reports each declaration as `file:line: function <name>`:
+
+```yaml
+cfg-synth-tools:
+  - name: yosys
+    tool: yosys
+    opts:
+      static-functions: error      # error | warn | allow
+      conflicting-drivers: error   # error | allow
+```
+
+`static-functions` defaults to `error` with `frontend: slang`, which
+miscompiles the design, and to `warn` with the legacy `verilog` frontend, which
+inlines per call site — correct there, but not portable. `error` fails the run
+before Yosys; `warn` logs one warning per finding and records
+`static_function_findings` in the result envelope; `allow` skips the scan.
+
+Fix a finding by adding the keyword:
+
+```systemverilog
+function automatic ptr_t inc(input ptr_t p);
+  return p + 1;
+endfunction
+```
+
+The scan is a tokenizer, not an elaborator. Class methods, `extern` and
+`pure virtual` prototypes, DPI imports and exports, and any scope declared
+`module automatic` (or `package`/`interface`/`program` `automatic`) are exempt.
+A declaration whose `function` keyword or `automatic` qualifier is hidden
+inside a macro is missed, and `-y` library directories are not scanned because
+the filelist never names their contents. Use Verible's
+`explicit-function-lifetime` rule through `rb lint` and `cfg-verible` as the
+style-lint complement covering testbench and non-synthesisable sources.
+
+When call sites are split across a combinational and a clocked process, the
+shared net takes conflicting drivers and folds to `x`, taking its register and
+everything downstream with it. Yosys reports this as a
+`multiple conflicting drivers` warning and still exits 0.
+`conflicting-drivers: error`, the default, turns those warnings in `synth.log`
+into a failed run naming the count and the log path. Set `allow` only when the
+warnings are understood and accepted.
+
+Both gates apply to the `tool: yosys` backend. An unrecognized value for
+either option is fatal.
+
 ## Select an effort
 
 Define reusable effort levels in `root_config.yaml`:
@@ -223,7 +279,7 @@ synth-configs:
 
 Mapped runs report gates and area. Constrained Yosys runs report WNS as clock period minus critical-path delay. OpenROAD reports actual WNS and TNS; negative values indicate violations and TNS 0 indicates no negative endpoint slack.
 
-A Yosys run passes when the process exits 0 and its log has no `ERROR:` line. An OpenROAD run requires both the Yosys and OpenROAD stages to exit 0 and rejects OpenROAD `[ERROR ...]` lines. Any failed stage reports `FAIL`.
+A Yosys run passes when the process exits 0, its log has no `ERROR:` line, and neither correctness gate fires. An OpenROAD run requires both the Yosys and OpenROAD stages to exit 0 and rejects OpenROAD `[ERROR ...]` lines. Any failed stage reports `FAIL`.
 
 ## Inspect artefacts
 

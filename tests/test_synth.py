@@ -2736,3 +2736,312 @@ def test_openroad_yosys_stage_writes_then_fails_removes_the_netlist(
     assert isinstance(result, SynthFailResults)
     assert "Yosys stage failed" in result.results["desc"]
     assert not netlist.exists()
+
+
+# ---------------------------------------------------------------------------
+# Static-lifetime gate and conflicting-driver gate (#472)
+# ---------------------------------------------------------------------------
+
+# The issue's repro, trimmed to the two declarations that matter. `inc` is on
+# line 3 and `same` on line 4.
+_STATIC_FN_SRC = dedent("""\
+    module my_module;
+      typedef logic [4:0] ptr_t;
+      function ptr_t inc(input ptr_t p);     return p + 1; endfunction
+      function bit   same(input ptr_t a, b); return (a == b); endfunction
+    endmodule
+""")
+
+_AUTOMATIC_FN_SRC = _STATIC_FN_SRC.replace(
+    "function ptr_t", "function automatic ptr_t"
+).replace("function bit   same", "function automatic bit same")
+
+
+def _setup_run_with_source(tmp_path, text):
+    """A one-source model whose RTL is `text`."""
+    sv = tmp_path / "top.sv"
+    sv.write_text(text)
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(
+        dedent(f"""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "my_module"
+            filelist: ["-v {sv}"]
+        """)
+    )
+    from rtl_buddy.config.model import ModelConfig
+
+    return ModelConfig(
+        name="my_module", filelist=[f"-v {sv}"], path=str(models_yaml)
+    ), sv
+
+
+def _gate_yosys(tmp_path, text, *, opts_overrides=None, tool_overrides=None):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    model, sv = _setup_run_with_source(tmp_path, text)
+    opts = SynthToolOptsFile(**(opts_overrides or {}))
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(name="yosys", tool="yosys", opts=opts)
+    )
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=tool_overrides,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+    )
+    return ys, sv
+
+
+def _patch_yosys(monkeypatch, *, returncode=0, write_log=None, calls=None):
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module,
+        "run_managed_process",
+        _fake_managed_process(returncode=returncode, write_log=write_log, calls=calls),
+    )
+
+
+def test_static_functions_error_fails_before_yosys(tmp_path, monkeypatch):
+    calls = []
+    ys, sv = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch, calls=calls)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    desc = result.results["desc"]
+    assert f"{sv}:3: function inc" in desc
+    assert f"{sv}:4: function same" in desc
+    # The gate is a *pre*-synthesis check: yosys must not have been started.
+    assert calls == []
+
+
+def test_static_functions_error_logs_an_error_event(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.DEBUG):
+        ys.run()
+    # caplog renders the human message, not the dotted event name.
+    assert "without an explicit automatic lifetime" in caplog.text
+
+
+def test_static_functions_warn_passes_and_warns_per_finding(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "warn"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert caplog.text.count("has static lifetime") == 2
+    # The finding survives into the machine-readable envelope.
+    assert result.results["static_function_findings"] == 2
+
+
+def test_static_functions_allow_is_silent(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert "static lifetime" not in caplog.text
+    assert "static_function_findings" not in result.results
+
+
+def test_static_functions_default_verilog_frontend_warns(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(tmp_path, _STATIC_FN_SRC)
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert "has static lifetime" in caplog.text
+
+
+def test_static_functions_gate_is_quiet_on_automatic_sources(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert "static lifetime" not in caplog.text
+
+
+def test_static_functions_mode_settable_per_run_via_tool_overrides(
+    tmp_path, monkeypatch
+):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        tool_overrides={"yosys": {"static_functions": "error"}},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthFailResults)
+
+
+def test_static_functions_invalid_mode_is_fatal(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "loud"}
+    )
+    _patch_yosys(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="static-functions"):
+        ys.run()
+
+
+def test_static_functions_default_is_error_for_slang_and_warn_for_verilog():
+    from rtl_buddy.config.synth import SynthToolOpts, resolve_static_functions_mode
+
+    assert resolve_static_functions_mode(SynthToolOpts(frontend="slang")) == "error"
+    assert resolve_static_functions_mode(SynthToolOpts(frontend="verilog")) == "warn"
+    # An explicit setting always wins over the frontend-derived default.
+    assert (
+        resolve_static_functions_mode(
+            SynthToolOpts(frontend="slang", static_functions="warn")
+        )
+        == "warn"
+    )
+
+
+def test_conflicting_drivers_default_error_fails_the_run(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_yosys(
+        monkeypatch,
+        write_log=(
+            "Warning: multiple conflicting drivers for bad.\\inc.p [4]:\n"
+            "    port A[4] of cell $add\n"
+            "Warning: multiple conflicting drivers for bad.\\inc.p [3]:\n"
+        ),
+    )
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "2 'multiple conflicting drivers'" in result.results["desc"]
+    assert "synth.log" in result.results["desc"]
+
+
+def test_conflicting_drivers_allow_keeps_the_run_passing(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"static_functions": "allow", "conflicting_drivers": "allow"},
+    )
+    _patch_yosys(
+        monkeypatch,
+        write_log="Warning: multiple conflicting drivers for bad.\\inc.p [4]:\n",
+    )
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_conflicting_drivers_invalid_mode_is_fatal(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"static_functions": "allow", "conflicting_drivers": "warn"},
+    )
+    _patch_yosys(monkeypatch, write_log="")
+    with pytest.raises(FatalRtlBuddyError, match="conflicting-drivers"):
+        ys.run()
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        # The real yosys `check` warning, verbatim.
+        ("Warning: multiple conflicting drivers for bad.\\inc.p [4]:", True),
+        # Same message reported against a source location.
+        ("bad.sv:9: Warning: multiple conflicting drivers for bad.\\p:", True),
+        # `check -h` help text, echoed into the log by a `help check`.
+        ("  - two or more conflicting drivers for one wire", False),
+        # A command echo or a comment that merely names the phrase.
+        ("yosys> echo multiple conflicting drivers", False),
+        ("# multiple conflicting drivers", False),
+    ],
+)
+def test_conflicting_driver_regex_is_anchored_on_the_warning(line, expected):
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    assert bool(find_conflicting_driver_warnings(line + "\n")) is expected
+
+
+@pytest.mark.parametrize(
+    "event, fields, expected_substrings",
+    [
+        (
+            "synth.static_functions",
+            {
+                "synth": "block",
+                "frontend": "slang",
+                "count": 2,
+                "findings": ["bad.sv:9: function inc", "bad.sv:10: function same"],
+            },
+            [
+                "block",
+                "bad.sv:9: function inc",
+                "bad.sv:10: function same",
+                "slang",
+                "static-functions",
+            ],
+        ),
+        (
+            "synth.static_function",
+            {
+                "synth": "block",
+                "frontend": "verilog",
+                "path": "bad.sv",
+                "line": 9,
+                "kind": "function",
+                "subroutine": "inc",
+            },
+            ["bad.sv:9", "function inc", "static lifetime"],
+        ),
+        (
+            "synth.conflicting_drivers",
+            {"synth": "block", "count": 5, "log": "artefacts/block/synth.log"},
+            ["block", "5", "artefacts/block/synth.log", "conflicting-drivers"],
+        ),
+    ],
+)
+def test_gate_human_messages_are_specific(event, fields, expected_substrings):
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(event, fields)
+    assert msg != event.replace(".", " ")
+    for sub in expected_substrings:
+        assert sub in msg, f"{event}: {sub!r} not in {msg!r}"

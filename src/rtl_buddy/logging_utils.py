@@ -1172,6 +1172,32 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'single_unit: true has no effect with frontend "{fields.get("frontend")}" '
                 "— it only applies to the slang frontend; set frontend: slang to use it"
             )
+        case "synth.static_functions":
+            findings = fields.get("findings") or []
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                "function/task declaration(s) without an explicit automatic "
+                f"lifetime — {'; '.join(str(f) for f in findings)}; the "
+                f'"{fields.get("frontend")}" frontend shares one storage '
+                "location per formal across every call site, which silently "
+                "merges registers. Add `automatic`, or set synth option "
+                "static-functions: warn|allow to proceed"
+            )
+        case "synth.static_function":
+            return (
+                f"{fields.get('path')}:{fields.get('line')}: "
+                f"{fields.get('kind')} {fields.get('subroutine')} has static "
+                "lifetime (no explicit `automatic`); its formals are shared "
+                "storage and are not portable across synthesis frontends"
+            )
+        case "synth.conflicting_drivers":
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                '"multiple conflicting drivers" warning(s) in '
+                f"{fields.get('log')} — a net with incompatible drivers folds "
+                "to x and takes its downstream logic with it. Fix the design, "
+                "or set synth option conflicting-drivers: allow to proceed"
+            )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.openroad.no_lef":
