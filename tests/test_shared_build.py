@@ -1182,20 +1182,22 @@ def test_a_library_dir_listing_stays_flat(tmp_path, monkeypatch):
     assert [entry[0] for entry in _dir_entry(sim, "-y ")[-1]] == ["bar.sv"]
 
 
-def test_an_incdir_listing_is_recursive_and_skips_dot_names(tmp_path, monkeypatch):
+def test_an_incdir_listing_is_recursive_and_keeps_dot_files(tmp_path, monkeypatch):
     """Any name at all can be `include`d, so an include dir is listed
     unfiltered — and recursively, because `` `include "nested/deep.svh" ``
-    resolves *beneath* the directory. Dot-prefixed names are not compile
-    inputs: browsing a directory in Finder writes `.DS_Store`, and charging
-    a full recompile for that is not a trade worth making."""
+    resolves *beneath* the directory. A dot-*file* is ordinary input
+    (`` `include ".config.svh" `` resolves and compiles); only dot
+    *directories* and a denylist of editor/VCS bookkeeping are dropped."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     (tmp_path / "inc" / "table.txt").write_text("0\n")
+    (tmp_path / "inc" / ".config.svh").write_text("`define C 1\n")
     (tmp_path / "inc" / "nested").mkdir()
     (tmp_path / "inc" / "nested" / "deep.svh").write_text("`define D 1\n")
-    (tmp_path / "inc" / ".DS_Store").write_text("finder\n")
-    (tmp_path / "inc" / ".hidden").mkdir()
-    (tmp_path / "inc" / ".hidden" / "swap.svh").write_text("`define S 1\n")
+    for name in (".DS_Store", ".gitignore", ".w.svh.swp", "w.svh~", ".#w.svh"):
+        (tmp_path / "inc" / name).write_text("bookkeeping\n")
+    (tmp_path / "inc" / ".git").mkdir()
+    (tmp_path / "inc" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
@@ -1208,10 +1210,111 @@ def test_an_incdir_listing_is_recursive_and_skips_dot_names(tmp_path, monkeypatc
     assert sim.compile() == 0
     listing = _dir_entry(sim, "+incdir+")[-1]
     assert [entry[0] for entry in listing] == [
+        ".config.svh",
         "nested/deep.svh",
         "table.txt",
         "w.svh",
     ]
+
+
+def test_a_dot_header_edit_inside_an_incdir_invalidates_the_stamp(
+    tmp_path, monkeypatch
+):
+    """The counterpart to the denylist: `.config.svh` is a legal include, so
+    dropping every dot name would reopen the gap this stamp closes."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    dot_header = tmp_path / "inc" / ".config.svh"
+    dot_header.write_text("`define C 1\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+
+    _touch(dot_header, "`define C 2\n")
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2
+
+
+def test_an_incdir_above_the_artefact_dir_does_not_stamp_rtl_buddys_output(
+    tmp_path, monkeypatch
+):
+    """`+incdir+.` in a tests.yaml, or `+incdir+..` from a design directory
+    holding verif suites, puts the suite's own `artefacts/` inside the walk.
+    Everything under it — run.f, compile.log, the obj_dir, the stamp itself
+    — is written AFTER the fingerprint that would list it, so a stamp that
+    listed them could never validate again and every gated dispatch job
+    would recompile."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+."],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
+    assert "src/top.sv" in listing  # the walk did happen
+    assert not [name for name in listing if name.startswith("artefacts/")], listing
+
+    # The reuse the artefact tree would otherwise have made impossible.
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 1
+    assert _sim("test_c").compile() == 0
+    assert len(calls) == 1
+
+
+def test_a_build_directory_beside_the_sources_is_pruned_too(tmp_path, monkeypatch):
+    """`obj_dir*` is rtl_buddy's build-directory spelling wherever it lands,
+    including an unshared build dropped next to the sources."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    stray = tmp_path / "inc" / "obj_dir_test_a"
+    stray.mkdir()
+    (stray / "Vtop.cpp").write_text("generated\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    assert [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]] == ["w.svh"]
+
+    (stray / "Vtop.cpp").write_text("regenerated\n")
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 1
 
 
 def test_a_header_nested_under_an_incdir_invalidates_the_stamp(tmp_path, monkeypatch):
@@ -1247,9 +1350,9 @@ def test_a_header_nested_under_an_incdir_invalidates_the_stamp(tmp_path, monkeyp
 
 
 def test_a_dot_file_appearing_in_an_incdir_does_not_invalidate(tmp_path, monkeypatch):
-    """The over-approximation stops at names no simulator resolves through.
-    A `.DS_Store` dropped by browsing the directory must not cost a rebuild
-    of a whole chip."""
+    """The over-approximation stops at a denylist of names no simulator ever
+    reads. A `.DS_Store` dropped by browsing the directory in Finder must
+    not cost a rebuild of a whole chip."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1268,8 +1371,8 @@ def test_a_dot_file_appearing_in_an_incdir_does_not_invalidate(tmp_path, monkeyp
     assert _sim("test_a").compile() == 0
     assert len(calls) == 1
 
-    (tmp_path / "inc" / ".DS_Store").write_text("finder\n")
-    (tmp_path / "inc" / ".w.svh.swp").write_text("vim\n")
+    for name in (".DS_Store", ".gitignore", ".w.svh.swp", "w.svh~", "#w.svh#"):
+        (tmp_path / "inc" / name).write_text("bookkeeping\n")
 
     assert _sim("test_b").compile() == 0
     assert len(calls) == 1

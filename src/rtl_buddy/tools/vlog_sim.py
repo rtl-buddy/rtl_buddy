@@ -9,6 +9,7 @@ vlog_sim module handles verilog simulations for rtl-buddy
 """
 
 import contextlib
+import fnmatch
 import hashlib
 import json
 import os
@@ -33,7 +34,14 @@ from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
 from .vlog_cov import VlogCov
-from .artifact_paths import shared_build_dir, test_artifact_dir, test_build_dir_name
+from .artifact_paths import (
+    ARTIFACT_DIRNAME,
+    BUILD_DIR_PREFIX,
+    SHARED_BUILDS_DIRNAME,
+    shared_build_dir,
+    test_artifact_dir,
+    test_build_dir_name,
+)
 
 import time
 import pprint
@@ -364,6 +372,43 @@ _FILELIST_OPTION_RE = re.compile(r"^(\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*
 
 _INCDIR_OPTION = "+incdir+"
 _LIBRARY_DIR_OPTION = "-y"
+
+# Directory names an `+incdir+` walk must not descend into (#478 review).
+#
+# rtl_buddy's own artefact trees are the load-bearing half: a `+incdir+.`
+# declared in a tests.yaml, or a `+incdir+..` from a design directory that
+# contains verif suites, makes the walk reach `artefacts/` — and the files
+# under it (run.f, compile.log, the obj_dir, the stamp itself) are written
+# AFTER the fingerprint that lists them. Every later process would then see
+# a different listing and recompile, which under `--dispatch` is every
+# gated simulation job. Derived from the constants the writers use, so
+# renaming a managed directory cannot leave this behind.
+#
+# Dot-directories are the other half: `.git`, `.svn`, `.hg` and friends
+# hold no compile input and can be enormous.
+_PRUNED_WALK_DIRNAMES = frozenset({ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME})
+_PRUNED_WALK_DIR_PREFIXES = (BUILD_DIR_PREFIX,)
+
+# Files that are metadata rather than compile input, as fnmatch patterns.
+#
+# A *name-based* denylist, not "everything starting with a dot": a dot-file
+# can be perfectly ordinary input — `` `include ".config.svh" `` resolves
+# and compiles — so skipping every dot name would reopen the gap this
+# stamp exists to close. What is listed here is editor and VCS bookkeeping
+# no simulator ever reads, and `.DS_Store` in particular, which browsing an
+# include directory in Finder writes and which used to force a full
+# recompile.
+_NON_INPUT_FILE_PATTERNS = (
+    ".DS_Store",
+    ".gitignore",
+    ".gitattributes",
+    ".gitkeep",
+    "*.swp",  # vim swap
+    "*.swo",
+    "*~",  # emacs/gedit backup
+    ".#*",  # emacs lock
+    "#*#",  # emacs autosave
+)
 
 # A directory-valued source entry is `[line, None, None, None, listing]`:
 # four elements of the ordinary `[path, size, mtime_ns, sha]` shape, all
@@ -713,6 +758,33 @@ def _hashed_stat_entry(
             toolchain_prefix=toolchain_prefix,
         ),
     ]
+
+
+def _is_pruned_walk_dir(name: str) -> bool:
+    """Should an ``+incdir+`` walk refuse to descend into ``name``?
+
+    See :data:`_PRUNED_WALK_DIRNAMES`: rtl_buddy's own artefact trees,
+    whose contents are written *after* the fingerprint that would list
+    them, and dot-directories, which hold no compile input.
+    """
+    return (
+        name.startswith(".")
+        or name in _PRUNED_WALK_DIRNAMES
+        or name.startswith(_PRUNED_WALK_DIR_PREFIXES)
+    )
+
+
+def _is_non_input_file(name: str) -> bool:
+    """Is ``name`` editor/VCS bookkeeping rather than a compile input?
+
+    Matched against :data:`_NON_INPUT_FILE_PATTERNS` by name only. Every
+    other file is listed, dot-prefixed ones included — ``.config.svh`` is a
+    legal include and dropping it would be exactly the silent gap #478 is
+    about.
+    """
+    return any(
+        fnmatch.fnmatchcase(name, pattern) for pattern in _NON_INPUT_FILE_PATTERNS
+    )
 
 
 def _is_directory_entry(entry) -> bool:
@@ -1662,10 +1734,18 @@ class VlogSim:
         a build has exactly the same one — and repeating it per file would
         only bloat the stamp.
 
-        Dot-prefixed names are skipped, files and directories alike:
-        ``.DS_Store`` (browsing a directory in Finder forced a full
-        recompile), ``.git``, and editor swap files are not compile inputs,
-        and no simulator resolves an include through them.
+        Two kinds of name are skipped, and only two. **Directories** that
+        are dot-prefixed (``.git``, ``.svn``) or are one of rtl_buddy's own
+        managed artefact trees are never descended into — see
+        :func:`_is_pruned_walk_dir`; the artefact prune is what keeps a
+        ``+incdir+`` that happens to be an *ancestor* of the suite's
+        ``artefacts/`` from stamping ``run.f``, the compile log and the
+        stamp itself, all of which are written after the fingerprint that
+        would list them, so that every later process saw a different
+        listing and recompiled. **Files** are skipped only when they match
+        :data:`_NON_INPUT_FILE_PATTERNS`. A dot-*file* is otherwise listed
+        like any other: `` `include ".config.svh" `` is legal and resolves,
+        so a blanket dot-name skip would reopen the gap this stamp closes.
 
         ``None`` comes back when the directory cannot be read. That degrades
         to the pre-#478 untracked entry rather than to an empty listing,
@@ -1688,13 +1768,14 @@ class VlogSim:
                 ):
                     # In-place, because os.walk reads this list back to
                     # decide where to descend: a pruned name is never
-                    # walked at all, so a `.git` inside an include dir
-                    # costs nothing rather than being listed and dropped.
+                    # walked at all, so a `.git` or an `artefacts/` inside
+                    # an include dir costs nothing rather than being walked
+                    # and dropped.
                     dir_names[:] = sorted(
-                        name for name in dir_names if not name.startswith(".")
+                        name for name in dir_names if not _is_pruned_walk_dir(name)
                     )
                     for name in sorted(file_names):
-                        if name.startswith("."):
+                        if _is_non_input_file(name):
                             continue
                         path = os.path.join(walk_root, name)
                         if not os.path.isfile(path):
@@ -1712,7 +1793,7 @@ class VlogSim:
                     names = sorted(
                         item.name
                         for item in scan
-                        if item.is_file() and not item.name.startswith(".")
+                        if item.is_file() and not _is_non_input_file(item.name)
                     )
                 entries = [(name, os.path.join(dir_path, name)) for name in names]
         except OSError as e:
