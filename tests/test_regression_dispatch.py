@@ -1609,6 +1609,73 @@ def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
     assert all(a["allocated"] is None for a in advice)
 
 
+def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`sbatch-args` is appended last and wins, so the YAML is not the request.
+
+    The project resolves the default 1 cpu, but `cfg-dispatch.sbatch-args`
+    overrides `--cpus-per-task` to 4, and that is what the jobs run with.
+    Recording the resolved 1 as the request would analyse a genuinely
+    over-reserved run against cpus it never had — and, with `cpus: 1`
+    failing the `cpus > 1` guard, silently drop the finding. The head
+    records nothing instead, so `ReqCPUS` carries it (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  sbatch-args: [--cpus-per-task=4]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # what the override actually asked for
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    # `-D` so the DEBUG line explaining the fallback reaches the console:
+    # rb reconfigures the root logger, so caplog never sees a CLI run's
+    # events and the output is what can be asserted on.
+    result, _ = _invoke(
+        [
+            "-D",
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # Analysed against the 4 the override submitted, not the 1 the YAML
+    # resolved to -- which would have been dropped by the `cpus > 1` guard.
+    assert cpus["reserved"] == "4"
+    assert cpus["allocated"] is None
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
+    # ...and the run says why the advice came from sacct rather than from
+    # the reservation, naming the argument responsible.
+    assert "sbatch-args" in result.output
+    assert "--cpus-per-task=4" in result.output
+    assert "ReqCPUS" in result.output
+
+
 def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],

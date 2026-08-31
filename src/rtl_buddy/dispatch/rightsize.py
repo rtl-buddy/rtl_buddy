@@ -48,8 +48,13 @@ Semantics:
   reconcile. The denominator is preferably the reservation rtl-buddy itself
   resolved and submitted, which is the request by construction and needs no
   cooperation from the site; ``ReqCPUS`` and then ``AllocCPUS`` are the
-  fallbacks, for a caller that cannot supply it and for telemetry predating
-  the field.
+  fallbacks, for a caller that cannot supply it, for telemetry predating
+  the field, and for a ``cfg-dispatch.sbatch-args`` carrying its own
+  ``--cpus-per-task`` — appended after the generated flags, so it
+  supersedes the reservation rtl-buddy resolved. ``mem`` and ``time``
+  never had that exposure: they are judged against ``ReqMem`` and
+  ``TimelimitRaw``, which sacct reports from the allocation an override
+  actually produced.
 - Advice is labeled with the run count and regression level it was
   derived from — a smoke-level run must not be used to shrink a
   nightly test's reservation.
@@ -246,6 +251,7 @@ def analyze_build_reservation(
     accounting_interval_s=None,
     compile_origins=None,
     suite_config_hint=None,
+    cpus_overridden=False,
 ):
     """Right-size the *build job's* own reservation (#495).
 
@@ -279,8 +285,12 @@ def analyze_build_reservation(
     shown a decomposition that does not match its YAML. The efficiency
     ratio follows the same rule: its denominator is that resolved value
     scaled by ``parallel`` — the job's own ``--cpus-per-task`` — then
-    ``ReqCPUS``, then ``AllocCPUS`` (#505). Empty telemetry (a
-    local-parallel backend reports none) yields no advice at all.
+    ``ReqCPUS``, then ``AllocCPUS`` (#505). ``cpus_overridden`` withdraws
+    the first of those: ``cfg-dispatch.sbatch-args`` is appended after
+    the generated flags and wins, so a ``--cpus-per-task`` written there
+    means the resolved value was never submitted and may state neither
+    the ratio nor the decomposition. Empty telemetry (a local-parallel
+    backend reports none) yields no advice at all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -451,8 +461,16 @@ def analyze_build_reservation(
     # already holds (#505). `ReqCPUS` is the next best thing for a head that
     # could not resolve the block, and the allocation the last (it is also
     # the only one available to telemetry predating the field).
+    # ...unless `cfg-dispatch.sbatch-args` carries its own
+    # `--cpus-per-task`: those are appended after the generated flags and
+    # win, so the resolved reservation is not what was submitted and cannot
+    # stand in for the request. `ReqCPUS` is then the best available answer
+    # (#505 review) — and the decomposition below drops the same value for
+    # the same reason.
     submitted = (
-        (compile_resources.cpus or 0) * parallel if compile_resources is not None else 0
+        0
+        if cpus_overridden or compile_resources is None
+        else (compile_resources.cpus or 0) * parallel
     )
     cpus = submitted or build_telemetry.get("req_cpus") or alloc_cpus
     cpu_time = build_telemetry.get("total_cpu_s")
@@ -514,7 +532,7 @@ def analyze_build_reservation(
             # resolve the block at all.
             resolved_per_build = (
                 getattr(compile_resources, "cpus", None)
-                if compile_resources is not None
+                if compile_resources is not None and not cpus_overridden
                 else None
             )
             per_build_now = resolved_per_build or math.ceil(cpus / parallel)

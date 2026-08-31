@@ -21,6 +21,7 @@ from rtl_buddy.config.dispatch import (
     mem_to_bytes,
     resolve_compile_resources,
     resolve_resources,
+    sbatch_args_cpus_override,
     time_to_seconds,
 )
 from rtl_buddy.config.root import RootConfig
@@ -701,3 +702,60 @@ def test_parallel_is_not_a_field_of_a_suite_level_compile_block(
     resolved = resolve_compile_resources(cfg, block)
     assert resolved == JobResources(cpus=4, mem="48G")
     assert not hasattr(resolved, "parallel")
+
+
+# ------------- #505 review: a cpus override in sbatch-args is detectable
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--cpus-per-task=4"],
+        ["--cpus-per-task", "4"],
+        ["-c", "4"],
+        ["-c4"],
+        ["-c=4"],
+        ["--partition=verif", "--cpus-per-task=4", "--exclusive"],
+        # A trailing flag with no value is malformed sbatch input, but it is
+        # still an override of intent: sbatch, not right-sizing, reports it.
+        ["--cpus-per-task"],
+    ],
+)
+def test_a_cpus_override_in_sbatch_args_is_found(args):
+    """`sbatch-args` is appended last and wins, so it has to be seen (#505).
+
+    Right-sizing otherwise analyses a run against the cpus the YAML resolved
+    to rather than the cpus it was submitted with — the same class of bug
+    #505 fixed, arriving by the other door.
+    """
+    found = sbatch_args_cpus_override(args)
+    assert found is not None
+    assert "cpus-per-task" in found or found.startswith("-c")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        None,
+        ["--partition=verif"],
+        ["--constraint=haswell"],
+        ["--comment=nightly"],
+        ["--chdir=/tmp"],
+        ["--mem=8G", "--time=01:00:00"],
+        # Not a cpus count: the short option takes a number.
+        ["-cfoo"],
+    ],
+)
+def test_args_that_do_not_touch_cpus_are_left_alone(args):
+    """`--constraint`/`--comment`/`--chdir` all start with `--c`."""
+    assert sbatch_args_cpus_override(args) is None
+
+
+def test_the_override_is_reported_verbatim_for_the_log_line():
+    assert sbatch_args_cpus_override(["--cpus-per-task=4"]) == "--cpus-per-task=4"
+    assert sbatch_args_cpus_override(["-c", "4"]) == "-c 4"
+    assert (
+        sbatch_args_cpus_override(["--x", "--cpus-per-task", "16"])
+        == "--cpus-per-task 16"
+    )

@@ -77,6 +77,7 @@ from .config.dispatch import (
     compile_resource_origins,
     resolve_compile_resources,
     resolve_resources,
+    sbatch_args_cpus_override,
 )
 from .dispatch import (
     LocalProcessBackend,
@@ -3245,6 +3246,25 @@ class RtlBuddy:
         # share a reservation shape. Consumes the single expansion; no hook.
         groups = {}  # (cpus, mem, time) -> list[(row index, TestJobSpec)]
         compile_resources = resolve_compile_resources(dispatch_cfg, suite_compile)
+        # `sbatch-args` is appended after the generated flags and therefore
+        # wins, so a `--cpus-per-task` there means the reservation resolved
+        # above is NOT what the jobs are submitted with. Right-sizing must
+        # not take it for the request; recording nothing sends it back to
+        # the scheduler's own `ReqCPUS` (#505 review).
+        cpus_overridden = sbatch_args_cpus_override(
+            getattr(dispatch_cfg, "sbatch_args", None)
+        )
+        if cpus_overridden:
+            # DEBUG, once per suite submit: the override is deliberate
+            # configuration, and the only thing worth saying is why the
+            # advice is derived from sacct rather than from the YAML.
+            log_event(
+                logger,
+                logging.DEBUG,
+                "rightsize.request_from_scheduler",
+                suite_dir=suite_dir,
+                sbatch_arg=cpus_overridden,
+            )
         for entry in entries:
             cfg = entry["cfg"]
             resources = resolve_resources(dispatch_cfg, cfg)
@@ -3283,7 +3303,9 @@ class RtlBuddy:
                 # tests.yaml already holds (#505). Recorded after the in-job
                 # compile max, so it is the number that actually governed
                 # the allocation.
-                suite_results[idx]["requested_cpus"] = resources.cpus
+                suite_results[idx]["requested_cpus"] = (
+                    None if cpus_overridden else resources.cpus
+                )
             dispatch_dir = (
                 Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
             )
@@ -4191,6 +4213,18 @@ class RtlBuddy:
                     # above got: one reservation, one attribution.
                     compile_origins=compile_origins,
                     suite_config_hint=suite_config_path or suite_display,
+                    # ...and whether the resolved reservation is what the
+                    # build job was actually submitted with: a
+                    # `--cpus-per-task` in `sbatch-args` is appended after
+                    # the generated flags and wins, so neither the ratio nor
+                    # the decomposition may be stated from it (#505 review).
+                    cpus_overridden=bool(
+                        sbatch_args_cpus_override(
+                            getattr(
+                                self.root_cfg.get_dispatch_cfg(), "sbatch_args", None
+                            )
+                        )
+                    ),
                 )
             )
         for finding in findings:

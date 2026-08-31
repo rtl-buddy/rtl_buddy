@@ -467,6 +467,46 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
     return resolved
 
 
+# Every spelling of `--cpus-per-task` sbatch's getopt accepts, plus the
+# short form. Deliberately generous: a false positive only costs the
+# right-sizing analysis its best denominator (it falls back to `ReqCPUS`),
+# while a false negative makes it analyse a run against cpus it never had.
+_CPUS_LONG_OPT = "--cpus-per-task"
+
+
+def sbatch_args_cpus_override(sbatch_args) -> str | None:
+    """The ``sbatch-args`` entry that overrides ``--cpus-per-task``, if any.
+
+    ``cfg-dispatch.sbatch-args`` is appended verbatim *after* the generated
+    reservation flags, so a duplicate flag there wins — which is the
+    documented contract, and the reason right-sizing cannot always trust
+    the reservation it resolved. Where this returns non-``None`` the
+    resolved ``cpus`` is not what the job was submitted with, so it must not
+    be recorded as the request; the analysis falls back to the scheduler's
+    own ``ReqCPUS`` (#505 review).
+
+    Returns the offending argument, for the log line that explains the
+    fallback. Only ``cpus`` needs this: ``mem`` and ``time`` advice is
+    already measured against ``ReqMem``/``TimelimitRaw``, which sacct
+    reports from the allocation the override actually produced.
+    """
+    args = list(sbatch_args or [])
+    for index, arg in enumerate(args):
+        if arg in (_CPUS_LONG_OPT, "-c"):
+            # Value-in-the-next-argument form. A trailing flag with no value
+            # is malformed sbatch input, but it is still an override of
+            # intent, and sbatch — not right-sizing — is where it should be
+            # reported.
+            following = args[index + 1 : index + 2]
+            return f"{arg} {following[0]}" if following else arg
+        if arg.startswith(f"{_CPUS_LONG_OPT}="):
+            return arg
+        if arg.startswith("-c") and arg[2:].lstrip("=").isdigit():
+            # `-c4` and, defensively, `-c=4`.
+            return arg
+    return None
+
+
 def compile_parallel(dispatch_cfg) -> int:
     """How many distinct builds one build job may compile concurrently (#495).
 

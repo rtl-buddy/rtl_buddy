@@ -60,7 +60,9 @@ of the global reservation.
   Slurm allocated: a site that hands out whole cores charges a `cpus: 1` job two
   and no reservation edit can change that. The request is the `--cpus-per-task`
   rtl_buddy itself submitted, so the rule holds even where `ReqCPUS` is rounded
-  too. Where request and allocation differ the table reads
+  too — unless `cfg-dispatch.sbatch-args` carries its own `--cpus-per-task`,
+  which is appended last and wins: the advice then falls back to `ReqCPUS` and
+  a DEBUG `rightsize request_from_scheduler` line names the argument. Where request and allocation differ the table reads
   `Reserved 4 (8 allocated)`; `allocated` is on every finding and is null
   except on such a `cpus` row. Edit the requested figure named in `Field`.
 - Right-size from representative regression levels and seeds, then rerun until

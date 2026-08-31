@@ -767,6 +767,7 @@ def _build_advice(
     accounting_interval_s=None,
     compile_origins=None,
     suite_config_hint=None,
+    cpus_overridden=False,
 ):
     return analyze_build_reservation(
         telemetry,
@@ -779,6 +780,7 @@ def _build_advice(
         accounting_interval_s=accounting_interval_s,
         compile_origins=compile_origins,
         suite_config_hint=suite_config_hint,
+        cpus_overridden=cpus_overridden,
     )
 
 
@@ -1592,3 +1594,70 @@ def test_a_build_row_without_req_cpus_still_uses_the_configured_request():
     assert cpus_a.allocated == "8"
     assert cpus_a.utilization == 0.25
     assert cpus_a.suggested == "2"
+
+
+# ------------ #505 review: sbatch-args can supersede the resolved reservation
+
+
+def test_a_cpus_override_in_sbatch_args_withdraws_the_configured_request():
+    """`cfg-dispatch.sbatch-args` is appended last, so it wins.
+
+    A `--cpus-per-task` written there means the reservation the head
+    resolved was never submitted, so it may state neither the ratio nor the
+    decomposition — both fall back to what the scheduler reports. The head
+    detects the override and simply does not offer its number.
+    """
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "alloc_cpus": 8,
+        "req_cpus": 8,  # what the override actually asked for
+        "total_cpu_s": 200,
+    }
+    # Without the override the configured 2 would be the denominator, and
+    # 200 / (100 x 2) = 1.0 is a saturated job with nothing to advise.
+    assert [
+        f for f in _build_advice(telemetry, parallel=1, cpus=2) if f.resource == "cpus"
+    ] == []
+
+    (cpus_a,) = [
+        f
+        for f in _build_advice(telemetry, parallel=1, cpus=2, cpus_overridden=True)
+        if f.resource == "cpus"
+    ]
+    # 200 / (100 x 8) = 0.25 against the 8 the override submitted.
+    assert cpus_a.reserved == "8"
+    assert cpus_a.allocated is None
+    assert cpus_a.utilization == 0.25
+    assert cpus_a.suggested == "3"  # ceil(8 x 0.25 x 1.5)
+    # The decomposition may not name the superseded `compile.cpus: 2` either.
+    note = cpus_a.edit_hint["note"]
+    assert "reserved 2" not in note
+    assert "the build job reserved 8" in note
+
+
+def test_a_test_row_falls_back_when_the_head_records_no_request():
+    """The head's half of the same guard: it records nothing (#505 review).
+
+    `analyze_suite_reservations` needs no flag — a row whose
+    `requested_cpus` is absent is exactly the "ask the scheduler" case,
+    which is also what pre-#505 telemetry looks like.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,
+            },
+            requested_cpus=None,
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"
