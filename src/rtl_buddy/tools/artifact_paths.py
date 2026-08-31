@@ -1,3 +1,4 @@
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Iterable
 import re
@@ -35,6 +36,18 @@ DISPATCH_OUTPUT_PATTERNS = (
     "rtl_buddy-*.log",
     "build-rtl_buddy-*.log",
 )
+
+#: rtl_buddy's *own* bookkeeping, as fnmatch patterns. These share an
+#: artefact directory with the tool outputs but are not tool outputs, and
+#: nothing that clears by suffix may remove them. It matters because an
+#: artefact directory is keyed on a run's *name* and names are not required
+#: to be unique across commands: an `rb fpga` run and a simulation test
+#: called the same thing land in the same `artefacts/<name>/`, where the
+#: FPGA backend's `.json` suffix would otherwise match the test's durable
+#: `result.json` (#469). Enforced inside :func:`clear_managed_outputs`
+#: rather than left to each caller's ``keep``, because a caller that
+#: forgets is precisely the bug.
+PROTECTED_OUTPUT_PATTERNS = (RESULT_JSON_NAME, *DISPATCH_OUTPUT_PATTERNS)
 
 
 def sanitize_artifact_component(name: str) -> str:
@@ -185,6 +198,8 @@ def clear_managed_outputs(
       owner: the run/analysis name, for the error message.
       keep: exact filenames to leave alone even when they match — for a
         fixed-name artefact that happens to share a managed suffix.
+        rtl_buddy's own envelopes (:data:`PROTECTED_OUTPUT_PATTERNS`) are
+        always kept and need not be listed here.
 
     Every matching entry is handed to :func:`clear_stale_artefacts`,
     including ones that are not regular files. A *directory* sitting where
@@ -210,7 +225,9 @@ def clear_managed_outputs(
     doomed = [
         entry
         for entry in entries
-        if entry.name not in keep and entry.name.endswith(suffixes)
+        if entry.name not in keep
+        and entry.name.endswith(suffixes)
+        and not any(fnmatch(entry.name, pat) for pat in PROTECTED_OUTPUT_PATTERNS)
     ]
     return clear_stale_artefacts(doomed, owner=owner)
 

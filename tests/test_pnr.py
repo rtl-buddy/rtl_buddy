@@ -805,3 +805,137 @@ def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
     assert not stale_drc.exists()
     for name, path in design_named.items():
         assert not path.exists(), name
+
+
+def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
+    """The flow's `write_db` runs before the script ends, so OpenROAD can be
+    killed or exit non-zero with a complete or partial `<top>.routed.odb` on
+    disk. `rb power` accepts that ODB by existence, so a FAIL must not leave
+    it behind (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    artefacts = Path(backend.artefact_dir)
+    odb = artefacts / "demo_top.routed.odb"
+    routed_v = artefacts / "demo_top.routed.v"
+
+    def _writes_then_dies(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        odb.write_bytes(b"\x00partial odb\x00")
+        routed_v.write_text("module demo_top(); endmodule\n")
+        result = MagicMock()
+        result.returncode = 1
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_dies)
+
+    res = backend.run()
+
+    assert "exited with code 1" in res.results["desc"]
+    assert not odb.exists()
+    assert not routed_v.exists()
+
+
+def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
+    """Same for the other post-run gate: an `[ERROR ...]` line fails the run,
+    so the ODB written before it must go (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
+
+    def _writes_then_errors(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text(
+            "[ERROR GRT-0012] detailed route failed\n"
+        )
+        odb.write_bytes(b"\x00partial odb\x00")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_errors)
+
+    res = backend.run()
+
+    assert "ERROR(s) in OpenROAD log" in res.results["desc"]
+    assert not odb.exists()

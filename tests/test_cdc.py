@@ -376,6 +376,21 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _analyzer_on_path(monkeypatch):
+    """Pretend rtl-buddy-cdc is installed.
+
+    `RtlBuddyCdc.run` skips when the analyzer is not on PATH (#469), and
+    rtl_buddy does not depend on it — so without this the argv tests below
+    would pass on a developer box that happens to have it and skip-and-fail
+    in CI. Tests that care about the analyzer being absent re-patch `which`
+    themselves; the later `setattr` wins.
+    """
+    from rtl_buddy.tools import cdc_rtl_buddy as _mod
+
+    monkeypatch.setattr(_mod.shutil, "which", lambda name: f"/fake/bin/{name}")
+
+
 def _setup_lint_run(
     tmp_path, frontend=None, single_unit=False, blackbox=None, emit_maps=False
 ):
@@ -763,3 +778,31 @@ def test_lint_fresh_report_from_this_run_is_still_consumed(tmp_path, monkeypatch
 
     assert res.results["violations"] == 0
     assert res.is_pass()
+
+
+def test_lint_missing_analyzer_skips_and_keeps_the_previous_reports(
+    tmp_path, monkeypatch
+):
+    """A box without rtl-buddy-cdc never ran it, so it must not delete the
+    reports a box that has it produced — the same carve-out the Vivado
+    backend has, and what the docs promise (#469)."""
+    from rtl_buddy.runner.cdc_results import CdcSkipResults
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    kept = Path(wrapper.artefact_dir) / "cdc.json"
+    kept.write_text('{"summary": {"violations": 3}}')
+    kept_txt = Path(wrapper.artefact_dir) / "cdc.txt"
+    kept_txt.write_text("3 violations from the box that has the analyzer\n")
+
+    res = wrapper.run()
+
+    assert isinstance(res, CdcSkipResults)
+    assert "not found" in res.results["desc"]
+    assert "tool-check" in res.results["desc"]
+    # Nothing was run, so nothing is deleted.
+    assert calls == []
+    assert kept.exists()
+    assert kept_txt.exists()

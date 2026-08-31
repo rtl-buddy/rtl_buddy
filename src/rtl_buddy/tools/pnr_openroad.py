@@ -475,6 +475,21 @@ class OpenRoadPnr:
                 paths=stale,
             )
 
+    def _fail_after_openroad(self, desc: str) -> PnrFailResults:
+        """Fail a run that has already invoked OpenROAD, publishing nothing.
+
+        The flow's `write_def` / `write_verilog` / `write_sdc` / `write_db`
+        all run before the script ends, so OpenROAD can be killed — or exit
+        non-zero, or log an `[ERROR ...]` line — with a complete or partial
+        `<top>.routed.odb` on disk. `rb power` resolves that ODB by path and
+        accepts it by existence, so returning a FAIL and leaving it there
+        hands the next command a database this run never stood behind
+        (#469). Every post-OpenROAD failure return goes through here, so a
+        new failure gate added to `run` inherits the cleanup by using it.
+        """
+        self._clear_stale_outputs()
+        return PnrFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> PnrResults:
         log_event(
             logger,
@@ -578,9 +593,8 @@ class OpenRoadPnr:
                 returncode=result.returncode,
                 log=log_path,
             )
-            return PnrFailResults(
-                name=self.name + "/results",
-                desc=f"OpenROAD exited with code {result.returncode}",
+            return self._fail_after_openroad(
+                f"OpenROAD exited with code {result.returncode}"
             )
 
         try:
@@ -590,9 +604,8 @@ class OpenRoadPnr:
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:
-            return PnrFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in OpenROAD log",
+            return self._fail_after_openroad(
+                f"{len(error_lines)} ERROR(s) in OpenROAD log"
             )
 
         area = self._parse_area_um2(log_text)

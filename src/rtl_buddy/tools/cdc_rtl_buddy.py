@@ -14,6 +14,7 @@ import functools
 import json
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -25,7 +26,12 @@ from ..config.cdc import CdcConfig, CdcToolConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
-from ..runner.cdc_results import CdcFailResults, CdcPassResults, CdcResults
+from ..runner.cdc_results import (
+    CdcFailResults,
+    CdcPassResults,
+    CdcResults,
+    CdcSkipResults,
+)
 
 
 _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
@@ -192,9 +198,33 @@ class RtlBuddyCdc:
     # --- run ----------------------------------------------------------------
 
     def run(self) -> CdcResults:
-        # First, before any validation can raise: an analysis that ends in a
-        # config error is still a run, and leaving the previous run's report
-        # beside it is the same lie this fix removes (#469).
+        executable = self.tool_cfg.get_executable() or "rtl-buddy-cdc"
+        if not shutil.which(executable):
+            # Ahead of the clear, mirroring the Vivado backend: a box without
+            # the analyzer never ran it, so it must not delete the reports a
+            # box that has it produced. Without this the clear happened first
+            # and `run_managed_process` then raised out of Popen, losing them
+            # (#469).
+            log_event(
+                logger,
+                logging.WARNING,
+                "cdc.no_analyzer",
+                analysis=self.cdc_cfg.get_name(),
+                exe=executable,
+            )
+            return CdcSkipResults(
+                name=self.cdc_cfg.get_name(),
+                desc=(
+                    f"{executable!r} not found — run "
+                    "`rb tool-check --explain rtl-buddy-cdc` for install "
+                    "instructions"
+                ),
+            )
+
+        # Everything past the skip is a run of this analysis, however it ends:
+        # an analysis that dies in a config error is still a run, and leaving
+        # the previous run's report beside it is the same lie this fix
+        # removes (#469).
         stale = self._clear_stale_outputs()
         if stale:
             log_event(
@@ -229,7 +259,6 @@ class RtlBuddyCdc:
         text_report = self._report_path("txt")
         log_path = self._log_path()
 
-        executable = self.tool_cfg.get_executable() or "rtl-buddy-cdc"
         opts = self.tool_cfg.get_opts(
             self.cdc_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )

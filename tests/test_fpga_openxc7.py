@@ -632,3 +632,31 @@ def test_openxc7_non_7series_part_still_clears_artefacts(tmp_path, monkeypatch):
         backend.run()
 
     assert not stale_bit.exists()
+
+
+def test_openxc7_clear_spares_the_test_runners_result_json(tmp_path, monkeypatch):
+    """Artefact directories are keyed on a run's *name*, and names are not
+    required to be unique across commands — an `rb fpga` run and a simulation
+    test called the same thing share `artefacts/<name>/`. The `.json` suffix
+    clear must not eat the test runner's durable `result.json` (#469)."""
+    from rtl_buddy.tools.artifact_paths import RESULT_JSON_NAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    result_json = artefacts / RESULT_JSON_NAME
+    result_json.write_text('{"result": "PASS", "name": "demo_fpga"}')
+    dispatch_envelope = artefacts / "result-1234.json"
+    dispatch_envelope.write_text('{"result": "PASS"}')
+    # The backend's own output still goes.
+    stale_netlist = artefacts / "old_top.json"
+    stale_netlist.write_text('{"stale": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert result_json.read_text() == '{"result": "PASS", "name": "demo_fpga"}'
+    assert dispatch_envelope.exists()
+    assert not stale_netlist.exists()
