@@ -570,7 +570,10 @@ def test_slurm_explains_scontrol_as_an_optional_probe():
     by_name = {s.name: s for s in tm.get_manifest()}
     slurm = by_name["slurm"]
 
-    assert "scontrol" in slurm.binaries
+    # NOT in `binaries`: that tuple is any-of and feeds the version probe.
+    assert "scontrol" not in slurm.binaries
+    assert "scontrol" in slurm.optional_binaries
+
     text = tm.explain(slurm)
     assert "scontrol" in text
     assert "MaxArraySize" in text
@@ -578,6 +581,45 @@ def test_slurm_explains_scontrol_as_an_optional_probe():
     # Still optional overall: sbatch is the version probe and the gate.
     assert slurm.version_cmd[0] == "sbatch"
     assert slurm.optional
+
+
+def test_an_optional_binary_alone_does_not_make_a_tool_present(monkeypatch, tmp_path):
+    """A host with `scontrol` but no `sbatch` cannot dispatch (#509 review).
+
+    Detection is any-of over `binaries` and `probe_version` substitutes the
+    found path into `version_cmd`, so listing the auxiliary binary there
+    would report `ok` — and run `scontrol --version` to say so — on a host
+    that cannot submit a single job.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _make_exe(bindir / "scontrol")
+    monkeypatch.setenv("PATH", str(bindir))
+
+    by_name = {s.name: s for s in tm.get_manifest()}
+    status = tm.check_tool(by_name["slurm"])
+    assert status.status == "missing"
+    assert status.path is None
+
+    # ...while the real client on the same PATH is found as usual.
+    _make_exe(bindir / "sbatch")
+    assert tm.check_tool(by_name["slurm"], probe_versions=False).status == "ok"
+
+
+def test_optional_binaries_are_listed_with_their_role_not_as_status():
+    """--explain must not let an optional binary read as the tool's status."""
+    spec = tm.ToolSpec(
+        name="stub",
+        binaries=("stub-tool",),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(tm.PathDetector(),),
+        optional_binaries={"stub-extra": "buys the extra thing"},
+    )
+    text = tm.explain(spec)
+    assert "stub-extra: buys the extra thing" in text
+    assert "not required" in text
 
 
 def test_rtl_buddy_view_declares_floor_and_version_probe():

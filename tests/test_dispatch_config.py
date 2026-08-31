@@ -199,15 +199,11 @@ def test_slurm_tool_in_manifest():
     assert slurm is not None
     # sacct joins once right-sizing telemetry lands (P3); randtest dispatch
     # (P2) and `rb test --dispatch` (#440) add themselves to used_by.
-    # scontrol joined for the MaxArraySize probe (#509); it is a courtesy,
-    # not a gate — see test_slurm_explains_scontrol_as_an_optional_probe.
-    assert set(slurm.binaries) == {
-        "sbatch",
-        "squeue",
-        "sacct",
-        "scancel",
-        "scontrol",
-    }
+    assert set(slurm.binaries) == {"sbatch", "squeue", "sacct", "scancel"}
+    # scontrol is the MaxArraySize probe (#509) — a courtesy, not part of the
+    # client that must be present, so it stays OUT of `binaries`: see
+    # test_slurm_explains_scontrol_as_an_optional_probe.
+    assert set(slurm.optional_binaries) == {"scontrol"}
     assert slurm.optional is True
     assert slurm.used_by == ("regression", "randtest", "test")
 
