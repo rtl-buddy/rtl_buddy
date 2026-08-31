@@ -953,6 +953,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "inside your working tree — a false-green risk in nested git "
                 "worktrees. Verify these paths are intended."
             )
+        case "filelist.incdir_unrepresentable":
+            return (
+                f"{fields.get('count')} include director(ies) contain '+' and "
+                f"cannot be pinned to an absolute path: {fields.get('paths')}. "
+                "Filelist parsers read `+incdir+a+b` as two directories and "
+                "quoting does not help, so these entries keep their spelling "
+                "relative to the generated filelist and resolve against the "
+                "builder's working directory instead. Remove '+' from the "
+                "path to make them checkout-independent."
+            )
         case "fpv.filelist_define_reserved":
             return (
                 f"ignoring `+define+{fields.get('define')}` from the model "

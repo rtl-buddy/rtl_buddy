@@ -130,9 +130,13 @@ The plugin pin must speak the hub protocol shipped by rtl_buddy; maintainers upd
 
 ## Generated `run.f` files are checkout-specific
 
-rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. `+incdir+` and `-y` search directories are written absolute for the same reason. A relative search directory is resolved by the builder rather than by rtl_buddy: `-f` entries are read relative to the builder's working directory, and even a builder started in `run.f`'s own directory disagrees whenever a symlink sits between that directory and the design, because a relative path collapses `..` textually while a process walks it physically. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+
+Two path spellings cannot be pinned. An include directory whose path contains `+` keeps its relative spelling, because filelist parsers read `+incdir+a+b` as two directories and quoting does not change that; `filelist.incdir_unrepresentable` names those entries, and they stay dependent on the builder's working directory until the `+` is out of the path. A path containing whitespace is quoted instead, which Verilator's `-f` parser understands; Icarus's does not, and VCS is unverified, so keep whitespace out of checkout paths for those simulators.
 
 On a cluster with different mount paths per node, a stamp from one node may not validate on another. This causes a safe recompile, not compilation of the wrong source.
+
+Because the compile key hashes the text of each `run.f` entry, the first run after upgrading to a release that changed how an entry is spelled recompiles each shared build once. An absolute spelling also makes the key independent of where in the tree the consuming suite sits, so two suites at different depths that share a model now share one build where a relative spelling gave them different keys.
 
 ## Shared-build dependency tracking varies by simulator
 
