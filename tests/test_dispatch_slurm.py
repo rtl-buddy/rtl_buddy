@@ -2978,3 +2978,93 @@ def test_a_configured_singleton_is_not_repeated(monkeypatch):
         "--dependency=singleton",
         "--dependency=singleton",
     ]
+
+
+def test_a_non_utf8_suite_path_still_names_a_job():
+    """A path byte that is not valid UTF-8 reaches Python surrogate-
+    escaped (PEP 383). Encoding that with `.encode("utf-8")` raises, so
+    the name has to be taken over `os.fsencode` — a suite the filesystem
+    accepts must not crash the submit before sbatch ever runs."""
+    odd = "/proj/verif/bl\udcffk"
+    name = slurm_module.build_job_name(_build_spec(suite_dir=odd))
+    assert name.startswith("rb-build-")
+    assert name == slurm_module.build_job_name(_build_spec(suite_dir=odd))
+    assert name != slurm_module.build_job_name(_build_spec())
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [
+        ["--dependency=afterok:7", "--dependency=afterok:8"],
+        ["--dependency=afterok:7", "-d", "afterok:8"],
+        ["-dafterok:7", "--dependency=afterok:8"],
+        ["-d", "afterok:7", "-dafterok:8"],
+    ],
+    ids=["long-long", "long-separated", "short-long", "separated-short"],
+)
+def test_the_last_configured_dependency_is_the_one_composed_with(
+    monkeypatch, sbatch_args
+):
+    """Slurm obeys the last `--dependency` it is given, so composing onto
+    the first would build the dedup on top of an expression the scheduler
+    has already discarded — and drop the one the user meant."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert argv[-3] == "--dependency=afterok:8,singleton"
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["--job-name=custom"], ["-J", "custom"], ["-Jcustom"]],
+    ids=["long", "separated-short", "joined-short"],
+)
+def test_a_configured_job_name_cannot_take_the_build_job_s_identity(
+    monkeypatch, sbatch_args
+):
+    """The build job's name is what `singleton` serialises on.
+
+    A `--job-name` in `sbatch-args` is appended after the generated flags
+    and would win, which is worse than cosmetic: every suite would answer
+    to that one name, so unrelated builds across the repo would serialise
+    on each other, and the probe and the logged `job_name` would name
+    something Slurm is not using. So this one flag is emitted last too.
+    """
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+    spec = _build_spec()
+
+    backend.submit_build(spec)
+
+    probe, argv = calls
+    generated = f"--job-name={slurm_module.build_job_name(spec)}"
+    assert generated in argv
+    assert argv.index(generated) > max(
+        index for index, arg in enumerate(argv) if arg in sbatch_args
+    )
+    # ...and the probe asks about the name Slurm will really use.
+    assert f"--name={slurm_module.build_job_name(spec)}" in probe
+
+
+def test_a_configured_job_name_still_reaches_the_sim_jobs(monkeypatch):
+    """Only the build job's name is reserved. A sim job's name carries no
+    scheduling meaning, so `sbatch-args` keeps overriding it."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--job-name=custom"]).initialise()
+    )
+
+    backend.submit(_spec())
+
+    (argv,) = calls
+    assert argv.index("--job-name=custom") > argv.index("--job-name=rb:basic")

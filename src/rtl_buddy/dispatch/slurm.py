@@ -302,9 +302,14 @@ def build_job_name(spec: BuildJobSpec) -> str:
     wrong build. A different suite, which owns a different shared tree,
     never adopts another build's wait.
     """
-    digest = hashlib.sha256(
-        os.path.abspath(spec.suite_dir).encode("utf-8")
-    ).hexdigest()[:12]
+    # `os.fsencode`, not `.encode("utf-8")`: a path byte that is not valid
+    # UTF-8 arrives here surrogate-escaped (PEP 383), and encoding that
+    # raises UnicodeEncodeError — a crash before sbatch, for a suite the
+    # filesystem is perfectly happy with. fsencode is the inverse of the
+    # decode that produced the escapes, so it round-trips those bytes.
+    digest = hashlib.sha256(os.fsencode(os.path.abspath(spec.suite_dir))).hexdigest()[
+        :12
+    ]
     return f"{_BUILD_JOB_NAME_PREFIX}-{digest}"
 
 
@@ -591,11 +596,16 @@ class SlurmDispatchBackend(DispatchBackend):
         return None
 
     def _reservation_argv(self, resources, *, job_name, chdir, log_path) -> list[str]:
-        """Common sbatch reservation flags shared by build and sim jobs."""
+        """Common sbatch reservation flags shared by build and sim jobs.
+
+        ``job_name`` may be ``None`` for a caller that emits its own after
+        ``sbatch_args`` — the build job does, because its name is what
+        ``--dependency=singleton`` serialises on (#507).
+        """
         cmd = [
             "sbatch",
             "--parsable",
-            f"--job-name={job_name}",
+            *([] if job_name is None else [f"--job-name={job_name}"]),
             f"--chdir={chdir}",
             # Always explicit: right-sizing needs a defined time limit,
             # and site partitions may default to UNLIMITED.
@@ -697,20 +707,30 @@ class SlurmDispatchBackend(DispatchBackend):
         clause is an additional condition, not a replacement. Returned
         raw, separators included, because whether it uses ``,`` or ``?``
         decides whether composing is possible at all.
+
+        The **last** occurrence, because that is the one Slurm obeys: a
+        repeated option overrides the earlier copy, so composing onto the
+        first would build the dedup on top of an expression the scheduler
+        has already discarded — and the flag this backend emits (later
+        still) would then drop the one the user actually meant.
         """
         args = self.sbatch_args
+        found = None
+        skip = -1
         for index, arg in enumerate(args):
+            if index == skip:
+                # A value consumed by the separated spelling above; it is
+                # not a flag, whatever it looks like.
+                continue
             if arg.startswith("--dependency="):
-                return arg.split("=", 1)[1]
-            if (
-                arg.startswith("-d")
-                and arg not in ("-d", "--dependency")
-                and arg[1] != "-"
-            ):
-                return arg[2:]
-            if arg in ("-d", "--dependency") and index + 1 < len(args):
-                return args[index + 1]
-        return None
+                found = arg.split("=", 1)[1]
+            elif arg in ("-d", "--dependency"):
+                if index + 1 < len(args):
+                    found = args[index + 1]
+                    skip = index + 1
+            elif arg.startswith("-d") and arg[1] != "-":
+                found = arg[2:]
+        return found
 
     def _dedup_dependency(self, *, suite_dir: str) -> str | None:
         """The ``--dependency`` value that serialises this build job (#507).
@@ -753,11 +773,21 @@ class SlurmDispatchBackend(DispatchBackend):
         job_name = build_job_name(spec)
         cmd = self._reservation_argv(
             spec.resources,
-            job_name=job_name,
+            job_name=None,
             chdir=spec.suite_dir,
             log_path=spec.log_path,
         )
         cmd += self.sbatch_args
+        # The build job's name is not decoration: `--dependency=singleton`
+        # serialises on it, and the probe and the logged `job_name` name
+        # it. A `--job-name` / `-J` in `sbatch_args` would otherwise win
+        # (Slurm takes the last), which would both point those two at a
+        # name the scheduler is not using AND collapse every suite onto
+        # one singleton — a repo-wide serialisation of unrelated builds.
+        # So it goes last, like `--dependency` below. The cost is that
+        # `sbatch-args` cannot rename the build job; the sim jobs are
+        # untouched, and the docs say so.
+        cmd.append(f"--job-name={job_name}")
         # One build job of this identity runs at a time (#507). The flag
         # goes AFTER `sbatch_args`, unlike the sim jobs' `afterok` gate:
         # Slurm lets the last `--dependency` win, and a user-configured one
