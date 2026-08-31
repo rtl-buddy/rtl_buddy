@@ -1339,12 +1339,18 @@
   // The model → root mapping is read off the served payload rather than
   // assumed: a `model:` node is stitched to the module it names by a
   // `maps_to` link (`config_tier.MAPS_TO`), so the targets of the ACTIVE
-  // model's own `maps_to` links are its roots. The model name seeds the
-  // set as well, as a best-effort fallback for a design-tier-only graph,
-  // where no config tier has been built and so no stitch exists: that
-  // seed is right exactly when the model has no models.yaml `top:`
-  // override, and a superset is harmless here (an extra root only ever
-  // prefers an instance, never invents one). A suite qualifier (`@<suite>`,
+  // model's own `maps_to` links are its roots.
+  //
+  // The model NAME is a FALLBACK, used only when the payload carries no
+  // stitch for this model — a design-tier-only graph, where no config
+  // tier has been built and so no `model:` node exists at all. Seeding
+  // it unconditionally was wrong once `top:` existed: an active model
+  // `foo` topped at `bar` would own both names, so an instance rooted at
+  // a *different* selected model that happens to be named `foo` scored
+  // as the active model's own and `shallowestInstancePath` could prefer
+  // it — landing the selection in a model that is not on screen, which
+  // is the exact bug the active-model preference exists to prevent.
+  // Where a stitch exists it is the whole answer. A suite qualifier (`@<suite>`,
   // `graph.build.QUALIFIER_SEP`) is appended to an id two files claimed;
   // it is not part of the module name, so it comes off.
   //
@@ -1355,7 +1361,7 @@
   function activeModelRoots(links, model) {
     var roots = Object.create(null);
     if (typeof model !== 'string' || !model) { return roots; }
-    roots[model] = true;
+    var stitched = false;
     (links || []).forEach(function (l) {
       if (!l || l.type !== 'maps_to') { return; }
       var source = String(l.source == null ? '' : l.source);
@@ -1364,8 +1370,9 @@
       var hash = source.indexOf('#');
       if (hash < 0 || source.slice(hash + 1) !== model) { return; }
       var name = target.slice('module:'.length).split('@')[0];
-      if (name) { roots[name] = true; }
+      if (name) { roots[name] = true; stitched = true; }
     });
+    if (!stitched) { roots[model] = true; }
     return roots;
   }
 

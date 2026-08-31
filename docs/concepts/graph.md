@@ -44,7 +44,7 @@ The config tier still emits the model node, carrying `graph: false`, so `spec:` 
 
 The opt-out is design-tier-only. `rb hier`, `rb hier-query`, and `rb axi-profile` still elaborate the model and still fail if its root does not resolve.
 
-Every model the build selects must root at a distinct module. `module:<top>` is a global id and DUT ids are never suite-qualified, so two exports sharing a top merge into one hybrid hierarchy instead of staying apart. `graph build` refuses that input before invoking the exporter and names both models, both `models.yaml` files and the shared top; `graph: false` on one of them is the documented way out.
+Every model the build selects must carry a distinct `name` and root at a distinct module. Sharing a name collides on disk — both exports land in `artefacts/graph/design/<name>/` and the second overwrites the first — and sharing a top collides in the graph, where `module:<top>` is a global id and DUT ids are never suite-qualified, so the two hierarchies merge into one hybrid. `graph build` refuses either input before invoking the exporter and names both models and both `models.yaml` files; `graph: false` on one of them is the documented way out.
 
 Unchanged inputs, tool versions, schema, and tier selection produce a cached no-op build. Selection is part of it because `graph-meta.json` reports what each tier covered: a tier whose models all opted out reads no inputs, so `--model`, `--no-tb`, `--no-flow-tops`, and `--no-design` would otherwise leave its `skipped` list describing the previous invocation. A failure remains cached until an input, tool version, or selection changes, or `--force` is used.
 

@@ -2098,6 +2098,106 @@ def test_two_graphable_models_sharing_a_top_are_refused_before_any_export(
     assert not (graph_project / "artefacts" / "graph" / "graph.json").is_file()
 
 
+def test_two_selected_models_sharing_a_name_are_refused_before_any_export(
+    graph_project: Path, tmp_path: Path
+):
+    """Every per-model artefact path is keyed on the model *name*.
+
+    Two ``models.yaml`` files may each declare a `blk_a`: the loader only
+    rejects duplicates within one file, and everything else keeps them
+    apart (``_model_key`` is realpath-qualified, and so are their
+    ``model:`` node ids). So both are planned, both run, and the second
+    export overwrites the first in ``artefacts/graph/design/blk_a/`` and
+    ``artefacts/hier/blk_a/`` — while the tier reports two models built.
+    Distinct ``top:`` values do not help: the paths still collide.
+    """
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+    )
+    view, record = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    message = str(excinfo.value)
+    assert "design/blk_a/models.yaml" in message
+    assert "design/blk_dupe/models.yaml" in message
+    # It names the paths that would have collided, and both ways out.
+    assert "artefacts/graph/design/blk_a/" in message
+    assert "artefacts/hier/blk_a/" in message
+    assert "Rename one" in message and "graph: false" in message
+    assert _argv_lines(record) == []
+    assert not (graph_project / "artefacts" / "graph" / "graph.json").is_file()
+
+
+def test_a_shared_name_is_allowed_when_one_of_the_two_models_opts_out(
+    graph_project: Path, tmp_path: Path
+):
+    """An opted-out model writes no artefacts, so it claims no path."""
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+        "    graph: false\n"
+    )
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "built"
+    assert design.skipped == [{"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT}]
+    assert sorted(argv[argv.index("--top") + 1] for argv in _dut_calls(record)) == [
+        "blk_a",
+        "blk_b",
+    ]
+
+
+def test_a_duplicate_name_is_reported_before_a_duplicate_top(
+    graph_project: Path, tmp_path: Path
+):
+    """When both collisions hold, "rename one model" fixes both."""
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "same name, same top"\n'
+        '    filelist: ["blk_a.sv"]\n'
+    )
+    view, _ = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    assert "Rename one" in str(excinfo.value)
+
+
 def test_a_shared_top_is_allowed_when_one_of_the_two_models_opts_out(
     graph_project: Path, tmp_path: Path
 ):
@@ -2362,6 +2462,24 @@ def test_the_duplicate_design_top_event_has_a_human_message_case():
     assert msg != "graph build duplicate_design_top"
     assert "blk_a, blk_b" in msg
     assert "design/blk_b/models.yaml" in msg
+    assert "graph: false" in msg
+
+
+def test_the_duplicate_design_model_event_has_a_human_message_case():
+    """Guidelines → Logging: the ERROR event has to name the two files,
+    or `rtl_buddy.log` says less than the exception does."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.duplicate_design_model",
+        {
+            "model": "blk_a",
+            "paths": "design/blk_a/models.yaml, design/blk_dupe/models.yaml",
+        },
+    )
+    assert msg != "graph build duplicate_design_model"
+    assert "blk_a" in msg
+    assert "design/blk_dupe/models.yaml" in msg
     assert "graph: false" in msg
 
 

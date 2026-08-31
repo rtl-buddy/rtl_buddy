@@ -310,7 +310,7 @@ models:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `name` | Required | Model identifier |
+| `name` | Required | Model identifier; must be unique across every `models.yaml`, not only within one |
 | `filelist` | Required | Filelist entries resolved from `models.yaml` |
 | `desc` | Required | Human-readable description |
 | `spec` | Optional | `specs.yaml` path for `rb spec`; no simulation effect |
@@ -321,7 +321,11 @@ models:
 
 `top` is the model's root module everywhere rtl_buddy elaborates it, and it is binding, not advisory: a model has one root module, and a model whose name is not a module was already broken in every one of these flows. It roots `rb hier`, `rb hier-query`, and `rb axi-profile`, it roots the `rb graph build` design-tier export, it is the target of the graph's `model --maps_to--> module:` edge, and it is the default top of a `cdc.yaml`, `synth.yaml`, `lint.yaml`, `fpga.yaml`, `fpv.yaml`, or `mut.yaml` run against the model. Only `fpv.yaml` and `mut.yaml` have a `top:` field of their own; where one is set it wins, because a formal checker top lives in the run's own `properties:`. Setting `top` therefore changes artefact names that embed it — the FPGA bitstream is `<top>.bit`, and OpenROAD's design name follows the synthesis top.
 
-Two models that `rb graph build` would both export must not share a top. `module:<top>` is a global graph id and DUT ids are never suite-qualified, so two such exports merge into a single hybrid hierarchy rather than staying apart. The build refuses that input before invoking the exporter, naming both models, both `models.yaml` files and the shared top; give them distinct roots, or set `graph: false` on the one that is not the design of record. Models the build is not selecting, and models that already opted out, are not considered.
+Two models that `rb graph build` would both export must share neither a `name` nor a top, and the build refuses either collision before invoking the exporter, naming both models and both `models.yaml` files.
+
+A shared `name` collides on disk: every per-model artefact path is keyed on it, so the two exports overwrite each other in `artefacts/graph/design/<name>/` and `artefacts/hier/<name>/` while the tier reports both as built. A duplicate within one file is already rejected by the loader; this is the across-files half of the same rule, and distinct `top:` values do not make it safe. A shared top collides in the graph: `module:<top>` is a global id and DUT ids are never suite-qualified, so two such exports merge into a single hybrid hierarchy rather than staying apart.
+
+Rename one model, give them distinct roots, or set `graph: false` on the one that is not the design of record. Models the build is not selecting, and models that already opted out, are not considered.
 
 Set `graph: false` for a model with no elaborable root — an SV `interface` published as a library entry, or a filelist of vendored IP with no module named after the model. `rb graph build` then records the model, and any testbench or non-simulation run rooted at it, under the design tier's `skipped` list instead of attempting an export that can only fail. The config tier still emits the model node, so `spec:` and test cross-references keep resolving; it carries `graph: false` and no `maps_to` edge. The opt-out is design-tier-only: `rb hier`, `rb hier-query`, and `rb axi-profile` still run against the model and still fail if its root does not elaborate. Prefer `top:` when the filelist does elaborate and only the root module name differs.
 

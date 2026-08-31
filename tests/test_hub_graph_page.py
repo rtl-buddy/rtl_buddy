@@ -800,9 +800,17 @@ def test_a_node_without_an_instance_still_syncs_the_schematic():
 def test_a_models_roots_come_off_the_maps_to_stitch():
     """Which elaborations belong to the schematic's active model is read
     off the payload, not assumed: a ``model:`` node's ``maps_to`` target
-    IS the module its instances are rooted at. The model name seeds the
-    set as well, because the stitch only exists once a config tier has
-    been built."""
+    IS the module its instances are rooted at.
+
+    The model NAME is only a fallback, for a graph with no stitch to read
+    — a design-tier-only build, where no config tier has run and there
+    are no ``model:`` nodes at all. Seeding it alongside a stitch was
+    right only while a model was always named after its top module: with
+    ``top:`` (rtl-buddy/rtl_buddy#479) an active model ``alias`` topped
+    at ``real_top`` would own both names, and an instance rooted at a
+    *different* selected model that happens to be called ``alias`` would
+    score as the active model's own.
+    """
 
     out = _node_eval(
         _marked_js("active-model")
@@ -816,13 +824,22 @@ def test_a_models_roots_come_off_the_maps_to_stitch():
           // and whose module id had to be suite-qualified.
           { type: 'maps_to', source: 'model:design/x/models.yaml#alias',
             target: 'module:real_top@verif/x' },
+          // ...and a second model that really is rooted at `alias`. The
+          // whole point: `alias` is NOT the first model's elaboration.
+          { type: 'maps_to', source: 'model:design/y/models.yaml#other',
+            target: 'module:alias' },
+          // A model with two stitches keeps both.
+          { type: 'maps_to', source: 'model:design/z/models.yaml#twin',
+            target: 'module:twin_a' },
+          { type: 'maps_to', source: 'model:design/z/models.yaml#twin',
+            target: 'module:twin_b' },
           // Not a model->module stitch: the right type, the wrong source
           // prefix — a `tb:` node's roots are not a model's.
           { type: 'maps_to', source: 'tb:verif/x#tb', target: 'module:tb_top' },
           { type: 'instance_of', source: 'inst:fifo/fifo', target: 'module:fifo' },
           null
         ];
-        ['fifo', 'alias', 'nope', '', null, undefined].forEach(function (m) {
+        ['fifo', 'alias', 'twin', 'nope', '', null, undefined].forEach(function (m) {
           console.log(JSON.stringify(Object.keys(activeModelRoots(links, m)).sort()));
         });
         console.log(JSON.stringify(Object.keys(activeModelRoots(null, 'fifo'))));
@@ -830,11 +847,13 @@ def test_a_models_roots_come_off_the_maps_to_stitch():
     )
     assert [json.loads(line) for line in out.strip().splitlines()] == [
         ["fifo"],
-        # The model name AND the module it actually maps to; the suite
-        # qualifier is not part of the module name.
-        ["alias", "real_top"],
+        # The module it maps to and NOTHING else: `alias` is another
+        # model's root, so claiming it here would hand this model an
+        # elaboration it does not own.
+        ["real_top"],
+        ["twin_a", "twin_b"],
         # A model this graph knows nothing about still owns its own name:
-        # a design-tier-only graph has no `model:` nodes to stitch.
+        # there is no stitch to read, so the convention is all there is.
         ["nope"],
         # No active model -> no roots -> no preference (see below).
         [],

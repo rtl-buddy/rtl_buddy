@@ -1477,6 +1477,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"is missing from the graph and its `targets` edge is left "
                 f"dangling, the DUT's hierarchy is not; see {fields.get('log')}"
             )
+        case "graph_build.duplicate_design_model":
+            return (
+                f"graph build: more than one selected model is named "
+                f"{fields.get('model')} ({fields.get('paths')}) — every "
+                "per-model artefact path is keyed on the name, so their "
+                "exports would overwrite each other; rename one, or set "
+                "`graph: false` on the one that is not the design of record"
+            )
         case "graph_build.duplicate_design_top":
             return (
                 f"graph build: models {fields.get('models')} "

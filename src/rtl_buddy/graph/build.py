@@ -851,10 +851,48 @@ def _model_ident(project_root: Path, model: ModelConfig) -> str:
     return f"{rel}#{model.name}"
 
 
-def _reject_duplicate_tops(project_root: Path, models: list[ModelConfig]) -> None:
-    """Refuse to export two models rooted at the same module (#479).
+def _claimants(project_root: Path, models: list[ModelConfig]) -> str:
+    """``name (models.yaml), name (models.yaml)`` — who is in a collision.
 
-    A design-tier export's ids are **global** by contract —
+    The path is what makes the message actionable: the two entries are
+    in different files by construction (a collision *within* one
+    ``models.yaml`` never reaches here — the loader is already fatal on
+    a duplicate ``name:``), so the name alone would not say where to go.
+    """
+    return ", ".join(
+        f"{m.name} ({rel_path(project_root, m.path) if m.path else '?'})"
+        for m in models
+    )
+
+
+def _grouped(models: list[ModelConfig], key) -> dict[str, list[ModelConfig]]:
+    """Models bucketed by ``key``, keeping only the buckets with a clash."""
+    buckets: dict[str, list[ModelConfig]] = {}
+    for model in models:
+        buckets.setdefault(key(model), []).append(model)
+    return {k: ms for k, ms in sorted(buckets.items()) if len(ms) > 1}
+
+
+def _reject_colliding_models(project_root: Path, models: list[ModelConfig]) -> None:
+    """Refuse a design tier two models would land in the same slot (#479).
+
+    Two collisions, both of which produce a graph that reads as correct
+    and is not, and neither of which anything downstream can detect —
+    which is why both are refused here rather than reported afterwards.
+
+    **Same ``name:``.** Every per-model artefact path is keyed on the
+    model name: the export lands in ``artefacts/graph/design/<name>/``
+    and its generated filelist in ``artefacts/hier/<name>/``. Two models
+    of one name in two ``models.yaml`` files are distinct entries
+    everywhere else (``_model_key`` is realpath-qualified, and so are
+    their ``model:`` node ids), so both are planned, both run, and the
+    second silently overwrites the first — while the tier reports both
+    as built and the merge takes whichever bytes survived. A duplicate
+    *within* one file is already fatal in
+    :class:`~rtl_buddy.config.model.ModelConfigLoader`; this is the
+    across-files half of that rule.
+
+    **Same top.** A design-tier export's ids are **global** by contract —
     ``module:<top>``, ``inst:<top>/…`` — and DUT ids are deliberately the
     one thing suite qualification never touches: they are the weld a TB
     or run export merges onto (see the id-collision section below). So
@@ -862,38 +900,52 @@ def _reject_duplicate_tops(project_root: Path, models: list[ModelConfig]) -> Non
     :func:`~rtl_buddy.graph.merge.merge_graphs` keeps the first node's
     attributes and unions both link sets, and what lands in
     ``graph.json`` is one module node wearing one model's file and line
-    while instantiating both designs' children. Nothing downstream can
-    detect that, which is exactly why it has to be refused here: a wrong
-    graph that reads as a right one is worse than no graph.
+    while instantiating both designs' children. ``top:`` is what makes
+    this reachable on purpose, but two same-named models have always
+    collided this way too.
 
-    ``top:`` is what makes this reachable on purpose, but the same
-    collision has always been possible with two ``models.yaml`` files
-    that happen to declare the same model ``name:`` — a duplicate *within*
-    one file is already fatal in
-    :class:`~rtl_buddy.config.model.ModelConfigLoader`, and this is the
-    across-files half of that rule.
+    Names are checked first: it is the more basic identity problem, and
+    when both hold, "rename one model" is the instruction that fixes
+    both.
 
     Only graphable models are considered: a ``graph: false`` model is
-    never handed to the viewer, so it cannot collide with anything.
+    never handed to the viewer, so it cannot collide with anything. The
+    caller passes the *selected* models, so ``--model`` / ``-c`` narrow
+    the check exactly as they narrow the tier.
 
     Raises:
-      FatalRtlBuddyError: naming every model that claims a shared top,
-        the ``models.yaml`` each comes from, and the two ways out.
+      FatalRtlBuddyError: naming every model in the collision, the
+        ``models.yaml`` each comes from, and the ways out.
     """
-    by_top: dict[str, list[ModelConfig]] = {}
-    for model in models:
-        by_top.setdefault(model.get_top(), []).append(model)
-    clashes = {top: ms for top, ms in sorted(by_top.items()) if len(ms) > 1}
+    for name, claimants in _grouped(models, lambda m: m.name).items():
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.duplicate_design_model",
+            model=name,
+            paths=", ".join(
+                rel_path(project_root, m.path) for m in claimants if m.path
+            ),
+        )
+        raise FatalRtlBuddyError(
+            f"graph build: {len(claimants)} models are named {name!r}, and "
+            f"every per-model artefact path is keyed on that name — their "
+            f"exports would overwrite each other in "
+            f"artefacts/graph/design/{name}/ and artefacts/hier/{name}/:\n"
+            f"  name {name!r} is claimed by: "
+            f"{_claimants(project_root, claimants)}\n"
+            f"Rename one of them, or set `graph: false` on the one that is "
+            f"not the design of record."
+        )
+
+    clashes = _grouped(models, lambda m: m.get_top())
     if not clashes:
         return
-
     lines = []
     for top, claimants in clashes.items():
-        who = ", ".join(
-            f"{m.name} ({rel_path(project_root, m.path) if m.path else '?'})"
-            for m in claimants
+        lines.append(
+            f"  top {top!r} is claimed by: {_claimants(project_root, claimants)}"
         )
-        lines.append(f"  top {top!r} is claimed by: {who}")
         log_event(
             logger,
             logging.ERROR,
@@ -1444,8 +1496,9 @@ def build_graph(
             if not model.graph
         )
         # Before anything is planned, let alone exported: two graphable
-        # models rooted at one module cannot both be in the design tier.
-        _reject_duplicate_tops(root, graphable)
+        # models cannot share a name (their artefact paths collide) or a
+        # top (their graph ids do).
+        _reject_colliding_models(root, graphable)
         if tb:
             tb_targets, opted_out = _split_opted_out(
                 testbenches_from_suites(root, search_verif, models), "testbench"
