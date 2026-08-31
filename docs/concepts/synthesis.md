@@ -214,8 +214,12 @@ invocation exactly:
 `+define+` entries in the generated filelist are **not** included, because the
 synthesis flow does not pass them to Yosys either; seeding the scan with them
 would make it skip a declaration that really is elaborated. A run whose
-filelist carries `+define+` macros the flow drops logs one
-`synth.filelist_defines_ignored` warning naming them. That divergence from the
+filelist carries `+define+` macros that do not reach Yosys as written logs one
+`synth.filelist_defines_ignored` warning naming them — both the ones synthesis
+never sees and the ones it elaborates with a *different* value, the latter with
+both values shown. A bare `+define+X` counts as `X=1` only under
+`frontend: slang`, which normalises it; `read_verilog` and the simulator give
+it an empty body. That divergence from the
 simulation flow, which does apply them, predates this gate and is tracked
 separately — move the macro to the synth.yaml entry's `defines:` if the design
 needs it.
@@ -242,7 +246,8 @@ header always shares its includer's table, because `` `include `` is textual.
 never qualifies the declaration it decorates.
 
 Exempt: class methods — including out-of-body definitions such as
-`function int C::f(...)` — `extern` and `pure virtual` prototypes, DPI imports
+`function int C::f(...)`, though not an escaped `\C::f`, which is one
+identifier — `extern` and `pure virtual` prototypes, DPI imports
 and exports, and any scope declared `module automatic` (or
 `package`/`interface`/`program` `automatic`).
 

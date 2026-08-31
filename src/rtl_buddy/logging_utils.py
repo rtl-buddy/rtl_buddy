@@ -1207,13 +1207,24 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "synth.filelist_defines_ignored":
             names = fields.get("defines") or []
+            conflicts = fields.get("conflicts") or []
+            parts = []
+            if names:
+                parts.append(
+                    "not passed to Yosys at all: " + ", ".join(str(n) for n in names)
+                )
+            if conflicts:
+                parts.append(
+                    "passed with a different value: "
+                    + ", ".join(str(c) for c in conflicts)
+                )
             return (
                 f'synthesis "{fields.get("synth")}": {fields.get("count")} '
-                f"+define+ entr(ies) in the generated filelist are not passed "
-                f"to Yosys — {', '.join(str(n) for n in names)}; the synthesis "
-                "flow only applies the synth.yaml entry's `defines:`. Move "
-                "them there if the design needs them, or the elaborated RTL "
-                "will differ from the simulation flow's"
+                "+define+ entr(ies) in the generated filelist do not reach "
+                f"Yosys as written — {'; '.join(parts)}. The synthesis flow "
+                "only applies the synth.yaml entry's `defines:`; move them "
+                "there if the design needs them, or the elaborated RTL will "
+                "differ from the simulation flow's"
             )
         case "synth.conflicting_drivers":
             return (

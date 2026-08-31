@@ -1287,3 +1287,66 @@ def test_an_escaped_identifier_named_like_a_qualifier_outside_an_attribute():
         endmodule
     """)
     assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
+
+
+# ---------------------------------------------------------------------------
+# An escaped name is one identifier, separators and all (review round 10)
+# ---------------------------------------------------------------------------
+
+
+def test_an_escaped_name_containing_a_scope_separator_is_reported():
+    r"""`\C::f` is a single escaped identifier — an ordinary subroutine that
+    happens to be called `C::f` — not `f` defined out of block for class `C`.
+    Deriving "qualified" from the name text exempted it."""
+    src = "module m;\n  function int \\C::f (input int a); return a; endfunction\nendmodule\n"
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "C::f")]
+
+
+def test_an_escaped_name_containing_a_dot_is_reported():
+    src = "module m;\n  function int \\a.b (input int a); return a; endfunction\nendmodule\n"
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "a.b")]
+
+
+def test_an_escaped_task_name_with_a_separator_is_reported():
+    src = "module m;\n  task \\i1.t2 (input int a); endtask\nendmodule\n"
+    assert _names(scan_text(src, "m.sv")) == [(2, "task", "i1.t2")]
+
+
+def test_a_real_out_of_block_definition_is_still_exempt():
+    """The unescaped separator still means an out-of-block class method."""
+    src = dedent("""\
+        module m;
+          function int C::f(input int a); return a; endfunction
+          task D::t(input int a); endtask
+          function int plain; return 1; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["plain"]
+
+
+def test_an_escaped_name_inside_a_class_is_still_exempt():
+    src = "class C;\n  function int \\x::y (input int a); return a; endfunction\nendclass\n"
+    assert scan_text(src, "m.sv") == []
+
+
+def test_an_escaped_name_after_a_qualified_return_type_is_reported():
+    r"""`pkg::t_e` is the return type and `\g::h` the name — the fresh
+    unqualified name must clear the separator the type contributed."""
+    src = (
+        "module m;\n"
+        "  function pkg::t_e \\g::h (input int a); return 0; endfunction\n"
+        "endmodule\n"
+    )
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "g::h")]
+
+
+def test_an_escaped_name_ending_in_a_separator_keeps_it():
+    """The dangling-separator trim is for separators this parser added, not
+    for characters that are part of an escaped name."""
+    src = "module m;\n  function int \\f. (input int a); return a; endfunction\nendmodule\n"
+    assert [f.name for f in scan_text(src, "m.sv")] == ["f."]
+
+
+def test_an_escaped_name_with_no_separator_is_unaffected():
+    src = "module m;\n  function int \\odd$name (input int a); return a; endfunction\nendmodule\n"
+    assert [f.name for f in scan_text(src, "m.sv")] == ["odd$name"]

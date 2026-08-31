@@ -1,4 +1,4 @@
-"""Pre-synthesis scan for SystemVerilog subroutines with static lifetime.
+r"""Pre-synthesis scan for SystemVerilog subroutines with static lifetime.
 
 A `function` or `task` declared at module, interface, package, program, or
 compilation-unit scope without an explicit `automatic` lifetime has *static*
@@ -127,9 +127,6 @@ _PROTOTYPE_QUALIFIERS = frozenset({"extern", "pure", "import", "export"})
 # A statement boundary resets the pending-qualifier window.
 _STATEMENT_RESET = frozenset({"begin"})
 
-# Separators that make a subroutine name a qualified, out-of-body definition.
-_NAME_QUALIFIERS = ("::", ".")
-
 # Runaway guard only: a real `include cycle is already stopped by the active
 # path check in _expand_file, so anything that reaches this limit is a chain
 # deeper than any compiler would accept. Matched to slang's own
@@ -203,13 +200,13 @@ class _ScanState:
 
 
 def _tokenize(text: str, path: str) -> list[_Token]:
-    """Split SystemVerilog text into tokens tagged with their source line.
+    r"""Split SystemVerilog text into tokens tagged with their source line.
 
     Comments and whitespace are dropped. String literals survive as one
     `_STRING` token because `import "DPI-C"` and `` `include "x.svh" `` have to
     stay recognisable, but their contents are never inspected, so a keyword
     inside a string cannot become a finding. Escaped identifiers are marked so
-    a `\\begin` or `\\endmodule` cannot be mistaken for the keyword.
+    a `\begin` or `\endmodule` cannot be mistaken for the keyword.
     """
     tokens: list[_Token] = []
     line = 1
@@ -434,22 +431,29 @@ def _skip_parens(tokens: list[_Token], open_index: int) -> int:
 
 def _parse_subroutine_header(
     tokens: list[_Token], index: int
-) -> tuple[str | None, str]:
+) -> tuple[str | None, str, bool]:
     """Read a `function`/`task` header starting at `index`.
 
-    Returns `(explicit_lifetime, name)` where `explicit_lifetime` is
-    ``"automatic"``, ``"static"``, or None. The name is the last identifier at
-    bracket depth zero before the argument list or the terminating `;`, which
-    handles `ptr_t inc(`, `bit [W-1:0] f;`, `pkg::t_e g(`, and `void run;`
-    without needing a type grammar. A `::` or `.` binds into the name, so an
-    out-of-body definition such as `function int C::f(` comes back qualified,
-    and a `#(...)` parameterisation on the return type is skipped rather than
-    mistaken for the argument list (`function R#(int) C::f(`).
+    Returns `(explicit_lifetime, name, qualified)` where `explicit_lifetime`
+    is ``"automatic"``, ``"static"``, or None. The name is the last identifier
+    at bracket depth zero before the argument list or the terminating `;`,
+    which handles `ptr_t inc(`, `bit [W-1:0] f;`, `pkg::t_e g(`, and
+    `void run;` without needing a type grammar. A `#(...)` parameterisation on
+    the return type is skipped rather than mistaken for the argument list
+    (`function R#(int) C::f(`).
+
+    `qualified` says an **unescaped** `::` or `.` separator was consumed, so
+    the declaration is an out-of-block definition of a method declared
+    elsewhere. It is deliberately not derived from the name text: an escaped
+    identifier is a single name however it is spelled, so `\\C::f` is an
+    ordinary subroutine called `C::f`, not `f` belonging to `C`.
     """
     explicit: str | None = None
     name = ""
     bracket = 0
     qualify = False
+    qualified = False
+    name_escaped = False
     j = index + 1
     while j < len(tokens):
         tok = tokens[j]
@@ -474,6 +478,7 @@ def _parse_subroutine_header(
                 break
             elif bracket == 0 and tok.text == "." and name:
                 qualify = True
+                qualified = True
                 name += "."
             elif (
                 bracket == 0
@@ -485,6 +490,7 @@ def _parse_subroutine_header(
             ):
                 # `::` arrives as two punct tokens; consume both.
                 qualify = True
+                qualified = True
                 name += "::"
                 j += 1
         elif tok.kind == _WORD and bracket == 0:
@@ -498,10 +504,19 @@ def _parse_subroutine_header(
             elif qualify:
                 name += tok.text
                 qualify = False
+                name_escaped = tok.escaped
             else:
                 name = tok.text
+                name_escaped = tok.escaped
+                # A fresh unqualified name replaces anything the separators
+                # had built up (`function pkg::t_e decode(` -> `decode`).
+                qualified = False
         j += 1
-    return explicit, name.rstrip(":.") or "<unnamed>"
+    # Only trim a dangling separator this parser added; an escaped name may
+    # legitimately end in one.
+    if not name_escaped:
+        name = name.rstrip(":.")
+    return explicit, name or "<unnamed>", qualified
 
 
 def _is_class_method(stack: list[_Scope]) -> bool:
@@ -623,11 +638,10 @@ def _walk(tokens: list[_Token]) -> list[LifetimeFinding]:
         if paren_depth == 0:
             if value in ("function", "task"):
                 prototype = bool(_PROTOTYPE_QUALIFIERS.intersection(pending))
-                explicit, name = _parse_subroutine_header(tokens, i)
+                explicit, name, external = _parse_subroutine_header(tokens, i)
                 if prototype:
                     # No body, so no `endfunction` to pair with: do not push.
                     continue
-                external = any(sep in name for sep in _NAME_QUALIFIERS)
                 if _is_class_method(stack) or "virtual" in pending or external:
                     # An out-of-body `function int C::f(...)` defines a class
                     # method; the class it belongs to is elsewhere.

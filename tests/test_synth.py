@@ -3175,7 +3175,10 @@ def test_filelist_scan_context_collects_incdirs_and_defines(tmp_path):
         str(tmp_path / "a"),
         str(tmp_path / "b"),
     ]
-    assert defines == {"SYNTHESIS": "1", "DEBUG": ""}
+    # A bare `+define+DEBUG` is None, not "": which one it was decides
+    # whether it matches a run `defines:` value, and that depends on the
+    # frontend (slang normalises bare to 1, read_verilog to empty).
+    assert defines == {"SYNTHESIS": "1", "DEBUG": None}
 
 
 def test_filelist_scan_context_on_a_missing_file_is_empty(tmp_path):
@@ -4527,3 +4530,158 @@ def test_a_keep_attribute_does_not_change_the_gate_verdict(tmp_path, monkeypatch
     ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
     _patch_yosys(monkeypatch)
     assert isinstance(ys.run(), SynthPassResults)
+
+
+# ---------------------------------------------------------------------------
+# The filelist-define warning compares values, not just names (round 10)
+# ---------------------------------------------------------------------------
+
+
+def _scan_inputs(tmp_path, filelist_body, run_defines, frontend):
+    from rtl_buddy.tools.synth_yosys import lifetime_scan_inputs
+
+    fl = tmp_path / "synth.f"
+    fl.write_text(filelist_body)
+    return lifetime_scan_inputs(str(fl), "block", run_defines, frontend)
+
+
+def _defines_event(caplog):
+    return [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+    ]
+
+
+def test_normalise_define_value_follows_the_frontend():
+    """A bare `+define+X` is not universally `X=1`. Verified by expanding the
+    macro in an expression: Verilator and `read_verilog` give it an empty body
+    (`assign y = 8'd0 + `X;` is a syntax error), while slang normalises it to
+    1 and the same source compiles."""
+    from rtl_buddy.tools.synth_yosys import normalise_define_value
+
+    assert normalise_define_value(None, "slang") == "1"
+    assert normalise_define_value(None, "verilog") == ""
+    assert normalise_define_value("8", "slang") == "8"
+    assert normalise_define_value("", "verilog") == ""
+
+
+def test_a_matching_filelist_value_is_quiet(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+WIDTH=8\n", {"WIDTH": 8}, "verilog")
+    assert _defines_event(caplog) == []
+
+
+def test_a_conflicting_filelist_value_is_warned_with_both_values(tmp_path, caplog):
+    """The case the name-only filter swallowed: simulation builds an 8-bit
+    design and synthesis a 16-bit one, and nothing said so."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+WIDTH=8\n", {"WIDTH": 16}, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["defines"] == []
+    assert fields["conflicts"] == ["WIDTH (filelist='8', synth='16')"]
+    assert fields["count"] == 1
+
+
+def test_a_conflict_with_an_implicit_macro_is_warned(tmp_path, caplog):
+    """`+define+SYNTHESIS=0` disagrees with the value the frontend forces."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+SYNTHESIS=0\n", None, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["conflicts"] == ["SYNTHESIS (filelist='0', synth='1')"]
+
+
+def test_a_matching_implicit_macro_is_quiet(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+SYNTHESIS=1\n", None, "verilog")
+    assert _defines_event(caplog) == []
+
+
+def test_a_bare_filelist_define_matches_one_under_slang(tmp_path, caplog):
+    """slang normalises a bare predefine to 1, so `+define+DEBUG` and
+    `defines: {DEBUG: 1}` really are the same thing there."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, "slang")
+    assert _defines_event(caplog) == []
+
+
+def test_a_bare_filelist_define_conflicts_with_one_under_verilog(tmp_path, caplog):
+    """`read_verilog -DDEBUG` gives an empty body, so it is NOT `DEBUG=1`."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["conflicts"] == ["DEBUG (filelist='', synth='1')"]
+
+
+def test_an_absent_name_is_still_reported_as_not_passed(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+ONLY_IN_FILELIST=1\n", None, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["defines"] == ["ONLY_IN_FILELIST"]
+    assert events[0].rtl_fields["conflicts"] == []
+
+
+def test_both_kinds_are_reported_in_one_event(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(
+            tmp_path,
+            "+define+WIDTH=8\n+define+MISSING=1\n",
+            {"WIDTH": 16},
+            "verilog",
+        )
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["defines"] == ["MISSING"]
+    assert fields["conflicts"] == ["WIDTH (filelist='8', synth='16')"]
+    assert fields["count"] == 2
+
+
+def test_the_defines_message_names_both_kinds():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "synth.filelist_defines_ignored",
+        {
+            "synth": "block",
+            "defines": ["MISSING"],
+            "conflicts": ["WIDTH (filelist='8', synth='16')"],
+            "count": 2,
+            "filelist": "synth.f",
+        },
+    )
+    assert "not passed to Yosys at all: MISSING" in msg
+    assert "passed with a different value: WIDTH (filelist='8', synth='16')" in msg
+
+
+def test_a_conflicting_filelist_define_does_not_change_the_scan(tmp_path, caplog):
+    """The warning reports the divergence; the macro table still models the
+    Yosys invocation, so the run's value is the one the scan uses."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _incdirs, defines = _scan_inputs(
+            tmp_path, "+define+WIDTH=8\n", {"WIDTH": 16}, "verilog"
+        )
+    assert defines["WIDTH"] == "16"

@@ -106,7 +106,9 @@ def find_conflicting_driver_warnings(log_text: str) -> list[str]:
     return hits
 
 
-def filelist_scan_context(fl_path: str) -> tuple[list[str], dict[str, str]]:
+def filelist_scan_context(
+    fl_path: str,
+) -> tuple[list[str], dict[str, str | None]]:
     """`+incdir+` directories and `+define+` macros from a synthesis filelist.
 
     `_source_files_from_filelist` drops both because Yosys is handed sources
@@ -115,10 +117,15 @@ def filelist_scan_context(fl_path: str) -> tuple[list[str], dict[str, str]]:
     :func:`lifetime_scan_inputs` — because the synth flow does not pass them
     to Yosys either. Paths resolve relative to the filelist, matching the
     source entries.
+
+    A macro's value is ``None`` when the entry carried no ``=``: a bare
+    ``+define+X`` and ``+define+X=`` are different things, and which one it
+    was decides whether the entry matches a run ``defines:`` value -- see
+    :func:`normalise_define_value`.
     """
     fl_dir = os.path.dirname(os.path.abspath(fl_path))
     incdirs: list[str] = []
-    defines: dict[str, str] = {}
+    defines: dict[str, str | None] = {}
     try:
         with open(fl_path) as f:
             lines = f.readlines()
@@ -134,9 +141,9 @@ def filelist_scan_context(fl_path: str) -> tuple[list[str], dict[str, str]]:
             for entry in line[len("+define+") :].split("+"):
                 if not entry:
                     continue
-                name, _, value = entry.partition("=")
+                name, sep, value = entry.partition("=")
                 if name:
-                    defines[name] = value
+                    defines[name] = value if sep else None
     return incdirs, defines
 
 
@@ -191,6 +198,26 @@ def implicit_defines(frontend: str) -> dict[str, str]:
     return dict(_VERILOG_IMPLICIT_DEFINES)
 
 
+def normalise_define_value(value: str | None, frontend: str) -> str:
+    """The body a `+define+` entry would give the macro under `frontend`.
+
+    A bare `+define+X` is not universally `X=1`, verified by expanding the
+    macro in an expression rather than only testing `\\`ifdef`:
+
+    - Verilator (the simulation builder) and Yosys's `read_verilog` both give
+      it an **empty** body, so `\\`X` substitutes nothing and
+      `assign y = 8'd0 + \\`X;` is a syntax error.
+    - slang normalises it to **1** (`Preprocessor::undefineAll()` appends
+      `" 1"` to a predefine with no `=`), so the same source compiles.
+
+    So `+define+X` equals `defines: {X: 1}` under slang and not under the
+    verilog frontend, and the equivalence test has to follow the frontend.
+    """
+    if value is not None:
+        return value
+    return "1" if frontend == "slang" else ""
+
+
 def lifetime_scan_inputs(
     fl_path: str, synth_name: str, run_defines: dict | None, frontend: str
 ) -> tuple[list[str], dict[str, str]]:
@@ -214,15 +241,29 @@ def lifetime_scan_inputs(
     incdirs, filelist_defines = filelist_scan_context(fl_path)
     defines = implicit_defines(frontend)
     defines.update({str(k): str(v) for k, v in (run_defines or {}).items()})
-    ignored = sorted(name for name in filelist_defines if name not in defines)
-    if ignored:
+
+    # A filelist macro only diverges when applying it would have changed the
+    # elaboration. Matching on the NAME alone silently swallowed the case the
+    # warning exists for: `+define+WIDTH=8` in the filelist with
+    # `defines: {WIDTH: 16}` on the run means simulation builds an 8-bit
+    # design and synthesis a 16-bit one.
+    ignored: list[str] = []
+    conflicts: list[str] = []
+    for name in sorted(filelist_defines):
+        want = normalise_define_value(filelist_defines[name], frontend)
+        if name not in defines:
+            ignored.append(name)
+        elif defines[name] != want:
+            conflicts.append(f"{name} (filelist={want!r}, synth={defines[name]!r})")
+    if ignored or conflicts:
         log_event(
             logger,
             logging.WARNING,
             "synth.filelist_defines_ignored",
             synth=synth_name,
             defines=ignored,
-            count=len(ignored),
+            conflicts=conflicts,
+            count=len(ignored) + len(conflicts),
             filelist=fl_path,
         )
     return incdirs, defines
