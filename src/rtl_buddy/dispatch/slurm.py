@@ -574,18 +574,28 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return None
 
-    def _unknown_limit_hint(self) -> str:
+    def _unknown_limit_hint(self, stderr: str) -> str:
         """Why an oversized group was not split, for a failed array submit.
 
-        ``Invalid job array specification`` is exactly what sbatch answers a
-        group larger than the cluster's ``MaxArraySize``, and a limit that
-        could not be read is why this run did not split it. The probe already
-        says so — but at INFO, which a default-verbosity console never shows,
-        while THIS message is the one that fails the run in front of the user
-        (#509). Empty whenever the limit is known, so a submit that failed for
-        any other reason is not sent chasing a red herring.
+        ``Batch job submission failed: Invalid job array specification`` is
+        what sbatch answers a group larger than the cluster's
+        ``MaxArraySize``, and a limit that could not be read is why this run
+        did not split it. The probe already says so — but at INFO, which a
+        default-verbosity console never shows, while THIS message is the one
+        that fails the run in front of the user (#509).
+
+        Two guards, because a hint that shows up on every failed submit is
+        noise that buries the real recovery action: the limit must be
+        unknown (a known one already did the splitting), and sbatch must
+        have complained about the **array specification**. An invalid
+        account, partition or QoS is rejected with its own wording and has
+        nothing to do with array size. Matched case-insensitively on "job
+        array" rather than on the full sentence, so a Slurm that words the
+        rest of it differently still gets the hint.
         """
         if self._elements_per_array is not None:
+            return ""
+        if "job array" not in stderr.lower():
             return ""
         return (
             "; the cluster's MaxArraySize could not be read, so this group was "
@@ -705,7 +715,7 @@ class SlurmDispatchBackend(DispatchBackend):
             raise FatalRtlBuddyError(
                 f"sbatch array submit failed{where} ({len(specs)} jobs, "
                 f"rc={proc.returncode}): {proc.stderr.strip()}"
-                f"{self._unknown_limit_hint()}"
+                f"{self._unknown_limit_hint(proc.stderr)}"
             )
         base_id = proc.stdout.strip().split(";")[0]
         if not base_id:

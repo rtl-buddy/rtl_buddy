@@ -1084,6 +1084,31 @@ def test_cli_tool_check_machine_explain_alias_keeps_canonical_name(tmp_path: Pat
     assert "rtl-buddy-sch" not in payload["tools"]
 
 
+def test_cli_machine_tool_check_keeps_optional_binaries_out_of_the_payload(
+    tmp_path: Path,
+):
+    """Optional binaries are documentation, not a state to gate on (#509).
+
+    They appear in the human explanation — which `--machine` mirrors in
+    `instructions` — and nowhere in the structured `tools` entry, so no
+    consumer can build a readiness check on one.
+    """
+    result = _run_rb(
+        "--machine",
+        "tool-check",
+        "--explain",
+        "slurm",
+        "--no-probe-versions",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)["payload"]
+    entry = payload["tools"]["slurm"]
+    assert set(entry) <= {"status", "version", "path", "optional", "minimum_version"}
+    assert "scontrol" not in json.dumps(payload["tools"])
+    assert "scontrol" in payload["instructions"]
+
+
 def test_cli_tool_check_explain_unknown_hint_surfaces_aliases(tmp_path: Path):
     """The rejection tells the user which spellings exist."""
     result = _run_rb(

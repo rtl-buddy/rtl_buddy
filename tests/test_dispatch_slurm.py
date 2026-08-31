@@ -1526,12 +1526,51 @@ def test_a_refused_array_names_the_unread_limit(monkeypatch, tmp_path):
     assert "cfg-dispatch.max-array-size" in str(excinfo.value)
 
 
+def test_an_unrelated_submit_failure_offers_no_red_herring(monkeypatch, tmp_path):
+    """An unknown limit is not a reason to blame every rejected submit.
+
+    An invalid account/partition/QoS has its own recovery action, and a
+    MaxArraySize hint stapled to it buries the sentence that matters.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid partition name specified",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    # The limit is unknown here — the other guard alone must not be what
+    # keeps the hint away.
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "Invalid partition name" in str(excinfo.value)
+    assert "max-array-size" not in str(excinfo.value)
+
+
 def test_a_refused_array_with_a_known_limit_offers_no_red_herring(
     monkeypatch, tmp_path
 ):
-    """A group already within the limit failed for some other reason."""
+    """A limit that IS known did the splitting; the hint would be wrong.
+
+    Deliberately the array-specification wording, so this pins the
+    known-limit guard rather than riding on the stderr one.
+    """
     calls = []
-    results = [SimpleNamespace(returncode=1, stdout="", stderr="Invalid account")]
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=1001).initialise())
 
@@ -1539,7 +1578,7 @@ def test_a_refused_array_with_a_known_limit_offers_no_red_herring(
         backend.submit_array(
             [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
         )
-    assert "Invalid account" in str(excinfo.value)
+    assert "Invalid job array specification" in str(excinfo.value)
     assert "max-array-size" not in str(excinfo.value)
 
 
