@@ -13,6 +13,7 @@ rtl-buddy-filetype: test_config
 
 testbenches:
   - name: tb_top
+    toplevel: tb_top
     filelist:
       - +incdir+../../../verif/tb
       - tb_top.sv
@@ -32,6 +33,8 @@ tests:
 ```
 
 `model_path`, testbench filelists, and hook paths resolve from the directory containing `tests.yaml`, and a model's filelist entries resolve from the directory containing its own filelist — a `+incdir+` inside a filelist pulled in with `-F` names a directory beside that filelist, not beside the suite that consumes it, so a design filelist can carry its own include path. `plusargs` affect simulation; `plusdefines` affect compilation. See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
+
+`toplevel:` names the module the compile elaborates from and reaches the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`. Declare it on every testbench: without it the simulator elects a top from filelist order, so recomposing a model filelist renames the Verilator model and an uninstantiated module in an ordinary (non-`-v`) input turns the build into a `MULTITOP` error. It is not inferred from `name`, and a top pinned in the builder's `compile-time` opts still wins. See [Pinning the elaboration top](../reference/yaml.md#pinning-the-elaboration-top).
 
 ## Run tests
 

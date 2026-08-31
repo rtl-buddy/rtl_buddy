@@ -108,6 +108,19 @@ COMPILE_RETRY_TRANSCRIPT_NAME = "compile.retry.log"
 # artefact dir (correct, just unshared).
 SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus"})
 
+# The flag each simulator family takes to pin the elaboration root, so a
+# testbench's declared `toplevel:` decides the top instead of whichever
+# source the composed filelist happens to name first (#506, #508). The value
+# is always a separate token after the flag, which is what makes the
+# "already configured?" check below an exact-token membership test rather
+# than a prefix match. A family absent here has no such flag rtl_buddy knows
+# of, and its builds keep electing a top the way they always did.
+TOP_MODULE_FLAGS = {
+    "verilator": "--top-module",
+    "vcs": "-top",
+    "icarus": "-s",
+}
+
 # The argv suffix that makes a simulator print its version cheaply, per
 # family, for the toolchain half of the shared-build stamp. A family absent
 # here keeps the path + size + mtime half and no version string. VCS is
@@ -767,6 +780,10 @@ class _CompilePlan:
     builder_opts: list = field(default_factory=list)
     extra_compile_flags: list = field(default_factory=list)
     assertion_flags: list = field(default_factory=list)
+    # The family's top-selection flag for the testbench's declared
+    # `toplevel:` (#506, #508), or empty when none is declared, the family
+    # has no such flag, or the configured opts already pin one.
+    top_flags: list = field(default_factory=list)
     plusdefines: list = field(default_factory=list)
     is_verilator: bool = False
     # None unless share_build is on AND the family supports sharing.
@@ -1125,6 +1142,88 @@ class VlogSim:
         if not any(opt == "--coverage-user" for opt in existing):
             extras.append("--coverage-user")
         return extras
+
+    def _get_top_module_flags(
+        self, builder_opts: list, extra_compile_flags: list
+    ) -> list:
+        """Root the compile at the testbench's declared ``toplevel:`` (#506, #508).
+
+        Without it, both the elected top and — for Verilator — the model
+        name and every emitted C++ file come from filelist order: the first
+        *ordinary* (non-``-v``) entry wins, so recomposing a model filelist
+        silently renames the model, and an ordinary input carrying a module
+        nothing instantiates turns the build into a MULTITOP error. The
+        declared ``toplevel:`` is the answer to both, and until now only the
+        SystemC and cocotb-on-VCS paths passed it on.
+
+        Nothing is added when no ``toplevel:`` is declared. A testbench
+        ``name:`` is a config label, not necessarily a module, so defaulting
+        the top to it would turn working builds into "top module not found"
+        — ``toplevel:`` stays the explicit knob.
+
+        Idempotent in the same spirit as
+        :meth:`_get_verilator_assertion_flags`, and against BOTH sources of
+        compile flags: the builder's configured ``compile-time`` opts and
+        the subclass' :meth:`_get_extra_compile_flags` (SystemC always emits
+        ``--top-module``; cocotb on VCS emits ``-top``). A configured flag
+        wins — it is the more specific statement about this build — and a
+        configured top that *disagrees* with the testbench's is a WARNING,
+        because that combination is how a suite silently simulates a
+        different design than its config names.
+        """
+        toplevel = getattr(self.testbench, "toplevel", None)
+        if not toplevel:
+            return []
+        family = self._get_simulator_family()
+        flag = TOP_MODULE_FLAGS.get(family)
+        if flag is None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.toplevel_family_unsupported",
+                test=self.test_name,
+                simulator=family,
+                toplevel=toplevel,
+            )
+            return []
+
+        configured = list(builder_opts) + list(extra_compile_flags)
+        if flag in configured:
+            index = configured.index(flag)
+            existing = configured[index + 1] if index + 1 < len(configured) else None
+            if existing == toplevel:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.toplevel_already_pinned",
+                    test=self.test_name,
+                    simulator=family,
+                    flag=flag,
+                    toplevel=toplevel,
+                )
+            else:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.toplevel_conflict",
+                    test=self.test_name,
+                    simulator=family,
+                    flag=flag,
+                    toplevel=toplevel,
+                    configured=existing,
+                )
+            return []
+
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.toplevel",
+            test=self.test_name,
+            simulator=family,
+            flag=flag,
+            toplevel=toplevel,
+        )
+        return [flag, toplevel]
 
     def _get_simulator_family(self):
         """
@@ -1903,6 +2002,9 @@ class VlogSim:
         )
         extra_compile_flags = self._get_extra_compile_flags()
         assertion_flags = self._get_verilator_assertion_flags(builder_opts)
+        # After the extra flags, because the subclass that emits its own top
+        # flag emits it there and this must see it (#508).
+        top_flags = self._get_top_module_flags(builder_opts, extra_compile_flags)
         plusdefines = self._get_plusdefines()
         is_verilator = os.path.basename(rtl_builder_cfg.get_exe()).startswith(
             "verilator"
@@ -1921,6 +2023,7 @@ class VlogSim:
             builder_opts=builder_opts,
             extra_compile_flags=extra_compile_flags,
             assertion_flags=assertion_flags,
+            top_flags=top_flags,
             plusdefines=plusdefines,
             is_verilator=is_verilator,
             # The group is the OUTPUT the compile writes, canonicalized —
@@ -1959,6 +2062,12 @@ class VlogSim:
             + builder_opts
             + extra_compile_flags
             + assertion_flags
+            # The top flag changes which modules are elaborated and what the
+            # model is called, so two testbenches over one model that differ
+            # only in `toplevel:` must not share a build dir (#508). Empty
+            # when no `toplevel:` is declared, which is what keeps every
+            # existing key of an untouched project unchanged.
+            + top_flags
             + plusdefines
         )
         if self._get_simulator_family() == "icarus":
@@ -2173,6 +2282,10 @@ class VlogSim:
                     test=self.test_name,
                     flags=plan.assertion_flags,
                 )
+
+        # Pin the elaboration root, in the same position it occupies in
+        # `key_cmd` so the reuse breadcrumb and the real compile agree.
+        run_cmd += plan.top_flags
 
         # add test plus-defines
         run_cmd += plan.plusdefines

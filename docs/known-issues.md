@@ -152,6 +152,10 @@ Build stamps hash content rather than comparing size and mtime, because a stat-o
 
 Content decides from then on: regenerating a file byte-for-byte does not rebuild, and any real edit does. Reuse is also visible — `compile.build_reused` names the reused directory and its stamp's age on the console, and the test's `compile.log` repeats it with the command a rebuild would run, so an absent `compile.log` is no longer the only hint. Use `--rebuild` to compile regardless rather than deleting `artefacts/.shared-builds/` by hand; if you do delete a tree, delete it between runs and not during one, for the locking reason above.
 
+## A declared `toplevel` shifts the shared-build key once
+
+`toplevel:` now reaches the SystemVerilog builders as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and the flag is part of the compile fingerprint because it decides which modules are elaborated and what the model is called. A testbench that already declared `toplevel:` therefore gets a new shared-build directory on the first run after upgrading, and compiles once more. Testbenches without a `toplevel:` keep their existing key: the top is not inferred from the testbench `name`, so those builds are byte-identical to before and still elect a top from filelist order. A top pinned in the builder's `compile-time` opts continues to win; when it names a different module than `toplevel:`, the run logs `compile.toplevel_conflict` and the configured top is used. Simulator families other than Verilator, VCS, and Icarus get no top flag at all — `compile.toplevel_family_unsupported` records that at debug level.
+
 ## Yosys-backed flows do not support whitespace in paths
 
 Yosys script parsing is not shell parsing: whitespace splits tokens, `#` starts a comment, and single quotes from `shlex.quote` do not group a path. Keep design and artifact paths for synthesis and FPV free of whitespace. `fpv.yaml` parameter validation also rejects whitespace, `;`, and `#`.

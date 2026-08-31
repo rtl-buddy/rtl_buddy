@@ -359,3 +359,18 @@ def test_home_with_unresolved_var_and_no_fallback_raises(tmp_path, monkeypatch):
     )
     with pytest.raises(FatalRtlBuddyError, match="SYSTEMC_HOME"):
         sim._get_extra_compile_flags()
+
+
+def test_base_top_plumbing_does_not_double_the_systemc_flag(tmp_path):
+    """#508: the base now pins `toplevel:` too — SystemC must stay single.
+
+    SystemCSim has always emitted its own ``--top-module`` from
+    ``_get_extra_compile_flags()``. The base's plumbing has to see that and
+    stand down, or every SystemC compile would carry the flag twice.
+    """
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))
+    extra = sim._get_extra_compile_flags()
+    assert extra.count("--top-module") == 1
+    builder_opts = sim.rtl_builder_cfg.get_compile_time_opts("sim")
+    assert sim._get_top_module_flags(builder_opts, extra) == []

@@ -398,6 +398,31 @@ def test_vcs_dedup_is_token_level_not_substring(tmp_path, monkeypatch):
     assert flags[flags.index("-top") + 1] == "my_dut"
 
 
+def test_base_top_plumbing_does_not_double_the_vcs_top(tmp_path, monkeypatch):
+    # #508 taught the base VlogSim to pass `toplevel:` to the builder. The
+    # cocotb VCS path already emits `-top`, so the base must stand down.
+    sim = _make_sim(tmp_path, monkeypatch, "vcs", ["-sverilog"])
+    extra = sim._get_extra_compile_flags()
+    assert extra.count("-top") == 1
+    assert sim._get_top_module_flags(["-sverilog"], extra) == []
+
+
+def test_verilator_cocotb_gains_the_top_module_flag(tmp_path, monkeypatch):
+    # cocotb on Verilator elected its top from filelist order like any other
+    # build (#506); `toplevel:` is required for cocotb, so it can always
+    # root the compile.
+    sim = _make_sim(tmp_path, monkeypatch, "verilator", ["--binary", "-sv"])
+    extra = sim._get_extra_compile_flags()
+    assert "--top-module" not in extra
+    assert sim._get_top_module_flags(["-sv"], extra) == ["--top-module", "my_dut"]
+
+
+def test_icarus_cocotb_gains_the_top_flag(tmp_path, monkeypatch):
+    sim = _make_sim(tmp_path, monkeypatch, "icarus", ["-g2012"])
+    extra = sim._get_extra_compile_flags()
+    assert sim._get_top_module_flags(["-g2012"], extra) == ["-s", "my_dut"]
+
+
 def test_unsupported_family_raises(tmp_path, monkeypatch):
     # questa is not among the families cocotb can drive via a VPI shim here.
     sim = _make_sim(tmp_path, monkeypatch, "questa", [])

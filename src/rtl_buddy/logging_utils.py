@@ -792,6 +792,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('reason') or fields.get('simulator')}); "
                 "it compiles per test"
             )
+        case "compile.toplevel_conflict":
+            # WARNING, so it reaches a default console: a builder opt that
+            # names a different top than the testbench does is how a suite
+            # silently elaborates a design its config does not name.
+            return (
+                f"{target or 'compile'}: builder opts pin "
+                f"{fields.get('flag')} {fields.get('configured')}, which "
+                f"overrides this testbench's toplevel: "
+                f"{fields.get('toplevel')} — the configured top is used"
+            )
         case "dispatch.compile_mem_unparseable":
             return (
                 f"cfg-dispatch compile mem {fields.get('mem')!r} is not a "

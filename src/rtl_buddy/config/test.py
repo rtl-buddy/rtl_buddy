@@ -65,7 +65,14 @@ class TestbenchConfig:
     Attributes:
       name (str): Unique testbench identifier.
       filelist (list[str]): List of paths to files involved in running the testbench.
-      toplevel (str | None): Top-level DUT module name. Required for cocotb and SystemC testbenches.
+      toplevel (str | None): Name of the module the compile elaborates from.
+        Required for cocotb and SystemC testbenches; optional but recommended
+        for a plain SystemVerilog one, where it is passed to the builder as
+        Verilator ``--top-module`` / VCS ``-top`` / Icarus ``-s`` (#506, #508).
+        Without it the top — and, for Verilator, the model name — is elected
+        from filelist order, which also makes an uninstantiated module in an
+        ordinary (non-``-v``) input a MULTITOP error. Not defaulted to
+        ``name``: a testbench name is a config label, not necessarily a module.
       cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
       systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
       resources (DispatchResourcesFile | None): default per-job reservation for
