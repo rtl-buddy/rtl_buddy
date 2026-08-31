@@ -524,6 +524,12 @@ class SlurmDispatchBackend(DispatchBackend):
         # {selection: (elements per array or None, where it came from)}.
         self._elements_per_array_by_cluster: dict[str | None, _ArrayLimit] = {}
         self._acct_interval_s = self._resolve_accounting_frequency()
+        # The dedup probe is per RUN, not per suite (#507 review): a
+        # `squeue` that hangs costs its timeout on every build job a
+        # regression submits, and it is a purely informational probe. One
+        # failure retires it for this backend instance; a probe that
+        # answers keeps being asked.
+        self._dedup_probe_available = True
 
     def _resolve_accounting_frequency(self) -> float | None:
         """Request per-second task sampling, unless the user asked for a rate.
@@ -641,6 +647,31 @@ class SlurmDispatchBackend(DispatchBackend):
             return []
         return [f"--dependency=afterok:{dependency}", "--kill-on-invalid-dep=yes"]
 
+    def _retire_dedup_probe(self, error: str, **fields) -> list[str]:
+        """Say the probe failed, stop asking, and answer "nobody" (#507).
+
+        Every reason it can fail — no ``squeue`` on the submit host, a
+        rejected query, a wedged slurmctld — is a property of this
+        submit host and this run, not of the suite being submitted. A
+        regression submits one build job per suite, so retrying would
+        pay the same timeout N times for a line that only decorates a
+        warning. Retired once, reported once, and the guarantee
+        (``--dependency=singleton``) is untouched by any of it.
+        """
+        self._dedup_probe_available = False
+        log_event(
+            logger,
+            logging.DEBUG,
+            "dispatch.build_dedup_unavailable",
+            **fields,
+            error=(
+                f"{error}; not asking again this run — the build job is still "
+                "serialised by --dependency=singleton, only the warning naming "
+                "the job it waits for is lost"
+            ),
+        )
+        return []
+
     def _queued_build_ids(self, job_name: str, *, cwd: str) -> list[str]:
         """This user's build jobs still in flight under ``job_name``.
 
@@ -650,24 +681,20 @@ class SlurmDispatchBackend(DispatchBackend):
         explains the resulting wait can *name* the jobs being waited on.
         Nothing branches on it but that line.
 
-        Which is why every failure here is a DEBUG line and an empty
-        answer: a submit host with no ``squeue``, one that errors, or one
-        that hangs loses the explanation and keeps the guarantee. Scoped
-        to this user because that is the scope ``singleton`` has, so the
-        line describes the jobs the dependency actually waits for.
+        Which is why every failure here is a DEBUG line, an empty answer,
+        and no second attempt this run (see :meth:`_retire_dedup_probe`):
+        a submit host with no ``squeue``, one that errors, or one that
+        hangs loses the explanation and keeps the guarantee. Scoped to
+        this user because that is the scope ``singleton`` has, so the line
+        describes the jobs the dependency actually waits for.
         """
+        if not self._dedup_probe_available:
+            return []
         fields = {"job_name": job_name, "suite_dir": cwd}
         try:
             user = getpass.getuser()
-        except Exception as e:  # noqa: BLE001 - no login name, no dedup
-            log_event(
-                logger,
-                logging.DEBUG,
-                "dispatch.build_dedup_unavailable",
-                **fields,
-                error=str(e),
-            )
-            return []
+        except Exception as e:  # noqa: BLE001 - no login name, no probe
+            return self._retire_dedup_probe(str(e), **fields)
         argv = [
             "squeue",
             "--noheader",
@@ -685,23 +712,11 @@ class SlurmDispatchBackend(DispatchBackend):
                 timeout=_DEDUP_TIMEOUT_SEC,
             )
         except (OSError, subprocess.SubprocessError) as e:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "dispatch.build_dedup_unavailable",
-                **fields,
-                error=str(e),
-            )
-            return []
+            return self._retire_dedup_probe(str(e), **fields)
         if proc.returncode != 0:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "dispatch.build_dedup_unavailable",
-                **fields,
-                error=proc.stderr.strip() or f"squeue exited {proc.returncode}",
+            return self._retire_dedup_probe(
+                proc.stderr.strip() or f"squeue exited {proc.returncode}", **fields
             )
-            return []
         return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
     def _configured_dependency(self) -> str | None:

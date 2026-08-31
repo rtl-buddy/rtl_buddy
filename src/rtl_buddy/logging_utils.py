@@ -863,12 +863,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             # invocation (#507).
             ids = fields.get("job_ids")
             joined = ", ".join(ids) if isinstance(ids, list) else str(ids)
+            # "reuses it if the inputs are unchanged", not "reuses it":
+            # the waiting job revalidates the stamp under the build lock,
+            # and `--rebuild`, an edit, or a different builder makes that
+            # fail and compile — which is correct, and which a line
+            # promising reuse would have made look like a bug.
             return (
                 f"A shared build for {fields.get('suite_dir')} is already queued or "
                 f"running as job {joined}; this run's build job "
-                f"{fields.get('job_id')} waits for it to finish and then reuses "
-                "what it built, rather than compiling into the same directory "
-                "alongside it"
+                f"{fields.get('job_id')} waits for it, then revalidates the shared "
+                "build and reuses it if the inputs are unchanged, rather than "
+                "compiling into the same directory alongside it"
             )
         case "dispatch.submitted":
             gate = fields.get("dependency")

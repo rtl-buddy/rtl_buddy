@@ -120,7 +120,9 @@ launching a large build; use independent cheap suites while it compiles.
   directory, not a hang.
 - `dispatch.build_job_deduped` means an earlier run's build job for this suite
   is still queued or running, so this run's build job waits for it
-  (`--dependency=singleton`, per job name and user) and reuses what it built.
+  (`--dependency=singleton`, per job name and user), then revalidates the shared
+  build and reuses it if the inputs are unchanged — `--rebuild`, an edit, or
+  another builder makes it recompile instead, which is correct.
   Expected after an interrupted run; nothing to fix. Jobs are named
   `rb-build-<hash>` per suite directory, so every run of that suite — a
   regression, one test, another builder mode — shares one. If the new job

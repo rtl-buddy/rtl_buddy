@@ -2762,7 +2762,15 @@ def test_an_in_flight_build_job_is_named_in_the_warning(monkeypatch, caplog):
     assert fields["job_name"] == job_name
     assert fields["suite_dir"] == "/proj/verif/blk"
     assert fields["job_id"] == "900"  # the job that will do the waiting
-    assert "41, 42" in record.getMessage() and "900" in record.getMessage()
+    message = record.getMessage()
+    assert "41, 42" in message and "900" in message
+    # It promises a revalidation, not a reuse: the waiting job checks the
+    # stamp under the build lock, and `--rebuild`, an edit, or another
+    # builder makes it compile instead — correct behaviour that a line
+    # promising reuse would have made look like a bug.
+    assert "revalidates the shared build and reuses it if the inputs are unchanged" in (
+        message
+    )
 
 
 def test_a_completing_build_job_still_counts_as_in_flight():
@@ -3169,3 +3177,77 @@ def test_the_exported_dependency_is_read_at_submit_time(monkeypatch):
     first, second = calls[1], calls[3]
     assert "--dependency=singleton" in first
     assert "--dependency=afterok:9,singleton" in second
+
+
+def test_a_failed_probe_is_not_repeated_for_the_rest_of_the_run(monkeypatch, caplog):
+    """A wedged `squeue` costs its timeout once, not once per suite.
+
+    A regression submits one build job per suite, and the probe only
+    decorates a warning — so paying N x 20 s for it is the one cost it
+    must never impose. The first failure retires it on this backend, and
+    the guarantee it does not provide (`--dependency=singleton`) is
+    unaffected.
+    """
+    import logging
+
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            raise slurm_module.subprocess.TimeoutExpired("squeue", timeout)
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+        backend.submit_build(_build_spec(suite_dir="/proj/verif/other"))
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch", "sbatch"]
+    # ...and it said so once, naming what is lost and what is not.
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert "not asking again this run" in record.getMessage()
+    assert "singleton" in record.getMessage()
+    # Both jobs are still serialised; only the explanation was lost.
+    assert all("--dependency=singleton" in argv for argv in calls[1:])
+
+
+def test_a_probe_that_answers_keeps_being_asked(monkeypatch):
+    """Retirement is for a broken probe, not for an empty queue."""
+    calls, results = (
+        [],
+        _dedup_results("", job_id="900") + _dedup_results("41\n", job_id="901"),
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+    backend.submit_build(_build_spec())
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch", "squeue", "sbatch"]
+
+
+def test_a_new_run_asks_again(monkeypatch):
+    """The latch lives on the backend instance, which lives for one run —
+    a submit host that was wedged an hour ago is not wedged forever."""
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            raise FileNotFoundError("squeue")
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    cfg = DispatchConfigFile().initialise()
+
+    SlurmDispatchBackend(cfg).submit_build(_build_spec())
+    SlurmDispatchBackend(cfg).submit_build(_build_spec())
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch", "squeue", "sbatch"]
