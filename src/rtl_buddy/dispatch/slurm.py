@@ -252,6 +252,11 @@ _BUILD_JOB_NAME_PREFIX = "rb-build"
 # the check-then-submit race a queue probe has, and what makes it work on
 # a submit host where `squeue` is unavailable.
 _DEDUP_DEPENDENCY = "singleton"
+# sbatch reads this as the default for `-d/--dependency`, and a
+# command-line option overrides it. Before #507 the build job passed no
+# dependency flag, so a gate exported this way reached it untouched;
+# emitting one means composing with it rather than replacing it.
+_SBATCH_DEPENDENCY_ENV = "SBATCH_DEPENDENCY"
 # Slurm takes `,` (all dependencies must be satisfied) or `?` (any may be),
 # and one expression may not mix them. A configured `?` therefore cannot be
 # composed with, and this is the marker for that case.
@@ -700,7 +705,7 @@ class SlurmDispatchBackend(DispatchBackend):
         return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
     def _configured_dependency(self) -> str | None:
-        """The dependency expression the user's ``sbatch-args`` already set.
+        """The dependency expression already in force for this submission.
 
         Composed with rather than overwritten: a site that gates every
         job behind a reservation or a staging job means it, and the dedup
@@ -708,11 +713,20 @@ class SlurmDispatchBackend(DispatchBackend):
         raw, separators included, because whether it uses ``,`` or ``?``
         decides whether composing is possible at all.
 
-        The **last** occurrence, because that is the one Slurm obeys: a
-        repeated option overrides the earlier copy, so composing onto the
-        first would build the dedup on top of an expression the scheduler
-        has already discarded — and the flag this backend emits (later
-        still) would then drop the one the user actually meant.
+        Two sources, in sbatch's own precedence. ``sbatch-args`` first —
+        the **last** occurrence there, because that is the one Slurm
+        obeys: a repeated option overrides the earlier copy, so composing
+        onto the first would build the dedup on top of an expression the
+        scheduler has already discarded, and the flag this backend emits
+        (later still) would then drop the one the user actually meant.
+        Then :data:`_SBATCH_DEPENDENCY_ENV`, which sbatch documents as
+        equivalent to ``-d`` and which a command-line option overrides.
+
+        The environment half is why this is read at submit time rather
+        than resolved in ``__init__``. It also used to reach the build
+        job untouched, precisely because this backend passed no dependency
+        flag at all; now that it passes one, an exported gate would be
+        silently replaced instead of added to (#507 review).
         """
         args = self.sbatch_args
         found = None
@@ -730,22 +744,31 @@ class SlurmDispatchBackend(DispatchBackend):
                     skip = index + 1
             elif arg.startswith("-d") and arg[1] != "-":
                 found = arg[2:]
-        return found
+        if found is not None:
+            return found
+        # An empty or whitespace-only export is not an expression; sbatch
+        # would make nothing of it either, so it is "no gate" rather than
+        # something to compose a comma onto.
+        return os.environ.get(_SBATCH_DEPENDENCY_ENV, "").strip() or None
 
     def _dedup_dependency(self, *, suite_dir: str) -> str | None:
         """The ``--dependency`` value that serialises this build job (#507).
 
-        ``singleton`` on its own, or the configured expression with
-        ``singleton`` ANDed onto it — a site that gates every job behind a
+        ``singleton`` on its own, or whatever dependency is already in
+        force — from ``sbatch-args`` or from ``SBATCH_DEPENDENCY`` — with
+        ``singleton`` ANDed onto it. A site that gates every job behind a
         staging job means that, and the dedup is an extra condition rather
         than a replacement.
 
-        ``None`` when the configured expression uses the ``?`` (any-of)
+        ``None`` when that expression uses the ``?`` (any-of)
         separator: Slurm allows one separator per expression, so
         ``afterok:7?afterok:8,singleton`` is rejected outright and the
         submission would fail. Losing the dedup there costs what the dedup
         buys — the in-job build lock still makes concurrent builders safe —
-        while composing would cost the run.
+        while composing would cost the run. Emitting no flag also leaves
+        the user's own gate exactly as it was: their ``sbatch-args`` copy
+        is still in the argv, and an exported one is still in sbatch's
+        environment.
         """
         configured = self._configured_dependency()
         if configured is None:
@@ -757,7 +780,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 "dispatch.build_dedup_unavailable",
                 suite_dir=suite_dir,
                 error=(
-                    f"configured --dependency={configured} uses the "
+                    f"the dependency already in force ({configured}) uses the "
                     f"{_DEPENDENCY_OR_SEPARATOR!r} (any-of) separator, which "
                     "Slurm will not let a second clause be added to"
                 ),

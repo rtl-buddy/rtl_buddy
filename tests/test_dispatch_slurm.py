@@ -3068,3 +3068,104 @@ def test_a_configured_job_name_still_reaches_the_sim_jobs(monkeypatch):
 
     (argv,) = calls
     assert argv.index("--job-name=custom") > argv.index("--job-name=rb:basic")
+
+
+def test_an_exported_dependency_is_composed_with_too(monkeypatch):
+    """`SBATCH_DEPENDENCY` is sbatch's own default for `-d`.
+
+    Before the dedup this backend passed no dependency flag at all, so a
+    gate exported that way reached the build job untouched. Emitting
+    `--dependency=singleton` would silently replace it, so it is folded
+    into the same composition a configured one gets.
+    """
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9")
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:9,singleton" in argv
+
+
+def test_sbatch_args_beat_the_exported_dependency(monkeypatch):
+    """sbatch's precedence: a command-line option overrides the
+    environment. Composing onto the env value would gate the build job on
+    something the scheduler was never going to apply."""
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9")
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7", "-d", "afterok:8"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    # The last `sbatch-args` value, and the export ignored entirely.
+    assert "--dependency=afterok:8,singleton" in argv
+    assert not any("afterok:9" in arg for arg in argv)
+
+
+def test_an_exported_any_of_dependency_stands_the_dedup_down(monkeypatch, caplog):
+    """Same reasoning as the `sbatch-args` case: one separator per
+    expression, so composing would make sbatch reject the submission. The
+    export stays in force — it is still in sbatch's environment — and the
+    build lock keeps concurrent builders safe."""
+    import logging
+
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9?afterok:10")
+    calls = []
+    # No probe: nothing will be waited on, so there is nothing to name.
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        assert backend.submit_build(_build_spec()).job_id == "900"
+
+    (argv,) = calls
+    assert not any(a.startswith("--dependency") for a in argv)
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert record.levelno == logging.DEBUG
+    assert "afterok:9?afterok:10" in record.__dict__["rtl_fields"]["error"]
+
+
+@pytest.mark.parametrize("exported", ["", "   "], ids=["empty", "blank"])
+def test_a_blank_exported_dependency_is_no_dependency(monkeypatch, exported):
+    """An empty export is not an expression to hang a comma off."""
+    monkeypatch.setenv("SBATCH_DEPENDENCY", exported)
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+
+
+def test_the_exported_dependency_is_read_at_submit_time(monkeypatch):
+    """The backend is constructed once per run and the environment can
+    change under it, so the read belongs at the submission."""
+    calls, results = (
+        [],
+        _dedup_results("", job_id="900") + _dedup_results("", job_id="901"),
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9")
+    backend.submit_build(_build_spec())
+
+    first, second = calls[1], calls[3]
+    assert "--dependency=singleton" in first
+    assert "--dependency=afterok:9,singleton" in second
