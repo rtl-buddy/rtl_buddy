@@ -212,11 +212,23 @@ def build_view_json(
     )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():
+        # The renderer can write the file and *then* fail. Leaving a view.json
+        # from a build that errored is worse than leaving none: the hub
+        # remembers the failure, but `_serve_active_view_json` tests the file
+        # before it consults that memory and would answer 200 with the
+        # half-built bytes (#469).
+        clear_stale_artefacts([out_path], owner=label)
         raise FatalRtlBuddyError(
             f"{label}: rtl-buddy-view exited with "
             f"code {rc}; see {Path(runner.artefact_dir) / 'hier.log'} for "
             f"details."
         )
 
-    _assert_view_schema_supported(out_path, label)
+    try:
+        _assert_view_schema_supported(out_path, label)
+    except FatalRtlBuddyError:
+        # Same reasoning: a view.json we have just rejected as unreadable or
+        # schema-incompatible must not stay on disk to be served anyway.
+        clear_stale_artefacts([out_path], owner=label)
+        raise
     return out_path

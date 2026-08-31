@@ -8,7 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.fpga import FpgaConfig
-from ..errors import FilelistError
+from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
 from ..runner.fpga_results import (
@@ -134,10 +134,54 @@ class VivadoFpga(BaseFpga):
     # Entry point
     # ------------------------------------------------------------------
 
+    def _clear_managed_outputs(self) -> None:
+        """Remove every output a run of this entry produces.
+
+        The five post-route reports and the bitstream are read back off fixed
+        paths, and Vivado exiting 0 with no ERROR line is not proof that it
+        rewrote them — so clearing them is what lets `_parse_reports` either
+        see this run's numbers or take its "not produced" path, instead of
+        quoting a previous run's utilization/WNS/power (#469). The bitstream
+        goes even without `--bitstream`: the artefact dir describes the latest
+        run, and a run reporting "no bitstream" beside a deployable
+        `<top>.bit` from an older run is the same trap — rerun with
+        `--bitstream` to regenerate it. It is matched by suffix, being the one
+        top-named output, so editing the run's model or top does not strand
+        the previous top's `.bit`; the reports have fixed names (`util.rpt`
+        and friends) and carry no `.bit` suffix.
+        """
+        stale = clear_stale_artefacts(
+            [
+                os.path.join(self.artefact_dir, filename)
+                for filename in REPORT_FILES.values()
+            ],
+            owner=self.fpga_cfg.get_name(),
+        )
+        stale += clear_managed_outputs(
+            self.artefact_dir, (".bit",), owner=self.fpga_cfg.get_name()
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "fpga.stale_artefacts_removed",
+                fpga=self.fpga_cfg.get_name(),
+                paths=stale,
+            )
+
     def run(self) -> FpgaResults:
-        # Resolve up front: an unknown `platform:` ref is a config error
-        # (FatalRtlBuddyError, exit 2), even when vivado is absent.
-        target = resolve_target(self.fpga_cfg, self.root_cfg)
+        # Resolved up front, and ahead of the tool skip below, because an
+        # unknown `platform:` ref is a config error (exit 2) whether or not
+        # Vivado is installed. Raising it over a previous run's reports and a
+        # deployable bitstream would leave exactly the stale artefacts this
+        # fix removes, so a config error clears them on its way out — it is a
+        # failed run, not a skip (#469).
+        try:
+            target = resolve_target(self.fpga_cfg, self.root_cfg)
+        except FatalRtlBuddyError:
+            self._clear_managed_outputs()
+            raise
+
         log_event(
             logger,
             logging.INFO,
@@ -165,41 +209,11 @@ class VivadoFpga(BaseFpga):
                 ),
             )
 
-        # Everything past the skip above is a run of this entry, however it
-        # ends — including the filelist error that returns just below. The
-        # five post-route reports and the bitstream are read back off fixed
-        # paths, and Vivado exiting 0 with no ERROR line is not proof that it
-        # rewrote them, so clear here and `_parse_reports` either sees this
-        # run's numbers or takes its "not produced" path instead of quoting a
-        # previous run's utilization/WNS/power (#469). The bitstream goes even
-        # without `--bitstream`: the artefact dir describes the latest run,
-        # and a run reporting "no bitstream" beside a deployable `<top>.bit`
-        # from an older run is the same trap — rerun with `--bitstream` to
-        # regenerate it. Deliberately *after* the skip: a box without Vivado
-        # never ran the tool, so it has no business deleting what a box with
-        # Vivado built.
-        stale = clear_stale_artefacts(
-            [
-                os.path.join(self.artefact_dir, filename)
-                for filename in REPORT_FILES.values()
-            ],
-            owner=self.fpga_cfg.get_name(),
-        )
-        # The bitstream is the one output named after the top, so it goes by
-        # suffix: editing the run's model or top would otherwise strand the
-        # previous top's `.bit` here. The reports above have fixed names
-        # (`util.rpt` and friends) and carry no `.bit` suffix.
-        stale += clear_managed_outputs(
-            self.artefact_dir, (".bit",), owner=self.fpga_cfg.get_name()
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "fpga.stale_artefacts_removed",
-                fpga=self.fpga_cfg.get_name(),
-                paths=stale,
-            )
+        # Everything past the skip is a run of this entry, however it ends —
+        # including the filelist error below. Deliberately *after* the skip:
+        # a box without Vivado never ran the tool, so it has no business
+        # deleting what a box with Vivado built.
+        self._clear_managed_outputs()
 
         try:
             fl_path = self._write_filelist()

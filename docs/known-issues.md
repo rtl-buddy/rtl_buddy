@@ -82,6 +82,8 @@ The clearing happens early, not just before the tool starts: a rerun that fails 
 
 Outputs named after the design's top — `<top>.bit`, `<design>.routed.odb` — are matched by suffix rather than by name, so editing a run's `model:` or `top:` does not strand the previous top's files in the same directory. An artifact directory belongs to one run, so everything carrying a suffix that flow writes is that flow's own output; nothing else in the directory is touched, and the scan never recurses into a workdir a tool owns.
 
+A tool that writes an output and *then* fails counts as a failure like any other: Yosys writes its netlist before the trailing `stat` that can error, and the hierarchy renderer can write a `view.json` before exiting non-zero or emitting a schema this rtl_buddy rejects. Those outputs are removed again, so a run that reports a failure has published nothing. A configuration error — an unknown `platform:`, a part a backend cannot build — clears them too; it is a failed run, not a skip.
+
 Consequently a failed rerun leaves no output at all rather than the previous run's. This propagates: a failed `rb synth` leaves no netlist, so `rb pnr` and `rb power` report that you need to run `rb synth` first instead of consuming the previous netlist. An `rb fpga` run without `--bitstream` likewise removes a previously built `<top>.bit`. Copy an artifact you want to compare against out of `artefacts/<name>/` before rerunning. Logs are exempt: each flow truncates its own log, so a crashed run still has one to read.
 
 An artifact that cannot be deleted — a permissions problem, or a directory where a file belongs — fails the run with a fatal error rather than letting it proceed, since continuing would risk reporting the previous run's numbers.

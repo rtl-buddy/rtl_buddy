@@ -1477,3 +1477,47 @@ def test_cli_fpga_regression_missing_config_exits_2(
     assert exit_code == 2, captured
     payload = json.loads(captured.out)
     assert "fpga_regression.yaml not found" in payload["payload"]["error"]
+
+
+def test_vivado_fpga_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
+    """`resolve_target` raises on an unknown `platform:`. That is a config
+    error, but raising it with the previous run's reports and a deployable
+    `.bit` still in place is the same trap as any other failure (#469)."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    model = ModelConfig(name="demo_top", filelist=[], path=str(tmp_path / "m.yaml"))
+    cfg = FpgaConfig(
+        name="demo_fpga",
+        desc="demo",
+        model=model,
+        tool="vivado",
+        part="",
+        platform="no_such_platform",
+        xdc_files=[],
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    backend = VivadoFpga(
+        name="demo/vivado",
+        fpga_cfg=cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,  # makes resolve_target raise
+        executable="vivado",
+        emit_bitstream=True,
+    )
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    for filename in REPORT_FILES.values():
+        shutil.copy(FIXTURES / filename, artefacts / filename)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    with pytest.raises(FatalRtlBuddyError, match="platform"):
+        backend.run()
+
+    assert not stale_bit.exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists()

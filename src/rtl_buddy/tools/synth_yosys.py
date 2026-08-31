@@ -399,6 +399,21 @@ class YosysSynth:
                 paths=stale,
             )
 
+    def _fail_after_yosys(self, desc: str) -> SynthFailResults:
+        """Fail a run that has already invoked Yosys, publishing no netlist.
+
+        Yosys writes `synth_netlist.v` / `synth.rtlil` partway through its
+        script and only then runs the trailing `stat`, so it can crash — or
+        log an `ERROR:` line — with the netlist already on disk. Returning a
+        FAIL and leaving it there hands `rb pnr` and `rb power` a design at
+        exactly the fixed path they resolve, from a synthesis that failed
+        (#469). Every post-Yosys failure return goes through here so the two
+        halves cannot drift apart, and so a new failure gate added to this
+        method inherits the cleanup by using it.
+        """
+        self._clear_stale_netlists()
+        return SynthFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> SynthResults:
         log_event(
             logger,
@@ -455,10 +470,7 @@ class YosysSynth:
                 returncode=result.returncode,
                 log=log_path,
             )
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc=f"Tool exited with code {result.returncode}",
-            )
+            return self._fail_after_yosys(f"Tool exited with code {result.returncode}")
 
         try:
             with open(log_path, "r") as f:
@@ -476,9 +488,8 @@ class YosysSynth:
                 count=len(error_lines),
                 log=log_path,
             )
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in synthesis log",
+            return self._fail_after_yosys(
+                f"{len(error_lines)} ERROR(s) in synthesis log"
             )
 
         area_um2 = self._parse_area_um2(log_text)

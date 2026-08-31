@@ -2603,3 +2603,136 @@ def test_openroad_failed_sta_stage_removes_the_netlist(tmp_path, monkeypatch):
 
     assert isinstance(result, SynthFailResults)
     assert netlist.exists() is False, "a failed synthesis must publish no netlist"
+
+
+def test_yosys_nonzero_exit_after_writing_removes_the_netlist(tmp_path, monkeypatch):
+    """Yosys writes the netlist partway through its script and only then runs
+    the trailing `stat`, so it can crash with the netlist already on disk. A
+    FAIL must publish nothing (#469)."""
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+    netlist = Path(ys.artefact_dir) / "synth_netlist.v"
+
+    def _writes_then_dies(cmd, stdout, stderr, **kwargs):
+        netlist.write_text("module my_module(); endmodule\n")
+        return ManagedProcessResult(returncode=1)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(synth_yosys_module, "run_managed_process", _writes_then_dies)
+
+    result = ys.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "code 1" in result.results["desc"]
+    assert not netlist.exists()
+
+
+def test_yosys_error_line_after_writing_removes_the_netlist(tmp_path, monkeypatch):
+    """Same for the other post-run gate: an `ERROR:` line in the log fails the
+    run, so the netlist Yosys had already written must go (#469)."""
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+    netlist = Path(ys.artefact_dir) / "synth_netlist.v"
+
+    def _writes_then_errors(cmd, stdout, stderr, **kwargs):
+        netlist.write_text("module my_module(); endmodule\n")
+        stdout.write("ERROR: cell type not found in liberty\n")
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(synth_yosys_module, "run_managed_process", _writes_then_errors)
+
+    result = ys.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "ERROR(s) in synthesis log" in result.results["desc"]
+    assert not netlist.exists()
+
+
+def test_openroad_yosys_stage_writes_then_fails_removes_the_netlist(
+    tmp_path, monkeypatch
+):
+    """Stage 1's script writes the netlist before its trailing `stat`, so a
+    stage-1 crash also leaves one behind — the `not yosys_ok` return has to
+    clear it too (#469)."""
+    from rtl_buddy.tools import synth_openroad as synth_openroad_module
+
+    model = _setup_run(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="openroad",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform="mylib",
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=synth_cfg,
+        root_cfg=_FakeRootCfgOR(
+            lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+        ),
+    )
+    netlist = Path(or_synth.artefact_dir) / "synth_netlist.v"
+
+    monkeypatch.setattr(
+        synth_openroad_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+
+    def _stage1_writes_then_dies(cmd, **kwargs):
+        netlist.write_text("module demo_top(); endmodule\n")
+
+        class _R:
+            returncode = 1
+
+        return _R()
+
+    monkeypatch.setattr(
+        synth_openroad_module.subprocess, "run", _stage1_writes_then_dies
+    )
+
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "Yosys stage failed" in result.results["desc"]
+    assert not netlist.exists()

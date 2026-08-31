@@ -571,3 +571,64 @@ def test_cli_openxc7_non_7series_part_exits_2(
     assert exit_code == 2, captured
     payload = json.loads(captured.out)
     assert "7-series" in payload["payload"]["error"]
+
+
+def test_openxc7_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
+    """Target resolution now runs after the clear, so an unknown `platform:`
+    (or a non-7-series part) does not raise over a previous run's netlist,
+    FASM and deployable bitstream (#469)."""
+    model = ModelConfig(
+        name="demo_top", filelist=[], path=str(tmp_path / "models.yaml")
+    )
+    cfg = FpgaConfig(
+        name="demo_fpga",
+        desc="demo",
+        model=model,
+        tool="openxc7",
+        part="",
+        platform="no_such_platform",
+        xdc_files=[],
+        _reglvl=None,
+        tool_overrides=_CHIPDB_OVERRIDES,
+    )
+    backend = OpenXc7Fpga(
+        name="demo/openxc7",
+        fpga_cfg=cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,  # makes resolve_target raise
+        executable="openxc7",
+        emit_bitstream=True,
+    )
+    monkeypatch.setattr(
+        fpga_openxc7_module.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    stale = {
+        name: artefacts / name
+        for name in ("demo_top.bit", "demo_top.json", "demo_top.fasm")
+    }
+    for path in stale.values():
+        path.write_bytes(b"\x00stale\x00")
+
+    with pytest.raises(FatalRtlBuddyError, match="platform"):
+        backend.run()
+
+    for name, path in stale.items():
+        assert not path.exists(), name
+
+
+def test_openxc7_non_7series_part_still_clears_artefacts(tmp_path, monkeypatch):
+    """The 7-series gate is a config error raised after the clear too."""
+    backend = _make_backend(tmp_path, part="xczu7ev-ffvc1156-2-e", emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_openxc7_module.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
+
+    stale_bit = Path(backend.artefact_dir) / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    with pytest.raises(FatalRtlBuddyError, match="7-series"):
+        backend.run()
+
+    assert not stale_bit.exists()

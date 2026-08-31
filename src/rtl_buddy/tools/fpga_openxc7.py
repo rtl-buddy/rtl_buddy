@@ -231,20 +231,60 @@ class OpenXc7Fpga(BaseFpga):
     # Entry point
     # ------------------------------------------------------------------
 
-    def run(self) -> FpgaResults:
-        # Resolve up front: an unknown `platform:` ref is a config error
-        # (exit 2), even when the toolchain is absent.
-        target = resolve_target(self.fpga_cfg, self.root_cfg)
-        part = target.part
-        # openXC7 (nextpnr-xilinx + prjxray) covers the 7-series
-        # families only — anything else is a config error, not a skip.
-        if not part.lower().startswith("xc7"):
-            raise FatalRtlBuddyError(
-                f"fpga run '{self.fpga_cfg.get_name()}': backend 'openxc7' "
-                f"supports 7-series parts only (names starting with 'xc7'), "
-                f"got '{part}' — use tool: vivado for other device families"
+    def _clear_managed_outputs(self) -> None:
+        """Remove every output a run of this entry produces.
+
+        Each stage hands its output file to the next by name and the bitstream
+        check at the end is a plain `isfile`, so a stage that exits 0 without
+        writing would silently promote a previous run's netlist / FASM /
+        frames / bitstream (#469). `<top>.frames` is on the list even though
+        its own stage truncates it at write time: a run without `--bitstream`
+        never reaches that stage at all, and a bitstream rerun that dies
+        earlier never reaches it either. The bitstream goes even without
+        `--bitstream`, matching the Vivado backend — the artefact dir
+        describes the latest run. Matched by suffix rather than by `<top>` so
+        that editing the run's model or top does not strand the previous
+        top's files here. Stage logs are truncated by `_run_stage` and carry
+        none of these suffixes.
+        """
+        stale = clear_managed_outputs(
+            self.artefact_dir,
+            _MANAGED_OUTPUT_SUFFIXES,
+            owner=self.fpga_cfg.get_name(),
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "fpga.stale_artefacts_removed",
+                fpga=self.fpga_cfg.get_name(),
+                paths=stale,
             )
+
+    def run(self) -> FpgaResults:
         top = self.fpga_cfg.get_top()
+
+        # Resolved up front, and ahead of the toolchain skip below, because a
+        # bad `platform:` or a part this backend cannot build is a config
+        # error (exit 2) whether or not openXC7 is installed. Raising it over
+        # a previous run's netlist, FASM and deployable bitstream would leave
+        # exactly the stale artefacts this fix removes, so a config error
+        # clears them on its way out — it is a failed run, not a skip (#469).
+        try:
+            target = resolve_target(self.fpga_cfg, self.root_cfg)
+            part = target.part
+            # openXC7 (nextpnr-xilinx + prjxray) covers the 7-series
+            # families only — anything else is a config error, not a skip.
+            if not part.lower().startswith("xc7"):
+                raise FatalRtlBuddyError(
+                    f"fpga run '{self.fpga_cfg.get_name()}': backend 'openxc7' "
+                    f"supports 7-series parts only (names starting with 'xc7'), "
+                    f"got '{part}' — use tool: vivado for other device families"
+                )
+        except FatalRtlBuddyError:
+            self._clear_managed_outputs()
+            raise
+
         log_event(
             logger,
             logging.INFO,
@@ -280,6 +320,13 @@ class OpenXc7Fpga(BaseFpga):
                 ),
             )
 
+        # Everything past the missing-binaries skip is a run of this entry,
+        # however it ends — including the chipdb/prjxray checks and the
+        # filelist error below. Deliberately *after* that skip: a box without
+        # the toolchain never ran anything, so it must not delete what a box
+        # with the toolchain built.
+        self._clear_managed_outputs()
+
         chipdb = self._resolve_chipdb(part)
         if chipdb is None:
             return FpgaSkipResults(
@@ -301,36 +348,6 @@ class OpenXc7Fpga(BaseFpga):
                     "$PRJXRAY_DB_DIR at the database root (see "
                     "`rb tool-check --explain prjxray`)"
                 ),
-            )
-
-        # Everything past the toolchain skips above is a run of this entry,
-        # however it ends — including the filelist error that returns just
-        # below. Each stage hands its output file to the next by name and the
-        # bitstream check at the end is a plain `isfile`, so a stage that
-        # exits 0 without writing would silently promote a previous run's
-        # netlist / FASM / frames / bitstream (#469). `<top>.frames` is on
-        # the list even though its own stage truncates it at write time: a
-        # run without `--bitstream` never reaches that stage at all, and a
-        # bitstream rerun that dies earlier never reaches it either. The
-        # bitstream goes even without `--bitstream`, matching the Vivado
-        # backend — the artefact dir describes the latest run. Matched by
-        # suffix rather than by `<top>` so that editing the run's model or
-        # top does not strand the previous top's files here, still at the
-        # paths a later edit-back would resolve. Stage logs are truncated by
-        # `_run_stage` and carry none of these suffixes. Deliberately *after*
-        # the skips: a box without the toolchain never ran anything.
-        stale = clear_managed_outputs(
-            self.artefact_dir,
-            _MANAGED_OUTPUT_SUFFIXES,
-            owner=self.fpga_cfg.get_name(),
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "fpga.stale_artefacts_removed",
-                fpga=self.fpga_cfg.get_name(),
-                paths=stale,
             )
 
         try:

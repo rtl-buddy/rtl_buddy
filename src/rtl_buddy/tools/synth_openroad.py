@@ -590,6 +590,20 @@ class OpenRoadSynth:
                 paths=stale,
             )
 
+    def _fail_after_yosys(self, desc: str) -> SynthFailResults:
+        """Fail a run that has already invoked Yosys, publishing no netlist.
+
+        Stage 1's script writes the netlist before its trailing `stat`, so a
+        Yosys that then crashes or logs an `ERROR:` line leaves it on disk —
+        as does a stage 1 that fully succeeds before stage 2 dies on
+        `link_design` or the SDC. Either way `rb synth` reports FAIL while
+        the netlist sits at the fixed path `rb pnr` and `rb power` resolve
+        (#469). Every post-Yosys failure return goes through here, so a new
+        failure gate added to this method inherits the cleanup by using it.
+        """
+        self._clear_stale_netlists()
+        return SynthFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> SynthResults:
         log_event(
             logger,
@@ -663,18 +677,12 @@ class OpenRoadSynth:
                 returncode=-1,
                 log=self._yosys_log_path(),
             )
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc="Yosys stage failed; see synth_yosys.log",
-            )
+            # Stage 1 writes the netlist before its trailing `stat`, so a
+            # crash or an ERROR line here can still leave one behind.
+            return self._fail_after_yosys("Yosys stage failed; see synth_yosys.log")
 
         result = self._run_or_stage(gate_count, lef_paths, lib_paths)
         if isinstance(result, SynthFailResults):
-            # Stage 1 may well have written a netlist before stage 2 failed
-            # on `link_design` or the SDC. `rb synth` reports FAIL, but the
-            # netlist is sitting at exactly the fixed path `rb pnr` and
-            # `rb power` resolve — so a failing synthesis would still hand
-            # them a design to place and power-analyse (#469). A run that
-            # fails publishes nothing.
-            self._clear_stale_netlists()
+            # Stage 1 succeeded and published a netlist; stage 2 then failed.
+            return self._fail_after_yosys(result.results["desc"])
         return result
