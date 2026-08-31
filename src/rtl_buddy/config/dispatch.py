@@ -27,8 +27,9 @@ execution backend for regression test runs:
       poll-interval: 10        # seconds between queue polls while collecting
       progress-interval: 60    # seconds between console progress lines (0 = quiet)
       max-wait: 7200           # seconds the head waits before failing loudly
-      max-array-size: 1001     # the cluster's Slurm MaxArraySize; normally
-                               # read from `scontrol show config`
+      max-jobs-per-array: 200  # %N throttle on EACH submitted Slurm array
+      max-array-size: 1001     # the cluster's Slurm MaxArraySize; omit it to
+                               # read the value from `scontrol show config`
       jobs: 4                  # local-parallel only: concurrent subprocesses
       retry:                   # optional; entirely off unless attempts > 0
         attempts: 2            # EXTRA attempts after the first

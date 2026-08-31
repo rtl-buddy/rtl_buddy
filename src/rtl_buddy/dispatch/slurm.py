@@ -574,6 +574,25 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return None
 
+    def _unknown_limit_hint(self) -> str:
+        """Why an oversized group was not split, for a failed array submit.
+
+        ``Invalid job array specification`` is exactly what sbatch answers a
+        group larger than the cluster's ``MaxArraySize``, and a limit that
+        could not be read is why this run did not split it. The probe already
+        says so — but at INFO, which a default-verbosity console never shows,
+        while THIS message is the one that fails the run in front of the user
+        (#509). Empty whenever the limit is known, so a submit that failed for
+        any other reason is not sent chasing a red herring.
+        """
+        if self._elements_per_array is not None:
+            return ""
+        return (
+            "; the cluster's MaxArraySize could not be read, so this group was "
+            "submitted as one array — set cfg-dispatch.max-array-size to let "
+            "rb split a group larger than that limit"
+        )
+
     def submit_array(
         self,
         specs: list[TestJobSpec],
@@ -686,6 +705,7 @@ class SlurmDispatchBackend(DispatchBackend):
             raise FatalRtlBuddyError(
                 f"sbatch array submit failed{where} ({len(specs)} jobs, "
                 f"rc={proc.returncode}): {proc.stderr.strip()}"
+                f"{self._unknown_limit_hint()}"
             )
         base_id = proc.stdout.strip().split(";")[0]
         if not base_id:

@@ -25,7 +25,10 @@ Two things it deliberately does **not** do:
   (``ulimit``/``nice``/``taskset`` are coarse and platform-specific), so
   ``jobs`` is the only concurrency control. ``max-jobs-per-array`` is a
   Slurm ``%N`` throttle and equally inapplicable — the pool is one global
-  cap across every suite and resource group.
+  cap across every suite and resource group — and so is
+  ``max-array-size``: there is no job array here to outgrow a scheduler
+  limit, so the inherited :meth:`DispatchBackend.submit_array` never
+  splits a group (#509).
 * **Report usage.** With no accounting source there is no reserved-vs-used
   telemetry, so reservation right-sizing yields no advice
   (:meth:`LocalProcessBackend.collect_telemetry`).

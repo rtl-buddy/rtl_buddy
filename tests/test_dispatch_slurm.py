@@ -1253,6 +1253,15 @@ def test_effective_sbatch_args_is_what_the_backend_will_append():
 # ------------------------------------- MaxArraySize chunking (#509)
 
 
+def _events(caplog, event):
+    """The `rtl_fields` of every record logged for one rtl_event."""
+    return [
+        r.__dict__["rtl_fields"]
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == event
+    ]
+
+
 def _array_ranges(calls):
     """The `--array=` value of every sbatch call, in submission order."""
     return [
@@ -1355,18 +1364,9 @@ def test_an_unknown_limit_submits_one_array_as_before(monkeypatch, tmp_path, cap
         )
 
     assert _array_ranges(calls) == ["1-10"]
-    assert [
-        r
-        for r in caplog.records
-        if r.__dict__.get("rtl_event") == "dispatch.max_array_size_unknown"
-    ]
+    assert len(_events(caplog, "dispatch.max_array_size_unknown")) == 1
     # ...and the single-array event still reports itself as one slice of one.
-    (submitted,) = [
-        r
-        for r in caplog.records
-        if r.__dict__.get("rtl_event") == "dispatch.array_submitted"
-    ]
-    fields = submitted.__dict__["rtl_fields"]
+    (fields,) = _events(caplog, "dispatch.array_submitted")
     assert (fields["slice"], fields["slices"]) == (1, 1)
 
 
@@ -1451,7 +1451,9 @@ def test_the_configured_limit_wins_over_scontrol(monkeypatch, tmp_path):
     assert probed == []
 
 
-def test_an_unusable_scontrol_answer_disables_chunking_loudly(monkeypatch, tmp_path):
+def test_an_unusable_scontrol_answer_disables_chunking_loudly(
+    monkeypatch, tmp_path, caplog
+):
     """rc=0 but no MaxArraySize line: unknown, and said so once."""
     calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
 
@@ -1465,11 +1467,19 @@ def test_an_unusable_scontrol_answer_disables_chunking_loudly(monkeypatch, tmp_p
     monkeypatch.setattr(slurm_module.subprocess, "run", run)
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
-    backend.submit_array([_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a")
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
     assert _array_ranges(calls) == ["1-3"]
+    # "Loudly" is the whole point: silence here is a cluster whose groups
+    # will be refused by sbatch with nothing in the log to say why.
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "no usable MaxArraySize" in fields["error"]
 
 
-def test_a_wedged_scontrol_does_not_fail_the_submit(monkeypatch, tmp_path):
+def test_a_wedged_scontrol_does_not_fail_the_submit(monkeypatch, tmp_path, caplog):
     calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
 
     def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
@@ -1480,8 +1490,57 @@ def test_a_wedged_scontrol_does_not_fail_the_submit(monkeypatch, tmp_path):
     monkeypatch.setattr(slurm_module.subprocess, "run", run)
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
-    backend.submit_array([_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a")
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
     assert _array_ranges(calls) == ["1-3"]
+    assert len(_events(caplog, "dispatch.max_array_size_unknown")) == 1
+
+
+def test_a_refused_array_names_the_unread_limit(monkeypatch, tmp_path):
+    """The reporter's exact failure, made actionable on the console.
+
+    `Invalid job array specification` IS an oversized group, and the probe
+    that would have split it only says so at INFO — which a default console
+    never shows. The error that fails the run carries the fix instead.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "Invalid job array specification" in str(excinfo.value)
+    assert "cfg-dispatch.max-array-size" in str(excinfo.value)
+
+
+def test_a_refused_array_with_a_known_limit_offers_no_red_herring(
+    monkeypatch, tmp_path
+):
+    """A group already within the limit failed for some other reason."""
+    calls = []
+    results = [SimpleNamespace(returncode=1, stdout="", stderr="Invalid account")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=1001).initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "Invalid account" in str(excinfo.value)
+    assert "max-array-size" not in str(excinfo.value)
 
 
 def test_a_failed_slice_cancels_the_slices_already_submitted(monkeypatch, tmp_path):

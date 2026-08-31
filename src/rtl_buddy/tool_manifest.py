@@ -389,7 +389,7 @@ def _builtin_manifest() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="slurm",
-            binaries=("sbatch", "squeue", "sacct", "scancel"),
+            binaries=("sbatch", "squeue", "sacct", "scancel", "scontrol"),
             version_cmd=("sbatch", "--version"),
             version_regex=r"slurm[- ]?(?:wlm\s+)?([\d.]+)",
             minimum_version=None,
@@ -403,12 +403,18 @@ def _builtin_manifest() -> list[ToolSpec]:
             },
             used_by=("regression", "randtest", "test"),
             optional=True,
-            description="Slurm workload manager client (sbatch/squeue/sacct/scancel)",
+            description="Slurm workload manager client "
+            "(sbatch/squeue/sacct/scancel; scontrol optional)",
             notes="Only needed for `regression --dispatch slurm` (and randtest, "
             "and `rb test --dispatch slurm`). "
             "Requires a shared filesystem between the submit host and compute "
             "nodes; sacct (slurmdbd accounting) drives reservation right-sizing "
-            "telemetry and degrades gracefully when absent.",
+            "telemetry and degrades gracefully when absent. scontrol is an "
+            "optional probe: `scontrol show config` supplies the cluster's "
+            "MaxArraySize, and without it there is no automatic chunking of a "
+            "resource group too large for one job array — set "
+            "cfg-dispatch.max-array-size instead, or sbatch refuses the group "
+            "with `Invalid job array specification`.",
         ),
         ToolSpec(
             name="surfer",

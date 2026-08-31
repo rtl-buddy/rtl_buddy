@@ -558,6 +558,28 @@ def test_slurm_gates_test_as_well_as_regression():
     assert "rb test --dispatch slurm" in slurm.notes
 
 
+def test_slurm_explains_scontrol_as_an_optional_probe():
+    """`rb tool-check --explain slurm` must name scontrol and what it buys.
+
+    The backend shells out to `scontrol show config` for the cluster's
+    MaxArraySize (#509). Missing scontrol is not a gate — chunking simply
+    stays off — but a site that hits `Invalid job array specification`
+    needs the manifest to say so and to name the config fallback, since
+    --explain is what the bundled skill tells agents to read.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    slurm = by_name["slurm"]
+
+    assert "scontrol" in slurm.binaries
+    text = tm.explain(slurm)
+    assert "scontrol" in text
+    assert "MaxArraySize" in text
+    assert "cfg-dispatch.max-array-size" in text
+    # Still optional overall: sbatch is the version probe and the gate.
+    assert slurm.version_cmd[0] == "sbatch"
+    assert slurm.optional
+
+
 def test_rtl_buddy_view_declares_floor_and_version_probe():
     """rtl-buddy-view carries a 0.3.0 FLOOR (no upper cap) and a probe.
 
