@@ -939,3 +939,77 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
 
     assert "ERROR(s) in OpenROAD log" in res.results["desc"]
     assert not odb.exists()
+
+
+def test_def2stream_removes_a_zero_length_gds(tmp_path, monkeypatch):
+    """A zero-length GDS is what the size check rejects, and it is still a
+    file — leaving it means the next run's `isfile` sees a layout where none
+    was produced (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(
+        tmp_path, klayout_tech="pdk/klayout/tech.lyt", cell_gds="pdk/gds/cells.gds"
+    )
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+    out_gds = Path(backend.artefact_dir) / "demo_top.gds"
+
+    def _writes_empty(cmd, **_kwargs):
+        out_gds.write_bytes(b"")
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "fatal: streamout aborted"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_empty)
+
+    assert backend._run_def2stream(platform, "demo_top") is None
+    assert not out_gds.exists()
+
+
+def test_gds2png_removes_a_partial_png(tmp_path, monkeypatch):
+    """KLayout can render part of the image and then fail; a partial PNG left
+    here is reported as this run's layout by the next one (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(tmp_path, klayout_props="pdk/klayout/props.lyp")
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+        emit_png=True,
+    )
+    out_png = Path(backend.artefact_dir) / "demo_top.png"
+    gds = Path(backend.artefact_dir) / "demo_top.gds"
+    gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
+
+    def _writes_partial(cmd, **_kwargs):
+        out_png.write_bytes(b"\x89PNG partial")
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "render aborted"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_partial)
+
+    assert backend._run_gds2png(platform, str(gds), "demo_top") is None
+    assert not out_png.exists()

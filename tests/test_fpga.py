@@ -1521,3 +1521,53 @@ def test_vivado_fpga_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
     assert not stale_bit.exists()
     for filename in REPORT_FILES.values():
         assert not (artefacts / filename).exists()
+
+
+def test_vivado_fpga_bitstream_stage_failure_publishes_nothing(tmp_path, monkeypatch):
+    """The Tcl writes all five reports before `write_bitstream`, so a run that
+    dies at the bitstream stage leaves fresh reports and a partial `.bit`.
+    A FAIL publishes nothing (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    def _reports_then_dies(cmd, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "vivado.log").write_text("")
+        for filename in REPORT_FILES.values():
+            shutil.copy(FIXTURES / filename, cwd / filename)
+        (cwd / "demo_top.bit").write_bytes(b"\x00partial\x00")
+        return ManagedProcessResult(returncode=1)
+
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _reports_then_dies)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "exited with code 1" in res.results["desc"]
+    assert not (artefacts / "demo_top.bit").exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists(), filename
+
+
+def test_vivado_fpga_missing_bitstream_clears_the_reports(tmp_path, monkeypatch):
+    """The "bitstream not produced" gate fires after the reports were written,
+    so it has to clear them too (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    monkeypatch.setattr(
+        fpga_vivado_module,
+        "run_managed_process",
+        _fake_vivado(drop_bitstream=False),
+    )
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "bitstream not produced" in res.results["desc"]
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists(), filename

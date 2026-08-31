@@ -26,6 +26,12 @@ BUILD_DIR_PREFIX = "obj_dir"
 #: able to tell one of those from a generated input (#478).
 RESULT_JSON_NAME = "result.json"
 
+#: The compile stamp a simulator build writes beside its build directory —
+#: directly into ``artefacts/<test>/`` for an unshared build. Defined here
+#: rather than in :mod:`.vlog_sim` (which imports it from here) so that the
+#: protected set below and the stamp's writer cannot drift apart.
+SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+
 #: A dispatched job's envelope and log, written into
 #: ``<test>/dispatch/`` (per test) and ``artefacts/.dispatch/`` (per head)
 #: — see :mod:`rtl_buddy.dispatch.argv`. fnmatch patterns, because both
@@ -63,6 +69,10 @@ DISPATCH_OUTPUT_PATTERNS = (
 #: halves of that: every name below is one a flow really writes, and none of
 #: them is one a flow clears by suffix.
 SIBLING_OUTPUT_NAMES = (
+    # rb test's build cache (tools/vlog_sim.py). An unshared build writes it
+    # straight into `artefacts/<test>/`, so a co-named FPGA run's `.json`
+    # clear would silently invalidate the cache and force a recompile.
+    SHARED_BUILD_STAMP_NAME,
     # rb cdc, open analyzer (tools/cdc_rtl_buddy.py)
     "cdc.json",
     "cdc.txt",

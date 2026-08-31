@@ -1010,12 +1010,19 @@ def test_protected_names_are_outputs_a_flow_really_writes():
     """Drift guard: every sibling name in the protected set has to be one a
     flow actually writes into `artefacts/<name>/`, or the set is stale and
     protecting nothing (#469)."""
-    from rtl_buddy.tools.artifact_paths import SIBLING_OUTPUT_NAMES
+    from rtl_buddy.tools import vlog_sim as vlog_sim_mod
+    from rtl_buddy.tools.artifact_paths import (
+        SHARED_BUILD_STAMP_NAME,
+        SIBLING_OUTPUT_NAMES,
+    )
 
+    # The build stamp is a shared constant rather than a literal in its
+    # writer, so check the binding instead of grepping for the string.
+    assert vlog_sim_mod.SHARED_BUILD_STAMP_NAME == SHARED_BUILD_STAMP_NAME
+
+    tools = Path(__file__).parent.parent / "src" / "rtl_buddy" / "tools"
     sources = "\n".join(
-        (
-            Path(__file__).parent.parent / "src" / "rtl_buddy" / "tools" / name
-        ).read_text()
+        (tools / name).read_text()
         for name in (
             "cdc_rtl_buddy.py",
             "cdc_vivado.py",
@@ -1030,7 +1037,9 @@ def test_protected_names_are_outputs_a_flow_really_writes():
     unwritten = [
         name
         for name in SIBLING_OUTPUT_NAMES
-        if name not in sources and not name.startswith("cdc.")
+        if name not in sources
+        and not name.startswith("cdc.")
+        and name != SHARED_BUILD_STAMP_NAME
     ]
     assert not unwritten, f"protected but written by nobody: {unwritten}"
 

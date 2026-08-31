@@ -310,6 +310,18 @@ class VivadoCdc:
 
     # --- run ----------------------------------------------------------------
 
+    def _fail_after_vivado(self, desc: str) -> CdcFailResults:
+        """Fail a run that has already invoked Vivado, publishing no report.
+
+        `report_cdc` writes `cdc.rpt` partway through the Tcl, so Vivado can
+        exit non-zero — or log an ERROR, or emit a report this wrapper cannot
+        parse — with a complete or partial report on disk at the fixed path
+        the next run's parse would read (#469). Every post-Vivado failure
+        return goes through here.
+        """
+        clear_stale_artefacts([self._report_path()], owner=self.cdc_cfg.get_name())
+        return CdcFailResults(name=self.cdc_cfg.get_name(), violations=0, desc=desc)
+
     def run(self) -> CdcResults:
         # Resolve up front: a missing part is a config error (exit 2),
         # even when vivado is absent.
@@ -422,10 +434,8 @@ class VivadoCdc:
             )
 
         if result.returncode != 0:
-            return CdcFailResults(
-                name=self.cdc_cfg.get_name(),
-                violations=0,
-                desc=(f"vivado exited with code {result.returncode} (see {log_path})"),
+            return self._fail_after_vivado(
+                f"vivado exited with code {result.returncode} (see {log_path})"
             )
 
         try:
@@ -434,27 +444,17 @@ class VivadoCdc:
             log_text = ""
         error_lines = [ln for ln in log_text.splitlines() if _VIVADO_ERROR_RE.match(ln)]
         if error_lines:
-            return CdcFailResults(
-                name=self.cdc_cfg.get_name(),
-                violations=0,
-                desc=f"{len(error_lines)} ERROR(s) in Vivado log (see {log_path})",
+            return self._fail_after_vivado(
+                f"{len(error_lines)} ERROR(s) in Vivado log (see {log_path})"
             )
 
         report_path = self._report_path()
         if not os.path.isfile(report_path):
-            return CdcFailResults(
-                name=self.cdc_cfg.get_name(),
-                violations=0,
-                desc=f"no CDC report produced (see {log_path})",
-            )
+            return self._fail_after_vivado(f"no CDC report produced (see {log_path})")
         try:
             parsed = parse_report_cdc(Path(report_path).read_text())
         except (OSError, ValueError) as e:
-            return CdcFailResults(
-                name=self.cdc_cfg.get_name(),
-                violations=0,
-                desc=f"could not parse CDC report: {e}",
-            )
+            return self._fail_after_vivado(f"could not parse CDC report: {e}")
 
         violations = parsed["violations"]
         log_event(

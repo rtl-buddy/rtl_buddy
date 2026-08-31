@@ -248,6 +248,18 @@ class OpenRoadPower(BasePower):
     # Entry point
     # ------------------------------------------------------------------
 
+    def _fail_after_openroad(self, desc: str) -> PowerFailResults:
+        """Fail a run that has already invoked OpenROAD, publishing no report.
+
+        `report_power`'s output file is written before the script ends, so
+        OpenROAD can exit non-zero — or log an `[ERROR ...]`, or leave a
+        report this wrapper cannot read or parse — with `power.rpt` on disk
+        at the fixed path the next run would otherwise quote (#469). Every
+        post-OpenROAD failure return goes through here.
+        """
+        clear_stale_artefacts([self._report_path()], owner=self.power_cfg.get_name())
+        return PowerFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> PowerResults:
         log_event(
             logger,
@@ -342,9 +354,8 @@ class OpenRoadPower(BasePower):
                 returncode=result.returncode,
                 log=log_path,
             )
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"OpenROAD exited with code {result.returncode}",
+            return self._fail_after_openroad(
+                f"OpenROAD exited with code {result.returncode}"
             )
 
         try:
@@ -354,31 +365,25 @@ class OpenRoadPower(BasePower):
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in OpenROAD log",
+            return self._fail_after_openroad(
+                f"{len(error_lines)} ERROR(s) in OpenROAD log"
             )
 
         report_path = self._report_path()
         if not os.path.isfile(report_path):
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"power report not produced at {report_path}",
+            return self._fail_after_openroad(
+                f"power report not produced at {report_path}"
             )
 
         try:
             report_text = Path(report_path).read_text()
         except OSError as e:
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"failed to read power report: {e}",
-            )
+            return self._fail_after_openroad(f"failed to read power report: {e}")
 
         parsed = self._parse_report(report_text)
         if parsed is None:
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc="could not parse Total line from report_power output",
+            return self._fail_after_openroad(
+                "could not parse Total line from report_power output"
             )
 
         activity_source = self.power_cfg.get_activity_source()

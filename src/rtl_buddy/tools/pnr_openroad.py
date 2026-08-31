@@ -380,6 +380,10 @@ class OpenRoadPnr:
                 returncode=r.returncode,
                 log=log_path,
             )
+            # A zero-length GDS is what the size check above rejects, and it
+            # is still a file: leaving it means the next run's `isfile` sees
+            # a layout where none was produced (#469).
+            clear_stale_artefacts([out_gds], owner=self.pnr_cfg.get_name())
             return None
         if r.returncode != 0:
             log_event(
@@ -430,6 +434,9 @@ class OpenRoadPnr:
                 returncode=r.returncode,
                 log=log_path,
             )
+            # KLayout can render part of the image and then fail; a partial
+            # PNG left here is reported as this run's layout by the next one.
+            clear_stale_artefacts([out_png], owner=self.pnr_cfg.get_name())
             return None
         return out_png
 

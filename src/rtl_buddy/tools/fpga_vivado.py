@@ -169,6 +169,19 @@ class VivadoFpga(BaseFpga):
                 paths=stale,
             )
 
+    def _fail_after_vivado(self, desc: str) -> FpgaFailResults:
+        """Fail a run that has already invoked Vivado, publishing nothing.
+
+        The Tcl writes all five post-route reports before it reaches
+        `write_bitstream`, so a run that dies at the bitstream stage — or
+        exits non-zero, or logs an ERROR, or leaves a report this wrapper
+        cannot parse — has fresh reports and possibly a partial `<top>.bit`
+        on disk at the fixed paths the next run would otherwise read (#469).
+        Every post-Vivado failure return goes through here.
+        """
+        self._clear_managed_outputs()
+        return FpgaFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> FpgaResults:
         # Resolved up front, and ahead of the tool skip below, because an
         # unknown `platform:` ref is a config error (exit 2) whether or not
@@ -282,9 +295,8 @@ class VivadoFpga(BaseFpga):
                 returncode=result.returncode,
                 log=log_path,
             )
-            return FpgaFailResults(
-                name=self.name + "/results",
-                desc=f"Vivado exited with code {result.returncode}",
+            return self._fail_after_vivado(
+                f"Vivado exited with code {result.returncode}"
             )
 
         try:
@@ -303,24 +315,18 @@ class VivadoFpga(BaseFpga):
                 first=error_lines[0],
                 log=log_path,
             )
-            return FpgaFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in Vivado log",
-            )
+            return self._fail_after_vivado(f"{len(error_lines)} ERROR(s) in Vivado log")
 
         try:
             reports = self._parse_reports()
         except RuntimeError as e:
-            return FpgaFailResults(name=self.name + "/results", desc=str(e))
+            return self._fail_after_vivado(str(e))
 
         bitstream: str | None = None
         if self.emit_bitstream:
             bit_path = self._bitstream_path()
             if not os.path.isfile(bit_path):
-                return FpgaFailResults(
-                    name=self.name + "/results",
-                    desc=f"bitstream not produced at {bit_path}",
-                )
+                return self._fail_after_vivado(f"bitstream not produced at {bit_path}")
             bitstream = bit_path
 
         util = reports["utilization"]

@@ -88,7 +88,10 @@ _UNSET = object()
 
 # Stamp written into a shared build dir after a successful compile; records
 # the exact compile inputs the simv was built from so reuse can be validated.
-SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+# Defined in `artifact_paths` so the artefact-clearing helpers can protect it
+# from a co-named run's suffix clear (#469); re-exported here because this is
+# where every consumer already looks for it.
+from .artifact_paths import SHARED_BUILD_STAMP_NAME as SHARED_BUILD_STAMP_NAME
 
 # First line of the ``compile.log`` a *reuse* leaves (#494). Doubles as the
 # marker that tells a breadcrumb from a real compile transcript, so a reuse

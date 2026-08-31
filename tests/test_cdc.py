@@ -843,3 +843,93 @@ def test_lint_missing_analyzer_skip_still_fires_for_a_valid_analysis(
 
     assert isinstance(res, CdcSkipResults)
     assert kept.exists()
+
+
+def test_lint_config_failure_clears_the_previous_reports(tmp_path, monkeypatch):
+    """A config error is a failed run, so it must not leave the previous
+    run's reports to be read as this one's (#469)."""
+    import os
+
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    stale = Path(wrapper.artefact_dir) / "cdc.json"
+    stale.write_text('{"summary": {"violations": 31}}')
+    os.unlink(wrapper.cdc_cfg.get_constraints())
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        wrapper.run()
+
+    assert not stale.exists()
+
+
+def test_lint_clears_maps_even_when_not_emitting_them(tmp_path, monkeypatch):
+    """`--emit-constraints` / `--check-xdc` read the maps back off a fixed
+    path, so an ordinary run must not leave an earlier constraint-generation
+    run's maps for them to answer from (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=False)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+    reset_map = Path(wrapper.artefact_dir) / "reset_map.json"
+    domain_map.write_text('{"clocks": ["from an --emit-constraints run"]}')
+    reset_map.write_text('{"reset_synchronizers": []}')
+
+    wrapper.run()
+
+    assert not domain_map.exists()
+    assert not reset_map.exists()
+    assert wrapper.read_emitted_maps() == (None, None)
+
+
+def test_lint_analyzer_writes_then_fails_publishes_nothing(tmp_path, monkeypatch):
+    """The analyzer writes its report before it finishes, so an unsupported
+    exit code can arrive with a report on disk. A FAIL publishes nothing, or
+    `read_report` hands the CLI a report the run disowned (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+
+    def _writes_then_dies(cmd, stdout, stderr, **kwargs):
+        report.write_text('{"summary": {"violations": 7}}')
+        domain_map.write_text('{"clocks": []}')
+        return ManagedProcessResult(returncode=2)
+
+    monkeypatch.setattr(mod, "run_managed_process", _writes_then_dies)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert "exited with code 2" in res.results["desc"]
+    assert not report.exists()
+    assert not domain_map.exists()
+    assert wrapper.read_report() == {}
+
+
+def test_lint_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
+    """Same for a report the wrapper cannot parse (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+
+    def _writes_garbage(cmd, stdout, stderr, **kwargs):
+        report.write_text("{ not json")
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(mod, "run_managed_process", _writes_garbage)
+
+    res = wrapper.run()
+
+    assert "could not parse JSON report" in res.results["desc"]
+    assert not report.exists()

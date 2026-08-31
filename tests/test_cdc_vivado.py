@@ -353,3 +353,61 @@ def test_cdc_runner_unconfigured_tool_still_errors(tmp_path):
     runner = _runner_for_tool(tmp_path, "vivado", None)
     with pytest.raises(FatalRtlBuddyError, match="not found in cfg-cdc-tools"):
         runner.run()
+
+
+def test_vivado_cdc_writes_report_then_fails_publishes_nothing(tmp_path, monkeypatch):
+    """`report_cdc` writes partway through the Tcl, so Vivado can exit
+    non-zero with a report on disk. A FAIL publishes nothing (#469)."""
+    backend = _make_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "cdc.rpt"
+
+    def _writes_then_dies(cmd, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "vivado.log").write_text("")
+        shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", report)
+        return ManagedProcessResult(returncode=1)
+
+    _mock_env(monkeypatch, _writes_then_dies)
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "exited with code 1" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_vivado_cdc_error_line_after_writing_publishes_nothing(tmp_path, monkeypatch):
+    """Same for the ERROR-record gate (#469)."""
+    backend = _make_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "cdc.rpt"
+    log = "ERROR: [Synth 8-439] module 'missing_mod' not found\n"
+
+    _mock_env(monkeypatch, _fake_vivado("vivado_cdc_violations.rpt", log_text=log))
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "ERROR(s) in Vivado log" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_vivado_cdc_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
+    """And for a report `parse_report_cdc` rejects (#469)."""
+    backend = _make_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "cdc.rpt"
+
+    def _writes_garbage(cmd, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "vivado.log").write_text("")
+        (cwd / "cdc.rpt").write_text("not a CDC report\n")
+        return ManagedProcessResult(returncode=0)
+
+    _mock_env(monkeypatch, _writes_garbage)
+    monkeypatch.setattr(
+        cdc_vivado_module,
+        "parse_report_cdc",
+        lambda _text: (_ for _ in ()).throw(ValueError("no summary table")),
+    )
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "could not parse CDC report" in res.results["desc"]
+    assert not report.exists()

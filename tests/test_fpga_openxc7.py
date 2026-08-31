@@ -716,3 +716,22 @@ def test_openxc7_stage_failure_removes_the_earlier_stages_outputs(
     assert not (artefacts / "demo_top.json").exists()
     assert not (artefacts / "demo_top.fasm").exists()
     assert not (artefacts / "demo_top.bit").exists()
+
+
+def test_openxc7_clear_spares_a_co_named_tests_build_stamp(tmp_path, monkeypatch):
+    """An unshared simulator build writes `rb-compile-stamp.json` straight
+    into `artefacts/<test>/`, so a co-named FPGA run's `.json` clear would
+    silently invalidate the build cache and force a recompile (#469)."""
+    from rtl_buddy.tools.artifact_paths import SHARED_BUILD_STAMP_NAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    stamp = Path(backend.artefact_dir) / SHARED_BUILD_STAMP_NAME
+    stamp.write_text('{"compile_key": "abc123"}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert stamp.read_text() == '{"compile_key": "abc123"}'

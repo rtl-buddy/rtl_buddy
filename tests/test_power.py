@@ -699,3 +699,56 @@ def test_power_ignores_a_previous_runs_report(tmp_path, monkeypatch):
     assert isinstance(res, PowerFailResults)
     assert "power report not produced" in res.results["desc"]
     assert not stale.exists()
+
+
+def test_power_writes_report_then_fails_publishes_nothing(tmp_path, monkeypatch):
+    """`report_power` writes before the script ends, so OpenROAD can exit
+    non-zero with `power.rpt` on disk. A FAIL publishes nothing (#469)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "power.rpt"
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _writes_then_dies(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        report.write_text("Total 1.0e-03 2.0e-03 3.0e-04 3.3e-03 100.0%\n")
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _writes_then_dies)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "exited with code 1" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_power_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
+    """Same for a report with no parseable `Total` row (#469)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "power.rpt"
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _writes_garbage(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        report.write_text("no totals here\n")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _writes_garbage)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "could not parse Total line" in res.results["desc"]
+    assert not report.exists()
