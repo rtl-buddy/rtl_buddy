@@ -1564,6 +1564,14 @@
     }
     var mod = moduleNameFor(n, out);
     if (mod) { return { target: 'module:' + mod }; }
+    // A `model:` node that resolved to no module opted out of the design
+    // tier (#479), and it stops here rather than falling through to the
+    // file branch below. Its `file` is the models.yaml that declares it,
+    // and a YAML file is not a coverage coordinate — the cov pane would
+    // focus a file with no coverage, so the button reads as live and the
+    // click does nothing useful. `sendTo` says the node is not a
+    // coverage coordinate instead.
+    if (n.type === 'model') { return null; }
     if (n.type === 'coverage_item') {
       var block = n.block == null ? '' : String(n.block);
       var item = n.label == null ? '' : String(n.label);
@@ -1572,10 +1580,13 @@
     }
     var file = n.file == null ? '' : String(n.file);
     if (!file) { return null; }
-    var out = { target: 'file:' + file };
+    // Named apart from the `out` parameter: same-named `var` and
+    // parameter share one binding, so reusing the name would read as if
+    // the links were being overwritten mid-function.
+    var focus = { target: 'file:' + file };
     var line = Number(n.line);
-    if (line >= 1) { out.line = Math.floor(line); }
-    return out;
+    if (line >= 1) { focus.line = Math.floor(line); }
+    return focus;
   }
   // <<< cov-target
 

@@ -1899,8 +1899,17 @@ def test_graph_false_model_skips_its_testbench_and_run_exports(
             "model": "blk_a",
             "reason": graph_build.GRAPH_OPT_OUT,
         },
+        # One record per DECLARED run, not per export: the fpv suite
+        # proves one checker under `bmc` and `prove`, which de-duplicate
+        # into a single export — but both are runs the user wrote down,
+        # and a skip list that named only the first would lose one.
         {
             "run": "fpv/blk_a_chk#chk_bmc",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a_chk#chk_prove",
             "model": "blk_a",
             "reason": graph_build.GRAPH_OPT_OUT,
         },
@@ -2136,15 +2145,22 @@ def test_two_selected_models_sharing_a_name_are_refused_before_any_export(
     # It names the paths that would have collided, and both ways out.
     assert "artefacts/graph/design/blk_a/" in message
     assert "artefacts/hier/blk_a/" in message
-    assert "Rename one" in message and "graph: false" in message
+    assert "Rename one of them" in message
     assert _argv_lines(record) == []
     assert not (graph_project / "artefacts" / "graph" / "graph.json").is_file()
 
 
-def test_a_shared_name_is_allowed_when_one_of_the_two_models_opts_out(
-    graph_project: Path, tmp_path: Path
-):
-    """An opted-out model writes no artefacts, so it claims no path."""
+def test_graph_false_does_not_excuse_a_shared_name(graph_project: Path, tmp_path: Path):
+    """Opting out is not a way out of a name collision.
+
+    A model name is how every selector spells a model — ``--model NAME``,
+    a test's ``model:``, a back-pointer — and none of them can say which
+    of two entries is meant. An opted-out duplicate would shadow the
+    graphable one in a name-keyed lookup, silently, and afterwards the
+    survivor looks like the only one there ever was. So the name half of
+    the refusal covers every model in scope, opted out or not; only the
+    *top* half is graphable-only.
+    """
     dupe = graph_project / "design" / "blk_dupe"
     dupe.mkdir()
     (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
@@ -2158,19 +2174,54 @@ def test_a_shared_name_is_allowed_when_one_of_the_two_models_opts_out(
         "    graph: false\n"
     )
     view, record = _fake_view(tmp_path)
-    build = build_graph(
-        graph_project,
-        view_executable=str(view),
-        view_version="0.4.0",
-        extract_enabled=False,
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    message = str(excinfo.value)
+    assert "design/blk_a/models.yaml" in message
+    assert "design/blk_dupe/models.yaml" in message
+    # And it says so, rather than pointing at the knob that does not help.
+    assert "Rename one of them" in message
+    assert "`graph: false` does not resolve a name collision" in message
+    assert _argv_lines(record) == []
+
+
+def test_the_model_selector_does_not_silently_pick_between_two_of_a_name(
+    graph_project: Path, tmp_path: Path
+):
+    """``--model blk_a`` with two `blk_a` entries must not choose one.
+
+    The selector resolved names first-found-wins, so an opted-out entry
+    that happened to be discovered first shadowed the graphable one and
+    the build exported nothing while reporting a clean skip. It now
+    returns every match and lets the collision refusal speak.
+    """
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+        "    graph: false\n"
     )
-    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
-    assert design.status == "built"
-    assert design.skipped == [{"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT}]
-    assert sorted(argv[argv.index("--top") + 1] for argv in _dut_calls(record)) == [
-        "blk_a",
-        "blk_b",
-    ]
+    view, _ = _fake_view(tmp_path)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["graph", "build", "--tool", str(view), "--no-extract", "--model", "blk_a"],
+    )
+    assert result.exit_code != 0, result.output
+    combined = result.output + str(result.exception or "")
+    assert "design/blk_a/models.yaml" in combined
+    assert "design/blk_dupe/models.yaml" in combined
 
 
 def test_a_duplicate_name_is_reported_before_a_duplicate_top(
@@ -2480,7 +2531,8 @@ def test_the_duplicate_design_model_event_has_a_human_message_case():
     assert msg != "graph build duplicate_design_model"
     assert "blk_a" in msg
     assert "design/blk_dupe/models.yaml" in msg
-    assert "graph: false" in msg
+    assert "rename one of them" in msg
+    assert "does not resolve a name collision" in msg
 
 
 def test_the_new_warning_events_have_human_message_cases():

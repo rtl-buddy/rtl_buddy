@@ -596,7 +596,8 @@ def test_a_model_node_is_named_by_its_maps_to_stitch():
           'model:design/x/models.yaml#alias',
           'model:design/x/models.yaml#empty',
           'model:design/x/models.yaml#weird',
-          // `graph: false` — no stitch at all.
+          // `graph: false` — no stitch at all (its `file` is irrelevant
+          // here: a models.yaml is not a design coordinate either).
           'model:design/vendor/models.yaml#apb_intf'
         ];
         console.log(JSON.stringify(ids.map(function (id) {
@@ -1053,8 +1054,13 @@ def test_a_graph_node_maps_onto_a_coverage_target():
           { id: 'model:design/common/models.yaml#ip_async_fifo', type: 'model' },
           // `top: axi_xbar`: the cov target follows the stitch, not the name.
           { id: 'model:design/vendor/models.yaml#pp_axi', type: 'model' },
-          // `graph: false`: no stitch, and no file either — nothing to focus.
-          { id: 'model:design/vendor/models.yaml#apb_intf', type: 'model' },
+          // `graph: false`: no stitch — and it carries a `file` the way
+          // every served config-tier model node does (its models.yaml).
+          // The file fallback must not fire on it: a YAML file is not a
+          // coverage coordinate, so the button would read as live and
+          // focus a file with no coverage.
+          { id: 'model:design/vendor/models.yaml#apb_intf', type: 'model',
+            file: 'design/vendor/models.yaml', line: 7 },
           // A module node has a `file` too — the module is the better
           // answer, so it must win.
           { id: 'module:fifo', type: 'module',
@@ -1087,7 +1093,9 @@ def test_a_graph_node_maps_onto_a_coverage_target():
         {"target": "module:ip_async_fifo"},
         # The point of #479: the top the model roots at, not its name.
         {"target": "module:axi_xbar"},
-        # An opted-out model has no `maps_to` and so no coverage target.
+        # An opted-out model has no `maps_to` and so no coverage target —
+        # not its models.yaml, which is what the generic file branch
+        # would have handed the cov pane.
         None,
         {"target": "module:fifo"},
         {"target": "module:fifo", "metric": "cover", "item": "REQ-1"},

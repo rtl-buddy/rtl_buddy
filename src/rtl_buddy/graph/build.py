@@ -438,6 +438,11 @@ class TestbenchTarget:
         return [self.node_id]
 
     @property
+    def labels(self) -> list[str]:
+        """Every testbench this export stands for — one for a TB."""
+        return [self.label]
+
+    @property
     def stitch_type(self) -> str:
         """Edge type of this target's config->design stitch."""
         return ELABORATES_AS
@@ -594,6 +599,18 @@ class FlowRunTarget:
     def label(self) -> str:
         """``<suite dir>#<run name>`` — how failures name this target."""
         return f"{self.suite_rel}#{self.run_name}"
+
+    @property
+    def labels(self) -> list[str]:
+        """One label per collapsed run, the way ``node_ids`` is one id.
+
+        De-duplication keeps a single export for runs that would produce
+        identical bytes, but each of them is a run the user wrote down.
+        A per-run record — a skip, here — has to name every one of them,
+        or a run silently disappears from the report because a twin
+        happened to sort first.
+        """
+        return [f"{self.suite_rel}#{name}" for name in self.run_names]
 
     @property
     def tb_top(self) -> str:
@@ -817,6 +834,13 @@ def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
     with a record of its own keeps the reason visible instead of
     silently shrinking the tier.
 
+    One record per *declared* item, not per export: a flow-run target
+    collapses runs that would produce identical bytes, and the stitch
+    path already re-expands them (``node_ids``). The skip list does the
+    same through ``labels``, so an fpv suite proving one checker under
+    ``bmc`` and ``prove`` reports both as skipped rather than losing the
+    twin that did not happen to sort first.
+
     Args:
       targets: :class:`TestbenchTarget` / :class:`FlowRunTarget` list.
       kind: ``"testbench"`` or ``"run"`` — the key the skip record uses,
@@ -830,12 +854,13 @@ def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
         if target.model.graph:
             keep.append(target)
         else:
-            skipped.append(
+            skipped.extend(
                 {
-                    kind: target.label,
+                    kind: label,
                     "model": target.model.name,
                     "reason": GRAPH_OPT_OUT,
                 }
+                for label in target.labels
             )
     return keep, skipped
 
@@ -873,24 +898,35 @@ def _grouped(models: list[ModelConfig], key) -> dict[str, list[ModelConfig]]:
     return {k: ms for k, ms in sorted(buckets.items()) if len(ms) > 1}
 
 
-def _reject_colliding_models(project_root: Path, models: list[ModelConfig]) -> None:
+def _reject_colliding_models(
+    project_root: Path, models: list[ModelConfig], graphable: list[ModelConfig]
+) -> None:
     """Refuse a design tier two models would land in the same slot (#479).
 
     Two collisions, both of which produce a graph that reads as correct
     and is not, and neither of which anything downstream can detect —
     which is why both are refused here rather than reported afterwards.
 
-    **Same ``name:``.** Every per-model artefact path is keyed on the
-    model name: the export lands in ``artefacts/graph/design/<name>/``
-    and its generated filelist in ``artefacts/hier/<name>/``. Two models
-    of one name in two ``models.yaml`` files are distinct entries
-    everywhere else (``_model_key`` is realpath-qualified, and so are
-    their ``model:`` node ids), so both are planned, both run, and the
-    second silently overwrites the first — while the tier reports both
-    as built and the merge takes whichever bytes survived. A duplicate
-    *within* one file is already fatal in
+    **Same ``name:``, checked across every model in scope, opted out or
+    not.** Every per-model artefact path is keyed on the model name: the
+    export lands in ``artefacts/graph/design/<name>/`` and its generated
+    filelist in ``artefacts/hier/<name>/``. Two models of one name in two
+    ``models.yaml`` files are distinct entries everywhere else
+    (``_model_key`` is realpath-qualified, and so are their ``model:``
+    node ids), so both are planned, both run, and the second silently
+    overwrites the first — while the tier reports both as built and the
+    merge takes whichever bytes survived. A duplicate *within* one file
+    is already fatal in
     :class:`~rtl_buddy.config.model.ModelConfigLoader`; this is the
     across-files half of that rule.
+
+    ``graph: false`` is not a way out of *this* half. A model name is how
+    every selector spells a model — ``rb graph build --model NAME``, a
+    test's ``model:``, a back-pointer — and none of them can say which of
+    two entries is meant. An opted-out duplicate is therefore still a
+    name two files are fighting over: it would shadow the graphable one
+    in a name-keyed lookup, silently, and the shadowing is invisible
+    afterwards because the surviving entry looks like the only one.
 
     **Same top.** A design-tier export's ids are **global** by contract —
     ``module:<top>``, ``inst:<top>/…`` — and DUT ids are deliberately the
@@ -908,10 +944,14 @@ def _reject_colliding_models(project_root: Path, models: list[ModelConfig]) -> N
     when both hold, "rename one model" is the instruction that fixes
     both.
 
-    Only graphable models are considered: a ``graph: false`` model is
-    never handed to the viewer, so it cannot collide with anything. The
-    caller passes the *selected* models, so ``--model`` / ``-c`` narrow
-    the check exactly as they narrow the tier.
+    The top half is graphable-only: a ``graph: false`` model is never
+    handed to the viewer, so it claims no graph id. Both halves see only
+    the *selected* models, so ``--model`` / ``-c`` narrow the check
+    exactly as they narrow the tier.
+
+    Args:
+      models: every model in scope, including the opted-out ones.
+      graphable: the subset that will actually be exported.
 
     Raises:
       FatalRtlBuddyError: naming every model in the collision, the
@@ -929,16 +969,18 @@ def _reject_colliding_models(project_root: Path, models: list[ModelConfig]) -> N
         )
         raise FatalRtlBuddyError(
             f"graph build: {len(claimants)} models are named {name!r}, and "
-            f"every per-model artefact path is keyed on that name — their "
-            f"exports would overwrite each other in "
-            f"artefacts/graph/design/{name}/ and artefacts/hier/{name}/:\n"
+            f"every per-model artefact path — and every selector that "
+            f"names a model — is keyed on that name; their exports would "
+            f"overwrite each other in artefacts/graph/design/{name}/ and "
+            f"artefacts/hier/{name}/:\n"
             f"  name {name!r} is claimed by: "
             f"{_claimants(project_root, claimants)}\n"
-            f"Rename one of them, or set `graph: false` on the one that is "
-            f"not the design of record."
+            f"Rename one of them. `graph: false` does not resolve a name "
+            f"collision — the opted-out entry would still shadow the other "
+            f"in any lookup by name."
         )
 
-    clashes = _grouped(models, lambda m: m.get_top())
+    clashes = _grouped(graphable, lambda m: m.get_top())
     if not clashes:
         return
     lines = []
@@ -1495,10 +1537,11 @@ def build_graph(
             for model in models
             if not model.graph
         )
-        # Before anything is planned, let alone exported: two graphable
-        # models cannot share a name (their artefact paths collide) or a
-        # top (their graph ids do).
-        _reject_colliding_models(root, graphable)
+        # Before anything is planned, let alone exported: no two models
+        # in scope may share a name (their artefact paths and every
+        # name-keyed lookup collide, opt-out or not), and no two
+        # graphable ones may share a top (their graph ids collide).
+        _reject_colliding_models(root, models, graphable)
         if tb:
             tb_targets, opted_out = _split_opted_out(
                 testbenches_from_suites(root, search_verif, models), "testbench"

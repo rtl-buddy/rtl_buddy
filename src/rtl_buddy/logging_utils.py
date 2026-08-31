@@ -1481,9 +1481,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"graph build: more than one selected model is named "
                 f"{fields.get('model')} ({fields.get('paths')}) — every "
-                "per-model artefact path is keyed on the name, so their "
-                "exports would overwrite each other; rename one, or set "
-                "`graph: false` on the one that is not the design of record"
+                "per-model artefact path, and every selector that names a "
+                "model, is keyed on that name, so their exports would "
+                "overwrite each other and a lookup by name would silently "
+                "pick one; rename one of them (`graph: false` does not "
+                "resolve a name collision)"
             )
         case "graph_build.duplicate_design_top":
             return (
