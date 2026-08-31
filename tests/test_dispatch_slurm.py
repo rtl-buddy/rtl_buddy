@@ -43,7 +43,8 @@ def _spec(**overrides) -> TestJobSpec:
 def _fake_run(calls, results, *, max_array_size=None):
     """subprocess.run stand-in: records argv, pops canned results.
 
-    The ``scontrol show config`` MaxArraySize probe (#509) is answered from
+    Any ``scontrol`` call — the MaxArraySize probe (#509), with or without
+    the ``-M <cluster>`` a cross-cluster ``sbatch-args`` adds — is answered from
     ``max_array_size`` instead — neither recorded nor popped — so a test
     about sbatch argv keeps asserting on sbatch calls alone. ``None`` (the
     default) makes the probe fail, i.e. no chunking. The probe itself is
@@ -51,7 +52,7 @@ def _fake_run(calls, results, *, max_array_size=None):
     """
 
     def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
-        if list(argv[:2]) == ["scontrol", "show"]:
+        if list(argv[:1]) == ["scontrol"]:
             return _scontrol_result(max_array_size)
         calls.append(list(argv))
         result = (
@@ -1599,3 +1600,125 @@ def test_a_failed_slice_cancels_the_slices_already_submitted(monkeypatch, tmp_pa
         )
 
     assert calls[-1] == ["scancel", "100"]
+
+
+def test_selected_cluster_reads_every_spelling_and_takes_the_last():
+    """sbatch takes four forms and lets a later one override an earlier."""
+    parse = slurm_module._selected_cluster
+    assert parse([]) is None
+    assert parse(["--partition=verif"]) is None
+    assert parse(["-M", "remote"]) == "remote"
+    assert parse(["-Mremote"]) == "remote"
+    assert parse(["--clusters=remote"]) == "remote"
+    assert parse(["--clusters", "remote"]) == "remote"
+    assert parse(["--cluster=remote"]) == "remote"
+    # A project appending an override to a shared list must win here for
+    # the same reason it wins at submit.
+    assert parse(["-M", "first", "--clusters=second"]) == "second"
+    # A dangling option selects nothing rather than eating the next flag.
+    assert parse(["--partition=verif", "-M"]) is None
+
+
+def test_the_probe_asks_the_cluster_the_jobs_are_submitted_to(monkeypatch, tmp_path):
+    """`scontrol show config` unqualified reads the LOCAL cluster, whose
+    MaxArraySize is not the one the arrays are submitted against (#509)."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probes = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probes.append(list(argv))
+            return _scontrol_result(3)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=remote"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.cluster == "remote"
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+
+    assert probes == [["scontrol", "-M", "remote", "show", "config"]]
+    # ...and the remote cluster's answer is what chunks the group.
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_several_clusters_leave_the_limit_unknown(monkeypatch, tmp_path, caplog):
+    """`--clusters=a,b` is resolved at submit, so no single limit applies."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(sbatch_args=["-M", "alpha,beta"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
+    assert _array_ranges(calls) == ["1-3"]
+    # Probing either one would pin a limit the other may not have.
+    assert probed == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "alpha,beta" in fields["error"]
+    assert fields["cluster"] == "alpha,beta"
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+
+
+def test_a_pinned_limit_needs_no_cluster_probe(monkeypatch, tmp_path):
+    """The config value is the answer for whichever cluster is selected."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(
+        sbatch_args=["-M", "alpha,beta"], max_array_size=4
+    ).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array([_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a")
+    assert probed == []
+    assert _array_ranges(calls) == ["1-3"]
+
+
+def test_an_ambiguous_cluster_still_earns_the_submit_failure_hint(
+    monkeypatch, tmp_path
+):
+    """Unknown is unknown, however it became unknown."""
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=alpha,beta"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "cfg-dispatch.max-array-size" in str(excinfo.value)

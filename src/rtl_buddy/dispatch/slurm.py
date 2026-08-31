@@ -106,9 +106,39 @@ _MAX_ARRAY_SIZE_RE = re.compile(r"^MaxArraySize\s*=\s*(\d+)\s*$", re.MULTILINE)
 # unreachable must cost a bounded wait and then leave chunking off, never
 # hang the head before it has submitted anything.
 _SCONTROL_TIMEOUT_S = 30
-# Sentinel for "the limit has not been probed yet", distinct from a probe
-# that ran and found nothing (`None`, i.e. do not chunk).
-_UNPROBED = object()
+# Options by which `sbatch-args` sends the jobs to another cluster. The
+# probe has to follow them: `scontrol show config` with no cluster reads
+# the LOCAL slurmctld, whose MaxArraySize says nothing about the cluster
+# the arrays are actually submitted to (#509 review).
+_CLUSTER_OPTS = ("-M", "--clusters", "--cluster")
+
+
+def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
+    """The cluster ``sbatch-args`` submits to, or ``None`` for the local one.
+
+    All four spellings Slurm takes: ``-M name``, ``-Mname``,
+    ``--clusters=name`` and ``--clusters name`` (plus the ``--cluster``
+    singular, which sbatch accepts as an abbreviation). The LAST occurrence
+    wins, which is how sbatch itself resolves a repeated option — so a
+    project appending an override to a shared list gets the same answer
+    here as at submit.
+
+    The value is returned verbatim, comma-separated multi-cluster lists
+    included: deciding what to do about those belongs to the caller, which
+    is the only place that can say what it costs.
+    """
+    selected = None
+    for index, arg in enumerate(sbatch_args):
+        if arg in _CLUSTER_OPTS:
+            following = sbatch_args[index + 1 :]
+            if following:
+                selected = following[0]
+        elif arg.startswith(("--clusters=", "--cluster=")):
+            selected = arg.split("=", 1)[1]
+        elif arg.startswith("-M") and len(arg) > 2:
+            selected = arg[2:]
+    return selected or None
+
 
 # `MaxRSS` is a high-water mark over samples, so a job shorter than the
 # sampling interval reports whatever the first sample caught — near zero.
@@ -279,7 +309,11 @@ class SlurmDispatchBackend(DispatchBackend):
         # _max_elements_per_array — so constructing a backend never shells
         # out, and a run with no array never probes at all.
         self.max_array_size = getattr(dispatch_cfg, "max_array_size", None)
-        self._elements_per_array = _UNPROBED
+        # ...and which cluster to ask for it, when `sbatch-args` submits
+        # somewhere other than the local one. Cached per cluster: the answer
+        # is a property of the cluster probed, not of this process.
+        self.cluster = _selected_cluster(self.sbatch_args)
+        self._elements_per_array_by_cluster: dict[str | None, int | None] = {}
         self._acct_interval_s = self._resolve_accounting_frequency()
 
     def _resolve_accounting_frequency(self) -> float | None:
@@ -512,9 +546,11 @@ class SlurmDispatchBackend(DispatchBackend):
         before #509 — because guessing a ceiling would split groups on
         clusters that never needed it.
         """
-        if self._elements_per_array is _UNPROBED:
-            self._elements_per_array = self._probe_max_elements(cwd=cwd)
-        return self._elements_per_array
+        if self.cluster not in self._elements_per_array_by_cluster:
+            self._elements_per_array_by_cluster[self.cluster] = (
+                self._probe_max_elements(cwd=cwd)
+            )
+        return self._elements_per_array_by_cluster[self.cluster]
 
     def _probe_max_elements(self, *, cwd: str | None) -> int | None:
         if self.max_array_size is not None:
@@ -526,11 +562,24 @@ class SlurmDispatchBackend(DispatchBackend):
                 max_array_size=self.max_array_size,
                 max_elements=self.max_array_size - 1,
                 source="config",
+                cluster=self.cluster,
             )
             return self.max_array_size - 1
+        if self.cluster is not None and "," in self.cluster:
+            # `--clusters=a,b` lets SLURM pick whichever can run the job
+            # soonest, and the decision is made at submit. Probing either
+            # one would pin a limit the other may not have, so the honest
+            # answer is "unknown" and the pinned config value.
+            self._log_unknown(
+                f"sbatch-args select several clusters ({self.cluster}); which "
+                "one runs the array is decided at submit, so no single "
+                "MaxArraySize applies"
+            )
+            return None
+        cluster_argv = [] if self.cluster is None else ["-M", self.cluster]
         try:
             proc = subprocess.run(
-                ["scontrol", "show", "config"],
+                ["scontrol", *cluster_argv, "show", "config"],
                 capture_output=True,
                 text=True,
                 cwd=cwd,
@@ -552,6 +601,7 @@ class SlurmDispatchBackend(DispatchBackend):
                     max_array_size=value,
                     max_elements=value - 1,
                     source="scontrol",
+                    cluster=self.cluster,
                 )
                 return value - 1
             # A cluster reporting MaxArraySize < 2 has arrays disabled; no
@@ -562,17 +612,21 @@ class SlurmDispatchBackend(DispatchBackend):
                 or "no usable MaxArraySize in `scontrol show config` "
                 f"(rc={proc.returncode})"
             )[:200]
+        self._log_unknown(reason)
+        return None
+
+    def _log_unknown(self, reason: str) -> None:
         log_event(
             logger,
             logging.INFO,
             "dispatch.max_array_size_unknown",
             backend=self.name,
             error=reason,
+            cluster=self.cluster,
             # An oversized group is what this probe exists to split, so say
             # how to get chunking back when the cluster cannot be asked.
             hint="set cfg-dispatch.max-array-size to split oversized groups",
         )
-        return None
 
     def _unknown_limit_hint(self, stderr: str) -> str:
         """Why an oversized group was not split, for a failed array submit.
@@ -593,7 +647,7 @@ class SlurmDispatchBackend(DispatchBackend):
         array" rather than on the full sentence, so a Slurm that words the
         rest of it differently still gets the hint.
         """
-        if self._elements_per_array is not None:
+        if self._elements_per_array_by_cluster.get(self.cluster) is not None:
             return ""
         if "job array" not in stderr.lower():
             return ""
