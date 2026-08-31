@@ -1613,9 +1613,7 @@ def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
     "sbatch_args,named",
     [
         ("[--cpus-per-task=4]", "--cpus-per-task=4"),
-        # `ReqCPUS` is tasks x cpus-per-task, so four tasks of the resolved
-        # one cpu is a four-cpu job that `requested_cpus` would call one.
-        ("[--ntasks=4]", "--ntasks=4"),
+        ("[--cpus-per-gpu=4]", "--cpus-per-gpu=4"),
         # sbatch obeys the LAST occurrence of one option, and so must the hint.
         ("[--cpus-per-task=2, --cpus-per-task=4]", "--cpus-per-task=4"),
     ],
@@ -1630,12 +1628,13 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     """`sbatch-args` is appended last and wins, so the YAML is not the request.
 
     The project resolves the default 1 cpu, but `cfg-dispatch.sbatch-args`
-    raises the job's cpu request to 4 — directly, or by asking for four
-    tasks of it — and that is what the jobs run with. Recording the
-    resolved 1 as the request would analyse a genuinely over-reserved run
-    against cpus it never had and, with `cpus: 1` failing the `cpus > 1`
-    guard, silently drop the finding. The head records nothing instead, so
-    `ReqCPUS` carries it (#505 review).
+    states a cpu request of 4 directly, and that is what the jobs run with.
+    Recording the resolved 1 as the request would analyse a genuinely
+    over-reserved run against cpus it never had and, with `cpus: 1` failing
+    the `cpus > 1` guard, silently drop the finding. The head records
+    nothing instead, so `ReqCPUS` carries it (#505 review). A task count
+    rather than a cpu count is covered separately: the denominator is the
+    same, the note is not.
     """
     root_cfg = minimal_project / "root_config.yaml"
     root_cfg.write_text(
@@ -1698,6 +1697,56 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     assert "sbatch-args" in result.output
     assert named in result.output
     assert "ReqCPUS" in result.output
+
+
+def test_a_lone_ntasks_override_does_not_claim_to_take_the_suggestion(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--ntasks` is a task count, so "write 2 in here" would mean 2 tasks.
+
+    End to end: one override argument, but not a cpu count. The finding
+    still has to reach the reader with the whole-job figure, and the note
+    must not tell them to put it into an argument that would not take it
+    (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  sbatch-args: [--ntasks=4]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5), whole-job
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus["edit_hint"]["note"]
+    assert "`--ntasks=4` scales this job's cpu request rather than stating it" in note
+    assert "change it there" not in note
 
 
 def test_orthogonal_sbatch_args_cpu_options_withhold_the_per_argument_edit(

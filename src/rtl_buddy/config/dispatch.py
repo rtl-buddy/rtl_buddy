@@ -482,13 +482,21 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
 # Keyed by the long form, valued by the short one, because the two are the
 # SAME option: `[-c 4, --cpus-per-task=8]` is one option written twice (the
 # last wins), not two multiplying each other.
-_CPU_REQUEST_OPTS = {
-    # The cpu counts.
+#
+# Split in two, because the difference decides whether advice can name one
+# of them: a DIRECT cpu count states the request outright, so a whole-job
+# suggestion can be written straight into it. Everything else — topology
+# and task/node counts — only *scales* it, so the suggested number is not a
+# value that argument takes (#505 review).
+_DIRECT_CPU_COUNT_OPTS = {
     "--cpus-per-task": "-c",
     "--cpus-per-gpu": None,
+}
+_CPU_SCALING_OPTS = {
+    # Topology modifiers.
     "--threads-per-core": None,
     "--extra-node-info": "-B",
-    # The task and node counts that multiply them.
+    # The task and node counts `ReqCPUS` multiplies the cpu count by.
     "--ntasks": "-n",
     "--ntasks-per-node": None,
     "--ntasks-per-core": None,
@@ -496,9 +504,35 @@ _CPU_REQUEST_OPTS = {
     "--ntasks-per-gpu": None,
     "--nodes": "-N",
 }
+_CPU_REQUEST_OPTS = {**_DIRECT_CPU_COUNT_OPTS, **_CPU_SCALING_OPTS}
 _CPU_REQUEST_SHORT_TO_LONG = {
     short: long for long, short in _CPU_REQUEST_OPTS.items() if short
 }
+
+
+def sbatch_arg_sets_cpu_count_directly(arg: str) -> bool:
+    """Does this rendered ``sbatch-args`` entry state the cpu count itself?
+
+    ``--cpus-per-task`` and ``--cpus-per-gpu`` name a number of cpus, so a
+    whole-job suggestion can be written into one. ``--ntasks``,
+    ``--ntasks-per-node``, ``--nodes``, ``--threads-per-core`` and
+    ``-B``/``--extra-node-info`` are task counts and topology: they scale
+    the request rather than stating it, and telling a reader to put a cpu
+    count into one of them would be advice that cannot be applied (#505
+    review).
+
+    Takes an entry as :func:`sbatch_args_cpu_request_options` renders it —
+    ``--cpus-per-task=4``, ``--cpus-per-task 4``, ``-c 4``, ``-c4``,
+    ``-c=4`` — so the caller never has to re-parse sbatch syntax.
+    """
+    # Whichever separator came first, the option token is what precedes it.
+    token = arg.split("=", 1)[0].split(" ", 1)[0]
+    if token in _DIRECT_CPU_COUNT_OPTS:
+        return True
+    short = _DIRECT_CPU_COUNT_OPTS["--cpus-per-task"]
+    # `-c`, `-c 4` and `-c=4` reduce to the bare short form; `-c4` keeps its
+    # value, which must be numeric or this is some other option entirely.
+    return token == short or (token.startswith(short) and token[len(short) :].isdigit())
 
 
 def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:

@@ -92,7 +92,11 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from ..config.dispatch import mem_to_bytes, time_to_seconds
+from ..config.dispatch import (
+    mem_to_bytes,
+    sbatch_arg_sets_cpu_count_directly,
+    time_to_seconds,
+)
 from ..logging_utils import log_event
 
 logger = logging.getLogger(__name__)
@@ -174,20 +178,33 @@ def _override_note(sbatch_args: list, masked_path: str) -> str:
     next job is submitted with the same argument, and the finding returns
     (#505 review).
 
-    One such argument is the whole request, so the suggestion can be
-    written straight into it. Several MULTIPLY — ``ReqCPUS`` is *tasks x
-    cpus-per-task* — so no single one of them can be told to take the
-    suggested number, and saying otherwise would produce exactly the
-    unappliable advice this rule exists to prevent. The note then states
-    the product and hands the decomposition back to the reader, who is the
-    only party that knows which factor is the one to shrink (#505 review).
+    Only one shape can be handed the suggested number: a single DIRECT cpu
+    count (``--cpus-per-task``, ``--cpus-per-gpu``), which states the
+    request outright. Two shapes cannot. Several arguments MULTIPLY —
+    ``ReqCPUS`` is *tasks x cpus-per-task* — so none of them alone takes a
+    whole-job figure. And a lone task or topology modifier (``--ntasks``,
+    ``--ntasks-per-node``, ``--nodes``, ``--threads-per-core``,
+    ``-B``) is not a cpu count at all: writing 3 into ``--ntasks`` asks for
+    three tasks, not three cpus. Telling a reader to do either would
+    produce exactly the unappliable advice this rule exists to prevent, so
+    the note states what the arguments do and hands the decomposition back
+    to the reader, who is the only party that knows which factor should
+    shrink (#505 review).
     """
     quoted = [f"`{arg}`" for arg in sbatch_args]
-    if len(quoted) == 1:
+    if len(quoted) == 1 and sbatch_arg_sets_cpu_count_directly(sbatch_args[0]):
         return (
             f"sbatch-args {quoted[0]} sets this job's cpu request, "
             f"superseding {masked_path}; change it there. Suggested value "
             "is the whole-job cpu count."
+        )
+    if len(quoted) == 1:
+        return (
+            f"sbatch-args supersedes {masked_path}: {quoted[0]} scales "
+            "this job's cpu request rather than stating it. Suggested "
+            "value is the whole-job cpu count — that argument does not "
+            "take it, so work out the reservation that reaches it "
+            "yourself."
         )
     return (
         f"sbatch-args supersedes {masked_path}: this job's cpu request is "
@@ -710,9 +727,17 @@ def analyze_suite_reservations(
         # resources: are trimmed. These are the floors each suggestion is
         # clamped to; None where there is nothing to clamp against.
         floor = agg["compile_floor"]
-        floor_cpus = floor.get("cpus")
         floor_mem_b = mem_to_bytes(floor.get("mem"))
         floor_time_s = time_to_seconds(floor.get("time"))
+        cpus_override = agg.get("cpus_override")
+        # ...but the cpus floor only bounds the reservation rtl-buddy
+        # GENERATED, and a `sbatch-args` cpu argument supersedes that
+        # whole reservation — the max never reaches sbatch. Clamping to a
+        # floor the allocation does not have discards valid advice: an
+        # override to 4 under a compile floor of 8 has every suggestion
+        # pushed up to 8 and then dropped for not being below 4, so the
+        # run reports nothing at all (#505 review).
+        floor_cpus = None if cpus_override else floor.get("cpus")
         common = {
             "suite": suite_display,
             "test": test,
@@ -722,7 +747,6 @@ def analyze_suite_reservations(
             "phase": "compile+sim" if agg["compile_in_job"] else "sim",
         }
 
-        cpus_override = agg.get("cpus_override")
         # The YAML field the override masks — named in the note so a reader
         # can see what was superseded, resolved by the same layering the
         # unmasked hint would have used.

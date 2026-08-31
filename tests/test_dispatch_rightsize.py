@@ -7,6 +7,8 @@ guardrails, and the Verilator-only gate on time advice.
 
 from __future__ import annotations
 
+import pytest
+
 from rtl_buddy.config.dispatch import RightsizeConfigFile
 from rtl_buddy.dispatch.rightsize import (
     RightsizeFinding,
@@ -1888,3 +1890,167 @@ def test_the_build_row_withholds_it_too_under_orthogonal_options():
     assert "cfg-dispatch.compile.cpus" in note
     # The superseded per-build decomposition stays gone.
     assert "the build job reserved" not in note
+
+
+# ------- #505 review: a lone task/topology modifier is not a cpu count
+
+
+_MODIFIER_TELEMETRY = {
+    "state": "COMPLETED",
+    "elapsed_s": 1000,
+    "timelimit_s": 3600,
+    "alloc_cpus": 8,
+    "req_cpus": 8,
+    "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+}
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "--ntasks=4",
+        "-n 4",
+        "--ntasks-per-node=2",
+        "--ntasks-per-core=2",
+        "--nodes=2",
+        "-N 2",
+        "--threads-per-core=2",
+        "-B 2:4:1",
+        "--extra-node-info=2:4:1",
+    ],
+)
+def test_a_lone_task_or_topology_modifier_does_not_take_the_suggestion(arg):
+    """Writing 3 into `--ntasks` asks for three tasks, not three cpus.
+
+    Only `--cpus-per-task`/`--cpus-per-gpu` state a cpu count outright. A
+    task count or a topology modifier scales the request, so "change it
+    there" would be advice that cannot be applied and the finding would
+    return on the next run — the shape #505 exists to stop (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            _MODIFIER_TELEMETRY,
+            requested_cpus=None,
+            cpus_override=[arg],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
+    note = cpu.edit_hint["note"]
+    assert f"`{arg}` scales this job's cpu request rather than stating it" in note
+    assert "that argument does not take it" in note
+    # ...and it must NOT be the "write the number in here" wording.
+    assert "sets this job's cpu request" not in note
+    assert "change it there" not in note
+
+
+@pytest.mark.parametrize(
+    "arg", ["--cpus-per-task=8", "-c 8", "-c8", "--cpus-per-gpu=8"]
+)
+def test_a_lone_direct_cpu_count_still_takes_the_suggestion(arg):
+    """`--cpus-per-task` and `--cpus-per-gpu` name cpus, so write it in."""
+    rows = [_row("t", _MODIFIER_TELEMETRY, requested_cpus=None, cpus_override=[arg])]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    note = cpu.edit_hint["note"]
+    assert f"sbatch-args `{arg}` sets this job's cpu request" in note
+    assert "change it there" in note
+    assert "scales this job's cpu request" not in note
+
+
+def test_the_build_row_also_declines_a_lone_modifier():
+    """Same rule for the suite's build job (#495 row)."""
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 7200,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 200,  # 0.25 efficiency
+            },
+            parallel=1,
+            cpus=2,
+            cpus_override=["--ntasks-per-node=4"],
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpus_a.suggested == "3"
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus_a.edit_hint["note"]
+    assert "`--ntasks-per-node=4` scales this job's cpu request" in note
+    assert "cfg-dispatch.compile.cpus" in note
+    assert "change it there" not in note
+
+
+# ------- #505 review: the compile floor cannot clamp what it does not bound
+
+
+def test_an_override_disables_the_compile_cpus_floor():
+    """The floor bounds the GENERATED reservation, which sbatch never saw.
+
+    An in-job compile's allocation is max(sim, compile), so no reduce may
+    take it below the compile side — unless a `sbatch-args` cpu argument
+    supersedes that whole reservation, in which case the max never reaches
+    sbatch. Clamping to a floor of 8 under a request of 4 pushes every
+    suggestion up to 8, which is then dropped for not being below 4: a
+    genuinely over-reserved run reports nothing at all (#505 review).
+    """
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 1000,
+        "timelimit_s": 3600,
+        "alloc_cpus": 4,
+        "req_cpus": 4,  # the override's request
+        "total_cpu_s": 1000.0,  # 0.25 efficiency against those 4
+    }
+    floor = {"cpus": 8, "mem": "16G", "time": "02:00:00"}
+
+    # Without an override the floor is real: max(sim, compile) means the
+    # allocation cannot go below 8, so there is nothing to advise.
+    unoverridden = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor=floor,
+            requested_cpus=4,
+        )
+    ]
+    assert [f for f in _analyze(unoverridden) if f.resource == "cpus"] == []
+
+    # With one, the floor bounds a reservation that was never submitted.
+    overridden = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor=floor,
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(overridden, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"  # ceil(4 x 0.25 x 1.5), not clamped up to 8
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+
+    # The mem and time floors are untouched: `--cpus-per-task` supersedes
+    # neither, so those reservations really are still max(sim, compile).
+    assert [f for f in _analyze(overridden) if f.resource == "mem"] == []

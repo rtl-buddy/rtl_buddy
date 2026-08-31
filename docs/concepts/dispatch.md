@@ -245,10 +245,11 @@ Efficiency is therefore taken against the request, which is what a `resources.cp
 
 One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **after** the generated reservation flags and therefore overrides them, so an argument there — not the resolved reservation — decides what the jobs request. `ReqCPUS` is *tasks × cpus-per-task*, so two families qualify:
 
-| | Options |
-| --- | --- |
-| cpu counts | `-c` / `--cpus-per-task`, `--cpus-per-gpu`, `--threads-per-core`, `-B` / `--extra-node-info` |
-| task and node counts that multiply them | `-n` / `--ntasks`, `--ntasks-per-node`, `--ntasks-per-core`, `--ntasks-per-socket`, `--ntasks-per-gpu`, `-N` / `--nodes` |
+| | Options | |
+| --- | --- | --- |
+| direct cpu counts | `-c` / `--cpus-per-task`, `--cpus-per-gpu` | state the request |
+| topology modifiers | `--threads-per-core`, `-B` / `--extra-node-info` | scale it |
+| task and node counts | `-n` / `--ntasks`, `--ntasks-per-node`, `--ntasks-per-core`, `--ntasks-per-socket`, `--ntasks-per-gpu`, `-N` / `--nodes` | scale it |
 
 All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: `--ntasks` and `--cpus-per-task` are orthogonal and the request is their product, so each distinct option is reported. `--exclusive` and `--overcommit` are deliberately not included: they change what is *allocated* rather than what is requested, so `ReqCPUS` still describes the reservation.
 
@@ -257,12 +258,23 @@ Where such an argument is present rtl_buddy records no request for that run's ro
 The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at `root_config.yaml`) and its `note` says which field was superseded, for example:
 
 ```
-sbatch-args `--ntasks=4` sets this job's cpu request, superseding
+sbatch-args `--cpus-per-task=4` sets this job's cpu request, superseding
 tests[name=wr_single].resources.cpus; change it there. Suggested value is
 the whole-job cpu count.
 ```
 
-`suggested` is always the whole-job cpu count. Where exactly one argument sets the request, that is the number to write into it. Where several do, they multiply, so no single one of them can take it — the note says so and hands the decomposition back, because only the reader knows which factor is the one to shrink:
+`suggested` is always the whole-job cpu count, but only one shape of override can be handed it: **exactly one direct cpu count**, as above. The other two shapes cannot, and the note says so rather than giving advice that would not apply.
+
+A lone modifier is not a cpu count — writing 3 into `--ntasks` asks for three tasks, not three cpus:
+
+```
+sbatch-args supersedes tests[name=wr_single].resources.cpus: `--ntasks=4`
+scales this job's cpu request rather than stating it. Suggested value is the
+whole-job cpu count — that argument does not take it, so work out the
+reservation that reaches it yourself.
+```
+
+Several arguments multiply, so no single one of them takes the figure either — only the reader knows which factor should shrink:
 
 ```
 sbatch-args supersedes tests[name=wr_single].resources.cpus: this job's cpu
@@ -270,6 +282,8 @@ request is the product of `--ntasks=4` x `--cpus-per-task=2`. Suggested value
 is the whole-job cpu count — decompose it across those arguments yourself; no
 single one of them takes it.
 ```
+
+An override also disables the **compile cpus floor**. That floor exists because a job compiling inside itself is allocated `max(sim, compile)`, so no reduction can take it below the compile side — but an override supersedes that generated reservation entirely, and sbatch never sees the max. Left in place it clamps every suggestion up to the floor and then discards it for not being below the request, so a genuinely over-reserved run reports nothing at all. The `mem` and `time` floors are untouched, since no cpu argument supersedes them.
 
 Only `cpus` is retargeted: none of these arguments supersedes a `mem` or `time` field, so those findings keep naming the reservation that governs them.
 

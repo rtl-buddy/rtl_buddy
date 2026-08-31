@@ -72,10 +72,16 @@ of the global reservation.
   arguments, and the `cpus` row's `edit_hint` points at
   `cfg-dispatch.sbatch-args` with a note naming the field it masks — edit the
   argument, not that field. `mem` and `time` rows are unaffected.
-- Distinct cpu options multiply (`ReqCPUS` = tasks x cpus-per-task), so with
-  more than one present no single argument takes the suggestion: `suggested` is
-  the whole-job cpu count and the note says to decompose it across them
-  yourself. With exactly one, write it straight into that argument.
+- `suggested` is always the whole-job cpu count, but only ONE shape of override
+  takes it: exactly one direct cpu count (`-c`/`--cpus-per-task`,
+  `--cpus-per-gpu`) — write it straight in. A lone task/topology modifier
+  (`--ntasks`, `--ntasks-per-*`, `--nodes`, `--threads-per-core`, `-B`) is not
+  a cpu count, and several arguments multiply, so in both cases the note says
+  the number is the whole-job figure and the decomposition is yours.
+- An override also disables the compile `cpus` floor: that floor bounds the
+  generated `max(sim, compile)` reservation, which sbatch never saw, so leaving
+  it in would clamp every suggestion up and then discard it. `mem` and `time`
+  floors are untouched.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 
