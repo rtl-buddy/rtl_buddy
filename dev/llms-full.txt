@@ -3108,7 +3108,7 @@ tests:
     sim_timeout: 120
 ```
 
-`model_path`, testbench filelists, and hook paths resolve from the directory containing `tests.yaml`. `plusargs` affect simulation; `plusdefines` affect compilation. See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
+`model_path`, testbench filelists, and hook paths resolve from the directory containing `tests.yaml`, and a model's filelist entries resolve from the directory containing its own filelist — a `+incdir+` inside a filelist pulled in with `-F` names a directory beside that filelist, not beside the suite that consumes it, so a design filelist can carry its own include path. `plusargs` affect simulation; `plusdefines` affect compilation. See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
 
 ## Run tests
 
@@ -4502,9 +4502,13 @@ The plugin pin must speak the hub protocol shipped by rtl_buddy; maintainers upd
 
 ## Generated `run.f` files are checkout-specific
 
-rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. `+incdir+` and `-y` search directories are written absolute for the same reason. A relative search directory is resolved by the builder rather than by rtl_buddy: `-f` entries are read relative to the builder's working directory, and even a builder started in `run.f`'s own directory disagrees whenever a symlink sits between that directory and the design, because a relative path collapses `..` textually while a process walks it physically. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+
+Two path spellings cannot be pinned. An include directory whose path contains `+` keeps its relative spelling, because filelist parsers read `+incdir+a+b` as two directories and quoting does not change that; `filelist.incdir_unrepresentable` names those entries, and they stay dependent on the builder's working directory until the `+` is out of the path. A path containing whitespace is quoted instead, which Verilator's `-f` parser understands; Icarus's does not, and VCS is unverified, so keep whitespace out of checkout paths for those simulators.
 
 On a cluster with different mount paths per node, a stamp from one node may not validate on another. This causes a safe recompile, not compilation of the wrong source.
+
+Because the compile key hashes the text of each `run.f` entry, the first run after upgrading to a release that changed how an entry is spelled recompiles each shared build once. An absolute spelling also makes the key independent of where in the tree the consuming suite sits, so two suites at different depths that share a model now share one build where a relative spelling gave them different keys.
 
 ## Shared-build dependency tracking varies by simulator
 
@@ -7576,7 +7580,7 @@ models:
 | `synth` | Optional | Synthesis ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. Only the simulation flow acts on that include path: the synthesis, CDC, and FPGA flows drop `+incdir+` entries when they read the generated filelist back, so a header those flows must see needs a search path configured for them instead (see [FPGA Implementation](../concepts/fpga.md)). `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
 
 ## tests.yaml
 
