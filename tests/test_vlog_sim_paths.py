@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
@@ -286,6 +287,13 @@ def test_compile_fingerprint_degrades_on_unbalanced_quote(tmp_path, monkeypatch)
     assert stamps == [[raw_line, None, None, None]]
 
 
+def _ver_files(obj_dir: Path) -> str:
+    """Verilator's record of every file the verilation actually consumed."""
+    ver_files_path = next(iter(sorted(obj_dir.glob("*__verFiles.dat"))), None)
+    assert ver_files_path is not None, f"no *__verFiles.dat under {obj_dir}"
+    return ver_files_path.read_text()
+
+
 def _nested_worktree_repro(tmp_path: Path):
     """Build the path geometry from #457, including an ancestor with spaces."""
     primary = tmp_path / "project with spaces"
@@ -385,40 +393,67 @@ def test_verilator_compiles_nested_worktree_source_from_absolute_run_f(tmp_path:
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
-    ver_files_path = next(iter(sorted(obj_dir.glob("*__verFiles.dat"))), None)
-    assert ver_files_path is not None, f"no *__verFiles.dat under {obj_dir}"
-    ver_files = ver_files_path.read_text()
+    ver_files = _ver_files(obj_dir)
     assert str(worktree_source) in ver_files
     assert str(primary_source) not in ver_files
 
 
-def _nested_incdir_repro(tmp_path: Path):
+def _nested_incdir_repro(
+    tmp_path: Path,
+    *,
+    root_name: str = "project with spaces",
+    absolute_sources: bool = True,
+    scratch_artefacts: bool = False,
+    library_dir: bool = True,
+):
     """The #474 geometry: a design filelist that owns its own include path.
 
     ``models.yaml`` at the project root pulls ``design/blk/blk.f`` in with
     ``-F``; that nested filelist carries ``+incdir+.`` and ``-y .`` for its
     own directory. The consuming suite lives in an unrelated subtree, so
-    every search directory needs four ``..`` hops from ``run.f``. The root
-    has a space in it to exercise quoting.
+    every search directory needs four ``..`` hops from ``run.f``. The
+    default root has a space in it to exercise quoting.
+
+    ``library_dir`` off drops the ``-y .`` entry, leaving ``+incdir+`` as
+    the only way to reach the header: Verilator searches ``-y`` directories
+    for includes too, so a test that means to exercise ``+incdir+`` alone
+    has to take the library directory away.
+
+    ``scratch_artefacts`` puts the suite's ``artefacts/`` tree on a
+    different path and symlinks it into the suite — the ordinary "artefacts
+    live on scratch space" setup, and the reason ``rb test`` was exposed
+    even though it compiles with its cwd set to ``run.f``'s directory:
+    ``os.path.relpath`` collapses ``..`` textually while the builder walks
+    it physically.
     """
-    root = tmp_path / "project with spaces"
+    root = tmp_path / root_name
     (root / ".git").mkdir(parents=True)
     (root / "root_config.yaml").write_text("{}\n")
     design = root / "design" / "blk"
     design.mkdir(parents=True)
     (design / "blk_helper.svh").write_text("localparam int BLK_W = 8;\n")
-    (design / "blk_lib.sv").write_text("module blk_lib; endmodule\n")
-    (design / "blk.sv").write_text(
-        'module blk;\n`include "blk_helper.svh"\nblk_lib u_lib();\nendmodule\n'
-    )
-    (design / "blk.f").write_text("+incdir+.\n-y .\n+libext+.sv\nblk.sv\n")
+    if library_dir:
+        (design / "blk_lib.sv").write_text("module blk_lib; endmodule\n")
+        (design / "blk.sv").write_text(
+            'module blk;\n`include "blk_helper.svh"\nblk_lib u_lib();\nendmodule\n'
+        )
+        (design / "blk.f").write_text("+incdir+.\n-y .\n+libext+.sv\nblk.sv\n")
+    else:
+        (design / "blk.sv").write_text(
+            'module blk;\n`include "blk_helper.svh"\nendmodule\n'
+        )
+        (design / "blk.f").write_text("+incdir+.\nblk.sv\n")
 
     suite = root / "verif" / "unrelated"
     suite.mkdir(parents=True)
     (suite / "tb_top.sv").write_text("module tb_top;\nblk u_blk();\nendmodule\n")
     (suite / "tb_inc").mkdir()
+    if scratch_artefacts:
+        physical = tmp_path / "scratch" / "artefacts"
+        (physical / "basic").mkdir(parents=True)
+        (suite / "artefacts").symlink_to(physical, target_is_directory=True)
     output_dir = suite / "artefacts" / "basic"
-    output_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     model = ModelConfig(
         name="blk",
@@ -429,7 +464,7 @@ def _nested_incdir_repro(tmp_path: Path):
     VlogFilelist(name="t", model_cfg=model, output_path=str(run_f)).write_output(
         unroll=True,
         deduplicate=True,
-        absolute_sources=True,
+        absolute_sources=absolute_sources,
         test_filelist=["+incdir+tb_inc", "tb_top.sv"],
         suite_dir=str(suite),
     )
@@ -484,12 +519,140 @@ def test_verilator_resolves_nested_incdir_from_a_foreign_cwd(tmp_path: Path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
-    ver_files_path = next(iter(sorted(obj_dir.glob("*__verFiles.dat"))), None)
-    assert ver_files_path is not None, f"no *__verFiles.dat under {obj_dir}"
-    ver_files = ver_files_path.read_text()
+    ver_files = _ver_files(obj_dir)
     # The header came through +incdir+ and the library module through -y.
     assert str(design / "blk_helper.svh") in ver_files
     assert str(design / "blk_lib.sv") in ver_files
+
+
+def test_write_output_keeps_search_dirs_relative_without_absolute_sources(
+    tmp_path: Path,
+):
+    """The other half of the contract: only the flow that opts in gets the
+    pin. Every other consumer reads its filelist back itself and resolves
+    entries against the filelist's own directory, so their spelling is
+    unchanged (#474)."""
+    _root, design, suite, run_f = _nested_incdir_repro(tmp_path, absolute_sources=False)
+    lines = run_f.read_text().splitlines()
+    output_dir = run_f.parent
+
+    assert f"+incdir+{os.path.relpath(design, output_dir)}" in lines
+    assert f"-y {os.path.relpath(design, output_dir)}" in lines
+    assert f"+incdir+{os.path.relpath(suite / 'tb_inc', output_dir)}" in lines
+    assert not [line for line in lines if line.startswith(("+incdir+/", "-y /"))]
+
+
+def test_write_output_pins_search_dirs_through_a_symlinked_artefact_dir(
+    tmp_path: Path,
+):
+    """A symlink anywhere between ``run.f`` and the design is enough to
+    reproduce the report under ``rb test`` itself: it compiles with its cwd
+    set to ``run.f``'s directory, but ``relpath`` collapses ``..``
+    textually while the builder walks it physically, so the two disagree
+    (#474)."""
+    _root, design, _suite, run_f = _nested_incdir_repro(
+        tmp_path, scratch_artefacts=True
+    )
+    lines = run_f.read_text().splitlines()
+
+    assert f'+incdir+"{design}"' in lines
+    assert f'-y "{design}"' in lines
+
+    # The spelling emitted before the fix, resolved the way a process whose
+    # cwd is run.f's directory actually resolves it. It misses the design
+    # entirely — which is the "directory exists, wrong directory" trap when
+    # something else happens to sit there.
+    stale = os.path.relpath(design, run_f.parent)
+    physically = os.path.join(os.path.realpath(run_f.parent), stale)
+    assert not os.path.isdir(physically)
+
+
+@pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
+def test_verilator_resolves_nested_incdir_through_a_symlinked_artefact_dir(
+    tmp_path: Path,
+):
+    """Belt and braces for the symlink case, with the builder invoked the
+    way ``rb test`` invokes it: cwd is ``run.f``'s own directory (#474)."""
+    _root, design, _suite, run_f = _nested_incdir_repro(
+        tmp_path, scratch_artefacts=True
+    )
+    obj_dir = run_f.parent / "obj_dir"
+    result = subprocess.run(
+        [
+            "verilator",
+            "--cc",
+            "--top-module",
+            "tb_top",
+            "--Mdir",
+            str(obj_dir),
+            "-f",
+            str(run_f),
+        ],
+        cwd=run_f.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert str(design / "blk_helper.svh") in _ver_files(obj_dir)
+
+
+def test_write_output_keeps_incdir_relative_when_the_path_contains_plus(
+    tmp_path: Path, caplog
+):
+    """``+incdir+`` cannot express a ``+`` in a path — every filelist parser
+    reads ``+incdir+a+b`` as two directories, and quoting does not help — so
+    such an entry keeps its relative spelling and says so. ``-y`` takes its
+    argument as a separate token and is still pinned (#474)."""
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.tools.vlog_filelist"):
+        _root, design, _suite, run_f = _nested_incdir_repro(
+            tmp_path, root_name="pro+ject"
+        )
+    lines = run_f.read_text().splitlines()
+
+    assert f"+incdir+{os.path.relpath(design, run_f.parent)}" in lines
+    assert f"-y {design}" in lines
+    assert not [line for line in lines if line.startswith("+incdir+/")]
+
+    events = [
+        record
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "filelist.incdir_unrepresentable"
+    ]
+    assert len(events) == 1, caplog.text
+    assert str(design) in events[0].rtl_fields["paths"]
+
+
+@pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
+def test_verilator_compiles_when_the_checkout_path_contains_plus(tmp_path: Path):
+    """The fallback is what keeps a ``+`` checkout working at all: pinning
+    such an include directory absolute would split it in two (#474)."""
+    # No `-y`: Verilator also searches library directories for includes, and
+    # `-y` is unaffected by `+`, so it would rescue the include and hide
+    # whatever the `+incdir+` entry does.
+    _root, design, _suite, run_f = _nested_incdir_repro(
+        tmp_path, root_name="pro+ject", library_dir=False
+    )
+    obj_dir = run_f.parent / "obj_dir"
+    result = subprocess.run(
+        [
+            "verilator",
+            "--cc",
+            "--top-module",
+            "tb_top",
+            "--Mdir",
+            str(obj_dir),
+            "-f",
+            str(run_f),
+        ],
+        cwd=run_f.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    # Recorded relative, because the entry that found it stayed relative.
+    assert "blk_helper.svh" in _ver_files(obj_dir)
 
 
 def test_vlog_sim_execute_runs_in_artifact_dir_and_updates_symlinks(

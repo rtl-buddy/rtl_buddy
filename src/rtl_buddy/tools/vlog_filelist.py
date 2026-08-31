@@ -231,10 +231,18 @@ class VlogFilelist:
         list, not a path, and is emitted verbatim. Order, and therefore
         search precedence, is untouched. ``flatten`` wins over it (a
         basename cannot be pinned).
+
+        Two limits on the pin. A ``+incdir+`` whose resolved path contains
+        ``+`` cannot be pinned at all and falls back to the relative
+        spelling (see below). And the quoting that carries whitespace was
+        validated against Verilator's ``-f`` parser only — Icarus's does
+        not strip double quotes, and VCS's is unverified — so a checkout
+        path with whitespace remains unsupported for those simulators.
         """
         output_dir = os.path.abspath(output_dir)
         project_root = self._project_root(output_dir)
         escaped: list[str] = []
+        unpinnable: list[str] = []
         out_lines = []
         for line_path, line_option in entries:
             if line_option == _DEFINE_PREFIX:
@@ -310,7 +318,22 @@ class VlogFilelist:
                 # fails far from the cause or silently preprocesses a
                 # same-named header from the wrong tree. Pinning keeps
                 # precedence (that is order, not spelling) intact.
-                line_path = _quote_filelist_path(resolved_line_path)
+                if line_option == "+incdir+" and "+" in resolved_line_path:
+                    # `+incdir+` has no spelling for a path containing `+`:
+                    # `+incdir+a+b` is the two directories `a` and `b` by
+                    # convention, and quoting does not rescue it (checked
+                    # against Verilator's `-f` parser, which splits the
+                    # quoted form the same way). Keep the relative spelling
+                    # — the `+` normally sits in an ancestor the two paths
+                    # share, so the relative one often has none — and say
+                    # so, because a silently split include path is the
+                    # exact failure this change exists to remove. `-y` is
+                    # unaffected: its argument is a separate token.
+                    if resolved_line_path not in unpinnable:
+                        unpinnable.append(resolved_line_path)
+                    line_path = relative_line_path
+                else:
+                    line_path = _quote_filelist_path(resolved_line_path)
             else:
                 line_path = relative_line_path
 
@@ -334,6 +357,14 @@ class VlogFilelist:
                 count=len(escaped),
                 root=project_root,
                 paths=", ".join(escaped),
+            )
+        if unpinnable:
+            log_event(
+                logger,
+                logging.WARNING,
+                "filelist.incdir_unrepresentable",
+                count=len(unpinnable),
+                paths=", ".join(unpinnable),
             )
 
         return out_lines
