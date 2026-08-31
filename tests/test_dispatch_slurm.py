@@ -3251,3 +3251,79 @@ def test_a_new_run_asks_again(monkeypatch):
     SlurmDispatchBackend(cfg).submit_build(_build_spec())
 
     assert [argv[0] for argv in calls] == ["squeue", "sbatch", "squeue", "sbatch"]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["-M", "remote"], ["-Mremote"], ["--clusters=remote"], ["--cluster", "remote"]],
+    ids=["separated", "joined", "long-equals", "singular-separated"],
+)
+def test_the_dedup_probe_follows_the_selected_cluster(monkeypatch, sbatch_args):
+    """A bare `squeue` reads the LOCAL queue.
+
+    With `sbatch-args` submitting elsewhere that means either silence or,
+    worse, local job ids named in a warning about a remote wait — so the
+    probe goes where the build job goes (#509 parsed the selection).
+    """
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    probe, argv = calls
+    assert probe[0] == "squeue"
+    assert probe[1:3] == ["-M", "remote"]
+    assert "--dependency=singleton" in argv
+
+
+def test_a_multi_cluster_selection_skips_the_probe(monkeypatch, caplog):
+    """`--clusters=a,b` lets Slurm choose at submit, so an id from either
+    queue may belong to a cluster this build job is not on — and an id
+    means nothing without its cluster. The singleton is unaffected: Slurm
+    resolves it wherever the job lands."""
+    import logging
+
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--clusters=a,b"]).initialise()
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+
+    (argv,) = calls  # no probe at all
+    assert argv[0] == "sbatch"
+    assert "--dependency=singleton" in argv
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert "several clusters (a,b)" in record.getMessage()
+
+
+def test_the_cluster_banner_is_not_read_as_a_job_id(monkeypatch, caplog):
+    """`--noheader` drops the column header, not the `CLUSTER: name` line
+    `-M` prints ahead of each queue."""
+    import logging
+
+    calls, results = [], _dedup_results("CLUSTER: remote\n41\n42\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["-M", "remote"]).initialise()
+    )
+
+    with caplog.at_level(logging.WARNING):
+        backend.submit_build(_build_spec())
+
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["41", "42"]

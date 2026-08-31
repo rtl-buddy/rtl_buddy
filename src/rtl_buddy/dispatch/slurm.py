@@ -685,18 +685,36 @@ class SlurmDispatchBackend(DispatchBackend):
         and no second attempt this run (see :meth:`_retire_dedup_probe`):
         a submit host with no ``squeue``, one that errors, or one that
         hangs loses the explanation and keeps the guarantee. Scoped to
-        this user because that is the scope ``singleton`` has, so the line
-        describes the jobs the dependency actually waits for.
+        this user because that is the scope ``singleton`` has, and to the
+        cluster ``sbatch-args`` submits to, so the line describes the jobs
+        the dependency actually waits for.
         """
         if not self._dedup_probe_available:
             return []
         fields = {"job_name": job_name, "suite_dir": cwd}
+        if self.cluster is not None and "," in self.cluster:
+            # `--clusters=a,b` lets Slurm pick which one runs the job, at
+            # submit. Probing either would report ids from a queue this
+            # build job may not be in — and a job id means nothing without
+            # the cluster it belongs to. The singleton is unaffected: it is
+            # resolved wherever the job lands.
+            return self._retire_dedup_probe(
+                f"sbatch-args select several clusters ({self.cluster}), so a job "
+                "id from any one of them would be ambiguous",
+                **fields,
+            )
         try:
             user = getpass.getuser()
         except Exception as e:  # noqa: BLE001 - no login name, no probe
             return self._retire_dedup_probe(str(e), **fields)
+        # Follow `sbatch-args` to the cluster the build job is submitted to
+        # (#509 gave the backend the selection): a bare `squeue` reads the
+        # LOCAL queue, which for a remote submission means either silence
+        # or, worse, local ids named in a warning about a remote wait.
+        cluster_argv = [] if self.cluster is None else ["-M", self.cluster]
         argv = [
             "squeue",
+            *cluster_argv,
             "--noheader",
             "--format=%i",
             f"--user={user}",
@@ -717,7 +735,14 @@ class SlurmDispatchBackend(DispatchBackend):
             return self._retire_dedup_probe(
                 proc.stderr.strip() or f"squeue exited {proc.returncode}", **fields
             )
-        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        # `--noheader` drops the column header, not the `CLUSTER: name`
+        # banner `-M` prints ahead of each queue, so ids are taken as the
+        # lines that begin like one (`123`, `123_4`, `123_[1-4]`).
+        return [
+            line.strip()
+            for line in proc.stdout.splitlines()
+            if line.strip() and line.strip()[0].isdigit()
+        ]
 
     def _configured_dependency(self) -> str | None:
         """The dependency expression already in force for this submission.
