@@ -970,3 +970,37 @@ def test_clear_managed_outputs_missing_dir_is_not_an_error(tmp_path):
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     assert clear_managed_outputs(tmp_path / "never-made", (".bit",), owner="d") == []
+
+
+def test_clear_managed_outputs_directory_at_an_output_path_is_fatal(tmp_path):
+    """A directory sitting where an output belongs must not be silently
+    skipped: something has to be removed before the tool can write there, so
+    it takes the documented fatal path rather than being ignored (#469)."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    blocked = tmp_path / "top.bit"
+    blocked.mkdir()
+    (blocked / "inside.txt").write_text("not ours to delete\n")
+
+    with pytest.raises(FatalRtlBuddyError, match="could not remove"):
+        clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+
+    # Never recurses and never removes a tree — the user is told to deal with it.
+    assert blocked.is_dir()
+    assert (blocked / "inside.txt").exists()
+
+
+def test_clear_managed_outputs_removes_a_dangling_symlink(tmp_path):
+    """A broken symlink is not a file, but it *is* the stale artefact, and
+    unlinking it succeeds — so it is cleared rather than skipped (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    link = tmp_path / "top.bit"
+    link.symlink_to(tmp_path / "never-existed.bit")
+    assert link.is_symlink() and not link.is_file()
+
+    removed = clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+
+    assert [os.path.basename(p) for p in removed] == ["top.bit"]
+    assert not link.is_symlink()

@@ -186,6 +186,17 @@ def clear_managed_outputs(
       keep: exact filenames to leave alone even when they match — for a
         fixed-name artefact that happens to share a managed suffix.
 
+    Every matching entry is handed to :func:`clear_stale_artefacts`,
+    including ones that are not regular files. A *directory* sitting where
+    an output belongs (``<top>.bit/``) is exactly the case that must not be
+    skipped: something has to be removed before the tool can write there,
+    and quietly ignoring it would let the run read a neighbouring stale file
+    or report success against a path it never wrote. Unlinking a directory
+    fails, so it takes the documented fatal path and the user is told which
+    path to deal with — this never recurses or removes a tree. A dangling
+    symlink unlinks cleanly, which is the right outcome: the link is the
+    stale artefact.
+
     Returns:
       The paths removed, sorted, for logging.
     """
@@ -199,7 +210,7 @@ def clear_managed_outputs(
     doomed = [
         entry
         for entry in entries
-        if entry.is_file() and entry.name not in keep and entry.name.endswith(suffixes)
+        if entry.name not in keep and entry.name.endswith(suffixes)
     ]
     return clear_stale_artefacts(doomed, owner=owner)
 

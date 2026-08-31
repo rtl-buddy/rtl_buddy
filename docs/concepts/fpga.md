@@ -172,7 +172,7 @@ Both backends delete their outputs before each run — the reports, the netlist,
 
 The bitstream goes even when the run was not asked to build one: a run without `--bitstream` removes a previously built `<top>.bit`, because the artefact directory describes the latest run and a stale deployable bitstream sitting beside a run that reports none is exactly the trap the rest of this rule closes. Rerun with `--bitstream` to regenerate it, or copy the file out first.
 
-A run that *skips* is the exception: when the backend tool is not installed nothing is deleted, because a machine without the toolchain never ran it and has no business removing what a machine with it built. A configuration error is not a skip — an unknown `platform:`, or a part the backend cannot build, is reported whether or not the toolchain is present, and clears the outputs on its way out.
+A run that cannot find its backend tool is the exception: it deletes nothing, because a machine without the tool never ran it and has no business removing what a machine that has it produced. A configuration error is not a skip — an unknown `platform:`, or a part the backend cannot build, is reported whether or not the toolchain is present, and clears the outputs on its way out.
 
 ## Interpret pass, fail, and skip
 
