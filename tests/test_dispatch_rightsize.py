@@ -1642,7 +1642,7 @@ def test_a_cpus_override_in_sbatch_args_withdraws_the_configured_request():
     assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
     assert cpus_a.edit_hint["file"] == "root_config.yaml"
     note = cpus_a.edit_hint["note"]
-    assert "sbatch-args `--cpus-per-task=8` supersedes" in note
+    assert "sbatch-args `--cpus-per-task=8` sets this job's cpu request" in note
     assert "cfg-dispatch.compile.cpus" in note
     # The superseded decomposition is gone with it.
     assert "the build job reserved" not in note
@@ -1718,7 +1718,7 @@ def test_a_cpus_override_retargets_the_per_test_edit_hint():
     assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
     assert cpu.edit_hint["file"] == "root_config.yaml"
     note = cpu.edit_hint["note"]
-    assert "sbatch-args `--cpus-per-task=4` supersedes" in note
+    assert "sbatch-args `--cpus-per-task=4` sets this job's cpu request" in note
     assert "tests[name=t].resources.cpus" in note
 
     # Only cpus is masked: mem and time still name the fields that govern
@@ -1760,7 +1760,7 @@ def test_an_overridden_in_job_compile_row_names_the_field_it_masks():
         if f.resource == "cpus"
     ]
     assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
-    assert "supersedes cfg-dispatch.compile.cpus" in cpu.edit_hint["note"]
+    assert "superseding cfg-dispatch.compile.cpus" in cpu.edit_hint["note"]
 
     # ...and the suite's own compile block when that is the layer that won.
     rows = [
@@ -1781,4 +1781,4 @@ def test_an_overridden_in_job_compile_row_names_the_field_it_masks():
         )
         if f.resource == "cpus"
     ]
-    assert "supersedes compile.cpus" in cpu.edit_hint["note"]
+    assert "superseding compile.cpus" in cpu.edit_hint["note"]

@@ -708,29 +708,65 @@ def test_parallel_is_not_a_field_of_a_suite_level_compile_block(
 
 
 @pytest.mark.parametrize(
-    "args",
+    "args,expected",
     [
-        ["--cpus-per-task=4"],
-        ["--cpus-per-task", "4"],
-        ["-c", "4"],
-        ["-c4"],
-        ["-c=4"],
-        ["--partition=verif", "--cpus-per-task=4", "--exclusive"],
+        (["--cpus-per-task=4"], "--cpus-per-task=4"),
+        (["--cpus-per-task", "4"], "--cpus-per-task 4"),
+        (["-c", "4"], "-c 4"),
+        (["-c4"], "-c4"),
+        (["-c=4"], "-c=4"),
+        (
+            ["--partition=verif", "--cpus-per-task=4", "--exclusive"],
+            "--cpus-per-task=4",
+        ),
         # A trailing flag with no value is malformed sbatch input, but it is
         # still an override of intent: sbatch, not right-sizing, reports it.
-        ["--cpus-per-task"],
+        (["--cpus-per-task"], "--cpus-per-task"),
+        # `ReqCPUS` is tasks x cpus-per-task, so a task count multiplies the
+        # job's cpus just as surely and leaves `requested_cpus` — a per-task
+        # number — under-counting the denominator (#505 review).
+        (["--ntasks=4"], "--ntasks=4"),
+        (["-n", "4"], "-n 4"),
+        (["-n4"], "-n4"),
+        (["--ntasks-per-node=2"], "--ntasks-per-node=2"),
+        (["--ntasks-per-core=2"], "--ntasks-per-core=2"),
+        (["--ntasks-per-socket=2"], "--ntasks-per-socket=2"),
+        (["--ntasks-per-gpu=2"], "--ntasks-per-gpu=2"),
+        (["--cpus-per-gpu=4"], "--cpus-per-gpu=4"),
+        (["--threads-per-core=2"], "--threads-per-core=2"),
+        (["--nodes=2"], "--nodes=2"),
+        (["-N", "2"], "-N 2"),
+        (["-B", "2:4:1"], "-B 2:4:1"),
+        (["--extra-node-info=2:4:1"], "--extra-node-info=2:4:1"),
     ],
 )
-def test_a_cpus_override_in_sbatch_args_is_found(args):
+def test_a_cpus_override_in_sbatch_args_is_found(args, expected):
     """`sbatch-args` is appended last and wins, so it has to be seen (#505).
 
     Right-sizing otherwise analyses a run against the cpus the YAML resolved
     to rather than the cpus it was submitted with — the same class of bug
     #505 fixed, arriving by the other door.
     """
-    found = sbatch_args_cpus_override(args)
-    assert found is not None
-    assert "cpus-per-task" in found or found.startswith("-c")
+    assert sbatch_args_cpus_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["-c", "4", "--cpus-per-task=8"], "--cpus-per-task=8"),
+        (["--cpus-per-task=8", "-c", "4"], "-c 4"),
+        (["--ntasks=2", "--cpus-per-task=8"], "--cpus-per-task=8"),
+        (["--cpus-per-task=8", "--ntasks=2"], "--ntasks=2"),
+        (["-c4", "--partition=verif", "-c8"], "-c8"),
+    ],
+)
+def test_the_last_cpu_option_wins_like_sbatch(args, expected):
+    """sbatch obeys the FINAL occurrence, so the hint must name that one.
+
+    `[-c, 4, --cpus-per-task=8]` runs with 8; naming the first would send a
+    reader to an argument that is not in force (#505 review).
+    """
+    assert sbatch_args_cpus_override(args) == expected
 
 
 @pytest.mark.parametrize(
@@ -743,8 +779,16 @@ def test_a_cpus_override_in_sbatch_args_is_found(args):
         ["--comment=nightly"],
         ["--chdir=/tmp"],
         ["--mem=8G", "--time=01:00:00"],
-        # Not a cpus count: the short option takes a number.
+        # Not a cpus count: the short options take a number.
         ["-cfoo"],
+        ["-nodes"],
+        # `--nodelist` shares a prefix with `--nodes`, and `--ntasks-per-*`
+        # must not be read as a bare `--ntasks`.
+        ["--nodelist=node01"],
+        # Allocation, not request: `ReqCPUS` still describes the reservation,
+        # so the fallback is already right and there is nothing to retarget.
+        ["--exclusive"],
+        ["--overcommit"],
     ],
 )
 def test_args_that_do_not_touch_cpus_are_left_alone(args):

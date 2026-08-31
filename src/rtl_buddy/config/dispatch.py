@@ -467,44 +467,89 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
     return resolved
 
 
-# Every spelling of `--cpus-per-task` sbatch's getopt accepts, plus the
-# short form. Deliberately generous: a false positive only costs the
-# right-sizing analysis its best denominator (it falls back to `ReqCPUS`),
-# while a false negative makes it analyse a run against cpus it never had.
-_CPUS_LONG_OPT = "--cpus-per-task"
+# sbatch options that change what a job REQUESTS in cpus, i.e. that can make
+# `ReqCPUS` differ from the cpus-per-task the head resolved. Two families:
+# the cpu counts themselves, and the task/node counts `ReqCPUS` multiplies
+# them by (`ReqCPUS` = tasks x cpus-per-task). Deliberately generous — a
+# false positive only costs right-sizing its best denominator, since it then
+# falls back to `ReqCPUS`, while a false negative makes it analyse a run
+# against cpus the job never had.
+#
+# `--exclusive` and `--overcommit` are deliberately absent: they change what
+# is *allocated*, not what is requested, so `ReqCPUS` — the fallback — still
+# describes the reservation correctly.
+_CPU_REQUEST_LONG_OPTS = (
+    "--cpus-per-task",
+    "--cpus-per-gpu",
+    "--threads-per-core",
+    "--extra-node-info",
+    "--ntasks",
+    "--ntasks-per-node",
+    "--ntasks-per-core",
+    "--ntasks-per-socket",
+    "--ntasks-per-gpu",
+    "--nodes",
+)
+# Short forms of the above, in the same order of meaning: -c/--cpus-per-task,
+# -B/--extra-node-info, -n/--ntasks, -N/--nodes. Matched only with a value,
+# so an unrelated `-cfoo` is not mistaken for one.
+_CPU_REQUEST_SHORT_OPTS = ("-c", "-B", "-n", "-N")
 
 
 def sbatch_args_cpus_override(sbatch_args) -> str | None:
-    """The ``sbatch-args`` entry that overrides ``--cpus-per-task``, if any.
+    """The ``sbatch-args`` entry that decides the job's cpu request, if any.
 
     ``cfg-dispatch.sbatch-args`` is appended verbatim *after* the generated
-    reservation flags, so a duplicate flag there wins — which is the
-    documented contract, and the reason right-sizing cannot always trust
-    the reservation it resolved. Where this returns non-``None`` the
-    resolved ``cpus`` is not what the job was submitted with, so it must not
-    be recorded as the request; the analysis falls back to the scheduler's
-    own ``ReqCPUS`` (#505 review).
+    reservation flags, so an entry there wins — which is the documented
+    contract, and the reason right-sizing cannot always trust the
+    reservation it resolved. Where this returns non-``None`` the resolved
+    ``cpus`` is not what the job was submitted with, so it must not be
+    recorded as the request: the analysis falls back to the scheduler's own
+    ``ReqCPUS``, and the ``cpus`` finding's edit hint names this key rather
+    than the YAML field it masks (#505 review).
 
-    Returns the offending argument, for the log line that explains the
-    fallback. Only ``cpus`` needs this: ``mem`` and ``time`` advice is
-    already measured against ``ReqMem``/``TimelimitRaw``, which sacct
-    reports from the allocation the override actually produced.
+    Two families of option qualify, because ``ReqCPUS`` is *tasks x
+    cpus-per-task*: the cpu counts (``-c``/``--cpus-per-task``,
+    ``--cpus-per-gpu``, ``--threads-per-core``, ``-B``/``--extra-node-info``)
+    and the task/node counts that multiply them (``-n``/``--ntasks``,
+    ``--ntasks-per-node``/``-core``/``-socket``/``-gpu``,
+    ``-N``/``--nodes``). ``--exclusive`` and ``--overcommit`` are not
+    included: they change what is allocated rather than what is requested,
+    so ``ReqCPUS`` still describes the reservation.
+
+    Returns the LAST such argument, quoted for the log line and the edit
+    hint: sbatch obeys the final occurrence, so ``[-c, 4,
+    --cpus-per-task=8]`` runs with 8 and naming the first would send a
+    reader to an argument that is not in force.
+
+    Only ``cpus`` needs this. ``mem`` and ``time`` advice is already
+    measured against ``ReqMem``/``TimelimitRaw``, which sacct reports from
+    the allocation any override actually produced.
     """
     args = list(sbatch_args or [])
+    found = None
     for index, arg in enumerate(args):
-        if arg in (_CPUS_LONG_OPT, "-c"):
+        if arg in _CPU_REQUEST_LONG_OPTS or arg in _CPU_REQUEST_SHORT_OPTS:
             # Value-in-the-next-argument form. A trailing flag with no value
             # is malformed sbatch input, but it is still an override of
             # intent, and sbatch — not right-sizing — is where it should be
             # reported.
             following = args[index + 1 : index + 2]
-            return f"{arg} {following[0]}" if following else arg
-        if arg.startswith(f"{_CPUS_LONG_OPT}="):
-            return arg
-        if arg.startswith("-c") and arg[2:].lstrip("=").isdigit():
-            # `-c4` and, defensively, `-c=4`.
-            return arg
-    return None
+            found = f"{arg} {following[0]}" if following else arg
+            continue
+        if any(arg.startswith(f"{opt}=") for opt in _CPU_REQUEST_LONG_OPTS):
+            found = arg
+            continue
+        if any(
+            arg.startswith(opt)
+            and arg[len(opt) :].lstrip("=")
+            # `-c4`/`-n4`, and `-c=4` defensively. A value is required, so an
+            # unrelated `-cfoo` or `--constraint`-like token is not matched.
+            and arg[len(opt) :].lstrip("=")[0].isdigit()
+            for opt in _CPU_REQUEST_SHORT_OPTS
+        ):
+            found = arg
+    return found
 
 
 def compile_parallel(dispatch_cfg) -> int:

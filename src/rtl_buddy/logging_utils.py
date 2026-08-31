@@ -532,9 +532,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"cfg-dispatch.sbatch-args sets `{fields.get('sbatch_arg')}`, "
                 "which is appended after the generated flags and wins — so "
-                "the resolved cpus is not what was submitted. CPU-efficiency "
-                "advice for this suite is measured against the scheduler's "
-                "own ReqCPUS instead."
+                "the resolved cpus is not this job's cpu request. "
+                "CPU-efficiency advice for this suite is measured against "
+                "the scheduler's own ReqCPUS instead, and its edit hint "
+                "names sbatch-args."
             )
         case "rightsize.mem_advice_unsampled":
             tests = fields.get("tests") or []

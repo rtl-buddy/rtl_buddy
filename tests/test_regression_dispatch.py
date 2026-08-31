@@ -1609,23 +1609,37 @@ def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
     assert all(a["allocated"] is None for a in advice)
 
 
+@pytest.mark.parametrize(
+    "sbatch_args,named",
+    [
+        ("[--cpus-per-task=4]", "--cpus-per-task=4"),
+        # `ReqCPUS` is tasks x cpus-per-task, so four tasks of the resolved
+        # one cpu is a four-cpu job that `requested_cpus` would call one.
+        ("[--ntasks=4]", "--ntasks=4"),
+        # sbatch obeys the LAST occurrence, and so must the hint.
+        ("[--cpus-per-task=2, --cpus-per-task=4]", "--cpus-per-task=4"),
+    ],
+)
 def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
     monkeypatch: pytest.MonkeyPatch,
+    sbatch_args: str,
+    named: str,
 ):
     """`sbatch-args` is appended last and wins, so the YAML is not the request.
 
     The project resolves the default 1 cpu, but `cfg-dispatch.sbatch-args`
-    overrides `--cpus-per-task` to 4, and that is what the jobs run with.
-    Recording the resolved 1 as the request would analyse a genuinely
-    over-reserved run against cpus it never had — and, with `cpus: 1`
-    failing the `cpus > 1` guard, silently drop the finding. The head
-    records nothing instead, so `ReqCPUS` carries it (#505 review).
+    raises the job's cpu request to 4 — directly, or by asking for four
+    tasks of it — and that is what the jobs run with. Recording the
+    resolved 1 as the request would analyse a genuinely over-reserved run
+    against cpus it never had and, with `cpus: 1` failing the `cpus > 1`
+    guard, silently drop the finding. The head records nothing instead, so
+    `ReqCPUS` carries it (#505 review).
     """
     root_cfg = minimal_project / "root_config.yaml"
     root_cfg.write_text(
-        root_cfg.read_text() + "\ncfg-dispatch:\n  sbatch-args: [--cpus-per-task=4]\n"
+        root_cfg.read_text() + f"\ncfg-dispatch:\n  sbatch-args: {sbatch_args}\n"
     )
     backend = _RecordingBackend(
         telemetry={
@@ -1673,16 +1687,16 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     # `resources.cpus` would leave the next job's reservation where it is.
     assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
     assert (
-        "sbatch-args `--cpus-per-task=4` supersedes "
-        "tests[name=basic].resources.cpus" in cpus["edit_hint"]["note"]
+        f"sbatch-args `{named}` sets this job's cpu request, "
+        "superseding tests[name=basic].resources.cpus" in cpus["edit_hint"]["note"]
     )
-    # time still names its own field; `--cpus-per-task` supersedes nothing there.
+    # time still names its own field; a cpu argument supersedes nothing there.
     (time_row,) = [a for a in advice if a["resource"] == "time"]
     assert time_row["edit_hint"]["path"] == "tests[name=basic].resources.time"
     # ...and the run says why the advice came from sacct rather than from
     # the reservation, naming the argument responsible.
     assert "sbatch-args" in result.output
-    assert "--cpus-per-task=4" in result.output
+    assert named in result.output
     assert "ReqCPUS" in result.output
 
 

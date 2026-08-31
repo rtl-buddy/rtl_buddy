@@ -60,14 +60,18 @@ of the global reservation.
   Slurm allocated: a site that hands out whole cores charges a `cpus: 1` job two
   and no reservation edit can change that. The request is the `--cpus-per-task`
   rtl_buddy itself submitted, so the rule holds even where `ReqCPUS` is rounded
-  too — unless `cfg-dispatch.sbatch-args` carries its own `--cpus-per-task`,
-  which is appended last and wins: the advice then falls back to `ReqCPUS`, a
-  DEBUG `rightsize request_from_scheduler` line names the argument, and the
-  `cpus` row's `edit_hint` points at `cfg-dispatch.sbatch-args` with a note
-  naming the field it masks. Edit the argument, not that field. `mem` and
-  `time` rows are unaffected. Where request and allocation differ the table reads
+  too. Where request and allocation differ the table reads
   `Reserved 4 (8 allocated)`; `allocated` is on every finding and is null
   except on such a `cpus` row. Edit the requested figure named in `Field`.
+- ...unless `cfg-dispatch.sbatch-args` carries an argument that sets the job's
+  cpu request: `-c`/`--cpus-per-task`, `--cpus-per-gpu`, `--threads-per-core`,
+  `-B`, or a task/node count `ReqCPUS` multiplies them by (`-n`/`--ntasks`,
+  `--ntasks-per-*`, `-N`/`--nodes`). Those are appended last and win, the last
+  one of them deciding, as for sbatch. The advice then falls back to `ReqCPUS`,
+  a DEBUG `rightsize request_from_scheduler` line names the argument, and the
+  `cpus` row's `edit_hint` points at `cfg-dispatch.sbatch-args` with a note
+  naming the field it masks — edit the argument, not that field. `mem` and
+  `time` rows are unaffected.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 

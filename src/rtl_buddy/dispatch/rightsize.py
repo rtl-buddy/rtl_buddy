@@ -167,14 +167,17 @@ def _override_note(sbatch_arg: str, masked_path: str) -> str:
     """Why a cpus finding names ``sbatch-args`` instead of a YAML field.
 
     ``cfg-dispatch.sbatch-args`` is appended after the generated reservation
-    flags, so a ``--cpus-per-task`` there is the reservation. Advice that
-    named the masked field would be unappliable — the edit lands, the next
-    job is submitted with the same argument, and the finding returns
+    flags, so an argument there decides the job's cpu request — either
+    directly (``--cpus-per-task``) or as the task/node count ``ReqCPUS``
+    multiplies it by (``--ntasks``, ``--ntasks-per-node``, ...). Advice
+    that named the masked field would be unappliable: the edit lands, the
+    next job is submitted with the same argument, and the finding returns
     (#505 review).
     """
     return (
-        f"sbatch-args `{sbatch_arg}` supersedes {masked_path}; edit it "
-        "there. Suggested value is the whole-job figure that argument takes."
+        f"sbatch-args `{sbatch_arg}` sets this job's cpu request, "
+        f"superseding {masked_path}; change it there. Suggested value is "
+        "the whole-job cpu count."
     )
 
 
