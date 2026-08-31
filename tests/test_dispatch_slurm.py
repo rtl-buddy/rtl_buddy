@@ -2655,7 +2655,7 @@ def _dedup_results(queued: str, job_id: str = "900"):
     ]
 
 
-def test_the_build_job_name_is_derived_from_the_suite_and_builder(monkeypatch):
+def test_the_build_job_name_is_derived_from_the_suite_directory(monkeypatch):
     """Same identity → same name, which is what singleton serialises on."""
     name = slurm_module.build_job_name(_build_spec())
     assert name.startswith("rb-build-")
@@ -2674,21 +2674,39 @@ def test_a_regression_and_a_single_test_share_one_build_job_name():
 
 
 @pytest.mark.parametrize(
-    "different",
-    [
-        {"suite_dir": "/proj/verif/other"},
-        {"builder_mode": "debug"},
-        {"builder_override": "vcs"},
-    ],
-    ids=["other-suite", "other-mode", "other-builder"],
+    "same",
+    [{"builder_mode": "debug"}, {"builder_override": "vcs"}],
+    ids=["other-mode", "other-builder"],
 )
-def test_a_different_build_gets_a_different_job_name(different):
-    """Over-matching costs latency; under-matching would cost the dedup.
-    But a different suite or builder writes a different directory, and
-    must not queue behind an unrelated build."""
-    assert slurm_module.build_job_name(_build_spec()) != slurm_module.build_job_name(
-        _build_spec(**different)
+def test_the_builder_selection_does_not_split_the_job_name(same):
+    """Two builder modes whose `compile-time` options are identical and
+    differ only in `run-time` resolve to ONE `obj_dir_<key>`. Keying the
+    name on the mode would let a `-M debug` run and a `-M reg` run build
+    into that one directory at once — the identity stops at the suite,
+    which is the unit that owns the shared-build tree."""
+    assert slurm_module.build_job_name(_build_spec()) == slurm_module.build_job_name(
+        _build_spec(**same)
     )
+
+
+def test_another_suite_gets_a_different_job_name():
+    """Over-matching costs latency; under-matching costs the dedup. But
+    another suite owns another shared-build tree, and must not queue
+    behind a build that cannot collide with it."""
+    assert slurm_module.build_job_name(_build_spec()) != slurm_module.build_job_name(
+        _build_spec(suite_dir="/proj/verif/other")
+    )
+
+
+def test_the_job_name_is_taken_from_the_absolute_suite_path(tmp_path, monkeypatch):
+    """Two heads may spell one suite differently — a relative cwd, a `..`
+    — and a rendezvous point that they spell apart is not one."""
+    suite = tmp_path / "verif" / "blk"
+    suite.mkdir(parents=True)
+    monkeypatch.chdir(suite)
+    assert slurm_module.build_job_name(
+        _build_spec(suite_dir=str(suite))
+    ) == slurm_module.build_job_name(_build_spec(suite_dir="."))
 
 
 def test_every_build_job_is_submitted_as_a_singleton(monkeypatch):

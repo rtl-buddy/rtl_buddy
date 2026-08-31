@@ -274,16 +274,23 @@ def build_job_name(spec: BuildJobSpec) -> str:
     Deterministic across runs and across a user's processes, because the
     name is the rendezvous point: ``--dependency=singleton`` serialises
     jobs that share a name and owner, so two invocations that would
-    populate the same shared build directory have to answer to one name
-    or the dedup does not fire.
+    populate the same shared build tree have to answer to one name or the
+    dedup does not fire.
 
-    The identity is the suite directory plus the builder selection (mode
-    and any ``--builder`` override, which resolve different builders and
-    therefore different compile keys). Deliberately **not** the planned
-    tests: ``rb regression`` over a suite and ``rb test alpha`` inside it
-    compile the same key into the same ``obj_dir_<key>``, and the whole
-    point is the "interrupt a regression, re-run one test" shape — a name
-    that separated them would leave exactly that case racing.
+    The identity is **the suite directory, and nothing else**. That is the
+    unit which owns ``artefacts/.shared-builds/``, so it is the coarsest
+    thing that is still precise: every build any invocation of this suite
+    performs lands under that one tree.
+
+    Everything finer was tried and was wrong. The planned tests: ``rb
+    regression`` over a suite and ``rb test alpha`` inside it compile the
+    same key into the same ``obj_dir_<key>``, so naming them apart leaves
+    the issue's own shape — interrupt a regression, re-run one test —
+    racing. The builder selection (mode, ``--builder`` override): two
+    modes whose ``compile-time`` options are identical and differ only in
+    ``run-time`` produce the SAME compile key and the same ``obj_dir``,
+    so keying on the mode would let a ``-M debug`` run and a ``-M reg``
+    run build into one directory at once.
 
     So the name over-matches, on purpose. It is not the compile key and
     cannot be: keys fingerprint sources, flags and defines, and are only
@@ -292,17 +299,12 @@ def build_job_name(spec: BuildJobSpec) -> str:
     suite therefore share a name whether or not they compile the same
     thing, and the cost of a false match is queue latency — the second job
     waits, then finds the stamp does not validate and builds — never a
-    wrong build. A different suite or builder never adopts another
-    build's wait.
+    wrong build. A different suite, which owns a different shared tree,
+    never adopts another build's wait.
     """
-    identity = "\n".join(
-        [
-            os.path.abspath(spec.suite_dir),
-            spec.builder_mode or "",
-            spec.builder_override or "",
-        ]
-    )
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha256(
+        os.path.abspath(spec.suite_dir).encode("utf-8")
+    ).hexdigest()[:12]
     return f"{_BUILD_JOB_NAME_PREFIX}-{digest}"
 
 

@@ -122,9 +122,9 @@ launching a large build; use independent cheap suites while it compiles.
   is still queued or running, so this run's build job waits for it
   (`--dependency=singleton`, per job name and user) and reuses what it built.
   Expected after an interrupted run; nothing to fix. Jobs are named
-  `rb-build-<hash>` per suite + builder, so a regression and a single test in
-  that suite share one. If the new job stays PENDING, the one ahead is stuck:
-  `scancel` the ids the warning names.
+  `rb-build-<hash>` per suite directory, so every run of that suite — a
+  regression, one test, another builder mode — shares one. If the new job
+  stays PENDING, the one ahead is stuck: `scancel` the ids the warning names.
 
 For missing envelopes, retries, license queues, accounting gaps, and builders
 that compile inside simulation jobs, read `concepts/dispatch` and `known-issues`.
