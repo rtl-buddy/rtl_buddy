@@ -192,6 +192,19 @@ class RtlBuddyCdc:
     # --- run ----------------------------------------------------------------
 
     def run(self) -> CdcResults:
+        # First, before any validation can raise: an analysis that ends in a
+        # config error is still a run, and leaving the previous run's report
+        # beside it is the same lie this fix removes (#469).
+        stale = self._clear_stale_outputs()
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cdc.stale_artefacts_removed",
+                analysis=self.cdc_cfg.get_name(),
+                paths=stale,
+            )
+
         fl_path = self._write_filelist()
         sources = self._source_files_from_filelist(fl_path)
         if not sources:
@@ -288,19 +301,6 @@ class RtlBuddyCdc:
 
         cmd_text = _build_cmd("text", text_report)
         cmd_json = _build_cmd("json", json_report)
-
-        # Clear the previous run's outputs so anything present afterwards
-        # was written by this invocation (#469). Done after the fatal
-        # validations above, so a config error leaves the artefacts alone.
-        stale = self._clear_stale_outputs()
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "cdc.stale_artefacts_removed",
-                analysis=self.cdc_cfg.get_name(),
-                paths=stale,
-            )
 
         with task_status(f"Running CDC {self.cdc_cfg.get_name()}"):
             log_event(

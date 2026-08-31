@@ -417,6 +417,56 @@ class OpenRoadPnr:
     # Entry point
     # ------------------------------------------------------------------
 
+    def _clear_stale_outputs(self) -> None:
+        """Drop the previous run's outputs. The FIRST thing `run` does.
+
+        `_count_drcs` reads the routing DRC report off a fixed path and scores
+        a *missing* file as zero violations, the DEF and ODB are handed on to
+        KLayout streamout and to `rb power`, and the GDS / PNG are judged
+        purely by "did a file appear". Every one of those is consumed after
+        the fact, several of them by a *later command*, so every exit from
+        `run` has to leave them absent — including the "openroad not found"
+        and platform/template failures, which return before the tool is
+        reached (#469). The logs are left to OpenROAD's own `-log`, which
+        truncates them.
+
+        Naming the design-specific outputs needs the synth back-reference.
+        A broken one is reported by the normal flow further down, with the
+        message it has always used, so a failure to resolve it here is only
+        noted at DEBUG and the design-independent outputs are cleared anyway
+        — this runs before the tool-availability check and must not preempt
+        any of the existing error surfaces.
+        """
+        try:
+            design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        except Exception as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "pnr.stale_artefacts_design_unresolved",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+            )
+            design = None
+
+        paths = [
+            os.path.join(self.artefact_dir, name)
+            for name in _FLOW_OUTPUT_NAMES
+            if "{design}" not in name
+        ]
+        if design is not None:
+            paths = run_output_paths(self.artefact_dir, design)
+
+        stale = clear_stale_artefacts(paths, owner=self.pnr_cfg.get_name())
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "pnr.stale_artefacts_removed",
+                pnr=self.pnr_cfg.get_name(),
+                paths=stale,
+            )
+
     def run(self) -> PnrResults:
         log_event(
             logger,
@@ -425,6 +475,8 @@ class OpenRoadPnr:
             pnr=self.pnr_cfg.get_name(),
             tool=self.openroad_executable,
         )
+
+        self._clear_stale_outputs()
 
         if not shutil.which(self.openroad_executable):
             log_event(
@@ -500,29 +552,6 @@ class OpenRoadPnr:
             cmd=" ".join(cmd),
         )
 
-        # Everything a run produces bar the logs. `_count_drcs` reads the
-        # routing DRC report off a fixed path and treats a missing file as
-        # "zero violations", the DEF / ODB are handed on to KLayout streamout
-        # and to `rb power` respectively, and the GDS / PNG are judged purely
-        # by "did a file appear" — so a run that dies short of routing would
-        # otherwise be scored, streamed and power-analysed on a previous
-        # run's outputs. Clearing them here, before anything can fail, keeps
-        # a missing output missing (#469); the log is left to OpenROAD's own
-        # `-log`, which truncates it.
-        design = self.pnr_cfg.resolve_synth_cfg().get_top()
-        stale = clear_stale_artefacts(
-            run_output_paths(self.artefact_dir, design),
-            owner=self.pnr_cfg.get_name(),
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "pnr.stale_artefacts_removed",
-                pnr=self.pnr_cfg.get_name(),
-                paths=stale,
-            )
-
         with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad]"):
             result = subprocess.run(
                 cmd,
@@ -568,6 +597,7 @@ class OpenRoadPnr:
         gds_path: str | None = None
         png_path: str | None = None
         if self.emit_gds:
+            design = self.pnr_cfg.resolve_synth_cfg().get_top()
             gds_path = self._run_def2stream(platform, design)
             if gds_path and self.emit_png:
                 png_path = self._run_gds2png(platform, gds_path, design)

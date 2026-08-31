@@ -703,3 +703,80 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
     assert not stale_drc.exists()
     assert not stale_odb.exists()
     assert not stale_gds.exists()
+
+
+def test_pnr_missing_openroad_still_clears_the_odb(tmp_path, monkeypatch):
+    """pnr's DEF/ODB are the fixed-path inputs `rb power` resolves, so the
+    clear runs before even the tool-availability check: a box without
+    OpenROAD must not leave the previous ODB for a later `rb power` (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_odb = artefacts / "demo_top.routed.odb"
+    stale_odb.write_bytes(b"\x00stale odb\x00")
+    stale_drc = artefacts / "route.drc.rpt"
+    stale_drc.write_text("violation\n")
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
+
+    res = backend.run()
+
+    # The tool-missing message is unchanged...
+    assert "not found" in res.results["desc"]
+    # ...but nothing is left for `rb power` to pick up.
+    assert not stale_odb.exists()
+    assert not stale_drc.exists()
+
+
+def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
+    tmp_path, monkeypatch
+):
+    """Naming the design needs the synth back-reference, but a broken one must
+    not hijack the error the run would otherwise report (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),  # points at a synth.yaml that is absent
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+    )
+    stale_drc = Path(backend.artefact_dir) / "route.drc.rpt"
+    stale_drc.write_text("violation\n")
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
+
+    res = backend.run()
+
+    assert "not found" in res.results["desc"]
+    # The design-independent outputs are still cleared.
+    assert not stale_drc.exists()

@@ -18,6 +18,7 @@ from rtl_buddy.runner.synth_results import (
     SynthPassResults,
     SynthSkipResults,
 )
+from rtl_buddy.errors import FilelistError
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.tools import synth_yosys as synth_yosys_module
 from rtl_buddy.tools.synth_yosys import YosysSynth
@@ -2472,5 +2473,76 @@ def test_openroad_failed_yosys_stage_leaves_no_stale_netlist(tmp_path, monkeypat
 
     assert isinstance(result, SynthFailResults)
     assert "Yosys stage failed" in result.results["desc"]
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_yosys_filelist_failure_still_clears_the_netlist(tmp_path, monkeypatch):
+    """The clear is the FIRST thing run() does, so a rerun that dies before
+    yosys — here a filelist error — still leaves nothing for `rb pnr` /
+    `rb power` to resolve (#469)."""
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(ys.artefact_dir) / "synth.rtlil"
+    mapped.write_text("module stale_top(); endmodule\n")
+    rtlil.write_text("# stale rtlil\n")
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+
+    result = ys.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "Filelist error" in result.results["desc"]
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_openroad_pre_yosys_gate_still_clears_the_netlist(tmp_path):
+    """`run()` clears before every gate, so a return that never reaches yosys
+    — here the "requires Liberty" gate, which is also where #472's new
+    non-automatic-function gate lands — leaves no netlist behind (#469)."""
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="openroad",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    or_synth = _make_openroad(tmp_path, synth_cfg=synth_cfg)
+
+    mapped = Path(or_synth.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(or_synth.artefact_dir) / "synth.rtlil"
+    mapped.write_text("module stale_top(); endmodule\n")
+    rtlil.write_text("# stale rtlil\n")
+
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "requires Liberty" in result.results["desc"]
     assert not mapped.exists()
     assert not rtlil.exists()

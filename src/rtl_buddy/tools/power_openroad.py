@@ -272,6 +272,24 @@ class OpenRoadPower(BasePower):
                 desc=f"{self.executable!r} not found",
             )
 
+        # Everything past the "openroad not found" return above is a run of
+        # this entry, however it ends — including the script-generation
+        # failure just below. `report_power`'s output file is read back off a
+        # fixed path and OpenROAD exiting 0 with no [ERROR] does not prove it
+        # rewrote it, so clear here and the "power report not produced" path
+        # stays reachable instead of quoting a previous run's watts (#469).
+        stale = clear_stale_artefacts(
+            [self._report_path()], owner=self.power_cfg.get_name()
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "power.stale_artefacts_removed",
+                power=self.power_cfg.get_name(),
+                paths=stale,
+            )
+
         try:
             script_path = self._write_script()
         except Exception as e:
@@ -305,22 +323,6 @@ class OpenRoadPower(BasePower):
             power=self.power_cfg.get_name(),
             cmd=" ".join(cmd),
         )
-
-        # `report_power`'s output file is read back off a fixed path and
-        # OpenROAD exiting 0 with no [ERROR] does not prove it rewrote it.
-        # Clear it so the "power report not produced" path below stays
-        # reachable instead of quoting a previous run's watts (#469).
-        stale = clear_stale_artefacts(
-            [self._report_path()], owner=self.power_cfg.get_name()
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "power.stale_artefacts_removed",
-                power=self.power_cfg.get_name(),
-                paths=stale,
-            )
 
         with task_status(f"power {self.power_cfg.get_name()} [openroad]"):
             result = subprocess.run(

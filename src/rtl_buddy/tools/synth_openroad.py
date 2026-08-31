@@ -231,28 +231,6 @@ class OpenRoadSynth:
             cmd=" ".join(cmd),
         )
 
-        # Stage 2 reads stage 1's netlist back off a fixed path, having
-        # judged stage 1 by exit code and ERROR lines alone — and the same
-        # netlist is the input `rb pnr` / `rb power` resolve. A failed rerun
-        # would leave the previous successful run's netlist for both to
-        # consume (#469). Cleared before stage 1 so stage 2 and the
-        # downstream commands see only what this run produced.
-        stale = clear_stale_artefacts(
-            [
-                self._yosys_netlist_path(),
-                os.path.join(self.artefact_dir, "synth.rtlil"),
-            ],
-            owner=self.synth_cfg.get_name(),
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "synth.stale_artefacts_removed",
-                synth=self.synth_cfg.get_name(),
-                paths=stale,
-            )
-
         with task_status(f"synth {self.synth_cfg.get_name()} [yosys]"):
             with open(log_path, "w") as log_f:
                 result = subprocess.run(
@@ -584,6 +562,34 @@ class OpenRoadSynth:
     # Entry point
     # ------------------------------------------------------------------
 
+    def _clear_stale_netlists(self) -> None:
+        """Drop the previous run's netlists. The FIRST thing `run` does.
+
+        Stage 2 reads stage 1's netlist back off a fixed path having judged
+        stage 1 by exit code and ERROR lines alone, and the same file is the
+        input `rb pnr` (`_resolve_netlist_path`) and `rb power`
+        (`_resolve_inputs`) resolve, guarded by `isfile`. Every exit from
+        `run` therefore has to leave it absent — including the Liberty / LEF
+        gates and the filelist error, which return before yosys is reached
+        (#469). Both spellings go: which one stage 1 writes depends on
+        whether a Liberty resolved, and that can change between runs.
+        """
+        stale = clear_stale_artefacts(
+            [
+                self._yosys_netlist_path(),
+                os.path.join(self.artefact_dir, "synth.rtlil"),
+            ],
+            owner=self.synth_cfg.get_name(),
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.stale_artefacts_removed",
+                synth=self.synth_cfg.get_name(),
+                paths=stale,
+            )
+
     def run(self) -> SynthResults:
         log_event(
             logger,
@@ -593,6 +599,8 @@ class OpenRoadSynth:
             tool=self.tool_cfg.get_executable(),
             top=self.synth_cfg.get_top(),
         )
+
+        self._clear_stale_netlists()
 
         lib_paths = self._resolve_lib_paths()
         lef_paths = self._resolve_lef_paths()

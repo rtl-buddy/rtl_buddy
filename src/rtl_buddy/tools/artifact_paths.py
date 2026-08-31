@@ -105,6 +105,23 @@ def clear_stale_artefacts(
     does, and the log is the one artefact worth keeping if the tool dies
     before it can write anything else.
 
+    **Call this early.** Clearing just before the subprocess is not enough:
+    a rerun that fails on any path *before* the tool — a filelist error, an
+    unresolvable config, a gate that returns early — leaves the previous
+    run's outputs exactly where the next reader looks. Two placements are
+    correct, and which one applies depends on who reads the artefact:
+
+    - Outputs a **later command** consumes (the synthesis netlists that
+      ``rb pnr`` / ``rb power`` resolve; pnr's DEF and ODB) must be cleared
+      as the *first* action of ``run()``, ahead of every validation and
+      tool-availability check. A missing tool still means no fresh netlist,
+      and the downstream command must not silently use the old one.
+    - Outputs only read back within the same ``run()`` (the CDC, FPGA and
+      power reports, the bitstream) are cleared immediately *after* the
+      tool-availability skip and before all other work. A box that lacks
+      the tool provably never ran it, so it has no business deleting what a
+      box that has the tool produced; every other exit path clears.
+
     Args:
       paths: the outputs this invocation is expected to (re)write.
         Entries that do not exist are ignored, and ``None`` entries are

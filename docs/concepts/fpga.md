@@ -168,9 +168,11 @@ Vivado produces `fpga.f`, `flow.tcl`, `vivado.log`, utilization/timing/power/DRC
 
 openXC7 produces `fpga.f`, `synth.ys`, `yosys.log`, `<top>.json`, `nextpnr.log`, `<top>.fasm`, and optional prjxray stage logs plus `<top>.bit`.
 
-Both backends delete their outputs before each run — the reports, the netlist and FASM handed between stages, and the bitstream — so a run that fails partway leaves what it never wrote absent instead of the previous run's copy. The logs are exempt: each is truncated by the stage that writes it.
+Both backends delete their outputs before each run — the reports, the netlist, FASM and frames handed between stages, and the bitstream — so a run that fails partway leaves what it never wrote absent instead of the previous run's copy. The logs are exempt: each is truncated by the stage that writes it.
 
 The bitstream goes even when the run was not asked to build one: a run without `--bitstream` removes a previously built `<top>.bit`, because the artefact directory describes the latest run and a stale deployable bitstream sitting beside a run that reports none is exactly the trap the rest of this rule closes. Rerun with `--bitstream` to regenerate it, or copy the file out first.
+
+A run that *skips* is the exception: when the backend tool is not installed nothing is deleted, because a machine without the toolchain never ran it and has no business removing what a machine with it built.
 
 ## Interpret pass, fail, and skip
 

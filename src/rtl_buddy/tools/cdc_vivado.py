@@ -342,6 +342,25 @@ class VivadoCdc:
                 ),
             )
 
+        # Everything past the skip above is a run of this analysis, however it
+        # ends. Vivado can exit 0 with no matching ERROR line and still not
+        # have written report_cdc, and the filelist step below returns early
+        # on its own — so clear here, ahead of both, and the fixed-path read
+        # cannot pick up an earlier run's crossings (#469). Deliberately
+        # *after* the skip: a box without Vivado never ran the tool, so it has
+        # no business deleting a report a box with Vivado produced.
+        stale = clear_stale_artefacts(
+            [self._report_path()], owner=self.cdc_cfg.get_name()
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cdc.stale_artefacts_removed",
+                analysis=self.cdc_cfg.get_name(),
+                paths=stale,
+            )
+
         sdc_path = self.cdc_cfg.get_constraints()
         if not os.path.isfile(sdc_path):
             raise FatalRtlBuddyError(
@@ -393,22 +412,6 @@ class VivadoCdc:
             "-log",
             os.path.basename(log_path),
         ]
-
-        # Vivado can exit 0 with no matching ERROR line and still not have
-        # written report_cdc (an aborted implementation step, a Tcl edit).
-        # Clear the report first so the fixed-path read below cannot pick up
-        # an earlier run's crossings and report them as this run's (#469).
-        stale = clear_stale_artefacts(
-            [self._report_path()], owner=self.cdc_cfg.get_name()
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "cdc.stale_artefacts_removed",
-                analysis=self.cdc_cfg.get_name(),
-                paths=stale,
-            )
 
         with task_status(f"Running CDC {self.cdc_cfg.get_name()} [vivado]"):
             result = run_managed_process(

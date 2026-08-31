@@ -747,6 +747,53 @@ def test_vivado_fpga_clears_the_bitstream_without_emit_bitstream(tmp_path, monke
     assert not stale_bit.exists()
 
 
+def test_vivado_fpga_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
+    """The clear sits above the filelist step, so a rerun that dies before
+    Vivado leaves no reports or bitstream from the previous run (#469)."""
+    from rtl_buddy.errors import FilelistError
+
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    for filename in REPORT_FILES.values():
+        shutil.copy(FIXTURES / filename, artefacts / filename)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(type(backend), "_write_filelist", _boom)
+
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "Filelist error" in res.results["desc"]
+    assert not stale_bit.exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists()
+
+
+def test_vivado_fpga_skip_keeps_a_previous_runs_artefacts(tmp_path, monkeypatch):
+    """The clear sits *after* the tool-availability skip on purpose: a box
+    without Vivado never ran it, so it must not delete what a box that has
+    Vivado produced (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(fpga_vivado_module.shutil, "which", lambda _name: None)
+
+    artefacts = Path(backend.artefact_dir)
+    kept = artefacts / "demo_top.bit"
+    kept.write_bytes(b"\x00built elsewhere\x00")
+
+    res = backend.run()
+
+    assert isinstance(res, FpgaSkipResults)
+    assert kept.exists()
+
+
 def test_vivado_fpga_uses_failing_timing_fixture(tmp_path, monkeypatch):
     """A routed-but-timing-failed run still passes; metrics carry the truth."""
     backend = _make_backend(tmp_path)

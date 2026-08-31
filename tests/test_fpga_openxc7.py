@@ -368,6 +368,58 @@ def test_openxc7_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypat
     assert not stale_bit.exists()
 
 
+def test_openxc7_clears_stale_frames_without_emit_bitstream(tmp_path, monkeypatch):
+    """`<top>.frames` is on the up-front clear list even though the stage that
+    writes it truncates it: a run without `--bitstream` never reaches that
+    stage, so nothing else would ever remove it (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_frames = artefacts / "demo_top.frames"
+    stale_frames.write_bytes(b"\x00stale frames\x00")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert not stale_frames.exists()
+
+
+def test_openxc7_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
+    """The clear sits above the filelist step, so a bitstream rerun that dies
+    before any stage runs leaves no frames or bitstream behind (#469)."""
+    from rtl_buddy.errors import FilelistError
+    from rtl_buddy.tools.fpga_openxc7 import OpenXc7Fpga
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+
+    artefacts = Path(backend.artefact_dir)
+    stale = {
+        name: artefacts / name
+        for name in ("demo_top.frames", "demo_top.bit", "demo_top.json")
+    }
+    for path in stale.values():
+        path.write_bytes(b"\x00stale\x00")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(OpenXc7Fpga, "_write_filelist", _boom)
+
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "Filelist error" in res.results["desc"]
+    for name, path in stale.items():
+        assert not path.exists(), name
+
+
 def test_openxc7_failing_timing_still_passes_with_loop_fields(tmp_path, monkeypatch):
     backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
     _mock_toolchain(monkeypatch, _fake_pipeline(nextpnr_log="nextpnr_xilinx_fail.log"))
