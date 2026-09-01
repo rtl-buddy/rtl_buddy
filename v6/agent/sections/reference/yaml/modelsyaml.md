@@ -12,11 +12,41 @@ models:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `name` | Required | Model identifier |
+| `name` | Required | Model identifier; must be unique across every `models.yaml`, not only within one, and regardless of `graph:`. Must start with a letter, digit or underscore and contain only letters, digits, underscore, dot or hyphen |
 | `filelist` | Required | Filelist entries resolved from `models.yaml` |
 | `desc` | Required | Human-readable description |
 | `spec` | Optional | `specs.yaml` path for `rb spec`; no simulation effect |
 | `synth` | Optional | Synthesis ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
+| `graph` | Optional | `false` opts the model out of `rb graph build`'s design tier; default `true` |
+| `top` | Optional | Root module of the filelist when it is not named after the model; default `name`. Letters, digits and underscore only (no `$`), and unique across the graphable models `rb graph build` selects |
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
+`top` is the model's root module everywhere rtl_buddy elaborates it, and it is binding, not advisory: a model has one root module, and a model whose name is not a module was already broken in every one of these flows. It roots `rb hier`, `rb hier-query`, and `rb axi-profile`, it roots the `rb graph build` design-tier export, it is the target of the graph's `model --maps_to--> module:` edge, and it is the default top of a `cdc.yaml`, `synth.yaml`, `lint.yaml`, `fpga.yaml`, `fpv.yaml`, or `mut.yaml` run against the model. Only `fpv.yaml` and `mut.yaml` have a `top:` field of their own; where one is set it wins, because a formal checker top lives in the run's own `properties:`. Setting `top` therefore changes artefact names that embed it — the FPGA bitstream is `<top>.bit`, and OpenROAD's design name follows the synthesis top.
+
+Models in a `rb graph build` selection must not collide, and the build refuses either collision before invoking the exporter, naming both models and both `models.yaml` files.
+
+A model name is also a directory name — `artefacts/hier/<name>/`, `artefacts/graph/design/<name>/`, and the per-model directory every flow writes — so it is restricted to a single safe path segment and rejected at load time otherwise. Path separators, absolute paths, `.` and `..` are refused.
+
+`top` is checked at load time too, against a stricter rule: a letter or underscore, then letters, digits or underscore. It does not stay in HDL — the FPGA flows name the bitstream `<top>.bit`, and the Yosys, Vivado and OpenROAD generators interpolate it into Tcl unquoted — so a value carrying a path separator, a newline or a shell or Tcl metacharacter is refused rather than escaped per tool. That is narrower than SystemVerilog allows, deliberately: `$` is legal in an SV identifier but substitutes in Tcl, so `synth_design -top foo$bar` would elaborate a different module than the YAML names; and escaped identifiers (`\name `) can carry `/` and `;`. A top that really needs either has to be renamed, or wrapped in a module whose name does not.
+
+**No two models may share a `name`, opted out or not.** Every per-model artefact path is keyed on it, so two exports overwrite each other in `artefacts/graph/design/<name>/` and `artefacts/hier/<name>/` while the tier reports both as built. Distinct `top:` values do not make that safe, and neither does `graph: false`: a name is also how every selector spells a model — `--model NAME`, a test's `model:`, a back-pointer — so a duplicate shadows the other entry in any lookup by name, silently. Rename one of them. A duplicate within one file is already rejected by the loader; this is the across-files half of the same rule.
+
+**No two models that would both be exported may share a top.** `module:<top>` is a global graph id and DUT ids are never suite-qualified, so two such exports merge into a single hybrid hierarchy rather than staying apart. Give them distinct roots, or set `graph: false` on the one that is not the design of record — an opted-out model is never exported, so it claims no graph id.
+
+Models the build is not selecting are not considered by either rule.
+
+Set `graph: false` for a model with no elaborable root — an SV `interface` published as a library entry, or a filelist of vendored IP with no module named after the model. `rb graph build` then records the model, and every testbench and non-simulation run rooted at it, under the design tier's `skipped` list instead of attempting an export that can only fail, and removes any `artefacts/graph/design/<model>/` a previous build left behind. The config tier still emits the model node, so `spec:` and test cross-references keep resolving; it carries `graph: false` and no `maps_to` edge. The opt-out is design-tier-only: `rb hier`, `rb hier-query`, and `rb axi-profile` still run against the model and still fail if its root does not elaborate. Prefer `top:` when the filelist does elaborate and only the root module name differs.
+
+```yaml
+models:
+  - name: apb_intf
+    desc: APB interface library
+    filelist: [-v apb_intf.sv]
+    graph: false
+  - name: pp_axi
+    desc: Vendored AXI collection
+    filelist: [-F pp_axi.f]
+    top: axi_xbar
+```
+
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. Only the simulation flow acts on that include path: the synthesis, CDC, and FPGA flows drop `+incdir+` entries when they read the generated filelist back, so a header those flows must see needs a search path configured for them instead (see [FPGA Implementation](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/fpga/)). `rb synth` likewise drops `+define+` entries and passes only the synth.yaml entry's `defines:`; it warns when the filelist carries macros it is not applying. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.

@@ -17,6 +17,6 @@ runs:
     require-timing-met: true
 ```
 
-`model_path` and XDC paths are relative to `fpga.yaml`. The model name is the synthesis top. `part` and `platform` are mutually exclusive; naming both is an exit-2 configuration error. Expected-failure fields follow [Expected Failures](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/expected-failures/).
+`model_path` and XDC paths are relative to `fpga.yaml`. The synthesis top is the model's root module — its `top:` in `models.yaml`, defaulting to the model name — and it also names the emitted bitstream (`<top>.bit`). `part` and `platform` are mutually exclusive; naming both is an exit-2 configuration error. Expected-failure fields follow [Expected Failures](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/expected-failures/).
 
 `require-timing-met` defaults to false. A completed route that misses timing therefore passes the flow while reporting `timing_met: false`, negative slack, and failing paths. Set it true when timing closure is a regression gate; the failing result still includes timing metrics. A backend that reports no timing result is not failed by this option.

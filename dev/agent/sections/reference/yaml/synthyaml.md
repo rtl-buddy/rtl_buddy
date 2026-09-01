@@ -28,7 +28,7 @@ syntheses:
 | `platform` | Optional | `cfg-synth-platforms` entry; enables technology mapping |
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF/Liberty files appended after platform data |
 | `reglvl` | Optional | Regression level |
-| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit` |
+| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `static_functions`, `conflicting_drivers` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry; CLI `--effort` wins |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 

@@ -530,6 +530,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/build-and-refresh-the-graph.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#models-with-no-elaborable-root",
+          "slug": "models-with-no-elaborable-root",
+          "title": "Models with no elaborable root",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/models-with-no-elaborable-root.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#query-the-graph",
           "slug": "query-the-graph",
           "title": "Query the graph",
@@ -1113,6 +1119,18 @@
           "slug": "systemverilog-frontend",
           "title": "SystemVerilog frontend",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/systemverilog-frontend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#gate-static-lifetime-subroutines",
+          "slug": "gate-static-lifetime-subroutines",
+          "title": "Gate static-lifetime subroutines",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/gate-static-lifetime-subroutines.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#gate-conflicting-drivers",
+          "slug": "gate-conflicting-drivers",
+          "title": "Gate conflicting drivers",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/gate-conflicting-drivers.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#select-an-effort",
@@ -1844,6 +1862,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/artifact-locking-is-per-tree-and-per-host.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#tool-flows-delete-their-previous-outputs-before-running",
+          "slug": "tool-flows-delete-their-previous-outputs-before-running",
+          "title": "Tool flows delete their previous outputs before running",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/tool-flows-delete-their-previous-outputs-before-running.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#dispatch-changes-build-behavior",
           "slug": "dispatch-changes-build-behavior",
           "title": "Dispatch changes build behavior",
@@ -1854,6 +1878,12 @@
           "slug": "local-parallel-enforces-only-the-job-count",
           "title": "local-parallel enforces only the job count",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/local-parallel-enforces-only-the-job-count.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#oversized-resource-groups-are-split-into-several-arrays",
+          "slug": "oversized-resource-groups-are-split-into-several-arrays",
+          "title": "Oversized resource groups are split into several arrays",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/oversized-resource-groups-are-split-into-several-arrays.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#quote-dispatch-time-values",
@@ -1904,10 +1934,22 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/the-first-run-after-upgrading-recompiles-every-shared-build.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#check-every-toplevel-before-upgrading-it-now-roots-the-compile",
+          "slug": "check-every-toplevel-before-upgrading-it-now-roots-the-compile",
+          "title": "Check every `toplevel:` before upgrading: it now roots the compile",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/check-every-toplevel-before-upgrading-it-now-roots-the-compile.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#yosys-backed-flows-do-not-support-whitespace-in-paths",
           "slug": "yosys-backed-flows-do-not-support-whitespace-in-paths",
           "title": "Yosys-backed flows do not support whitespace in paths",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/yosys-backed-flows-do-not-support-whitespace-in-paths.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#static-lifetime-functions-corrupt-the-netlist-under-the-slang-frontend",
+          "slug": "static-lifetime-functions-corrupt-the-netlist-under-the-slang-frontend",
+          "title": "Static-lifetime functions corrupt the netlist under the slang frontend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/static-lifetime-functions-corrupt-the-netlist-under-the-slang-frontend.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#unknown-synthesis-overrides-are-ignored-after-a-warning",
@@ -1938,6 +1980,12 @@
           "slug": "graph-coverage-source-changes-attribution",
           "title": "Graph coverage source changes attribution",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/graph-coverage-source-changes-attribution.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge",
+          "slug": "a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge",
+          "title": "A cocotb test over an opted-out model keeps a dangling DUT edge",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#the-viewer-distribution-and-executable-have-different-names",

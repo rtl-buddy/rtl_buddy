@@ -472,7 +472,7 @@ Select the simulator as for any other test:
 rb --builder icarus test cocotb_smoke
 ```
 
-Unsupported simulator families and a missing `toplevel:` are fatal configuration errors. See [Tests YAML](../reference/yaml.md#testsyaml) for the complete schema and [Simulation Backends](simulators.md) for backend differences.
+Unsupported simulator families and a missing `toplevel:` are fatal configuration errors. `toplevel:` becomes `COCOTB_TOPLEVEL` and also roots the compile — Verilator `--top-module`, VCS `-top`, Icarus `-s` — unless the builder's `compile-time` opts already pin a top. See [Tests YAML](../reference/yaml.md#testsyaml) for the complete schema and [Simulation Backends](simulators.md) for backend differences.
 
 ## Interpret results
 
@@ -665,7 +665,7 @@ Use `Ctrl-C` to stop the head and its process groups. `SIGKILL` prevents cleanup
 
 Before using `--dispatch slurm`, provide:
 
-- `sbatch`, `squeue`, `sacct`, and `scancel` on the submit host. Run `rb tool-check --explain slurm`.
+- `sbatch`, `squeue`, `sacct`, and `scancel` on the submit host, and `scontrol` for the `MaxArraySize` probe below. Run `rb tool-check --explain slurm`.
 - A shared filesystem exposing the project, artefacts, and Python environment at identical absolute paths on submit and compute hosts.
 - The project's Python environment on compute hosts; workers run `sys.executable -m rtl_buddy`.
 
@@ -686,6 +686,8 @@ Preprocessing hooks always run serially, and their position relative to compilat
 
 Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. `max-jobs-per-array` is a `%N` throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.
 
+A group larger than the cluster's Slurm `MaxArraySize` is not a legal array, so it is submitted as several. rtl_buddy reads `MaxArraySize` once per run from `scontrol show config`, or from `cfg-dispatch.max-array-size` when that is set, and slices the group into arrays of at most `MaxArraySize - 1` elements — Slurm's largest task index is one below the limit, and rtl_buddy's array elements are numbered from 1. A cluster that also sets `SchedulerParameters=max_array_tasks=N` caps how many tasks one array may hold at all, which can be well below `MaxArraySize` and is reported separately by `scontrol`; the slice size is the smaller of the two, `min(max_array_tasks, MaxArraySize - 1)`, because that parameter is an inclusive count of tasks while `MaxArraySize` is an exclusive index bound. The two ceilings layer independently: `cfg-dispatch.max-array-size` overrides the probed `MaxArraySize`, `cfg-dispatch.max-array-tasks` overrides the probed `max_array_tasks`, and whichever field is left unset still comes from the probe. Pinning only `max-array-size` therefore keeps the cluster's task cap in force instead of hiding it; the probe is skipped entirely only when both are pinned, or when no single cluster can be asked. Either ceiling alone is enough to slice: a site that can state only its task cap — no `scontrol` on the submit host, or a multi-cluster selection — gets arrays of `max-array-tasks` elements even though `MaxArraySize` is unknown. Each slice is its own array with its own manifest and logs under `slice-N/` in the run's dispatch directory, its job name carries a `/N` suffix, and every slice waits on the same build job. The handles are collected as one logical group, so the summary, cancellation, and the reservation advice are unchanged by the split. `max-jobs-per-array` throttles each slice, so a split group's peak concurrency is the throttle multiplied by the number of slices. The probe follows the cluster the jobs go to: when `sbatch-args` selects another one (`-M name`, `-Mname`, `--clusters=name`, or `--clusters name`, last occurrence winning as it does at submit), `scontrol` is asked with the same `-M name`, because an unqualified probe would read the local cluster's limit and submit against a different one. `SBATCH_CLUSTERS` in the environment selects a cluster the same way and is read when the probe runs; `sbatch-args` wins over it, matching Slurm's own precedence. Every job records the cluster that accepted it — `sbatch --parsable` answers `jobid;cluster` for a remote submission, and the selection stands in when it answers with the id alone — because a job id only means anything on its own cluster. Polling, cancellation and accounting are then issued there: one `squeue -M <cluster>` per cluster while the fleet drains — an unqualified poll cannot see a remote slice, and a job it cannot see reads as drained, so collection would start while that slice was still queued — one `scancel -M <cluster>` per cluster the fleet reached (a `--clusters=a,b` group can be spread over both, and the cleanup after a failed slice must reach the slices already queued), and one `sacct -M <cluster>` per cluster as well — accounting rows carry no cluster of their own, so a combined query could not be split back apart and two jobs sharing a number would have their rows merged. Telemetry, the outstanding set and per-suite membership are therefore keyed by job id for a local or single-cluster run, as they always were, and by `<cluster>:<job id>` for a job accepted elsewhere — two clusters can issue the same number, and one entry for both would drop a queued job from the count and report its suite finished early. That key is internal: a `max-wait` failure splits it again and hands you a command Slurm accepts, `squeue -M alpha -j '77_[1-2]'`, with `jobs`, `clusters` and `queries` as separate fields on `dispatch.max_wait_exceeded`. A single-cluster site sees the same bare commands as before. A selection naming more than one cluster — a comma-separated list, or the reserved `all` — is left unknown on purpose: Slurm picks which cluster runs the job at submit, so no single `MaxArraySize` applies, and `scontrol -M all show config` answers with one config block per cluster. Pin `cfg-dispatch.max-array-size` there, or `max-array-tasks` alone if that is the ceiling you know. A resolved limit is recorded at debug level as `dispatch.max_array_size`, with the `cluster` probed, both ceilings (`max_array_size` and `max_array_tasks`) beside the `max_elements` that governed, and `source: config` or `source: scontrol` naming where the **governing** value came from — with the two ceilings on different layers, that is the one that produced the smaller slice. `max_array_tasks` is reported on every path where a cap is known, configured or probed; like every unset field in rtl_buddy's log events it is omitted when none is known, so read its absence as "no task cap known". Only when NEITHER ceiling is known — nothing configured and nothing probed — is the group submitted whole, and an oversized one is then refused by sbatch; `dispatch.max_array_size_unknown` records that in the run log, and the sbatch failure repeats the hint so the fix is on the console that failed the run. An array refused despite being within every limit the probe could see says so too, naming the slice size it used and pointing at whichever ceiling produced it — `cfg-dispatch.max-array-tasks` when the task cap was binding, `cfg-dispatch.max-array-size` otherwise — as the knob to lower. A cluster can enforce a ceiling it does not report, and shrinking the index bound to work around a task cap would state a `MaxArraySize` the cluster does not have. A group that fits in one array is submitted exactly as before, with no `slice-N/` level.
+
 Verilator, VCS, and Icarus can place outputs in a shared compile-key directory. Other builders, and builders with an absolute `builder-simv`, keep the build under the test artefact directory:
 
 - Without shared-capable tests or seed fan-out, no separate build job is submitted; each simulation job compiles in its own directory.
@@ -700,6 +702,12 @@ A job gated on a build job keeps its **simulation** reservation. The compile blo
 A compile that reuses an existing build says so. `compile.build_reused` names the reused directory and the age of its stamp — once per build directory per process on the console (every reuse still lands in the log file), which on a local run is your terminal and under dispatch is the job's own log — and the test's `compile.log` carries the same breadcrumb, naming the command a rebuild would run. Under dispatch a gated job that reuses writes that breadcrumb into the build job's `compile.log`, keeping the build's own transcript below it; a gated *retry* never writes there at all, which is why it has its own file. A run that compiled nothing is now visible as such instead of only as a missing file. What a stamp validates against is content: every tracked input under the project root is compared by hash, so a `preproc` hook that regenerates a file byte-for-byte reuses the build, while any real edit invalidates it even on a node whose cached `stat` still describes the file as it was.
 
 `--rebuild` compiles even where the stamp validates. It forces at most one rebuild per build directory per invocation, so a suite whose tests share a compile key still compiles once and `compile.rebuild_forced` reports it once. Under dispatch it rides the build job, which is the single writer of the shared directory; gated simulation jobs never carry it, because a whole array forced to compile would land in that one directory at once. A suite that submits no build job — every test compiling in its own directory — passes it to the simulation jobs instead, and a retried job carries whatever its first attempt held. `--rebuild` says nothing about sharing: it neither implies nor suppresses `--share-build`.
+
+At most one build job of a given identity runs at a time per cluster, guaranteed by Slurm. Each build job is named after the suite whose shared-build tree it writes — `rb-build-<hash>` over the suite directory — and submitted with `--dependency=singleton`, which defers a job until every previously launched job of the same name and owner has terminated. This is the interrupted-run case: a client that was Ctrl-C'd leaves its build job on the cluster, and the re-run's build job would otherwise Verilate into the same `artefacts/.shared-builds/obj_dir_<key>` beside it. Instead it waits for the orphan to finish — holding no allocation while it waits — then revalidates the stamp under the build lock and reuses that build if the inputs are unchanged; `--rebuild`, an edit, or a different builder makes it compile, which is the same decision any other run would make. The scheduler evaluates the clause itself, so there is no window between deciding and submitting, and no dependence on the submit host being able to query the queue. Alongside it the head asks `squeue` for its own jobs of that name in any non-terminal state — including the held ones, `REQUEUE_HOLD` and `SPECIAL_EXIT`, since a predecessor stuck there is the one whose id you most need — purely to name them: when it finds any, `dispatch.build_job_deduped` reports the wait and the ids on the console. That probe is informational — if it is unavailable or comes back empty, the line is absent and the guarantee is unchanged (`dispatch.build_dedup_unavailable` records the reason at DEBUG). A probe that fails is not retried for the rest of the run, so a wedged `squeue` costs one timeout rather than one per suite; a squeue too old to know one of those state names is asked once more without the state filter, falling back to its own default of pending, running and completing. It follows a `-M` / `--clusters` in `sbatch-args` to the cluster the build job is submitted to, and stands down entirely when several clusters are named, since Slurm picks one at submit and a job id from the wrong queue would be meaningless.
+
+The identity is coarser than a compile key, deliberately: it is the suite directory alone, because that is the unit which owns `artefacts/.shared-builds/`. Compile keys fingerprint sources, flags and defines, and are only knowable after a config's `preproc` has run, inside the job — so the head names jobs by what it *can* see, and it leaves out everything finer than the tree. Not the planned tests: `rb regression` over a suite and `rb test alpha` inside it compile the same key into the same directory, and separating them would leave exactly the "interrupt a regression, re-run one test" case racing. Not the builder mode or `--builder` override either: two modes whose `compile-time` options are identical and differ only in `run-time` resolve to the same `obj_dir_<key>`, so a `-M debug` run and a `-M reg` run would otherwise build into one directory at once. Two runs of one suite therefore share a name whether or not they compile the same thing, and a false match costs queue latency — the second job waits, finds the stamp stale, and rebuilds — never a wrong build. A different suite, owning a different shared tree, never adopts the wait. A `--dependency` of your own is composed with rather than replaced (`afterok:7,singleton`) — from `sbatch-args` (the last one you give, since that is the one Slurm obeys, in any spelling sbatch resolves — `-d`, `--dependency`, or an unambiguous abbreviation such as `--depend`) or, when `sbatch-args` names none, from an exported `SBATCH_DEPENDENCY`, which sbatch treats as the default for `-d` and which a command-line option overrides. The environment is read at submission. The exception is an expression using the any-of separator `?`: Slurm permits one separator per expression, so composing there would make sbatch reject the submission, and the dedup stands down instead (`dispatch.build_dedup_unavailable`, DEBUG), leaving your gate exactly as it was and the build lock to do the work. If a build job stays `PENDING` after `dispatch.build_job_deduped`, look at the job it is waiting for before doing anything to it — `squeue -j <ids> -O JobID,State,Reason` on the ids that warning names (or `squeue --name=<job name>` to find them), or `scontrol show job <id>` for the full record. A predecessor that is `RUNNING`, or `PENDING` for an ordinary capacity reason such as `Resources` or `Priority`, is the serialisation doing its job: the wait ends when that build does, and cancelling it would throw away the build this run is about to reuse along with the simulation jobs gated on it. `scancel` is for a predecessor that is not going to finish — held (`JobHeldUser`, `JobHeldAdmin`), unschedulable (`PartitionConfig`, `BadConstraints`), or simply an abandoned run you no longer want — since nothing times such a job out by default. A `--job-name` of your own does not apply to the build job at all — the generated name is emitted after `sbatch-args` precisely so it cannot be taken, since a custom name shared by every suite would serialise unrelated builds against each other. One bound on the guarantee is federation-shaped. A federation resolves `singleton` across its clusters, but a site that sets `DependencyParameters=disable_remote_singleton` fulfils it on the submitting cluster only — so two invocations routed to different clusters of such a federation, sharing this suite's filesystem, are not serialised against each other. Pin one cluster with `-M` in `sbatch-args` if you need the dedup there, or rely on the shared build directory's `flock`, which holds wherever the filesystem honours it (see [known issues](../known-issues.md)). A multi-cluster selection logs the caveat once per run at DEBUG. The `local-parallel` backend needs none of this: its jobs are processes on one host, where the build lock already serialises them.
+
+The build job itself carries no `--kill-on-invalid-dep`: `singleton` waits for terminations and can never become unsatisfiable. A configured `afterok` composed into it still can, exactly as it could before.
 
 When a build job exists, every dependent is submitted with `--kill-on-invalid-dep=yes`. A failed build therefore removes jobs that could never satisfy `afterok`; collection also cancels any `DependencyNeverSatisfied` remnants. A user-supplied `--kill-on-invalid-dep=no` in `sbatch-args` overrides the default.
 
@@ -729,6 +737,8 @@ cfg-dispatch:
     - --partition=verif
     - --account=chip
   max-jobs-per-array: 200
+  max-array-size: 1001   # the cluster's Slurm MaxArraySize; omit it to read
+                         # the value from `scontrol show config`
   poll-interval: 10
   progress-interval: 60
   max-wait: 7200
@@ -745,7 +755,7 @@ cfg-dispatch:
     margin: 1.5
 ```
 
-`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array. See [YAML formats](../reference/yaml.md#root_configyaml) for defaults and validation.
+`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array, and `max-array-size` controls how large one array may be before the group is split. See [YAML formats](../reference/yaml.md#root_configyaml) for defaults and validation.
 
 Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations.
 
@@ -807,7 +817,7 @@ Retry is disabled until `retry.attempts` is nonzero. It applies to simulation jo
 
 For `local-parallel`, queue evidence is sufficient because there is no scheduler state. Build jobs are never retried.
 
-Delay for retry number `n` is `min(backoff-max-sec, backoff-sec * 2^(n-1))`, multiplied by jitter. Slurm holds retries with `--begin`; local-parallel holds them outside the worker pool. User `sbatch-args` occur last, so a user `--begin` overrides retry backoff.
+Delay for retry number `n` is `min(backoff-max-sec, backoff-sec * 2^(n-1))`, multiplied by jitter. Slurm holds retries with `--begin`; local-parallel holds them outside the worker pool. User `sbatch-args` occur last, so a user `--begin` overrides retry backoff. Two flags are exceptions, both on the build job and for the same reason — the shared-build dedup must not be droppable by accident. Its `--dependency` is emitted after `sbatch-args` and carries the configured expression (the *last* one, since that is the one Slurm obeys), and its `--job-name` is emitted after them too, because that name is what `--dependency=singleton` serialises on. So `sbatch-args` cannot rename the build job; a `--job-name` / `-J` there still renames simulation jobs.
 
 `max-wait` bounds each collection round, not the total run, and excludes the requested backoff. An exhausted retry remains a failure. A retry submission failure logs `dispatch.retry_abandoned` and preserves the already-scored run.
 
@@ -851,9 +861,95 @@ Advice is calculated per test using the peak across runs in this invocation:
 - suggestions use peak times `margin`, with floors of 5 minutes and 128 MiB;
 - time advice is limited to Verilator because VCS license wait distorts elapsed time;
 - memory advice is suppressed when the longest run is shorter than the accounting sample interval, except that an out-of-memory state still suggests an increase;
-- `phase` is `sim`, `compile+sim`, or `compile` and `edit_hint` identifies the configuration field that actually controlled the allocation.
+- `phase` is `sim`, `compile+sim`, or `compile` and `edit_hint` identifies the configuration field that actually controlled the allocation;
+- CPU efficiency is measured against the cpus the job **requested**, not the cpus the scheduler handed out (`AllocCPUS`).
 
 The suite's build job gets one row of its own, named `(build job)` with `phase: compile`. It suggests `time` in both directions and `cpus` only downwards, because low CPU efficiency there means build slots idled rather than that more were needed. Its `cpus` suggestion is per build, and it appears only for a job that ran one build at a time: with `compile.parallel` above 1 the job's CPU efficiency also carries idle slots in the tail, which no accounting field separates from a compile that under-used its own CPUs, so the row is withheld with reason `parallel-utilization-ambiguous` rather than advising a reduction that could starve the longest compile. Size `compile.parallel` against the suite's distinct compile keys first, then read the `cpus` row from a `parallel: 1` run. `time` advice is unaffected — concurrent builds take the wall clock of the longest, not of their sum. A `reduce` is withheld when nothing actually compiled (every build reused its stamp), when the head has no per-build records to judge by — `no-build-records`, which covers both a job that left no envelope at all and one whose envelope carries no `builds` list (an older build job, or one whose telemetry could not be serialised) — or when it finished inside one accounting interval; `rightsize.build_advice_withheld` records which, along with how many records it saw and how many seconds of them were real compiling. Without that guard a re-run of an unchanged suite would advise a limit the next real RTL change times out against, cancelling the fan-out behind it.
+
+### Requested cpus versus allocated cpus
+
+A partition with `SelectTypeParameters=NONE` on nodes with `ThreadsPerCore=2` allocates whole cores, so a job submitted with `--cpus-per-task=1` is charged two: `sacct` reports `ReqCPUS=1` and `AllocCPUS=2`. Measured against the allocation a single-threaded simulation can never exceed 0.5 efficiency, and the default `over-threshold: 0.5` would fire on every such test, advising a reduction to the `cpus: 1` the `tests.yaml` already holds — advice no edit can retire.
+
+Efficiency is therefore taken against the request, which is what a `resources.cpus` or `compile.cpus` edit actually moves, and a `reduce` is emitted only when the suggestion is strictly below it. The denominator is the reservation rtl_buddy itself resolved and submitted as `--cpus-per-task` — the request by construction, so it holds on a site whose Slurm also normalises `ReqCPUS` to the rounded figure. Where that is unavailable the fallbacks are `ReqCPUS`, then `AllocCPUS`.
+
+One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **after** the generated reservation flags and therefore overrides them, so an argument there — not the resolved reservation — decides what the jobs request. `ReqCPUS` is *tasks × cpus-per-task*, so two families qualify:
+
+| | Options | |
+| --- | --- | --- |
+| the cpu count | `-c` / `--cpus-per-task` | states the request |
+| task and node counts | `-n` / `--ntasks`, `--ntasks-per-node`, `-N` / `--nodes` | raise it |
+
+`--ntasks-per-node` is in the second family because sbatch documents it as a *request* when `--ntasks` is absent ("request that ntasks be invoked on each node … meant to be used with the `--nodes` option"), so `--nodes=2 --ntasks-per-node=4` asks for eight tasks. It degrades to a per-node maximum when `--ntasks` is also given — and that option is in the set too, so the pair is caught either way.
+
+The same applies to the **environment**. `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and `SBATCH_NODES` are sbatch's documented input variables for those options, and they reach sbatch because the dispatched submit inherits the head's environment — `SBATCH_NTASKS=4` beside the generated `--cpus-per-task=2` requests eight cpus. rtl_buddy reads them at submit time and treats them exactly like the equivalent `sbatch-args` entry. It does **not** sanitize the environment: a site that exports these means them. Command line beats environment, which is sbatch's own precedence, so a variable whose option is already written in `sbatch-args` is not reported — the job did not run with it. An unset or blank variable is not an override at all.
+
+`SBATCH_CPUS_PER_TASK` is the one that looks like it should count and does not, for the same reason as `--cpus-per-gpu`: every submit path states `--cpus-per-task` on the command line, which beats the variable, so it can never take effect.
+
+The `sbatch-args` half is read from the **backend**, not from the suite's `cfg-dispatch`. The backend is instantiated once, from the orchestration `root_config.yaml`, before the suite loop; `root_cfg` is then rebuilt for any suite that walks up to a different one. In a regression spanning project roots the two lists therefore differ, and only the backend's is what `sbatch` receives — so reading the suite's would miss an override the backend really appends, or invent one it does not. The generated reservation flags stay suite-derived, since they come from that suite's own resolved `resources:`; it is the verbatim passthrough that belongs to the backend.
+
+The environment is read **once per suite, before that suite submits anything**, and the result is carried through to its analysis. A regression submits every suite before collecting any, and a sweep hook is `exec()`d in the head process, so a later suite's hook can set or unset `SBATCH_*` in between; re-reading it at analysis would judge an earlier suite's jobs by a later suite's environment. Both the per-test rows and the `(build job)` row use that one snapshot, so the two halves of a suite's advice always describe the same submission.
+
+A **retry** is a fresh `sbatch` from whatever environment the process holds by then, and it is the retry's telemetry the analysis reads — so each resubmission re-reads the overrides for the rows it resubmits. The new values are applied only once that round has been accepted and waited on: a refused `sbatch` or a failed wait leaves the head holding the previous attempt's results and telemetry, which must not be paired with the reservation of an attempt that never ran. Where a round is abandoned the rows keep describing the attempt that produced their numbers.
+
+Retries are also per run, so a test whose seeds did not all retry can end up with runs submitted under different requests. Efficiency is the peak across every run, and one `Reserved` and one `Field` cannot describe two reservations, so the `cpus` row for such a test is **withheld** and `rightsize.cpus_advice_withheld` records it with reason `mixed-cpu-requests` — the same answer `parallel-utilization-ambiguous` gives the build job. `mem` and `time` advice is unaffected, since no cpu argument moves those reservations.
+
+One **combination** counts even though neither half does alone. sbatch documents a second mode for `--ntasks-per-gpu`: "specify the GPUs wanted (e.g. via `--gpus` or `--gres`) without specifying `--ntasks`, and the total task count will be automatically determined". So a GPU count (`--gpus` / `-G`, `--gpus-per-node`, `--gpus-per-socket`, or a `--gres` that asks for gpus) together with `--ntasks-per-gpu`, and no `--ntasks` anywhere, derives *gpus × ntasks-per-gpu* tasks — a task-count override exactly like `--ntasks`. Both halves may come from `sbatch-args` or from `SBATCH_*`, and the advice names the pair, since neither argument alone caused it. With `--ntasks` present the derivation runs the other way (it sets the GPU count instead) and `--ntasks` is already an override, so the pair is not reported.
+
+All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: each distinct option is reported, because they combine rather than supersede one another.
+
+The set is deliberately narrow, because a false positive is not free — it discards a request rtl_buddy knows, retargets the edit hint away from the field that really governs, and disables the compile floor. Four near misses are excluded:
+
+- `--exclusive` and `--overcommit` change what is *allocated*, not what is requested, so `ReqCPUS` still describes the reservation.
+- `--threads-per-core` and `-B` / `--extra-node-info` are **node-selection constraints**: they restrict which nodes and hardware threads may be used, while the generated `--cpus-per-task` still states the request. rtl_buddy therefore still knows it, and keeps using it.
+- `--ntasks-per-core` and `--ntasks-per-socket` are **placement maxima** ("request the maximum ntasks be invoked on each core/socket … meant to be used with the `--ntasks` option"): they cap where the tasks `--ntasks` asked for may land, and a lone one requests nothing. The `--ntasks` they accompany is in the set, so a real task-count change is still caught.
+- `--cpus-per-gpu` is documented as mutually exclusive with `--cpus-per-task`, which every dispatched job carries, so sbatch rejects the pair. A job submitted that way never runs, and there is nothing to right-size. `--ntasks-per-gpu` is left out of the table on its own, since alone it caps placement without requesting anything — but it is not ignored: see below.
+
+Where such an argument or variable is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names what was responsible.
+
+The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at `root_config.yaml`) and its `note` says which field was superseded, for example:
+
+```
+sbatch-args `--cpus-per-task=4` sets this job's cpu request, superseding
+tests[name=wr_single].resources.cpus; change it there. Suggested value is
+the whole-job cpu count.
+```
+
+`suggested` is always the whole-job cpu count, but only one shape of override can be handed it: **exactly one `--cpus-per-task`**, as above. The other two shapes cannot, and the note says so rather than giving advice that would not apply.
+
+A lone task or node count is not a cpu count — writing 3 into `--ntasks` asks for three tasks, not three cpus — and it does not supersede the per-task field either: the generated `--cpus-per-task` is still in force, so both are levers and the note names both:
+
+```
+`--ntasks=4` multiplies this job's cpu request: the generated --cpus-per-task
+from tests[name=wr_single].resources.cpus still applies, so the request is 8
+per task x 4 tasks. Suggested value is the whole-job cpu count — lower
+tests[name=wr_single].resources.cpus, the task count in sbatch-args, or both;
+no single one of them takes it.
+```
+
+The `8 per task x 4 tasks` clause is an observation — the scheduler's own request over the flag the head submitted — and is omitted when that division is not exact.
+
+Where several arguments are present they combine by sbatch's own precedence, which the note does **not** attempt to reproduce — with `--ntasks=8 --nodes=2 --ntasks-per-node=4 --cpus-per-task=2` the request is 16, not the product of all four, because `--ntasks` wins and `--ntasks-per-node` degrades to a maximum. The note names them and leaves the arithmetic to the reader, who is the only party that knows which one should shrink:
+
+```
+sbatch-args supersedes tests[name=wr_single].resources.cpus: `--ntasks=4` and
+`--cpus-per-task=2` set this job's cpu request together. Suggested value is
+the whole-job cpu count — decompose it across them per sbatch's own
+precedence; no single one of them takes it.
+```
+
+An override that came only from the environment names no file at all: its `edit_hint.path` is `env` and there is no `file` key, because a variable lives in nothing an agent can edit. Where an `sbatch-args` entry is also in play the hint keeps pointing there — the command line is what can defeat the variable — and the note names both.
+
+A **direct** cpu override also disables the **compile cpus floor**. That floor exists because a job compiling inside itself is allocated `max(sim, compile)`, so no reduction can take it below the compile side — but a `--cpus-per-task` in `sbatch-args` replaces that generated flag, and sbatch never sees the max. Left in place it clamps every suggestion up to the floor and then discards it for not being below the request, so a genuinely over-reserved run reports nothing at all.
+
+A task or node count does **not** disable it. `--ntasks=2` leaves `--cpus-per-task=8` exactly where it was and asks for two tasks of it, so the floor still holds and the advice may not suggest below it: even one task costs 8 cpus, so a whole-job suggestion of 3 could never be reached and the finding would recur every run. The floor is kept *unscaled* rather than multiplied by the tasks observed — the task count is one of the two levers the advice offers, so 8 really is reachable, by dropping to a single task, and flooring at 8 × 2 would suppress every reduction there is.
+
+The `mem` and `time` floors are untouched throughout, since no cpu argument supersedes them.
+
+Only `cpus` is retargeted: none of these arguments supersedes a `mem` or `time` field, so those findings keep naming the reservation that governs them.
+
+`mem` and `time` advice never had this exposure: both are already measured against `ReqMem` and `TimelimitRaw`, which `sacct` reports from the allocation the override actually produced, so no override can put a stale number in their denominators.
+
+`Reserved` in the table and `reserved` in `payload.reservation_advice` are that requested figure. Where the scheduler gave out more, the allocated number rides along: the table shows `4 (8 allocated)` and the finding carries an `allocated` field, so `squeue` and `sacct` still reconcile. `allocated` is present on **every** finding for a stable key set, and is null except on a `cpus` row whose allocation differs from its request.
 
 Wherever a row's `edit_hint` names the compile reservation, it names whichever file holds the value that won. A field the suite's own `compile` block set is reported as `compile.<field>` in that suite's `tests.yaml`; every other compile field is reported as `cfg-dispatch.compile.<field>` in `root_config.yaml`. Both forms can appear in one run — a suite that overrides only `mem` gets suite-level advice for `mem` and root-level advice for `time`.
 
@@ -1054,7 +1150,7 @@ runs:
     require-timing-met: true
 ```
 
-`model_path` and XDC paths are relative to `fpga.yaml`. The model name is the synthesis top. `part` and `platform` are mutually exclusive; naming both is an exit-2 configuration error. Expected-failure fields follow [Expected Failures](expected-failures.md).
+`model_path` and XDC paths are relative to `fpga.yaml`. The synthesis top is the model's root module — its `top:` in `models.yaml`, defaulting to the model name — and it also names the emitted bitstream (`<top>.bit`). `part` and `platform` are mutually exclusive; naming both is an exit-2 configuration error. Expected-failure fields follow [Expected Failures](expected-failures.md).
 
 `require-timing-met` defaults to false. A completed route that misses timing therefore passes the flow while reporting `timing_met: false`, negative slack, and failing paths. Set it true when timing closure is a regression gate; the failing result still includes timing metrics. A backend that reports no timing result is not failed by this option.
 
@@ -1159,6 +1255,14 @@ Vivado produces `fpga.f`, `flow.tcl`, `vivado.log`, utilization/timing/power/DRC
 
 openXC7 produces `fpga.f`, `synth.ys`, `yosys.log`, `<top>.json`, `nextpnr.log`, `<top>.fasm`, and optional prjxray stage logs plus `<top>.bit`.
 
+Both backends delete their outputs before each run — the reports, the netlist, FASM and frames handed between stages, and the bitstream — so a run that fails partway leaves what it never wrote absent instead of the previous run's copy. The logs are exempt: each is truncated by the stage that writes it.
+
+The bitstream goes even when the run was not asked to build one: a run without `--bitstream` removes a previously built `<top>.bit`, because the artefact directory describes the latest run and a stale deployable bitstream sitting beside a run that reports none is exactly the trap the rest of this rule closes. Rerun with `--bitstream` to regenerate it, or copy the file out first.
+
+A run that cannot find its backend tool is the exception: it deletes nothing, because a machine without the tool never ran it and has no business removing what a machine that has it produced. A configuration error is not a skip — an unknown `platform:`, or a part the backend cannot build, is reported whether or not the toolchain is present, and clears the outputs on its way out.
+
+Name FPGA runs distinctly from other commands' entries. An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names. Names that collide with a CDC analysis or a simulation test are safe for artifact clearing — those outputs are protected — but a shared directory is still easier to read when one run owns it.
+
 ## Interpret pass, fail, and skip
 
 A run passes when every backend stage exits zero, logs contain no backend error records, required reports parse, and a requested bitstream exists. It fails otherwise and names the failing stage or output.
@@ -1214,7 +1318,7 @@ verifications:
     reglvl: 1000
 ```
 
-Paths are relative to `fpv.yaml`. `top` defaults to the model name, `depth` to 20, and `engines` to `smtbmc yices`. `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Modes are `bmc`, `prove`, `cover`, and `live`.
+Paths are relative to `fpv.yaml`. `top` defaults to the model's root module (its `top:` in `models.yaml`, itself defaulting to the model name), `depth` to 20, and `engines` to `smtbmc yices`. `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Modes are `bmc`, `prove`, `cover`, and `live`.
 
 Optional run controls include:
 
@@ -1445,7 +1549,23 @@ rb tool-check --explain rtl-buddy-view
 
 The external extractor is optional. If absent, its tier is `skipped` and the graph remains usable. A requested tier that breaks is `failed`; per-model failures become non-zero only with `--strict`. Inspect `graph-meta.json` for tier status and failure details.
 
-Unchanged inputs, tool versions, and schema produce a cached no-op build. A failure remains cached until an input or tool version changes, or `--force` is used.
+## Models with no elaborable root
+
+The design tier roots each model's export at the model's `top:`, defaulting to the model name. A model that has no such module — an SV `interface` published as a library entry, or a filelist of vendored IP — sets `graph: false` in [`models.yaml`](../reference/yaml.md#modelsyaml).
+
+An opted-out model, and every testbench and non-simulation run rooted at it, is listed under the design tier's `skipped` entries in the envelope and in `graph-meta.json`, never under `failures`. That includes the ones a normal build never reaches: a cocotb testbench whose `toplevel:` is the model's own root, and the synth, CDC or FPGA runs that default their top to it, are dropped as redundant with the DUT export when the model is graphable, and reported when there is no DUT export to be redundant with. Testbenches and runs that de-duplicate into one export are listed individually: the de-duplication key is what the viewer is handed, so two `testbenches:` entries with the same model, filelist and top elaborate once, but each remains a testbench the project declared. `skipped` does not affect the exit code, including under `--strict`. If every model in scope opts out, the tier itself is `skipped`.
+
+Opting a previously exported model out also removes its `artefacts/graph/design/<model>/` directory, including the testbench- and run-rooted exports nested under it. Those files are durable — nothing rewrites them but a later export of the same model — so leaving them would keep serving a hierarchy the build has just declared the model does not have. A removal that fails, for example under a read-only artefact directory, is fatal rather than ignored: reporting the model as skipped while its old hierarchy stays readable is the state the retraction exists to prevent. The target is re-checked before the delete and must resolve to a direct child of the design-export directory, so a symlinked model directory is refused rather than followed. Name collisions are reported before any retraction runs, so a rejected build never deletes the export of the model it was colliding with.
+
+The config tier still emits the model node, carrying `graph: false`, so `spec:` and test cross-references resolve. It emits no `maps_to` edge for it, and no `elaborates_as` or `targets` edge from a testbench or run over it, because the design tier will not define those `module:` nodes. A testbench is judged by the models its tests name, not by the module it tops at, so an exported model's testbench keeps its edge even when the two models share a root module. Give the model a `top:` instead when the filelist elaborates and only the root module name differs.
+
+The same rule covers a model this build did not select. The config tier reads the whole design directory whatever `--model` or `-c` narrowed the design tier to, so it holds models that will not be exported; those get a node and no config-to-design stitch. Withholding the stitch rather than letting it dangle matters because `module:<top>` is a global id: an unselected model whose `top:` matches a selected one's would otherwise resolve, after the merge, against that other model's hierarchy, and the graph would state a mapping that does not exist. Two models that are *both* exported still cannot share a top — that is refused before the build runs. A `--no-design` build has no selection to respect and stitches every graphable model, as it always has.
+
+The opt-out is design-tier-only. `rb hier`, `rb hier-query`, and `rb axi-profile` still elaborate the model and still fail if its root does not resolve.
+
+Every model the build selects must carry a distinct `name`, and every model it exports must root at a distinct module. Sharing a name collides on disk — both exports land in `artefacts/graph/design/<name>/` and the second overwrites the first — and it collides in every lookup that spells a model by name, so `graph: false` does not excuse it; rename one. Sharing a top collides in the graph, where `module:<top>` is a global id and DUT ids are never suite-qualified, so the two hierarchies merge into one hybrid; there `graph: false` on one of them is a way out, because an opted-out model is never exported. `graph build` refuses either input before invoking the exporter and names both models and both `models.yaml` files.
+
+Unchanged inputs, tool versions, schema, and tier selection produce a cached no-op build. Selection covers the flags that narrowed each tier and, for every selected model, its declaration: the `models.yaml` it comes from, its `name`, its `top:`, and its `graph:`. Both halves are load-bearing. A tier whose models all opted out reads no inputs, so `--model`, `--no-tb`, `--no-flow-tops`, and `--no-design` would otherwise leave `graph-meta.json`'s `skipped` list describing the previous invocation. And a `models.yaml` outside `--design-dir` — one a `--regression` selection reaches through a test's `model_path:` — is hashed by no tier, so editing `top:` alone would otherwise leave the graph rooted at the module the model used to name. A failure remains cached until an input, tool version, or selection changes, or `--force` is used.
 
 ## Query the graph
 
@@ -1601,7 +1721,7 @@ artefacts/graph/
 └── bind/graph.json
 ```
 
-`graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
+`graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, skipped items, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
 
 Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
 
@@ -1748,7 +1868,7 @@ rb hier-query demo_top port-connections demo_top.u_fabric.u_arb0
 rb hier-query demo_top source-snippet demo_top.u_fabric.u_arb0 --context 4
 ```
 
-`find-module` and `instances-of` take a module name. The other verbs take a dot-separated instance path rooted at the model name. Results are JSON except `source-snippet`, which prints source text with line numbers by default.
+`find-module` and `instances-of` take a module name. The other verbs take a dot-separated instance path rooted at the model's root module (its `top:` in `models.yaml`, defaulting to the model name). Results are JSON except `source-snippet`, which prints source text with line numbers by default.
 
 A lookup miss or parse failure exits 1 and prints the viewer diagnostic to stderr. An empty `instances-of` result is a successful answer and exits 0.
 
@@ -1847,6 +1967,8 @@ The browser can switch without restarting:
 
 Model discovery is refreshed per request. View generation is serialized per model or test to prevent duplicate concurrent builds. Restart the hub when you need to force regeneration after source changes.
 
+A rebuild clears the cached `view-<NAME>.json` and the model's cached domain map before it starts, so a build that fails — a bad `cdc:` back-pointer, a missing viewer, a crashed analyzer — reports the failure instead of leaving the previous build's hierarchy to be served in its place. A renderer that writes the file and *then* fails, or writes one whose schema this rtl_buddy rejects, has it removed too: the hub serves a cached view by testing the file, so a rejected view left on disk would be served regardless of the recorded failure.
+
 ## Diagnose view errors
 
 Failed `GET /view.json` requests return JSON with `error.kind`. Branch on the kind, not the prose:
@@ -1944,6 +2066,8 @@ Clicking graph nodes can:
 - send `selection_changed` for an instance, or the shallowest instance of a module;
 - send `open_source` for nodes with file locations;
 - translate a selected node into coverage focus.
+
+A model node is placed through its `maps_to` edge, so it lands on the module the model actually roots at even when `models.yaml` sets `top:`. A model that opted out with `graph: false` has no such edge and no design coordinate: its send buttons stay dark and say so, rather than focusing a module id the graph does not contain.
 
 The on-disk graph is never modified by the browser join. See [Design Knowledge Graph](graph.md) for graph semantics.
 
@@ -2347,7 +2471,7 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `<top>.gds`, `<top>.png` | Optional KLayout outputs |
 | `klayout.*.log` | Optional conversion logs |
 
-On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.
+Every file above except the logs is deleted before each run — including the optional KLayout outputs, which are cleared up front rather than at the streamout step, so a run that dies inside OpenROAD or on a host without KLayout leaves no older layout behind. A run that dies short of routing therefore leaves the outputs it never wrote absent rather than the previous run's. Unlike the other flows, this happens even when OpenROAD itself is missing — the clear is the first thing a run does — because `rb power` resolves `<top>.routed.odb` by path and must never be handed the previous run's database. For the same reason a run that reaches `write_db` and then dies — killed, exiting non-zero, or logging an `[ERROR ...]` line — has its outputs removed again, so a `FAIL` never leaves a routed database behind. The optional KLayout steps behave the same: a zero-length GDS or a half-rendered PNG is removed rather than left to be read as this run's layout. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.
 
 
 ---
@@ -2473,7 +2597,9 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | `power.log` | OpenROAD output |
 | `power.rpt` | Raw `report_power` report |
 
-On failure, inspect `power.log` for tool and input errors, then `power.rpt` for missing or malformed totals.
+An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names.
+
+On failure, inspect `power.log` for tool and input errors, then `power.rpt` for missing or malformed totals. `power.rpt` is deleted before each run and again if the run fails after writing it, so a run that never got as far as `report_power` — or that reached it and then failed — leaves none — read `power.log` in that case rather than an earlier run's numbers. A run that cannot find its backend tool is the exception: it deletes nothing, because a machine without the tool never ran it and has no business removing what a machine that has it produced.
 
 
 ---
@@ -2899,7 +3025,7 @@ syntheses:
     reglvl: 0
 ```
 
-Paths resolve from `synth.yaml`. `model` is also the synthesis top. `platform` enables Liberty mapping; the OpenROAD backend additionally requires LEF assets.
+Paths resolve from `synth.yaml`. The synthesis top is the model's root module — its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping; the OpenROAD backend additionally requires LEF assets.
 
 Use `lef-paths` and `lib-paths` for block-specific hard macros. Use `tool_overrides` only for backend options that have no portable equivalent. See [YAML Formats: synth.yaml](../reference/yaml.md#synthyaml) for all fields.
 
@@ -2980,6 +3106,157 @@ Under `cfg-synth-tools.opts`, fields use kebab case such as `plugin-path` and `s
 
 The override key remains `yosys` even when the run's backend is `openroad`, because Yosys owns elaboration.
 
+## Gate static-lifetime subroutines
+
+A `function` or `task` declared at module, interface, package, program, or
+compilation-unit scope without an explicit `automatic` lifetime has *static*
+lifetime: every formal argument is one shared storage location. Simulation is
+unaffected, because a call completes atomically inside a process, but
+yosys-slang lowers the declaration literally and gives every call site the same
+net per formal. Two calls in one combinational process then alias their
+arguments and the netlist is wrong with no error and no warning.
+
+RTL Buddy scans the sources named by the synthesis filelist, and the headers
+they `` `include ``, before Yosys starts, and reports each declaration as
+`file:line: function <name>`:
+
+```yaml
+cfg-synth-tools:
+  - name: yosys
+    tool: yosys
+    opts:
+      static-functions: error      # error | warn | allow
+      conflicting-drivers: error   # error | allow
+```
+
+`static-functions` defaults to `error` with `frontend: slang`, which
+miscompiles the design, and to `warn` with the legacy `verilog` frontend, which
+inlines per call site — correct there, but not portable. `error` fails the run
+before Yosys; `warn` logs one warning per finding and records
+`static_function_findings` in the result envelope; `allow` skips the scan.
+
+Fix a finding by adding the keyword:
+
+```systemverilog
+function automatic ptr_t inc(input ptr_t p);
+  return p + 1;
+endfunction
+```
+
+### What the scan sees
+
+`` `include `` directives are followed, resolved against the including file's
+directory and then the filelist's `+incdir+` entries. Each inclusion is scanned
+in its own context — a header included from a class is exempt there and still
+reported when the same header is included from an ordinary module — and one
+declaration is reported once however many places include it.
+
+`` `ifdef `` / `` `ifndef `` / `` `elsif `` / `` `else `` / `` `endif `` are
+evaluated on definedness and updated by `` `define ``, `` `undef `` and
+`` `undefineall `` in the sources. The macro table is seeded to match the Yosys
+invocation exactly:
+
+- the run's `defines:`, which is all `rb synth` passes to `read_verilog -D` /
+  `read_slang -D`;
+- the macros the selected frontend defines for itself, which differ:
+  `read_verilog` predefines `SYNTHESIS` and `YOSYS`, while `read_slang`
+  predefines `SYNTHESIS` and slang's own built-ins (`__slang__`, the
+  `SV_COV_*` constants) but **not** `YOSYS`. So a `` `ifndef SYNTHESIS ``
+  simulation-only helper is never reported under either, an
+  `` `ifdef SYNTHESIS `` region always is, and a `` `ifndef YOSYS `` helper is
+  reported only under `frontend: slang`, which is the frontend that compiles
+  it.
+
+`+define+` entries in the generated filelist are **not** included, because the
+synthesis flow does not pass them to Yosys either; seeding the scan with them
+would make it skip a declaration that really is elaborated. A run whose
+filelist carries `+define+` macros that do not reach Yosys as written logs one
+`synth.filelist_defines_ignored` warning naming them, in three groups:
+
+- macros synthesis never sees at all;
+- macros it elaborates with a *different* value than the filelist gives, with
+  both values shown;
+- **bare** `+define+X` entries paired with a synthesis value, which cannot be
+  compared and are always reported. Tools disagree about what a valueless
+  macro expands to: Verilator and Yosys's `read_verilog` give it an empty body,
+  while Icarus and slang give it `1`. Write `+define+X=1` if a value is meant.
+
+That divergence from the simulation flow, which does apply these macros,
+predates this gate and is tracked separately — move the macro to the synth.yaml
+entry's `defines:` if the design needs it.
+
+`` `undefineall `` follows the frontend in use, which differ: slang clears the
+source's own macros but re-applies the command-line ones, so the seed above
+survives; Yosys's `read_verilog` clears its command-line cache as well, so
+nothing does. A `` `ifndef `` guarded on a `defines:` macro after an
+`` `undefineall `` is therefore compiled under `frontend: verilog` and not
+under `frontend: slang`, and the scan reports it accordingly.
+
+An `` `include `` chain deeper than 1024 — slang's own limit — fails the run
+with the tail of the chain named, rather than silently skipping the header and
+losing whatever it declares.
+
+The macro table follows the compilation-unit boundary the frontend actually
+uses. With `single-unit: false` — the default — each source is its own
+compilation unit, so a `` `define `` in one file does not reach the next and
+the table is re-seeded from the run's defines for each; `single-unit: true`
+under `frontend: slang` shares it, matching `read_slang --single-unit`. A
+header always shares its includer's table, because `` `include `` is textual.
+
+`(* ... *)` attributes are ignored wholesale, so an identifier inside one
+never qualifies the declaration it decorates.
+
+Exempt: class methods — including out-of-body definitions such as
+`function int C::f(...)`, though not an escaped `\C::f`, which is one
+identifier — `extern` and `pure virtual` prototypes, DPI imports
+and exports, and any scope declared `module automatic` (or
+`package`/`interface`/`program` `automatic`).
+
+The scan is a tokenizer, not an elaborator, and its limits run in both
+directions:
+
+| Limit | Effect |
+| --- | --- |
+| Macro bodies are skipped at their `` `define `` | A declaration produced by a macro is never reported, in either direction; macros are expanded by the compiler, not by the scan |
+| `-y` library directories are not scanned | The filelist never names their contents, so declarations there are missed |
+| An unresolvable `` `include `` is logged at DEBUG and skipped | That header's declarations are missed; the run is not failed |
+| An unknown `frontend` or a missing slang plugin | Fails the run as a configuration error (exit 2) before the gates, not as a synthesis `FAIL` |
+| `` `if `` expression evaluation is not implemented | Only definedness is evaluated. This is not SystemVerilog anyway, so it costs nothing in practice |
+| Scope nesting is tracked by keyword pairing | Pathological but legal code can change which declarations are exempt, in either direction |
+
+Use Verible's `explicit-function-lifetime` rule through `rb lint` and
+`cfg-verible` as the style-lint complement covering testbench and
+non-synthesisable sources.
+
+## Gate conflicting drivers
+
+When call sites are split across a combinational and a clocked process, the
+shared net takes conflicting drivers and folds to `x`, taking its register and
+everything downstream with it. Yosys reports this as a
+`multiple conflicting drivers` warning and still exits 0.
+`conflicting-drivers: error`, the default, turns those warnings into a failed
+run naming the count and the log path. Set `allow` only when the warnings are
+understood and accepted.
+
+A legitimate multi-driver tristate bus produces the same warning, one per bit.
+Those are not counted: a warning whose drivers are all `$tribuf` / `$_TBUF_`
+cells and module ports is a working design, and only a warning with at least
+one other driver — a flop, a process action — fails the run.
+
+Both gates apply to the Yosys elaboration stage, which the `yosys` and
+`openroad` backends share. An unrecognized value for either option is fatal.
+
+### Upgrading
+
+These gates are new, and `static-functions` defaults to `error` under
+`frontend: slang`. A slang synthesis run that passed before can now **fail**,
+including one whose subroutines have a single call site and whose netlist
+happens to be correct — the scan reports the declaration, not the aliasing.
+That default is deliberate: the failure mode it guards is a silently corrupted
+netlist with plausible area and timing numbers. To stage the migration, set
+`static-functions: warn` while the declarations are fixed; each run then still
+reports `static_function_findings` in its machine output.
+
 ## Select an effort
 
 Define reusable effort levels in `root_config.yaml`:
@@ -3053,7 +3330,7 @@ synth-configs:
 
 Mapped runs report gates and area. Constrained Yosys runs report WNS as clock period minus critical-path delay. OpenROAD reports actual WNS and TNS; negative values indicate violations and TNS 0 indicates no negative endpoint slack.
 
-A Yosys run passes when the process exits 0 and its log has no `ERROR:` line. An OpenROAD run requires both the Yosys and OpenROAD stages to exit 0 and rejects OpenROAD `[ERROR ...]` lines. Any failed stage reports `FAIL`.
+A Yosys run passes when the process exits 0, its log has no `ERROR:` line, and neither correctness gate fires. An OpenROAD run requires both the Yosys and OpenROAD stages to exit 0 and rejects OpenROAD `[ERROR ...]` lines. Any failed stage reports `FAIL`.
 
 ## Inspect artefacts
 
@@ -3067,6 +3344,8 @@ Outputs land under `<synth-dir>/artefacts/<run>/`.
 | `synth.log` | Yosys-only | Yosys output |
 | `synth_yosys.log` | OpenROAD | First-stage Yosys output |
 | `synth.tcl`, `synth.log` | OpenROAD | STA script and OpenROAD output |
+
+Both netlists are deleted at the very start of each run, before the filelist is even generated and before Yosys is looked for at all, so every way a run can fail leaves them absent — there is no missing-tool carve-out here, because `rb pnr` and `rb power` resolve the netlist by path and must never be handed the previous run's. A run that fails publishes nothing. Yosys writes the netlist partway through its script and only then runs the trailing `stat`, so it can crash — or log an `ERROR:` line — with the netlist already on disk; and on the OpenROAD backend the Yosys stage can succeed before the timing stage fails. Every one of those paths removes the netlist again, so a `FAIL` never leaves a design for `rb pnr` or `rb power` to pick up. They are the fixed-path inputs `rb pnr` and `rb power` resolve, so a failed rerun that left the last successful run's netlist in place would have those commands place, route, and power-analyse a design that is no longer what the RTL says. A failed run therefore leaves no netlist at all, and `rb pnr` reports that you need to run `rb synth` first. Copy a netlist you want to compare against out of the artefact directory before rerunning.
 
 When a run fails, inspect the relevant stage log first. Missing tools, plugin paths, Liberty, or LEF inputs are configuration failures; correct the path or installation and rerun the named synthesis.
 
@@ -3090,6 +3369,7 @@ rtl-buddy-filetype: test_config
 
 testbenches:
   - name: tb_top
+    toplevel: tb_top
     filelist:
       - +incdir+../../../verif/tb
       - tb_top.sv
@@ -3108,7 +3388,9 @@ tests:
     sim_timeout: 120
 ```
 
-`model_path`, testbench filelists, and hook paths resolve from the directory containing `tests.yaml`. `plusargs` affect simulation; `plusdefines` affect compilation. See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
+`model_path`, testbench filelists, and hook paths resolve from the directory containing `tests.yaml`, and a model's filelist entries resolve from the directory containing its own filelist — a `+incdir+` inside a filelist pulled in with `-F` names a directory beside that filelist, not beside the suite that consumes it, so a design filelist can carry its own include path. `plusargs` affect simulation; `plusdefines` affect compilation. See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
+
+`toplevel:` names the module the compile elaborates from and reaches the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`. Declare it on every testbench: without it the simulator elects a top from filelist order, so recomposing a model filelist renames the Verilator model and an uninstantiated module in an ordinary (non-`-v`) input turns the build into a `MULTITOP` error. For a SystemVerilog bench it names the bench, not the DUT. It is not inferred from `name`, and a top pinned in the builder's `compile-time` opts still wins. See [Pinning the elaboration top](../reference/yaml.md#pinning-the-elaboration-top).
 
 ## Run tests
 
@@ -3246,7 +3528,7 @@ rb regression --share-build
 
 RTL Buddy stores shared builds under `artefacts/.shared-builds/obj_dir_<hash>/`. The key includes the resolved simulator executable, compile options, plusdefines, compile environment, and resolved filelist. Plusargs, seeds, and simulation timeouts do not affect it.
 
-A compile stamp records the content hash of every tracked input under the project root, plus toolchain identity. Reuse occurs only while the stamp matches, and content is what decides: regenerating a source byte-for-byte reuses the build; any real edit rebuilds it, including one a node's cached `stat` still describes as the old file. Verilator also reports consumed dependencies, so included headers, `-y` library files, standard includes, and the underlying Verilator binary invalidate the build. VCS and Icarus cannot report equivalent dependencies; after a header-only or hidden toolchain change, force compilation with `--rebuild`.
+A compile stamp records the content hash of every tracked input under the project root, plus toolchain identity. Reuse occurs only while the stamp matches, and content is what decides: regenerating a source byte-for-byte reuses the build; any real edit rebuilds it, including one a node's cached `stat` still describes as the old file. Verilator also reports consumed dependencies, so included headers, `-y` library files, standard includes, and the underlying Verilator binary invalidate the build. VCS and Icarus report none, so for every builder the stamp additionally lists the contents of each `+incdir+` and `-y` directory the filelist names: editing, adding, or removing a file in one rebuilds whatever the simulator, and an added `-y` file is the case no dependency file can report. Listings are unfiltered by suffix; an `+incdir+` is walked recursively and a `-y` directory listed flat, following what each option's search can reach. The walk skips dot-directories and RTL Buddy's own `artefacts/`, `.shared-builds/` and `obj_dir*` trees, plus editor and VCS bookkeeping files and RTL Buddy's own per-test outputs by name (`run.f`, `compile.log`, `test.log`, `result.json`, the stamp, and the rest) — all of those are written after the fingerprint that would list them, so stamping one would make every later run recompile. A header a `preproc` hook generates into its `artifact_dir` **is** tracked, and other dot-files are too, since `` `include ".config.svh" `` resolves. After a change outside what the listing and a dependency file cover — a hidden toolchain change, an include reached by a path no `+incdir+` names — force compilation with `--rebuild`.
 
 Reuse is announced rather than inferred from a missing log:
 
@@ -3313,7 +3595,9 @@ Optional tools appear by default. Use `--no-include-optional` to hide them. The 
 - **Tools:** canonical name, `ok` / `missing` / `outdated`, detected version, resolved path, minimum version, and optional status.
 - **Subcommand readiness:** each declared `rb` command and the dependencies that block it. An optional feature does not make unrelated commands unready.
 
-Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, and platform-specific install hints.
+Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, any optional binaries, and platform-specific install hints.
+
+A tool that declares optional binaries lists them under `Optional binaries (not required; not detected as this tool)`, each with what it buys. They enrich the tool without being part of it: they never satisfy detection, never supply the probed version, and never change a `ok` / `missing` / `outdated` status. Slurm's `scontrol` is the example — `scontrol show config` supplies the cluster's `MaxArraySize`, so dispatch can split a resource group too large for one job array, and a submit host without it dispatches normally once `cfg-dispatch.max-array-size` is set. Reading the absence of an optional binary as a missing tool, or its presence as a present one, is exactly the confusion the separate section exists to prevent: a host with `scontrol` but no `sbatch` reports slurm `missing`.
 
 Aliases are accepted by `--explain` and runtime dependency checks. Output always uses the canonical tool name. For example, `rtl-buddy-sch` resolves to `rtl-buddy-view`; an unknown-name machine response includes the known names and alias mapping.
 
@@ -3331,7 +3615,7 @@ Exit behavior depends on the invocation:
 
 `--required-for` implies enforcement. Optional dependencies do not fail `--strict`.
 
-The JSON payload contains `tools`, `subcommands`, and `exit_code`. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
+The JSON payload contains `tools`, `subcommands`, and `exit_code`. Each `tools` entry carries `status`, `version`, `path`, `optional`, and `minimum_version` when one is declared. Optional binaries are deliberately absent from it: they are documentation of what a tool can additionally use, not a state anything can gate on, so machine consumers see no field for them. `rb --machine tool-check --explain <tool>` mirrors the human explanation verbatim in the payload's `instructions` field, which is where they do appear. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
 
 Example focused CI gate:
 
@@ -3357,7 +3641,9 @@ Detected versions are cached at `${XDG_CACHE_HOME:-~/.cache}/rtl_buddy/tool_vers
 
 ## Understand the manifest
 
-`src/rtl_buddy/tool_manifest.py` is the source of truth for both reports and runtime dependency errors. Each tool declares its canonical name and aliases, ordered detection methods, version probe and minimum, install hints, dependent subcommands, and whether it is optional.
+`src/rtl_buddy/tool_manifest.py` is the source of truth for both reports and runtime dependency errors. Each tool declares its canonical name and aliases, its required binaries, ordered detection methods, version probe and minimum, install hints, dependent subcommands, whether it is optional, and any optional binaries.
+
+`binaries` is the tool's required core, and it is an any-of list: the first name found on `PATH` (or in a configured vendor directory) makes the tool detected, and that resolved path is substituted into the version probe. A binary that does not by itself make the tool usable therefore does not belong there — listing one would let a host missing every real command report `ok`, version-probed through the wrong executable. Such helpers go in `optional_binaries`, a mapping of binary name to what it buys, which only `--explain` reads.
 
 The first successful detector wins. Detectors cover `PATH`, configured absolute or vendor paths, Python packages, and sibling Python distributions. Manifest construction rejects name or alias collisions.
 
@@ -4316,7 +4602,7 @@ RTL Buddy's wheel provides required Python dependencies. Integrated tools are fi
 | Workflow | Required tools | Notes |
 | --- | --- | --- |
 | `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
-| Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` recommended | Requires a Linux submit host and shared filesystem. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
+| Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Requires a Linux submit host and shared filesystem. `sacct` supplies right-sizing telemetry; `scontrol` supplies `MaxArraySize`, without which a resource group too large for one job array is not split — set `cfg-dispatch.max-array-size` instead. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
 | `synth`, `synth-regression` | [rtl-buddy Yosys fork](https://github.com/rtl-buddy/yosys); OpenROAD for `tool: openroad` | See [Synthesis](concepts/synthesis.md#install-the-tools). |
 | `pnr`, `power` | OpenROAD 25Q1 or newer | KLayout is optional for P&R GDS and PNG output. |
@@ -4446,6 +4732,24 @@ Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immedi
 
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
 
+## Tool flows delete their previous outputs before running
+
+`rb cdc`, `rb synth`, `rb fpga`, `rb pnr`, and `rb power` remove the outputs they are about to write — reports, domain maps, synthesis netlists, DEF/ODB, GDS/PNG, bitstream — from the run's artifact directory before invoking the tool. `rb hub` does the same for the `view.json` and domain map it caches under `.rtl-buddy/cache/`, which outlive the build that filled them. An exit code cannot distinguish "produced nothing to report" from "crashed before writing" (rtl-buddy-cdc's exit 1 means rule violations were found), so a report left by an earlier run would otherwise be parsed and its counts reported as the current result. Clearing first makes an absent report absent, and the flow then says so and names its log.
+
+A run that cannot find its backend tool is the exception: it deletes nothing, because a machine without the tool never ran it and has no business removing what a machine that has it produced. That covers `rb cdc` (both backends — the open analyzer is not an rtl_buddy dependency, so a project can legitimately run without it), `rb fpga` and `rb power`. `rb synth` and `rb pnr` clear regardless, tool present or not, because their netlists and their DEF/ODB are resolved by path by a *later* command — a missing tool still means there is no fresh netlist, and `rb pnr` or `rb power` must not silently use the old one. A configuration error is never a skip: an unknown `platform:`, or a part a backend cannot build, is reported whether or not the tool is present, and clears the outputs on its way out.
+
+The clearing happens early, not just before the tool starts: a rerun that fails on a filelist error, an unresolvable config, or any other check still leaves nothing behind. Outputs a later command consumes — the synthesis netlists `rb pnr` and `rb power` resolve, and pnr's DEF and ODB — are cleared as the very first thing the run does, ahead of even the tool-availability check, because a missing tool still means there is no fresh netlist for the downstream command to use. Outputs only read back within the same run are cleared just after that check instead.
+
+Outputs named after the design's top — `<top>.bit`, `<design>.routed.odb` — are matched by suffix rather than by name, so editing a run's `model:` or `top:` does not strand the previous top's files in the same directory. Another command's durable outputs are never matched this way either: a run's `result.json`, its build cache `rb-compile-stamp.json`, the dispatch envelopes, and the sibling commands' reports — `cdc.json`, the CDC domain maps, `power.rpt`, the synthesis netlists — all survive. This matters because an artifact directory is keyed on a run's *name* and names need not be unique across commands: an `rb fpga` run, a CDC analysis and a simulation test called the same thing all share one directory.
+
+Sharing a name is still worth avoiding, because clearing is not the only way two commands collide. An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names. An artifact directory belongs to one run, so everything carrying a suffix that flow writes is that flow's own output; nothing else in the directory is touched, and the scan never recurses into a workdir a tool owns.
+
+A tool that writes an output and *then* fails counts as a failure like any other, and every flow removes what it wrote on the way out. Yosys writes its netlist before the trailing `stat` that can error; the CDC analyzers write their report before they finish; Vivado's FPGA flow writes all five reports before it reaches `write_bitstream`; OpenROAD writes `power.rpt` and the routed database before its script ends; KLayout can leave a zero-length GDS or a half-rendered PNG; and the hierarchy renderer can write a `view.json` before exiting non-zero or emitting a schema this rtl_buddy rejects. Those outputs are removed again, so a run that reports a failure has published nothing. A configuration error — an unknown `platform:`, a part a backend cannot build — clears them too; it is a failed run, not a skip.
+
+Consequently a failed rerun leaves no output at all rather than the previous run's. This propagates: a failed `rb synth` leaves no netlist, so `rb pnr` and `rb power` report that you need to run `rb synth` first instead of consuming the previous netlist. An `rb fpga` run without `--bitstream` likewise removes a previously built `<top>.bit`. Copy an artifact you want to compare against out of `artefacts/<name>/` before rerunning. Logs are exempt: each flow truncates its own log, so a crashed run still has one to read.
+
+An artifact that cannot be deleted — a permissions problem, or a directory where a file belongs — fails the run with a fatal error rather than letting it proceed, since continuing would risk reporting the previous run's numbers.
+
 ## Dispatch changes build behavior
 
 `--dispatch` implies `--share-build` and rejects `--early-stop`. `cfg-dispatch.backend` defaults `regression` and `randtest`, but `rb test` remains local unless `--dispatch` is explicit. A one-seed `randtest` replay also stays local.
@@ -4454,11 +4758,17 @@ Shareable builders compile once per compile key. Builders that cannot share comp
 
 ## local-parallel enforces only the job count
 
-The `local-parallel` backend ignores CPU, memory, time, array-throttle, and right-sizing settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
+The `local-parallel` backend ignores CPU, memory, time, array-throttle, array-size, and right-sizing settings. `max-jobs-per-array` and `max-array-size` describe Slurm job arrays, of which this backend submits none, so neither throttles nor splits anything here. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
 
 `cfg-dispatch.compile.parallel` is the exception: it is not a reservation but concurrency the build job itself honours, and that job occupies one pool slot while fanning out inside it. The real ceiling on the host is therefore `jobs` multiplied by `compile.parallel`, and nothing clamps it. Size the two together.
 
 Normal interruption terminates the worker process groups. `SIGKILL` of the head process cannot run cleanup and can orphan `rb _test-job` children; inspect and stop them after a hard CI timeout or `kill -9`.
+
+## Oversized resource groups are split into several arrays
+
+A resource group larger than the cluster's Slurm `MaxArraySize` cannot be one job array. rtl_buddy submits it as several, each holding at most `MaxArraySize - 1` elements — or fewer where the cluster sets `SchedulerParameters=max_array_tasks`, an inclusive cap on the tasks in one array that `scontrol` reports separately and that the slice size takes the minimum with. Two consequences are worth planning for: `max-jobs-per-array` throttles each slice, so the group's peak concurrency is that throttle multiplied by the number of slices; and a slice's manifest and element logs live under `slice-N/` in the run's dispatch directory instead of directly in it. A group that fits in a single array keeps the flat layout.
+
+The limit is read from `scontrol show config` once per cluster per run, before the run's first array submit, with the `-M` of any cross-cluster `sbatch-args` so the answer describes the cluster the arrays are submitted to. `SBATCH_CLUSTERS` selects a cluster the same way, with `sbatch-args` winning. A selection naming several clusters — `--clusters=a,b`, or the reserved `all` — leaves the limit unknown, since Slurm chooses between them at submit; pin `cfg-dispatch.max-array-size` for those. Where the submit host cannot run `scontrol`, nothing is split and sbatch refuses an oversized group with `Invalid job array specification`; set `cfg-dispatch.max-array-size` to the cluster's value, and `cfg-dispatch.max-array-tasks` too where the cluster caps tasks-per-array below it — each ceiling is configured, and layered over the probe, on its own, and either one alone is enough to split a group. `dispatch.max_array_size_unknown` in the run log names that case, and the submit failure itself repeats the hint. A resolved limit is recorded at debug level as `dispatch.max_array_size`, whose `source` field reads `config` or `scontrol`.
 
 ## Quote dispatch time values
 
@@ -4502,29 +4812,73 @@ The plugin pin must speak the hub protocol shipped by rtl_buddy; maintainers upd
 
 ## Generated `run.f` files are checkout-specific
 
-rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+rtl_buddy writes explicit source entries as absolute paths so Verilator cannot resolve a relative source through an include or library directory in another checkout. `+incdir+` and `-y` search directories are written absolute for the same reason. A relative search directory is resolved by the builder rather than by rtl_buddy: `-f` entries are read relative to the builder's working directory, and even a builder started in `run.f`'s own directory disagrees whenever a symlink sits between that directory and the design, because a relative path collapses `..` textually while a process walks it physically. Do not commit or copy `run.f` between checkouts. Use one symlink spelling of a checkout consistently, because path spelling affects compile keys.
+
+Two path spellings cannot be pinned. An include directory whose path contains `+` keeps its relative spelling, because filelist parsers read `+incdir+a+b` as two directories and quoting does not change that; `filelist.incdir_unrepresentable` names those entries, and they stay dependent on the builder's working directory until the `+` is out of the path. A path containing whitespace is quoted instead, which Verilator's `-f` parser understands; Icarus's does not, and VCS is unverified, so keep whitespace out of checkout paths for those simulators.
 
 On a cluster with different mount paths per node, a stamp from one node may not validate on another. This causes a safe recompile, not compilation of the wrong source.
 
+Because the compile key hashes the text of each `run.f` entry, the first run after upgrading to a release that changed how an entry is spelled recompiles each shared build once. An absolute spelling also makes the key independent of where in the tree the consuming suite sits, so two suites at different depths that share a model now share one build where a relative spelling gave them different keys.
+
 ## Shared-build dependency tracking varies by simulator
 
-Verilator reports consumed headers, library files, its standard includes, and its binary, so changes invalidate the shared-build stamp. Tracked inputs under the project root are compared by content hash, including a filelist source that lives there as a symlink into a tree outside it. Inputs the root does not cover are compared by size and mtime instead of being hashed on every validation: the toolchain's own includes and binary, any single input above 64 MB (`compile.hash_skipped_large` names those), and a reported dependency that resolves outside the root, which is how a header symlinked in from a shared tree is recorded. What remains untracked is what a builder never reports: VCS and Icarus emit no dependency file, so a header reached only through `+incdir+` or `-y` is absent from the stamp, and hashing cannot cover an input nothing recorded. Editing such a header can still reuse a stale build.
+Verilator reports consumed headers, library files, its standard includes, and its binary, so changes invalidate the shared-build stamp. Tracked inputs under the project root are compared by content hash, including a filelist source that lives there as a symlink into a tree outside it. Inputs the root does not cover are compared by size and mtime instead of being hashed on every validation: the toolchain's own includes and binary, any single input above 64 MB (`compile.hash_skipped_large` names those), and a reported dependency that resolves outside the root, which is how a header symlinked in from a shared tree is recorded.
 
-Ambient environment variables and undeclared tool inputs are not tracked either. Force a compile with `--rebuild`; dropping `--share-build` does not force one under `--dispatch`, which implies it. `compile.build_dep_changed` explains detected invalidation.
+VCS and Icarus emit no dependency file, and their stamps still record `deps: null`. Include directories are covered for them — and for Verilator — by the stamp's own listing of every `+incdir+` and `-y` directory the filelist names: one entry per regular file, compared the same content-first way. Editing, adding, or removing a file in one of those directories therefore rebuilds on every builder. The listing is also the only thing that notices a file *appearing* in a `-y` library directory, which no dependency file can report: `-y` resolves by module name on demand, so a file that changes the next elaboration was opened by nobody during the last one. It over-approximates on purpose — editing a header nothing includes rebuilds a build that did not strictly need it — because over-invalidating costs a recompile while under-invalidating reports a stale binary as green.
+
+An `+incdir+` is walked **recursively**, because `` `include "nested/deep.svh" `` resolves beneath the directory; a `-y` directory is listed **flat**, because library resolution maps a module name to a file in the directory itself. Neither is filtered by suffix: `+libext+` can be set in `builder-opts.compile-time` and never reach `run.f`, so a filter derived from `run.f` would silently miss the library file that appears with any other suffix. The cost of the walk is a fraction of a second for a few thousand files, but it is paid on every stamp validation, so pointing an `+incdir+` at a large tree makes every reuse check walk it.
+
+Two kinds of name are left out of the walk. **Directories**: dot-directories (`.git`, `.svn`) and RTL Buddy's own managed trees — the suite's `artefacts/`, `.shared-builds/`, and any `obj_dir*`. A project directory genuinely named `artefacts` or `obj_dir*` under an include path is therefore not tracked. **Files**: a denylist of editor and VCS bookkeeping (`.DS_Store`, `.gitignore`, `.gitattributes`, `.gitkeep`, `*.swp`, `*.swo`, `*~`, `.#*`, `#*#`) plus RTL Buddy's own per-test outputs (`run.f`, `compile.log`, `compile.retry.log`, `test.log`, `test.err`, `test.randseed`, `coverage.dat`, `simv`, `simv.vvp`, `rb-compile-stamp.json`, `result.json`, and a dispatched job's `result-*.json` / `rtl_buddy-*.log`). Every other file is listed, dot-prefixed ones included, because `` `include ".config.svh" `` is legal and resolves.
+
+Both exclusions exist for one failure. Everything RTL Buddy writes into an artefact directory is written *after* the fingerprint that would list it, so a listing containing any of it could never validate again: every later run saw a different listing and recompiled, and under `--dispatch` that is every gated simulation job. Pruning the directory covers an `+incdir+` that is an *ancestor* of the artefact tree (`+incdir+.` in a `tests.yaml`, `+incdir+..` from a design directory holding verif suites). Excluding the output names covers an include root that **is** an artefact directory: a `preproc` hook may generate headers into its `artifact_dir`, and the filelist then carries `+incdir+artefacts/<test>` with no `artefacts` component left for the walk to see. **Generated headers under `artefacts/` are tracked** — they are real compile inputs and an edit to one rebuilds; only RTL Buddy's own outputs beside them are skipped.
+
+A simulator's own scratch output in the same directory is not excluded, because its spelling belongs to the tool rather than to RTL Buddy. Pointing an `+incdir+` at a directory a builder writes into is therefore still a way to make every run recompile.
+
+What the listing does not cover: a directory that cannot be read is recorded as untracked, as it was before; a symlinked subdirectory under an `+incdir+` is not descended, which bounds the walk against a link loop; and a header reached by any path no `+incdir+` names is tracked only where a builder reports it — including the common case of an include resolved relative to the including file's own directory, which VCS and Verilator try before the search list, and which therefore stays untracked for the builders with no dependency file.
+
+Ambient environment variables and undeclared tool inputs are not tracked either. Force a compile with `--rebuild`; dropping `--share-build` does not force one under `--dispatch`, which implies it. `compile.build_dep_changed` names a reported dependency that moved and `compile.build_source_changed` a filelist entry, naming the file inside the directory where one is listed.
 
 Concurrent processes populating one shared directory are serialised by an advisory `flock` on `<shared directory>/.rb-build.lock`; a process that has to wait logs `compile.build_lock_wait` and repeats it every few minutes. Two bounds apply. On an NFS mount with `nolock`, `local_lock=flock`, or `local_lock=all`, `flock` is process-local and *succeeds*, so there is no warning and the cross-node guarantee silently does not hold. And the lock file lives inside the directory it guards, so delete a shared build tree between runs, never during one — an `rm -rf` that races a live run leaves the next process locking a fresh inode while the old holder still writes. Where the filesystem cannot lock at all, `compile.build_lock_unavailable` is logged once per directory and the compile proceeds unserialised.
 
+Under `--dispatch slurm` a second run of the same suite does not create that contention in the first place: each build job is named after the suite whose shared-build tree it writes and is submitted with `--dependency=singleton`, so Slurm itself defers it until every earlier job of that name and owner has terminated. An interrupted run's orphaned build job is therefore waited on rather than raced; the waiting job then revalidates the shared build and reuses it if the inputs are unchanged. `dispatch.build_job_deduped` names the job being waited on when the head's `squeue` probe can see it — that probe only supplies the message, the guarantee does not need it, and a probe that fails is not retried for the rest of the run. Four bounds. The name covers the suite directory alone — not the planned tests, the builder mode, or the compile keys, all of which can differ between two runs that still write one `obj_dir_<key>` — so an unrelated run of the same suite makes the second job wait for a build it then rebuilds, costing queue latency. `singleton` is per user, so two *users* building into one shared tree still meet at the lock. And a `--dependency` of your own that uses the any-of separator `?` cannot be composed with (Slurm permits one separator per expression), so the dedup stands down there and records `dispatch.build_dedup_unavailable` at DEBUG — your gate is left exactly as it was. `singleton` is also per cluster where a site sets `DependencyParameters=disable_remote_singleton`: a federation normally resolves it across its clusters, but with that option two invocations routed to different clusters of one federation that shares this filesystem are not serialised against each other — pin a cluster with `-M`, or rely on the `flock` above. A multi-cluster `sbatch-args` selection records that caveat once per run at DEBUG. A gate exported as `SBATCH_DEPENDENCY` counts as yours too: it is folded into the same composition when `sbatch-args` names no dependency of its own, so the build job's `--dependency` never silently replaces it. Two `sbatch-args` flags do not reach the build job for this reason: its `--job-name` and `--dependency` are emitted after your arguments, so you cannot rename a build job (simulation jobs are unaffected) and cannot replace its dependency, only add to it.
+
+A build job that stays `PENDING` after `dispatch.build_job_deduped` is usually waiting exactly as intended, so inspect the job ahead of it before cancelling anything: `squeue -j <ids> -O JobID,State,Reason` on the ids that warning names, or `squeue --name=<job name>` to find them (`dispatch.build_submitted` records the name), or `scontrol show job <id>`. `RUNNING`, or `PENDING` with an ordinary capacity reason (`Resources`, `Priority`), means the wait ends when that build does — cancelling it would discard the build this run is about to reuse and kill the simulation jobs gated on it. Only a predecessor that will not finish deserves `scancel`: held (`JobHeldUser`, `JobHeldAdmin`), unschedulable (`PartitionConfig`, `BadConstraints`), or an abandoned run you no longer want. Nothing times such a job out by default.
+
+Unshared builds are covered by neither mechanism. A suite where no planned test can share a build gets no build job at all (`dispatch.build_job_skipped`) and compiles inside each simulation job, into per-test artefact directories that take no build lock. Within one run those have a single writer, but two concurrent runs of such a suite write the same directories with nothing between them: do not run one twice at once. Interrupting a run also still leaves its jobs on the cluster and a re-run does not attach to them — the dedup makes the re-run's build job wait for the orphaned build, but the orphan's simulation jobs run to completion on their own.
+
 ## The first run after upgrading recompiles every shared build
 
-Build stamps hash content rather than comparing size and mtime, because a stat-only comparison can be answered from an NFS client's stale attribute cache: edit a source on the submit host, revalidate on a compute node inside that node's attribute-cache window, and `stat` still describes the pre-edit file, so the stamp validates and the run reports a PASS for a design it never compiled. Reading content closes that, since close-to-open consistency revalidates on `open()`. Stamps written by an earlier rtl_buddy carry no hashes and cannot validate, so expect one rebuild per build directory after upgrading and none afterwards. That settles only once every host runs the new version: on a partially upgraded cluster — submit host upgraded, compute nodes not — an old node rewrites a hashless stamp that a new one then rejects, so builds keep recompiling until the upgrade reaches every node.
+Build stamps hash content rather than comparing size and mtime, because a stat-only comparison can be answered from an NFS client's stale attribute cache: edit a source on the submit host, revalidate on a compute node inside that node's attribute-cache window, and `stat` still describes the pre-edit file, so the stamp validates and the run reports a PASS for a design it never compiled. Reading content closes that, since close-to-open consistency revalidates on `open()`. Stamps written by an earlier rtl_buddy carry no hashes, and ones written before include directories were listed are silent where a listing is now expected; neither can validate, so expect one rebuild per build directory after upgrading and none afterwards. A directory listing also changes the input digest a dispatched build job records beside a failed compile, so during a partial upgrade a gated simulation job can judge that compile's inputs to have moved and retry it once, even though it would fail the same way. That settles only once every host runs the new version: on a partially upgraded cluster — submit host upgraded, compute nodes not — an old node rewrites a hashless stamp that a new one then rejects, so builds keep recompiling until the upgrade reaches every node.
 
 Content decides from then on: regenerating a file byte-for-byte does not rebuild, and any real edit does. Reuse is also visible — `compile.build_reused` names the reused directory and its stamp's age on the console, and the test's `compile.log` repeats it with the command a rebuild would run, so an absent `compile.log` is no longer the only hint. Use `--rebuild` to compile regardless rather than deleting `artefacts/.shared-builds/` by hand; if you do delete a tree, delete it between runs and not during one, for the locking reason above.
+
+## Check every `toplevel:` before upgrading: it now roots the compile
+
+`toplevel:` used to be inert for a plain SystemVerilog testbench — only the SystemC path, the cocotb path, and `rb graph` / `rb hier` read it, and the schema described it as the "top-level DUT module name". It now reaches the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, so it decides what the simulator elaborates.
+
+A project that took the old wording literally and pointed `toplevel:` at the **DUT** rather than at the testbench therefore compiles a different design after upgrading, and it does so quietly. The observable symptom is a test that used to pass turning into `NA`: the compile succeeds, the simulation runs and exits immediately because the elaborated root contains no `initial` block, and the run ends with `no PASS/FAIL markers found in .../test.log; result is NA` and `test result unknown` in the summary. Nothing in that output names `toplevel:`, so it is worth checking up front. Before upgrading, review every `toplevel:` on a plain SystemVerilog testbench and confirm it names the module the simulator should elaborate — for an SV bench that is the bench itself, not the DUT it instantiates. A DUT with unconnected interface ports fails loudly instead (`%Error-UNSUPPORTED: Interfaced port on top level module`), which is the same mistake with a better error. cocotb and SystemC testbenches need no review: for those, `toplevel:` was already the elaboration root.
+
+Declaring `toplevel:` also shifts the shared-build key once. The flag is part of the compile fingerprint, because it decides which modules are elaborated and what the model is called, so a testbench that gains a top flag gets a new shared-build directory on the first run after upgrading and compiles once more. That is every plain SystemVerilog testbench with a `toplevel:`, plus cocotb on Verilator and Icarus. SystemC and cocotb-on-VCS keys are unchanged: those paths already passed their own top flag, so the plumbing recognises it and adds nothing. Testbenches without a `toplevel:` are unchanged too — the top is not inferred from the testbench `name`, so those builds still elect a top from filelist order and hash exactly as before.
+
+A top pinned in the builder's `compile-time` opts continues to win, in every spelling the family accepts: Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus accepts the module glued to the flag (`-stb`). When the configured top names a different module than `toplevel:`, the run logs `compile.toplevel_conflict` once — naming both tops — and the configured top is used. That holds for SystemC and cocotb testbenches too: those backends generate their own top flag only when the builder pins none, so a configured top is never silently overridden by the generated one. Simulator families other than Verilator, VCS, and Icarus get no top flag at all; `compile.toplevel_family_unsupported` records that at debug level.
 
 ## Yosys-backed flows do not support whitespace in paths
 
 Yosys script parsing is not shell parsing: whitespace splits tokens, `#` starts a comment, and single quotes from `shlex.quote` do not group a path. Keep design and artifact paths for synthesis and FPV free of whitespace. `fpv.yaml` parameter validation also rejects whitespace, `;`, and `#`.
 
 String-valued parameter overrides require SystemVerilog quotes inside the YAML scalar; ordinary numeric values must not be quoted as strings.
+
+## Static-lifetime functions corrupt the netlist under the slang frontend
+
+A `function` or `task` declared without `automatic` outside a class has static lifetime, so all of its call sites share one storage location per formal. yosys-slang models this literally: two calls in one combinational process alias their arguments, and calls split across a combinational and a clocked process leave the shared net with conflicting drivers, which folds to `x` and can drop a register and everything downstream. Simulation is unaffected, so the design can carry the defect indefinitely.
+
+`rb synth` scans the filelist's sources, and the headers they `` `include ``, before Yosys runs, and fails with `frontend: slang` (`static-functions: error`) or warns with the legacy `verilog` frontend, which inlines per call site. Add `automatic` to the declaration. Yosys `multiple conflicting drivers` warnings fail the run unless `conflicting-drivers: allow` is set; a legitimate tristate bus produces the same warning and is not counted. Both gates cover the Yosys elaboration stage, so they apply to the `yosys` and `openroad` backends alike.
+
+**A slang run that passed before can now fail**, including one whose subroutines have a single call site and whose netlist happens to be correct: the scan reports the declaration, not the aliasing. The `error` default is deliberate — the failure it guards is a silently corrupted netlist with plausible area and timing. Set `static-functions: warn` to stage the migration; `static_function_findings` then appears in the machine output of each affected run.
+
+The scan evaluates `` `ifdef `` against exactly the macros Yosys receives: the synth.yaml entry's `defines:` plus what the selected frontend predefines (`SYNTHESIS` and `YOSYS` for `read_verilog`; `SYNTHESIS` and slang's built-ins, but not `YOSYS`, for `read_slang`). `+define+` entries in the generated filelist are **not** applied by `rb synth` — only the simulation flow acts on them — so the scan ignores them too and logs one `synth.filelist_defines_ignored` warning naming what was dropped, what synthesis elaborates with a different value than the filelist asks for, and any bare `+define+X` — valueless macros expand to an empty body under Verilator and `read_verilog` but to `1` under Icarus and slang, so they cannot be compared and are always reported. Move such a macro to `defines:` if synthesis needs it; the underlying divergence between the simulation and synthesis flows predates this gate and is tracked separately. `` `undefineall `` is honoured with the semantics of the frontend in use: slang re-applies the command-line macros after clearing, Yosys's `read_verilog` does not, so the same source can leave a guarded region compiled under one frontend and not the other.
+
+The scan is a tokenizer with a definedness-only preprocessor, and it is imperfect in both directions. It misses declarations produced by macros (macro bodies are skipped at their `` `define ``), the contents of `-y` library directories, and headers whose `` `include `` cannot be resolved (logged at DEBUG). It can also report spuriously, because `` `if `` expressions are not evaluated and scope nesting is tracked by keyword pairing rather than parsed. Add Verible's `explicit-function-lifetime` rule through `rb lint` and `cfg-verible` to cover testbench and non-synthesisable sources. See [Synthesis](concepts/synthesis.md#gate-static-lifetime-subroutines).
 
 ## Unknown synthesis overrides are ignored after a warning
 
@@ -4547,6 +4901,10 @@ A completed routed run reports PASS even with negative slack. Read `timing_met`,
 A merged LCOV `.info` attributes coverage by file, so every module declared in one file receives the same totals. Use the default `--coverage auto` or model artifacts for per-module attribution. Unresolved and re-anchored LCOV paths are reported in the summary.
 
 `--coverage` requires `auto`, `model`, `none`, or a merged `.info` path. `--no-coverage` disables the join.
+
+## A cocotb test over an opted-out model keeps a dangling DUT edge
+
+`models.yaml` `graph: false` withdraws every config-tier edge into the model's hierarchy, but the binding tier's cocotb hop `python_module --binds_to--> module:<toplevel>` is derived from the merged graph and still names the DUT. That id stays in `graph-meta.json`'s `merge.dangling` list, exactly as it does under `--no-design`. Opt out only models that no cocotb test runs against, or give the model a `top:` instead.
 
 ## The viewer distribution and executable have different names
 
@@ -7371,6 +7729,8 @@ cfg-synth-tools:
       frontend: verilog
       plugin-path: ""
       single-unit: false
+      static-functions: error
+      conflicting-drivers: error
 
 cfg-pdks:
   - name: sky130hd
@@ -7395,7 +7755,7 @@ cfg-pnr-platforms:
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, and `single-unit`. OpenROAD additionally accepts `strategy` |
+| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `static-functions`, and `conflicting-drivers`. OpenROAD additionally accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, and `fill-cells`. Paths resolve from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
 | `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer` and `routing-layers.signal`/`.clock` |
@@ -7404,6 +7764,15 @@ cfg-pnr-platforms:
 | `cfg-power-tools` | `name`, `tool` |
 
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` is slang-only and must be a boolean. In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`; unknown keys warn and are ignored, while a non-mapping override or wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
+
+`static-functions` and `conflicting-drivers` are correctness gates on the Yosys elaboration stage, which both the `yosys` and the `openroad` backend use. Omit either option to take its default:
+
+| Option | Values | Default | Behavior |
+|---|---|---|---|
+| `static-functions` | `error`, `warn`, `allow` | `error` with `frontend: slang`, `warn` with `frontend: verilog` | Before Yosys starts, scans the filelist's sources and the headers they `` `include ``, for `function`/`task` declarations with no explicit `automatic` lifetime. `error` fails the run and names each `file:line: function <name>`; `warn` logs one warning per finding and records `static_function_findings` in the result envelope and machine output; `allow` skips the scan |
+| `conflicting-drivers` | `error`, `allow` | `error` | After Yosys exits, fails the run when the log contains Yosys `multiple conflicting drivers` warnings, reporting the count and the log path. Warnings whose drivers are all tristate buffers and module ports are a working multi-driver bus and are not counted |
+
+The scan resolves `` `include `` against the including file's directory and then the filelist's `+incdir+` entries, and evaluates `` `ifdef ``/`` `ifndef ``/`` `elsif ``/`` `else ``/`` `endif `` against exactly the macros Yosys is given: the run's `defines:` plus what the selected frontend predefines — `SYNTHESIS` and `YOSYS` for `read_verilog`, `SYNTHESIS` and slang's built-ins for `read_slang`. Filelist `+define+` entries are excluded because the synthesis flow does not pass them to Yosys either; a run that carries some logs one `synth.filelist_defines_ignored` warning, covering macros synthesis never sees, macros it elaborates with a different value, and bare `+define+X` entries, which cannot be compared because tools disagree about what a valueless macro expands to. The macro table follows `single-unit`: reset per source by default, shared across sources when slang reads them as one compilation unit. `` `undefineall `` follows the frontend too — slang re-applies the command-line macros, `read_verilog` does not. An unrecognized value for either option is fatal. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
 
 ### FPGA tools and platforms
 
@@ -7478,6 +7847,8 @@ cfg-dispatch:
   compile: {cpus: 8, mem: 16G, time: "02:00:00", parallel: 4}
   sbatch-args: [--partition=verif]
   max-jobs-per-array: 200
+  max-array-size: 1001
+  max-array-tasks: 1000
   poll-interval: 10
   progress-interval: 60
   max-wait: 7200
@@ -7503,8 +7874,10 @@ cfg-dispatch:
 | `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`; an integer from YAML sexagesimal parsing is fatal |
 | `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field. It is the only reservation block that takes `parallel`; the key is meaningless in a per-test or per-testbench `resources:` block, or in a suite-level `compile:`, and is discarded there |
 | `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
-| `sbatch-args` | Empty list; appended verbatim and therefore overrides duplicate generated flags |
+| `sbatch-args` | Empty list; appended verbatim and therefore overrides duplicate generated flags. Any argument here that sets the job's cpu request — `-c`/`--cpus-per-task`, or the task/node counts that raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`) — supersedes the resolved `cpus`, so CPU right-sizing falls back to the scheduler's `ReqCPUS` for that run and its `cpus` advice names this key rather than the masked `resources.cpus` / `compile.cpus`. Within one option the last occurrence wins, as it does for sbatch; distinct options combine instead, and the advice then names them all and leaves the combining rule to sbatch rather than claiming a product. Only a lone `-c`/`--cpus-per-task` is offered the suggested value; the task/node counts are told to be decomposed. A direct `--cpus-per-task` override also disables the compile `cpus` floor, which bounds a reservation sbatch never saw; a task or node count leaves that flag in force, so the floor is kept. The `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and `SBATCH_NODES` environment variables count the same way, since the submit inherits them (command line beats environment, and the environment is never sanitized). A GPU count (`--gpus`/`-G`, `--gpus-per-node`, `--gpus-per-socket`, a gpu `--gres`, or their `SBATCH_*` forms) together with `--ntasks-per-gpu` and no `--ntasks` also counts, since sbatch derives the task count from that pair. Node-selection constraints (`--threads-per-core`, `-B`), placement maxima (`--ntasks-per-core`, `--ntasks-per-socket`, and `--ntasks-per-gpu` on its own), `--exclusive` and `SBATCH_CPUS_PER_TASK` are not overrides — the generated `--cpus-per-task` still states the request; `--cpus-per-gpu` is not either, since Slurm rejects it alongside the `--cpus-per-task` every job carries. Two exceptions to "appended last", both on the build job: its `--dependency` is emitted after these and composes the configured expression with the shared-build dedup, and its `--job-name` is emitted after these because that name is what the dedup serialises on — a `--job-name` / `-J` here therefore does not rename the build job (it still renames simulation jobs) |
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
+| `max-array-size` | Unset; the cluster's Slurm `MaxArraySize`, read from `scontrol show config` when unset. Setting it does not suppress the probe: the probe is the only source of `max-array-tasks`, which still applies. Must be at least 2. Slurm's largest array task index is one **below** it, so `1001` allows 1000 elements per array; a resource group larger than that is split across several arrays instead of being refused by sbatch. Set it where the submit host cannot run `scontrol`, or to split groups more finely |
+| `max-array-tasks` | Unset; the cluster's `SchedulerParameters=max_array_tasks`, read from `scontrol show config` when unset. Must be at least 1. Unlike `max-array-size` it is an inclusive **count** of the tasks one array may hold, so `1000` allows 1000 elements. Set it where the submit host cannot run `scontrol` and the cluster caps tasks-per-array below `MaxArraySize`. Each ceiling layers independently — configured value over probed value — and the slice size is the smaller of whichever are known, so this field alone still splits a group when `MaxArraySize` cannot be resolved |
 | `poll-interval` | Positive seconds between backend polls |
 | `progress-interval` | 60; non-negative seconds between console updates; 0 disables console progress |
 | `max-wait` | Unset; positive seconds per collection round. Expiry fails the run and cancels outstanding jobs |
@@ -7569,14 +7942,44 @@ models:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `name` | Required | Model identifier |
+| `name` | Required | Model identifier; must be unique across every `models.yaml`, not only within one, and regardless of `graph:`. Must start with a letter, digit or underscore and contain only letters, digits, underscore, dot or hyphen |
 | `filelist` | Required | Filelist entries resolved from `models.yaml` |
 | `desc` | Required | Human-readable description |
 | `spec` | Optional | `specs.yaml` path for `rb spec`; no simulation effect |
 | `synth` | Optional | Synthesis ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
+| `graph` | Optional | `false` opts the model out of `rb graph build`'s design tier; default `true` |
+| `top` | Optional | Root module of the filelist when it is not named after the model; default `name`. Letters, digits and underscore only (no `$`), and unique across the graphable models `rb graph build` selects |
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
+`top` is the model's root module everywhere rtl_buddy elaborates it, and it is binding, not advisory: a model has one root module, and a model whose name is not a module was already broken in every one of these flows. It roots `rb hier`, `rb hier-query`, and `rb axi-profile`, it roots the `rb graph build` design-tier export, it is the target of the graph's `model --maps_to--> module:` edge, and it is the default top of a `cdc.yaml`, `synth.yaml`, `lint.yaml`, `fpga.yaml`, `fpv.yaml`, or `mut.yaml` run against the model. Only `fpv.yaml` and `mut.yaml` have a `top:` field of their own; where one is set it wins, because a formal checker top lives in the run's own `properties:`. Setting `top` therefore changes artefact names that embed it — the FPGA bitstream is `<top>.bit`, and OpenROAD's design name follows the synthesis top.
+
+Models in a `rb graph build` selection must not collide, and the build refuses either collision before invoking the exporter, naming both models and both `models.yaml` files.
+
+A model name is also a directory name — `artefacts/hier/<name>/`, `artefacts/graph/design/<name>/`, and the per-model directory every flow writes — so it is restricted to a single safe path segment and rejected at load time otherwise. Path separators, absolute paths, `.` and `..` are refused.
+
+`top` is checked at load time too, against a stricter rule: a letter or underscore, then letters, digits or underscore. It does not stay in HDL — the FPGA flows name the bitstream `<top>.bit`, and the Yosys, Vivado and OpenROAD generators interpolate it into Tcl unquoted — so a value carrying a path separator, a newline or a shell or Tcl metacharacter is refused rather than escaped per tool. That is narrower than SystemVerilog allows, deliberately: `$` is legal in an SV identifier but substitutes in Tcl, so `synth_design -top foo$bar` would elaborate a different module than the YAML names; and escaped identifiers (`\name `) can carry `/` and `;`. A top that really needs either has to be renamed, or wrapped in a module whose name does not.
+
+**No two models may share a `name`, opted out or not.** Every per-model artefact path is keyed on it, so two exports overwrite each other in `artefacts/graph/design/<name>/` and `artefacts/hier/<name>/` while the tier reports both as built. Distinct `top:` values do not make that safe, and neither does `graph: false`: a name is also how every selector spells a model — `--model NAME`, a test's `model:`, a back-pointer — so a duplicate shadows the other entry in any lookup by name, silently. Rename one of them. A duplicate within one file is already rejected by the loader; this is the across-files half of the same rule.
+
+**No two models that would both be exported may share a top.** `module:<top>` is a global graph id and DUT ids are never suite-qualified, so two such exports merge into a single hybrid hierarchy rather than staying apart. Give them distinct roots, or set `graph: false` on the one that is not the design of record — an opted-out model is never exported, so it claims no graph id.
+
+Models the build is not selecting are not considered by either rule.
+
+Set `graph: false` for a model with no elaborable root — an SV `interface` published as a library entry, or a filelist of vendored IP with no module named after the model. `rb graph build` then records the model, and every testbench and non-simulation run rooted at it, under the design tier's `skipped` list instead of attempting an export that can only fail, and removes any `artefacts/graph/design/<model>/` a previous build left behind. The config tier still emits the model node, so `spec:` and test cross-references keep resolving; it carries `graph: false` and no `maps_to` edge. The opt-out is design-tier-only: `rb hier`, `rb hier-query`, and `rb axi-profile` still run against the model and still fail if its root does not elaborate. Prefer `top:` when the filelist does elaborate and only the root module name differs.
+
+```yaml
+models:
+  - name: apb_intf
+    desc: APB interface library
+    filelist: [-v apb_intf.sv]
+    graph: false
+  - name: pp_axi
+    desc: Vendored AXI collection
+    filelist: [-F pp_axi.f]
+    top: axi_xbar
+```
+
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. Only the simulation flow acts on that include path: the synthesis, CDC, and FPGA flows drop `+incdir+` entries when they read the generated filelist back, so a header those flows must see needs a search path configured for them instead (see [FPGA Implementation](../concepts/fpga.md)). `rb synth` likewise drops `+define+` entries and passes only the synth.yaml entry's `defines:`; it warns when the filelist carries macros it is not applying. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
 
 ## tests.yaml
 
@@ -7618,7 +8021,7 @@ Testbench fields:
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
 | `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`; inherited by tests |
-| `toplevel` | Required for cocotb | DUT top passed as `COCOTB_TOPLEVEL` |
+| `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Passed to the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Not defaulted to `name` |
 | `cocotb.module` | Required for cocotb | Python module name or list passed as `COCOTB_TEST_MODULES` |
 
 Test fields:
@@ -7649,6 +8052,14 @@ Test fields:
 Builder precedence is CLI `--builder`, test `builder`, suite `builder`, then the active platform default. A `reglvl` map resolves against the effective builder.
 
 Coverage processing uses the platform-selected builder unless `--builder` is supplied. If a suite or test overrides the builder, use `--builder` for coverage runs to keep simulation and coverage family selection consistent.
+
+<a id="pinning-the-elaboration-top"></a>
+
+A testbench `toplevel:` roots the compile at that module: it is passed as Verilator `--top-module`, VCS `-top`, or Icarus `-s`. Without one, the simulator elects a top from filelist order: Verilator takes the first ordinary (non-`-v`) entry, so recomposing a model filelist renames the model and every emitted C++ file, and an ordinary input carrying a module nothing instantiates fails the build with `MULTITOP`. Declaring `toplevel:` fixes both, and a testbench missing from the composed filelist then fails at compile instead of silently producing a differently-named model. It is not defaulted to the testbench `name`, which is a config label rather than a module.
+
+For a plain SystemVerilog testbench, `toplevel:` names the **testbench**, not the DUT it instantiates. A `toplevel:` left over from when the field was only graph metadata and points at the DUT will compile and run, and report `NA`; see [Known Issues](../known-issues.md).
+
+A top pinned in the builder's `compile-time` opts wins over `toplevel:`, in any spelling the family accepts — Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus accepts the module glued to the flag (`-stb`). A disagreement between the two logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb testbenches follow the same rule: those backends emit their own top flag only when the builder pins none. Families other than Verilator, VCS, and Icarus get no top flag. The flag is part of the compile fingerprint, so two testbenches over one model with different `toplevel:` no longer share a build.
 
 Cocotb supports Verilator, Icarus, and VCS. `cocotb` must be installed and `cocotb-config` available; unsupported families or a missing `toplevel` are fatal. rtl_buddy reads `cocotb_results.xml`; cocotb tests do not need PASS/FAIL console markers.
 
@@ -7684,7 +8095,7 @@ syntheses:
 | `platform` | Optional | `cfg-synth-platforms` entry; enables technology mapping |
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF/Liberty files appended after platform data |
 | `reglvl` | Optional | Regression level |
-| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit` |
+| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `static_functions`, `conflicting_drivers` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry; CLI `--effort` wins |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 

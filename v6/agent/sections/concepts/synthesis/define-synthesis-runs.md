@@ -27,6 +27,6 @@ syntheses:
     reglvl: 0
 ```
 
-Paths resolve from `synth.yaml`. `model` is also the synthesis top. `platform` enables Liberty mapping; the OpenROAD backend additionally requires LEF assets.
+Paths resolve from `synth.yaml`. The synthesis top is the model's root module — its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping; the OpenROAD backend additionally requires LEF assets.
 
 Use `lef-paths` and `lib-paths` for block-specific hard macros. Use `tool_overrides` only for backend options that have no portable equivalent. See [YAML Formats: synth.yaml](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#synthyaml) for all fields.

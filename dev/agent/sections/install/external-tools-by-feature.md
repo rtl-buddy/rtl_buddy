@@ -3,7 +3,7 @@
 | Workflow | Required tools | Notes |
 | --- | --- | --- |
 | `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
-| Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` recommended | Requires a Linux submit host and shared filesystem. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
+| Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Requires a Linux submit host and shared filesystem. `sacct` supplies right-sizing telemetry; `scontrol` supplies `MaxArraySize`, without which a resource group too large for one job array is not split — set `cfg-dispatch.max-array-size` instead. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
 | `synth`, `synth-regression` | [rtl-buddy Yosys fork](https://github.com/rtl-buddy/yosys); OpenROAD for `tool: openroad` | See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#install-the-tools). |
 | `pnr`, `power` | OpenROAD 25Q1 or newer | KLayout is optional for P&R GDS and PNG output. |

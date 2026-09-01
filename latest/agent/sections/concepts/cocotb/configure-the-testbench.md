@@ -27,4 +27,4 @@ Select the simulator as for any other test:
 rb --builder icarus test cocotb_smoke
 ```
 
-Unsupported simulator families and a missing `toplevel:` are fatal configuration errors. See [Tests YAML](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#testsyaml) for the complete schema and [Simulation Backends](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/simulators/) for backend differences.
+Unsupported simulator families and a missing `toplevel:` are fatal configuration errors. `toplevel:` becomes `COCOTB_TOPLEVEL` and also roots the compile — Verilator `--top-module`, VCS `-top`, Icarus `-s` — unless the builder's `compile-time` opts already pin a top. See [Tests YAML](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#testsyaml) for the complete schema and [Simulation Backends](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/simulators/) for backend differences.
