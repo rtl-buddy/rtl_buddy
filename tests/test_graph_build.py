@@ -2481,6 +2481,125 @@ def test_narrowing_an_all_opted_out_build_refreshes_the_skipped_list(
     assert build_graph(graph_project, models=only_a, **common).unchanged is True
 
 
+def _out_of_tree_model(project: Path, *, top: str) -> None:
+    """A models.yaml outside ``design/``, reached only via a suite.
+
+    The shape a `--regression` selection can produce: a test's
+    ``model_path:`` may point anywhere, and the config tier only walks
+    ``--design-dir`` for models.yaml — so this file is hashed by nothing.
+    """
+    vendor = project / "vendor" / "pp"
+    vendor.mkdir(parents=True, exist_ok=True)
+    (vendor / "pp.sv").write_text("module pp_top (input logic clk);\nendmodule\n")
+    (vendor / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "pp_axi"\n'
+        '    desc: "vendored collection"\n'
+        '    filelist: ["pp.sv"]\n'
+        f'    top: "{top}"\n'
+    )
+    suite = project / "verif" / "vendor"
+    suite.mkdir(parents=True, exist_ok=True)
+    (suite / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        '  - name: "tb_vendor"\n'
+        "    filelist: []\n"
+        "tests:\n"
+        '  - name: "t_vendor"\n'
+        '    desc: "vendor smoke"\n'
+        "    reglvl: 0\n"
+        '    model: "pp_axi"\n'
+        '    model_path: "../../vendor/pp/models.yaml"\n'
+        '    testbench: "tb_vendor"\n'
+    )
+    reg = project / "regression.yaml"
+    if "verif/vendor/tests.yaml" not in reg.read_text():
+        reg.write_text(reg.read_text() + "  - verif/vendor/tests.yaml\n")
+
+
+def test_editing_top_alone_reroots_a_model_no_tier_hashes(
+    graph_project: Path, tmp_path: Path
+):
+    """`top:` is part of a selected model's fingerprint identity.
+
+    A models.yaml under ``--design-dir`` is hashed by the config tier, so
+    editing it invalidates the cache whatever changed. One reached only
+    through a test's ``model_path:`` is hashed by nothing — the design
+    tier hashes the model's *sources*, and `top:` is not one of them. So
+    re-rooting such a model moved no input, the fingerprint matched, and
+    the build served a cached graph rooted at the old module.
+    """
+    _out_of_tree_model(graph_project, top="pp_top")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+        tb=False,
+        flow_tops=False,
+    )
+
+    def _build() -> "graph_build.GraphBuild":
+        models = graph_build.models_from_regression(graph_project / "regression.yaml")
+        return build_graph(graph_project, models=models, **common)
+
+    first = _build()
+    assert "module:pp_top" in _nodes(json.loads(first.graph_path.read_text()))
+    # The premise: nothing hashes that file, so only the selection can
+    # notice the edit.
+    hashed = {entry["path"] for report in first.tiers for entry in report.inputs}
+    assert "vendor/pp/models.yaml" not in hashed
+    # ...and an untouched re-run is still a no-op.
+    assert _build().unchanged is True
+
+    models_yaml = graph_project / "vendor" / "pp" / "models.yaml"
+    models_yaml.write_text(models_yaml.read_text().replace("pp_top", "pp_alt"))
+
+    second = _build()
+    assert second.unchanged is False
+    assert second.fingerprint != first.fingerprint
+    nodes = _nodes(json.loads(second.graph_path.read_text()))
+    assert "module:pp_alt" in nodes and "module:pp_top" not in nodes
+    assert _build().unchanged is True
+
+
+def test_opting_an_unhashed_model_out_also_moves_the_fingerprint(
+    graph_project: Path, tmp_path: Path
+):
+    """The `graph:` flag rides in the same identity.
+
+    Membership would in fact catch it — the model leaves the exported set
+    and gains a skip record — but the declaration is what changed, so it
+    is pinned on the declaration.
+    """
+    _out_of_tree_model(graph_project, top="pp_top")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+        tb=False,
+        flow_tops=False,
+    )
+
+    def _build() -> "graph_build.GraphBuild":
+        models = graph_build.models_from_regression(graph_project / "regression.yaml")
+        return build_graph(graph_project, models=models, **common)
+
+    first = _build()
+    models_yaml = graph_project / "vendor" / "pp" / "models.yaml"
+    models_yaml.write_text(models_yaml.read_text() + "    graph: false\n")
+
+    second = _build()
+    assert second.unchanged is False
+    assert second.fingerprint != first.fingerprint
+    design = next(t for t in second.tiers if t.tier == DESIGN_TIER)
+    assert design.skipped == [{"model": "pp_axi", "reason": graph_build.GRAPH_OPT_OUT}]
+    assert "module:pp_top" not in _nodes(json.loads(second.graph_path.read_text()))
+
+
 def test_tier_flags_are_part_of_the_fingerprint_even_with_nothing_to_hash(
     graph_project: Path, tmp_path: Path
 ):

@@ -882,14 +882,25 @@ def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
 
 
 def _model_ident(project_root: Path, model: ModelConfig) -> str:
-    """Repo-relative identity of a model — ``<models.yaml>#<name>``.
+    """A model's whole design-tier identity, for the build fingerprint.
 
-    The fingerprint's counterpart to :func:`_model_key`, which keys on an
+    ``<models.yaml>#<name> top=<root module> graph=<bool>``. The
+    fingerprint's counterpart to :func:`_model_key`, which keys on an
     absolute realpath and so cannot go into a hash that has to reproduce
     across checkouts and machines.
+
+    The *declaration* is part of the identity, not just where it lives.
+    A models.yaml under ``--design-dir`` is hashed by the config tier, so
+    editing it moves the fingerprint anyway — but one reached only
+    through a test's ``model_path:`` (a ``--regression`` selection can
+    name a model anywhere) is hashed by nothing. The design tier hashes
+    the model's *sources*, and neither ``top:`` nor ``graph:`` changes
+    those. Without them here, re-rooting such a model left the
+    fingerprint untouched and ``graph build`` served a cached graph
+    rooted at the module the model used to name (#479).
     """
     rel = rel_path(project_root, model.path) if model.path else "?"
-    return f"{rel}#{model.name}"
+    return f"{rel}#{model.name} top={model.get_top()} graph={bool(model.graph)}"
 
 
 def _claimants(project_root: Path, models: list[ModelConfig]) -> str:
@@ -1712,12 +1723,19 @@ def build_graph(
     # records are part of what the sidecar reports, so they are part of
     # what makes it stale. Identities are repo-relative, so the
     # fingerprint still reproduces across checkouts.
+    #
+    # `models` covers every *selected* model, opted out or not, and each
+    # entry carries its `top:` and `graph:`. Membership alone would in
+    # fact catch an opt-out — the model leaves the exported set and gains
+    # a skip record, and both are here — but that leans on two derived
+    # lists agreeing, where the declaration itself is the thing that
+    # changed. `top:` has no such indirect route at all.
     selection = {
         DESIGN_TIER: {
             "enabled": design,
             "tb": tb,
             "flow_tops": flow_tops,
-            "models": sorted(_model_ident(root, m) for m in graphable),
+            "models": sorted(_model_ident(root, m) for m in models),
             "testbenches": sorted(t.label for t in tb_targets),
             "flow_runs": sorted(t.label for t in run_targets),
             "skipped": sorted(
