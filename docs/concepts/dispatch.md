@@ -262,6 +262,8 @@ A **retry** is a fresh `sbatch` from whatever environment the process holds by t
 
 Retries are also per run, so a test whose seeds did not all retry can end up with runs submitted under different requests. Efficiency is the peak across every run, and one `Reserved` and one `Field` cannot describe two reservations, so the `cpus` row for such a test is **withheld** and `rightsize.cpus_advice_withheld` records it with reason `mixed-cpu-requests` — the same answer `parallel-utilization-ambiguous` gives the build job. `mem` and `time` advice is unaffected, since no cpu argument moves those reservations.
 
+One **combination** counts even though neither half does alone. sbatch documents a second mode for `--ntasks-per-gpu`: "specify the GPUs wanted (e.g. via `--gpus` or `--gres`) without specifying `--ntasks`, and the total task count will be automatically determined". So a GPU count (`--gpus` / `-G`, `--gpus-per-node`, `--gpus-per-socket`, or a `--gres` that asks for gpus) together with `--ntasks-per-gpu`, and no `--ntasks` anywhere, derives *gpus × ntasks-per-gpu* tasks — a task-count override exactly like `--ntasks`. Both halves may come from `sbatch-args` or from `SBATCH_*`, and the advice names the pair, since neither argument alone caused it. With `--ntasks` present the derivation runs the other way (it sets the GPU count instead) and `--ntasks` is already an override, so the pair is not reported.
+
 All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: each distinct option is reported, because they combine rather than supersede one another.
 
 The set is deliberately narrow, because a false positive is not free — it discards a request rtl_buddy knows, retargets the edit hint away from the field that really governs, and disables the compile floor. Four near misses are excluded:
@@ -269,7 +271,7 @@ The set is deliberately narrow, because a false positive is not free — it disc
 - `--exclusive` and `--overcommit` change what is *allocated*, not what is requested, so `ReqCPUS` still describes the reservation.
 - `--threads-per-core` and `-B` / `--extra-node-info` are **node-selection constraints**: they restrict which nodes and hardware threads may be used, while the generated `--cpus-per-task` still states the request. rtl_buddy therefore still knows it, and keeps using it.
 - `--ntasks-per-core` and `--ntasks-per-socket` are **placement maxima** ("request the maximum ntasks be invoked on each core/socket … meant to be used with the `--ntasks` option"): they cap where the tasks `--ntasks` asked for may land, and a lone one requests nothing. The `--ntasks` they accompany is in the set, so a real task-count change is still caught.
-- `--cpus-per-gpu` is documented as mutually exclusive with `--cpus-per-task`, which every dispatched job carries, so sbatch rejects the pair. A job submitted that way never runs, and there is nothing to right-size. `--ntasks-per-gpu` is left out on the same conservative footing: it only takes effect beside a GPU request (`--gpus` / `--gres`) that rtl_buddy neither generates nor tracks.
+- `--cpus-per-gpu` is documented as mutually exclusive with `--cpus-per-task`, which every dispatched job carries, so sbatch rejects the pair. A job submitted that way never runs, and there is nothing to right-size. `--ntasks-per-gpu` is left out of the table on its own, since alone it caps placement without requesting anything — but it is not ignored: see below.
 
 Where such an argument or variable is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names what was responsible.
 
@@ -283,21 +285,24 @@ the whole-job cpu count.
 
 `suggested` is always the whole-job cpu count, but only one shape of override can be handed it: **exactly one `--cpus-per-task`**, as above. The other two shapes cannot, and the note says so rather than giving advice that would not apply.
 
-A lone task or node count is not a cpu count — writing 3 into `--ntasks` asks for three tasks, not three cpus:
+A lone task or node count is not a cpu count — writing 3 into `--ntasks` asks for three tasks, not three cpus — and it does not supersede the per-task field either: the generated `--cpus-per-task` is still in force, so both are levers and the note names both:
 
 ```
-sbatch-args supersedes tests[name=wr_single].resources.cpus: `--ntasks=4`
-raises this job's cpu request rather than stating it. Suggested value is the
-whole-job cpu count — that argument does not take it, so work out the
-reservation that reaches it yourself.
+`--ntasks=4` multiplies this job's cpu request: the generated --cpus-per-task
+from tests[name=wr_single].resources.cpus still applies, so the request is 8
+per task x 4 tasks. Suggested value is the whole-job cpu count — lower
+tests[name=wr_single].resources.cpus, the task count in sbatch-args, or both;
+no single one of them takes it.
 ```
+
+The `8 per task x 4 tasks` clause is an observation — the scheduler's own request over the flag the head submitted — and is omitted when that division is not exact.
 
 Where several arguments are present they combine by sbatch's own precedence, which the note does **not** attempt to reproduce — with `--ntasks=8 --nodes=2 --ntasks-per-node=4 --cpus-per-task=2` the request is 16, not the product of all four, because `--ntasks` wins and `--ntasks-per-node` degrades to a maximum. The note names them and leaves the arithmetic to the reader, who is the only party that knows which one should shrink:
 
 ```
 sbatch-args supersedes tests[name=wr_single].resources.cpus: `--ntasks=4` and
-`--cpus-per-task=2` set this job's cpu request together. Suggested value is the
-whole-job cpu count — decompose it across those arguments per sbatch's own
+`--cpus-per-task=2` set this job's cpu request together. Suggested value is
+the whole-job cpu count — decompose it across them per sbatch's own
 precedence; no single one of them takes it.
 ```
 

@@ -12,6 +12,7 @@ import pytest
 from rtl_buddy.config.dispatch import RightsizeConfigFile
 from rtl_buddy.dispatch.rightsize import (
     RightsizeFinding,
+    _override_note,
     analyze_build_reservation,
     analyze_suite_reservations,
     format_mem,
@@ -2479,3 +2480,75 @@ def test_mem_and_time_advice_survive_a_mixed_cpu_request():
         }
     findings = _analyze(rows, root_config_path="root_config.yaml")
     assert {f.resource for f in findings} == {"mem", "time"}
+
+
+def test_a_gpu_derived_task_count_reads_as_a_task_count_override():
+    """The pair multiplies the generated per-task cpus, like `--ntasks`.
+
+    So the compile floor survives, the per-task field stays a lever, and
+    the note names both halves — neither argument alone did this, and
+    pointing at one would send a reader to half the cause (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 2 gpus x 2 tasks-per-gpu x the generated 2
+                "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 2, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=2,
+            cpus_override=["--gpus=2", "--ntasks-per-gpu=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "8"
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), above the floor of 2
+    note = cpu.edit_hint["note"]
+    assert "`--gpus=2` and `--ntasks-per-gpu=2` multiply this job's cpu request" in note
+    assert "the generated --cpus-per-task from cfg-dispatch.compile.cpus" in note
+    # It multiplies, so it must not read as a direct replacement.
+    assert "change it there" not in note
+
+
+def test_the_documented_note_examples_are_the_notes_actually_emitted():
+    """docs/concepts/dispatch.md quotes these verbatim; keep them true.
+
+    The examples drifted twice while the wording was being corrected, and a
+    reader who trusts a stale one is told to edit the wrong field — the
+    same class of unappliable guidance #505 is about (#505 review).
+    """
+    from pathlib import Path
+
+    import rtl_buddy
+
+    docs = (
+        Path(rtl_buddy.__file__).resolve().parents[2]
+        / "docs"
+        / "concepts"
+        / "dispatch.md"
+    )
+    if not docs.is_file():  # pragma: no cover - installed without the docs tree
+        pytest.skip("docs tree not present next to the package")
+    text = docs.read_text()
+    masked = "tests[name=wr_single].resources.cpus"
+
+    for args, per_task, tasks in [
+        (["--cpus-per-task=4"], None, None),
+        (["--ntasks=4"], 8, 4),
+        (["--ntasks=4", "--cpus-per-task=2"], None, None),
+    ]:
+        note = _override_note(args, masked, per_task=per_task, tasks=tasks)
+        # The docs wrap these into a fenced block, so compare word streams.
+        assert " ".join(note.split()) in " ".join(text.split()), note

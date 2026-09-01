@@ -495,10 +495,10 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
 #   meant to be used with the --ntasks option"): they cap where the tasks
 #   `--ntasks` asked for may land, and a lone one requests nothing. The
 #   `--ntasks` they accompany is in this set, so a real task-count change is
-#   still caught. `--ntasks-per-gpu` is left out on the same conservative
-#   footing: it only takes effect beside a GPU request (`--gpus`/`--gres`)
-#   that rtl-buddy neither generates nor tracks, so on its own it moves no
-#   cpu request (#505 review).
+#   still caught. `--ntasks-per-gpu` is left out of THIS table on the same
+#   footing — on its own it moves no cpu request — but it is not simply
+#   ignored: paired with a GPU count and no `--ntasks` it derives the task
+#   count, which `_gpu_derived_task_count` below picks up (#505 review).
 #
 # Keyed by the long form, valued by the short one, because the two are the
 # SAME option: `[-c 4, --cpus-per-task=8]` is one option written twice (the
@@ -573,6 +573,67 @@ _CPU_REQUEST_ENV_VARS = {
 }
 
 
+# `--ntasks-per-gpu` is a placement cap on its own (see above), but sbatch
+# documents a second mode for it: "specify the GPUs wanted (e.g. via --gpus
+# or --gres) without specifying --ntasks, and the total task count will be
+# automatically determined". So a GPU count and `--ntasks-per-gpu` in the
+# same verbatim `sbatch-args` list, with no `--ntasks` anywhere, derives
+# tasks = gpus x ntasks-per-gpu — a task-count override exactly like
+# `--ntasks`, and one the generated `--cpus-per-task` is then multiplied by
+# (#505 review).
+#
+# `--gpus-per-task` is absent deliberately: sbatch documents it as mutually
+# exclusive with `--ntasks-per-gpu`, so that pair never runs.
+_GPU_COUNT_OPTS = {
+    "--gpus": "-G",
+    "--gpus-per-node": None,
+    "--gpus-per-socket": None,
+    # Only when it actually asks for gpus — `--gres=gpu:2`, not `--gres=fs:1`.
+    "--gres": None,
+}
+_GPU_COUNT_ENV_VARS = {
+    "SBATCH_GPUS": "--gpus",
+    "SBATCH_GPUS_PER_NODE": "--gpus-per-node",
+    "SBATCH_GPUS_PER_SOCKET": "--gpus-per-socket",
+    "SBATCH_GRES": "--gres",
+}
+_NTASKS_PER_GPU_OPT = {"--ntasks-per-gpu": None}
+_NTASKS_PER_GPU_ENV_VAR = "SBATCH_NTASKS_PER_GPU"
+
+
+def _gpu_derived_task_count(sbatch_args, env) -> dict[str, str]:
+    """The ``--gpus`` + ``--ntasks-per-gpu`` pair, when it sets the tasks.
+
+    Both halves may come from either source, since sbatch reads both.
+    Returns them together — the note has to name the pair, because neither
+    argument alone did this and pointing at one of them would send a reader
+    to a setting that is only half the cause.
+    """
+    per_gpu = _scan_options(sbatch_args, _NTASKS_PER_GPU_OPT)
+    if not per_gpu:
+        value = (env.get(_NTASKS_PER_GPU_ENV_VAR) or "").strip()
+        if value:
+            per_gpu = {"--ntasks-per-gpu": f"{_NTASKS_PER_GPU_ENV_VAR}={value}"}
+    if not per_gpu:
+        return {}
+    gpus = _scan_options(sbatch_args, _GPU_COUNT_OPTS)
+    # `--gres` carries many resource kinds; only a gpu one counts.
+    gres = _scan_options(sbatch_args, {"--gres": None}, value_must_contain="gpu")
+    gpus = {k: v for k, v in gpus.items() if k != "--gres"} | gres
+    for var, option in _GPU_COUNT_ENV_VARS.items():
+        value = (env.get(var) or "").strip()
+        if not value or option in gpus:
+            continue
+        if option == "--gres" and "gpu" not in value.lower():
+            continue
+        gpus[option] = f"{var}={value}"
+    if not gpus:
+        # A lone `--ntasks-per-gpu` requests nothing: it caps placement of
+        # tasks something else asked for. Round 10's exclusion stands.
+        return {}
+    return {**gpus, **per_gpu}
+
+
 def cpu_request_overrides(sbatch_args, env=None) -> list[str]:
     """Everything that supersedes the cpus reservation the head resolved.
 
@@ -599,6 +660,12 @@ def cpu_request_overrides(sbatch_args, env=None) -> list[str]:
         if not value or option in found:
             continue
         found[option] = f"{var}={value}"
+    # ...and the one combination that derives a task count rather than
+    # stating it. Only when nothing states one: with `--ntasks` present
+    # sbatch reads `--ntasks-per-gpu` the other way round, as the GPU count
+    # to satisfy, and `--ntasks` is already in `found` (#505 review).
+    if "--ntasks" not in found:
+        found.update(_gpu_derived_task_count(sbatch_args, env))
     return list(found.values())
 
 
@@ -647,31 +714,49 @@ def _scan_cpu_request_args(sbatch_args) -> dict[str, str]:
     apply sbatch's command-line-beats-environment precedence per option
     without re-parsing what this already worked out.
     """
+    return _scan_options(sbatch_args, _CPU_REQUEST_OPTS)
+
+
+def _scan_options(sbatch_args, long_to_short, *, value_must_contain=None):
+    """Match one table of sbatch options against a verbatim argument list.
+
+    Handles every spelling sbatch's getopt takes: ``--long=value``,
+    ``--long value``, ``-x value`` and ``-x4``. ``value_must_contain``
+    narrows a match to values mentioning a substring, which is how
+    ``--gres`` is counted only when it asks for gpus.
+    """
     args = list(sbatch_args or [])
+    short_to_long = {short: long for long, short in long_to_short.items() if short}
     # Insertion-ordered by first appearance; re-assignment keeps that
     # position, so a repeated option stays where it was first written and
     # carries its last value.
     found: dict[str, str] = {}
+
+    def keep(value):
+        return value_must_contain is None or value_must_contain in (value or "").lower()
+
     for index, arg in enumerate(args):
-        if arg in _CPU_REQUEST_OPTS or arg in _CPU_REQUEST_SHORT_TO_LONG:
+        if arg in long_to_short or arg in short_to_long:
             # Value-in-the-next-argument form. A trailing flag with no value
             # is malformed sbatch input, but it is still an override of
             # intent, and sbatch — not right-sizing — is where it should be
             # reported.
             following = args[index + 1 : index + 2]
-            canonical = _CPU_REQUEST_SHORT_TO_LONG.get(arg, arg)
+            if following and not keep(following[0]):
+                continue
+            canonical = short_to_long.get(arg, arg)
             found[canonical] = f"{arg} {following[0]}" if following else arg
             continue
-        for long in _CPU_REQUEST_OPTS:
-            if arg.startswith(f"{long}="):
+        for long in long_to_short:
+            if arg.startswith(f"{long}=") and keep(arg.split("=", 1)[1]):
                 found[long] = arg
                 break
         else:
-            for short, long in _CPU_REQUEST_SHORT_TO_LONG.items():
+            for short, long in short_to_long.items():
                 # `-c4`/`-n4`, and `-c=4` defensively. A numeric value is
                 # required, so an unrelated `-cfoo` is not matched.
                 value = arg[len(short) :].lstrip("=") if arg.startswith(short) else ""
-                if value and value[0].isdigit():
+                if value and value[0].isdigit() and keep(value):
                     found[long] = arg
                     break
     return found

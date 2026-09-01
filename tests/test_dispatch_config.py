@@ -946,3 +946,97 @@ def test_the_args_only_scanner_ignores_the_environment(monkeypatch):
     """`sbatch_args_cpu_request_options` stays what its name says."""
     monkeypatch.setenv("SBATCH_NTASKS", "4")
     assert sbatch_args_cpu_request_options([]) == []
+
+
+# ---- #505 review: a GPU count + --ntasks-per-gpu derives the task count
+
+
+@pytest.mark.parametrize(
+    "args,env,expected",
+    [
+        # sbatch: "specify the GPUs wanted (e.g. via --gpus or --gres)
+        # without specifying --ntasks, and the total task count will be
+        # automatically determined" — so this pair asks for 4 tasks.
+        (["--gpus=2", "--ntasks-per-gpu=2"], {}, ["--gpus=2", "--ntasks-per-gpu=2"]),
+        (["-G", "2", "--ntasks-per-gpu=2"], {}, ["-G 2", "--ntasks-per-gpu=2"]),
+        (["-G2", "--ntasks-per-gpu", "2"], {}, ["-G2", "--ntasks-per-gpu 2"]),
+        (
+            ["--gres=gpu:2", "--ntasks-per-gpu=2"],
+            {},
+            ["--gres=gpu:2", "--ntasks-per-gpu=2"],
+        ),
+        (
+            ["--gpus-per-node=2", "--ntasks-per-gpu=2"],
+            {},
+            ["--gpus-per-node=2", "--ntasks-per-gpu=2"],
+        ),
+        (
+            ["--gpus-per-socket=1", "--ntasks-per-gpu=2"],
+            {},
+            ["--gpus-per-socket=1", "--ntasks-per-gpu=2"],
+        ),
+        # Either half may come from the environment; sbatch reads both.
+        (
+            [],
+            {"SBATCH_GPUS": "2", "SBATCH_NTASKS_PER_GPU": "2"},
+            ["SBATCH_GPUS=2", "SBATCH_NTASKS_PER_GPU=2"],
+        ),
+        (
+            ["--gpus=2"],
+            {"SBATCH_NTASKS_PER_GPU": "2"},
+            ["--gpus=2", "SBATCH_NTASKS_PER_GPU=2"],
+        ),
+        (
+            [],
+            {"SBATCH_GRES": "gpu:2", "SBATCH_NTASKS_PER_GPU": "2"},
+            ["SBATCH_GRES=gpu:2", "SBATCH_NTASKS_PER_GPU=2"],
+        ),
+    ],
+)
+def test_a_gpu_count_with_ntasks_per_gpu_is_a_task_count_override(args, env, expected):
+    """Neither half does this alone, so the advice has to name the pair.
+
+    Without it the row records the generated per-task cpus as the whole-job
+    request while the job actually asked for four times that, overstating
+    efficiency fourfold and suppressing real reduction advice (#505 review).
+    """
+    assert cpu_request_overrides(args, env) == expected
+
+
+@pytest.mark.parametrize(
+    "args,env",
+    [
+        # Round 10/11 stands: alone it caps placement and requests nothing.
+        (["--ntasks-per-gpu=2"], {}),
+        ([], {"SBATCH_NTASKS_PER_GPU": "2"}),
+        # A GPU count with no --ntasks-per-gpu derives no tasks either.
+        (["--gpus=2"], {}),
+        (["--gres=gpu:2"], {}),
+        ([], {"SBATCH_GPUS": "2"}),
+        # `--gres` carries many resource kinds; only a gpu one can pair.
+        (["--gres=fs:lustre", "--ntasks-per-gpu=2"], {}),
+        ([], {"SBATCH_GRES": "bandwidth:lustre:1", "SBATCH_NTASKS_PER_GPU": "2"}),
+        # Mutually exclusive with --ntasks-per-gpu, so that pair never runs.
+        (["--gpus-per-task=1", "--ntasks-per-gpu=2"], {}),
+    ],
+)
+def test_a_half_pair_derives_no_task_count(args, env):
+    assert cpu_request_overrides(args, env) == []
+
+
+@pytest.mark.parametrize(
+    "args,env",
+    [
+        (["--gpus=2", "--ntasks-per-gpu=2", "--ntasks=8"], {}),
+        (["--gpus=2", "--ntasks-per-gpu=2"], {"SBATCH_NTASKS": "8"}),
+    ],
+)
+def test_an_explicit_ntasks_reverses_the_derivation(args, env):
+    """With `--ntasks` given, `--ntasks-per-gpu` sets the GPU count instead.
+
+    The task count then comes from `--ntasks`, which is already an
+    override — so the pair must not be reported on top of it.
+    """
+    found = cpu_request_overrides(args, env)
+    assert [f for f in found if "ntasks-per-gpu" in f.lower()] == []
+    assert any(f.endswith("8") for f in found)
