@@ -752,3 +752,52 @@ def test_power_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
     assert isinstance(res, PowerFailResults)
     assert "could not parse Total line" in res.results["desc"]
     assert not report.exists()
+
+
+def test_power_missing_input_without_openroad_is_a_config_error(tmp_path, monkeypatch):
+    """`_write_script` is where this flow validates its configuration. Running
+    it after the availability check reported a missing SDC as "openroad not
+    found" on a box that merely lacks the tool, and left the previous report
+    in place after a failed run (#469)."""
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    stale = Path(backend.artefact_dir) / "power.rpt"
+    stale.write_text("Total 1.0e-03 2.0e-03 3.0e-04 3.3e-03 100.0%\n")
+
+    # No SDC, and no OpenROAD either.
+    backend._resolve_inputs = lambda: {
+        "netlist": str(tmp_path / "synth_netlist.v"),
+        "odb": None,
+        "sdc": None,
+        "top": "demo_top",
+    }
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: None)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "script generation error" in res.results["desc"]
+    assert "constraints (SDC path) is required" in res.results["desc"]
+    assert not stale.exists()
+
+
+def test_power_valid_config_without_openroad_keeps_the_report(tmp_path, monkeypatch):
+    """The no-deletion behaviour survives for a genuinely valid config: a box
+    without OpenROAD never ran it, so it must not delete a report a box that
+    has it produced (#469)."""
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    kept = Path(backend.artefact_dir) / "power.rpt"
+    kept.write_text("Total 1.0e-03 2.0e-03 3.0e-04 3.3e-03 100.0%\n")
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: None)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "not found" in res.results["desc"]
+    assert kept.exists()

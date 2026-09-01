@@ -1288,3 +1288,50 @@ def test_owned_ledger_ignores_the_pre_namespace_flat_format(tmp_path):
 
     assert read_owned_ledger(tmp_path, "fpga-openxc7") == set()
     assert read_owned_ledger(tmp_path, "pnr-openroad") == set()
+
+
+def test_owned_ledger_retires_a_claim_once_the_leftover_is_cleared(tmp_path):
+    """A claim is a one-shot licence to clear, not a permanent title. An FPGA
+    run once topped `graph` must be able to clear the `graph.json` it left
+    behind — but once that is done the name is retired, so the file `rb graph`
+    later writes at its own protected path is not treated as this flow's
+    history and deleted (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs, read_owned_ledger
+
+    suffixes = (".json", ".bit")
+
+    # Run 1: topped `graph`, which is also `rb graph`'s protected basename.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["graph.json", "graph.bit"],
+        own_flow="fpga-openxc7",
+    )
+    (tmp_path / "graph.json").write_text("the FPGA run's netlist")
+
+    # Run 2: renamed. The leftover is this flow's, and goes.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["other.json", "other.bit"],
+        own_flow="fpga-openxc7",
+    )
+    assert not (tmp_path / "graph.json").exists()
+    # ...and the claim on it is retired, not carried forward.
+    assert read_owned_ledger(tmp_path, "fpga-openxc7") == {"other.json", "other.bit"}
+
+    # `rb graph` now writes its own protected file at that path.
+    theirs = tmp_path / "graph.json"
+    theirs.write_text("written by rb graph")
+
+    # Run 3: the FPGA flow must not take it.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["other.json", "other.bit"],
+        own_flow="fpga-openxc7",
+    )
+    assert theirs.read_text() == "written by rb graph"

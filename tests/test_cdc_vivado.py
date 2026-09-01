@@ -442,3 +442,21 @@ def test_vivado_cdc_skip_still_keeps_the_previous_report(tmp_path, monkeypatch):
 
     assert isinstance(res, CdcSkipResults)
     assert kept.exists()
+
+
+def test_vivado_cdc_missing_sdc_without_vivado_is_a_config_error(tmp_path, monkeypatch):
+    """An analysis pointing at a missing SDC is broken on every machine.
+    Reporting it as "vivado not found" on a box that merely lacks the tool
+    sends the user after the wrong problem, and leaves the previous report
+    in place after a failed run (#469)."""
+    backend = _make_backend(tmp_path)
+    stale = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", stale)
+
+    Path(backend.cdc_cfg.get_constraints()).unlink()
+    monkeypatch.setattr(cdc_vivado_module.shutil, "which", lambda _name: None)
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        backend.run()
+
+    assert not stale.exists()

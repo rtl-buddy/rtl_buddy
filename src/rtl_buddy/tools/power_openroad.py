@@ -248,6 +248,20 @@ class OpenRoadPower(BasePower):
     # Entry point
     # ------------------------------------------------------------------
 
+    def _clear_stale_report(self) -> None:
+        """Remove the previous run's `power.rpt`."""
+        stale = clear_stale_artefacts(
+            [self._report_path()], owner=self.power_cfg.get_name()
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "power.stale_artefacts_removed",
+                power=self.power_cfg.get_name(),
+                paths=stale,
+            )
+
     def _fail_after_openroad(self, desc: str) -> PowerFailResults:
         """Fail a run that has already invoked OpenROAD, publishing no report.
 
@@ -257,7 +271,7 @@ class OpenRoadPower(BasePower):
         at the fixed path the next run would otherwise quote (#469). Every
         post-OpenROAD failure return goes through here.
         """
-        clear_stale_artefacts([self._report_path()], owner=self.power_cfg.get_name())
+        self._clear_stale_report()
         return PowerFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> PowerResults:
@@ -270,6 +284,28 @@ class OpenRoadPower(BasePower):
             mode=self.power_cfg.get_mode(),
             netlist_source=self.power_cfg.get_netlist_source(),
         )
+
+        # Ahead of the "openroad not found" return below: `_write_script`
+        # is where this flow validates its configuration — the SDC, the
+        # platform's tech-lef, the upstream netlist or routed ODB. An
+        # analysis pointing at a missing input is broken on every machine,
+        # and reporting it as "openroad not found" on a box that merely
+        # lacks the tool sends the user after the wrong problem. A config
+        # error is a failed run, so it clears on the way out (#469).
+        try:
+            script_path = self._write_script()
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "power.script_failed",
+                power=self.power_cfg.get_name(),
+                error=str(e),
+            )
+            self._clear_stale_report()
+            return PowerFailResults(
+                name=self.name + "/results", desc=f"script generation error: {e}"
+            )
 
         if not shutil.which(self.executable):
             log_event(
@@ -290,31 +326,7 @@ class OpenRoadPower(BasePower):
         # fixed path and OpenROAD exiting 0 with no [ERROR] does not prove it
         # rewrote it, so clear here and the "power report not produced" path
         # stays reachable instead of quoting a previous run's watts (#469).
-        stale = clear_stale_artefacts(
-            [self._report_path()], owner=self.power_cfg.get_name()
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "power.stale_artefacts_removed",
-                power=self.power_cfg.get_name(),
-                paths=stale,
-            )
-
-        try:
-            script_path = self._write_script()
-        except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "power.script_failed",
-                power=self.power_cfg.get_name(),
-                error=str(e),
-            )
-            return PowerFailResults(
-                name=self.name + "/results", desc=f"script generation error: {e}"
-            )
+        self._clear_stale_report()
 
         log_path = self._log_path()
         env = os.environ.copy()

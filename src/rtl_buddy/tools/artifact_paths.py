@@ -155,6 +155,10 @@ def read_owned_ledger(artefact_dir: str | Path, flow: str) -> set[str]:
     clear from then on (#469). The ledger remembers what was written, so a
     renamed top's leftovers stay clearable.
 
+    A claim is a one-shot licence to clear, not a permanent title: once the
+    leftover has been removed the name is retired, so a sibling that later
+    writes its own file at that path is not treated as this flow's history.
+
     It is keyed by *flow*, because an artefact directory is keyed on a run's
     name and names are not unique across commands: a P&R run and an FPGA run
     called the same thing share one directory and therefore one ledger. A
@@ -375,7 +379,9 @@ def clear_managed_outputs(
         Required to use the ledger — claims are namespaced by flow because
         a P&R run and an FPGA run sharing a name share one artefact
         directory, and neither may inherit the other's claim. Without it
-        ``own`` applies to this call only and no claim is recorded. Without it a design whose top module is `graph`,
+        ``own`` applies to this call only and no claim is recorded. The
+        claim recorded is this run's ``own``, so a name inherited from the
+        ledger is retired once the leftover it named has been cleared. Without it a design whose top module is `graph`,
         `manifest` or `record` produced a `<top>.json` netlist matching a
         *sibling's* protected name, so the flow could not clear its own
         output: a failed rerun left the previous netlist published, and a
@@ -431,7 +437,15 @@ def clear_managed_outputs(
     if declared and own_flow is not None:
         # Only a caller that actually declares ownership updates the claim;
         # one that passes no `own` is not speaking for this directory.
-        write_owned_ledger(directory, own_flow, own)
+        #
+        # The new claim is exactly what this run is about to write — *not*
+        # the union that was just used to clear. A historical name is
+        # remembered only so the leftover it refers to can be cleared once;
+        # the clear above has now done that, so the claim is retired. Keeping
+        # the union instead would mean an FPGA run once topped `graph` owned
+        # `graph.json` forever, and would delete the file `rb graph` later
+        # wrote at its own protected path (#469).
+        write_owned_ledger(directory, own_flow, declared)
     return removed
 
 

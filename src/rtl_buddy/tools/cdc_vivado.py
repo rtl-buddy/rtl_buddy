@@ -345,6 +345,16 @@ class VivadoCdc:
         # run, not a skip (#469).
         try:
             part = self._resolve_part()
+            # Validated here, ahead of the availability skip below, for the
+            # same reason as the part: an analysis pointing at a missing SDC
+            # is broken on every machine, and reporting it as "vivado not
+            # installed" on a box that merely lacks the tool sends the user
+            # after the wrong problem (#469).
+            sdc_path = self.cdc_cfg.get_constraints()
+            if not os.path.isfile(sdc_path):
+                raise FatalRtlBuddyError(
+                    f"{self.cdc_cfg.get_name()}: SDC not found: {sdc_path}"
+                )
         except Exception:
             # Every exception, not a list of the expected ones — enumerating
             # them is how the open backend came to miss `FilelistError`.
@@ -388,11 +398,6 @@ class VivadoCdc:
         # no business deleting a report a box with Vivado produced.
         self._clear_stale_report()
 
-        sdc_path = self.cdc_cfg.get_constraints()
-        if not os.path.isfile(sdc_path):
-            raise FatalRtlBuddyError(
-                f"{self.cdc_cfg.get_name()}: SDC not found: {sdc_path}"
-            )
         if self.cdc_cfg.get_waivers() is not None:
             # rtl-buddy-cdc waiver files don't translate to Vivado; the
             # finding payload still carries everything so consumers can
