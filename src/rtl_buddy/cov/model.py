@@ -46,7 +46,12 @@ from .source_paths import SourcePathResolver
 MODEL_SCHEMA_VERSION = 1
 
 #: Filename inside ``cov_dir``.
-MODEL_FILENAME = "coverage-model.json"
+# Defined in `tools.artifact_paths` — the bottom of the import graph, and
+# where the artefact-clearing helpers protect it from a co-named run's
+# suffix clear (#469). Re-exported here, where consumers already look.
+from ..tools.artifact_paths import (  # noqa: E402
+    COV_MODEL_NAME as MODEL_FILENAME,
+)
 
 
 @dataclass(frozen=True)

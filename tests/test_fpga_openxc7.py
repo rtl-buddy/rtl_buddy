@@ -735,3 +735,55 @@ def test_openxc7_clear_spares_a_co_named_tests_build_stamp(tmp_path, monkeypatch
 
     assert isinstance(res, FpgaPassResults), res.results["desc"]
     assert stamp.read_text() == '{"compile_key": "abc123"}'
+
+
+def test_openxc7_clear_spares_a_co_named_graph_build(tmp_path, monkeypatch):
+    """`rb graph` writes `graph.json`, `graph-meta.json` and the results
+    overlay directly into `artefacts/graph/`, so an FPGA run named `graph`
+    shares the directory and the `.json` suffix clear would take all three
+    (#469)."""
+    from rtl_buddy.graph.config_tier import GRAPH_JSON_NAME, GRAPH_META_NAME
+    from rtl_buddy.graph.results import RESULTS_OVERLAY_NAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    graph_outputs = {
+        GRAPH_JSON_NAME: '{"schema_version": 1, "nodes": []}',
+        GRAPH_META_NAME: '{"fingerprint": "abc123"}',
+        RESULTS_OVERLAY_NAME: '{"results": {}}',
+    }
+    for name, body in graph_outputs.items():
+        (artefacts / name).write_text(body)
+    stale_netlist = artefacts / "old_top.json"
+    stale_netlist.write_text('{"stale": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name, body in graph_outputs.items():
+        assert (artefacts / name).read_text() == body, name
+    assert not stale_netlist.exists()
+
+
+def test_openxc7_clear_spares_a_co_named_cov_and_xplr_output(tmp_path, monkeypatch):
+    """Same for `rb cov`'s manifest and model, which sit directly in a
+    user-named coverage directory (#469)."""
+    from rtl_buddy.cov.manifest import MANIFEST_FILENAME
+    from rtl_buddy.cov.model import MODEL_FILENAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    for name in (MANIFEST_FILENAME, MODEL_FILENAME):
+        (artefacts / name).write_text('{"kept": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name in (MANIFEST_FILENAME, MODEL_FILENAME):
+        assert (artefacts / name).exists(), name

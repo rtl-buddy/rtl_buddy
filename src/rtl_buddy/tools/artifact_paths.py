@@ -32,6 +32,24 @@ RESULT_JSON_NAME = "result.json"
 #: protected set below and the stamp's writer cannot drift apart.
 SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
 
+#: The graph tier's durable exports, in ``artefacts/graph/``. Defined here
+#: rather than in :mod:`rtl_buddy.graph` (which imports them from here)
+#: because this module is the bottom of the import graph — everything that
+#: names an artefact depends on it, so nothing can be imported *into* it.
+GRAPH_JSON_NAME = "graph.json"
+GRAPH_META_NAME = "graph-meta.json"
+RESULTS_OVERLAY_NAME = "results-overlay.json"
+
+#: `rb cov`'s durable outputs, written side by side in the coverage
+#: directory (``artefacts/cov_dir/`` by default).
+COV_MANIFEST_NAME = "manifest.json"
+COV_MODEL_NAME = "coverage-model.json"
+
+#: `rb xplr`'s per-experiment ledger record and its git provenance sidecar,
+#: in ``artefacts/xplr/<exp-id>/``.
+XPLR_RECORD_NAME = "record.json"
+XPLR_WORKTREE_SIDECAR_NAME = "worktree.json"
+
 #: A dispatched job's envelope and log, written into
 #: ``<test>/dispatch/`` (per test) and ``artefacts/.dispatch/`` (per head)
 #: — see :mod:`rtl_buddy.dispatch.argv`. fnmatch patterns, because both
@@ -92,6 +110,23 @@ SIBLING_OUTPUT_NAMES = (
     # `artefacts/axi/<name>/` subtree today, so nothing can reach it — listed
     # so that stays true if a flow ever globs `.json` there.
     "axi-perf.json",
+    # rb graph (graph/). These sit *directly* in `artefacts/graph/`, so an
+    # FPGA run named `graph` shares the directory and the `.json` suffix
+    # clear would take all three.
+    GRAPH_JSON_NAME,
+    GRAPH_META_NAME,
+    RESULTS_OVERLAY_NAME,
+    # rb cov (cov/). Both sit directly in the coverage directory, which is
+    # `artefacts/cov_dir/` by default but is user-supplied — so a run can be
+    # named into the same directory.
+    COV_MANIFEST_NAME,
+    COV_MODEL_NAME,
+    # rb xplr (xplr/). One level deeper than any artefact dir a flow clears,
+    # in `artefacts/xplr/<exp-id>/`, and the scan never recurses — listed for
+    # the same reason as axi-perf.json, so that stays true if the layout
+    # changes.
+    XPLR_RECORD_NAME,
+    XPLR_WORKTREE_SIDECAR_NAME,
 )
 
 #: Everything :func:`clear_managed_outputs` must never remove: rtl_buddy's own

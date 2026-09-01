@@ -1016,9 +1016,27 @@ def test_protected_names_are_outputs_a_flow_really_writes():
         SIBLING_OUTPUT_NAMES,
     )
 
-    # The build stamp is a shared constant rather than a literal in its
-    # writer, so check the binding instead of grepping for the string.
-    assert vlog_sim_mod.SHARED_BUILD_STAMP_NAME == SHARED_BUILD_STAMP_NAME
+    # Several of these are shared constants rather than literals in their
+    # writer — `artifact_paths` is the bottom of the import graph, so the
+    # owning module imports the name from here rather than the reverse.
+    # Check the *bindings* for those instead of grepping for the string.
+    from rtl_buddy.cov import manifest as cov_manifest, model as cov_model
+    from rtl_buddy.graph import config_tier, results as graph_results
+    from rtl_buddy.tools import artifact_paths as ap
+    from rtl_buddy.xplr import gitprov, ledger
+
+    rebound = {
+        vlog_sim_mod.SHARED_BUILD_STAMP_NAME: SHARED_BUILD_STAMP_NAME,
+        config_tier.GRAPH_JSON_NAME: ap.GRAPH_JSON_NAME,
+        config_tier.GRAPH_META_NAME: ap.GRAPH_META_NAME,
+        graph_results.RESULTS_OVERLAY_NAME: ap.RESULTS_OVERLAY_NAME,
+        cov_manifest.MANIFEST_FILENAME: ap.COV_MANIFEST_NAME,
+        cov_model.MODEL_FILENAME: ap.COV_MODEL_NAME,
+        ledger.RECORD_FILENAME: ap.XPLR_RECORD_NAME,
+        gitprov.WORKTREE_SIDECAR: ap.XPLR_WORKTREE_SIDECAR_NAME,
+    }
+    for writer_name, protected_name in rebound.items():
+        assert writer_name == protected_name
 
     tools = Path(__file__).parent.parent / "src" / "rtl_buddy" / "tools"
     sources = "\n".join(
@@ -1037,9 +1055,7 @@ def test_protected_names_are_outputs_a_flow_really_writes():
     unwritten = [
         name
         for name in SIBLING_OUTPUT_NAMES
-        if name not in sources
-        and not name.startswith("cdc.")
-        and name != SHARED_BUILD_STAMP_NAME
+        if name not in sources and not name.startswith("cdc.") and name not in rebound
     ]
     assert not unwritten, f"protected but written by nobody: {unwritten}"
 
