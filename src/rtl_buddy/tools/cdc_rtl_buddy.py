@@ -404,14 +404,28 @@ class RtlBuddyCdc:
 
         try:
             payload = json.loads(Path(json_report).read_text())
-        except json.JSONDecodeError as e:
+            # Shape validation belongs *inside* the guard, not after it.
+            # `json.loads` succeeding only says the bytes were valid JSON: a
+            # top-level list, or a non-numeric `summary.violations`, parses
+            # fine and then raises on `.get` or `int()`. Outside the guard
+            # that escaped `_fail_after_analyzer` entirely, so the command
+            # died with the report it had just rejected still on disk (#469).
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    f"expected a JSON object at the top level, got "
+                    f"{type(payload).__name__}"
+                )
+            summary = payload.get("summary", {})
+            if not isinstance(summary, dict):
+                raise ValueError(
+                    f"expected an object for 'summary', got {type(summary).__name__}"
+                )
+            violations = int(summary.get("violations", 0))
+            suppressed = int(summary.get("suppressed", 0))
+            crossings = summary.get("crossings")
+            crossings = int(crossings) if crossings is not None else None
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError) as e:
             return self._fail_after_analyzer(f"could not parse JSON report: {e}")
-
-        summary = payload.get("summary", {})
-        violations = int(summary.get("violations", 0))
-        suppressed = int(summary.get("suppressed", 0))
-        crossings = summary.get("crossings")
-        crossings = int(crossings) if crossings is not None else None
 
         # Best-effort hub publish. When a hub is running for this
         # project, push the violations as a `diagnostics_set` event so

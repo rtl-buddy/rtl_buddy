@@ -787,3 +787,70 @@ def test_openxc7_clear_spares_a_co_named_cov_and_xplr_output(tmp_path, monkeypat
     assert isinstance(res, FpgaPassResults), res.results["desc"]
     for name in (MANIFEST_FILENAME, MODEL_FILENAME):
         assert (artefacts / name).exists(), name
+
+
+def test_openxc7_clears_its_own_netlist_when_the_top_collides(tmp_path, monkeypatch):
+    """A design topped `graph` writes `graph.json`, which is `rb graph`'s
+    protected name. If the flow cannot clear its own netlist, a Yosys run
+    that exits 0 without writing hands the *previous* run's JSON to nextpnr
+    and the run reports success against a design it never synthesised
+    (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "graph")
+
+    artefacts = Path(backend.artefact_dir)
+    stale_netlist = artefacts / "graph.json"
+    stale_netlist.write_text('{"from": "a previous run"}')
+
+    seen: dict[str, bool] = {}
+
+    def _yosys_writes_nothing(cmd, **kwargs):
+        exe = os.path.basename(cmd[0])
+        if exe == "yosys":
+            # Exits 0 with a clean log, but produces no netlist.
+            kwargs["stdout"].write(_fixture("yosys_openxc7.log"))
+            return ManagedProcessResult(returncode=0)
+        if exe == "nextpnr-xilinx":
+            seen["netlist_present"] = (artefacts / "graph.json").exists()
+            kwargs["stdout"].write(_fixture("nextpnr_xilinx_pass.log"))
+            (artefacts / "graph.fasm").write_text("# fasm\n")
+        return ManagedProcessResult(returncode=0)
+
+    _mock_toolchain(monkeypatch, _yosys_writes_nothing)
+    backend.run()
+
+    # nextpnr must not have been handed the previous run's netlist.
+    assert seen["netlist_present"] is False
+
+
+def test_openxc7_stage_failure_clears_a_colliding_top_netlist(tmp_path, monkeypatch):
+    """And the failure path clears it too — a FAIL publishes nothing, even
+    when the netlist's name belongs to a sibling command (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "manifest")
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+    artefacts = Path(backend.artefact_dir)
+
+    def _dies_at_fasm2frames(cmd, **kwargs):
+        exe = os.path.basename(cmd[0])
+        if exe == "fasm2frames":
+            return ManagedProcessResult(returncode=1)
+        if exe == "yosys":
+            kwargs["stdout"].write(_fixture("yosys_openxc7.log"))
+            (artefacts / "manifest.json").write_text("{}")
+            return ManagedProcessResult(returncode=0)
+        if exe == "nextpnr-xilinx":
+            kwargs["stdout"].write(_fixture("nextpnr_xilinx_pass.log"))
+            (artefacts / "manifest.fasm").write_text("# fasm\n")
+        return ManagedProcessResult(returncode=0)
+
+    _mock_toolchain(monkeypatch, _dies_at_fasm2frames)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert not (artefacts / "manifest.json").exists()
+    assert not (artefacts / "manifest.fasm").exists()

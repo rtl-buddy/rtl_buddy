@@ -468,10 +468,23 @@ class OpenRoadPnr:
             [os.path.join(self.artefact_dir, name) for name in _FIXED_OUTPUT_NAMES],
             owner=self.pnr_cfg.get_name(),
         )
+        # This run's own design-named outputs, cleared whatever they are
+        # called — a design that collides with a sibling's protected name
+        # must not be able to stop the flow clearing its own files (#469).
+        # The design may be unresolvable here; `own` is simply empty then,
+        # and the suffix match still covers the ordinary case.
+        own: list[str] = []
+        try:
+            design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        except Exception:
+            pass
+        else:
+            own = [f"{design}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES]
         stale += clear_managed_outputs(
             self.artefact_dir,
             _MANAGED_OUTPUT_SUFFIXES,
             owner=self.pnr_cfg.get_name(),
+            own=own,
         )
         if stale:
             log_event(

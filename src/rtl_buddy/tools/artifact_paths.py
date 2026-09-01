@@ -259,6 +259,7 @@ def clear_managed_outputs(
     suffixes: Iterable[str],
     *,
     owner: str,
+    own: Iterable[str] = (),
     keep: Iterable[str] = (),
 ) -> list[str]:
     """Clear a run's outputs by *suffix* rather than by exact name.
@@ -284,10 +285,19 @@ def clear_managed_outputs(
         ``".routed.odb"``). Include the dot. Match a *log* suffix here and
         you defeat the log exemption, so don't.
       owner: the run/analysis name, for the error message.
+      own: exact filenames this flow is about to write, or has just
+        written. These are cleared unconditionally, ahead of the protected
+        patterns — a flow always owns its own outputs no matter what they
+        are called. Without it a design whose top module is `graph`,
+        `manifest` or `record` produced a `<top>.json` netlist matching a
+        *sibling's* protected name, so the flow could not clear its own
+        output: a failed rerun left the previous netlist published, and a
+        Yosys run that exited 0 without writing handed that stale JSON
+        straight to nextpnr (#469).
       keep: exact filenames to leave alone even when they match — for a
         fixed-name artefact that happens to share a managed suffix.
         rtl_buddy's own envelopes (:data:`PROTECTED_OUTPUT_PATTERNS`) are
-        always kept and need not be listed here.
+        always kept and need not be listed here. ``own`` wins over both.
 
     Every matching entry is handed to :func:`clear_stale_artefacts`,
     including ones that are not regular files. A *directory* sitting where
@@ -305,19 +315,27 @@ def clear_managed_outputs(
     """
     directory = Path(artefact_dir)
     suffixes = tuple(suffixes)
-    keep = set(keep)
+    own = set(own)
+    keep = set(keep) - own
     try:
         entries = sorted(directory.iterdir())
     except (FileNotFoundError, NotADirectoryError):
         return []
-    doomed = [
-        entry
-        for entry in entries
-        if entry.name not in keep
-        and entry.name.endswith(suffixes)
-        and not any(fnmatch(entry.name, pat) for pat in PROTECTED_OUTPUT_PATTERNS)
-    ]
-    return clear_stale_artefacts(doomed, owner=owner)
+
+    def _doomed(name: str) -> bool:
+        # This flow's own outputs go regardless of what they are named:
+        # ownership is established by the caller, not guessed from the name.
+        if name in own:
+            return True
+        if name in keep:
+            return False
+        return name.endswith(suffixes) and not any(
+            fnmatch(name, pat) for pat in PROTECTED_OUTPUT_PATTERNS
+        )
+
+    return clear_stale_artefacts(
+        [entry for entry in entries if _doomed(entry.name)], owner=owner
+    )
 
 
 test_artifact_dir.__test__ = False

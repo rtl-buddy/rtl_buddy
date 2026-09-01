@@ -1092,3 +1092,50 @@ def test_a_suffix_clear_spares_every_protected_name_but_takes_its_own():
             assert (d / name).exists(), f"{name} was eaten by a {suffixes} clear"
         for name in mine:
             assert not (d / name).exists(), f"{name} should have been cleared"
+
+
+def test_clear_managed_outputs_own_wins_over_the_protected_patterns(tmp_path):
+    """A flow always owns its own outputs, whatever they are called. A design
+    topped `graph` writes `graph.json`, which is a *sibling's* protected name
+    — without `own` the flow could not clear its own netlist (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    mine = tmp_path / "graph.json"  # this run's <top>.json netlist
+    mine.write_text('{"mine": true}')
+    theirs = tmp_path / "record.json"  # a sibling command's output
+    theirs.write_text('{"theirs": true}')
+
+    removed = clear_managed_outputs(
+        tmp_path, (".json",), owner="demo", own=["graph.json"]
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["graph.json"]
+    assert not mine.exists()
+    assert theirs.exists()
+
+
+def test_clear_managed_outputs_own_beats_keep_too(tmp_path):
+    """`own` is the caller asserting ownership, so it outranks `keep` as well
+    — otherwise the two could contradict each other silently (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "top.bit").write_bytes(b"\x00")
+
+    removed = clear_managed_outputs(
+        tmp_path, (".bit",), owner="demo", own=["top.bit"], keep=["top.bit"]
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["top.bit"]
+
+
+def test_clear_managed_outputs_own_clears_even_without_a_matching_suffix(tmp_path):
+    """`own` names files outright; it does not have to match the suffix list."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "odd_name.xyz").write_text("mine")
+
+    removed = clear_managed_outputs(
+        tmp_path, (".bit",), owner="demo", own=["odd_name.xyz"]
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["odd_name.xyz"]

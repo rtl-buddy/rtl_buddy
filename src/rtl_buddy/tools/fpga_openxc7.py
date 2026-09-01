@@ -246,11 +246,21 @@ class OpenXc7Fpga(BaseFpga):
         that editing the run's model or top does not strand the previous
         top's files here. Stage logs are truncated by `_run_stage` and carry
         none of these suffixes.
+
+        This run's own `<top>.*` are passed as `own` so they are cleared
+        whatever they are called: a design whose top is `graph`, `manifest`
+        or `record` writes a `<top>.json` netlist that matches a *sibling's*
+        protected name, and without this the flow could not clear its own
+        output — a failed rerun left the previous netlist published, and a
+        Yosys run that exited 0 without writing handed the stale JSON on to
+        nextpnr.
         """
+        top = self.fpga_cfg.get_top()
         stale = clear_managed_outputs(
             self.artefact_dir,
             _MANAGED_OUTPUT_SUFFIXES,
             owner=self.fpga_cfg.get_name(),
+            own=[f"{top}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES],
         )
         if stale:
             log_event(

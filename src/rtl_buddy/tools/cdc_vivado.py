@@ -468,18 +468,23 @@ class VivadoCdc:
             return self._fail_after_vivado(f"no CDC report produced (see {log_path})")
         try:
             parsed = parse_report_cdc(Path(report_path).read_text())
-        except (OSError, ValueError) as e:
+            # Read the fields inside the guard too, so the whole shape
+            # contract is enforced where the failure is handled rather than
+            # resting on a `return` statement in another module (#469).
+            violations = parsed["violations"]
+            crossings = parsed["crossings"]
+            findings = parsed["findings"]
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
             return self._fail_after_vivado(f"could not parse CDC report: {e}")
 
-        violations = parsed["violations"]
         log_event(
             logger,
             logging.INFO,
             "cdc.vivado_done",
             analysis=self.cdc_cfg.get_name(),
             violations=violations,
-            crossings=parsed["crossings"],
-            findings=len(parsed["findings"]),
+            crossings=crossings,
+            findings=len(findings),
         )
 
         if violations == 0:
@@ -487,17 +492,17 @@ class VivadoCdc:
                 name=self.cdc_cfg.get_name(),
                 violations=0,
                 suppressed=0,
-                crossings=parsed["crossings"],
+                crossings=crossings,
             )
         else:
             res = CdcFailResults(
                 name=self.cdc_cfg.get_name(),
                 violations=violations,
                 suppressed=0,
-                crossings=parsed["crossings"],
+                crossings=crossings,
             )
         # Vivado's findings ride along verbatim, tagged with the backend
         # name — second opinion, not rtl_buddy's canonical taxonomy.
         res.results["backend"] = BACKEND_NAME
-        res.results["findings"] = parsed["findings"]
+        res.results["findings"] = findings
         return res

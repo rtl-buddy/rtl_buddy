@@ -157,8 +157,13 @@ class VivadoFpga(BaseFpga):
             ],
             owner=self.fpga_cfg.get_name(),
         )
+        # `own` so a design whose top collides with a sibling's protected
+        # name still has its own bitstream cleared (#469).
         stale += clear_managed_outputs(
-            self.artefact_dir, (".bit",), owner=self.fpga_cfg.get_name()
+            self.artefact_dir,
+            (".bit",),
+            owner=self.fpga_cfg.get_name(),
+            own=[os.path.basename(self._bitstream_path())],
         )
         if stale:
             log_event(

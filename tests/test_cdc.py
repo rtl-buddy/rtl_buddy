@@ -971,3 +971,48 @@ def test_lint_filelist_error_clears_the_previous_reports(tmp_path, monkeypatch):
     assert not reset_map.exists()
     assert wrapper.read_report() == {}
     assert wrapper.read_emitted_maps() == (None, None)
+
+
+@pytest.mark.parametrize(
+    "payload, why",
+    [
+        ('[{"summary": {"violations": 0}}]', "top-level list"),
+        ('{"summary": []}', "summary is a list"),
+        ('{"summary": {"violations": "many"}}', "non-numeric violations"),
+        ('{"summary": {"violations": 0, "crossings": {}}}', "non-numeric crossings"),
+        ('"just a string"', "top-level string"),
+    ],
+)
+def test_lint_structurally_bad_report_publishes_nothing(
+    tmp_path, monkeypatch, payload, why
+):
+    """`json.loads` succeeding only says the bytes were valid JSON. A
+    top-level list or a non-numeric `summary.violations` parses fine and then
+    raises on `.get` or `int()` — outside the guard that escaped
+    `_fail_after_analyzer`, leaving the rejected report on disk (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+    text = Path(wrapper.artefact_dir) / "cdc.txt"
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+
+    def _writes_odd_shape(cmd, stdout, stderr, **kwargs):
+        report.write_text(payload)
+        text.write_text("a text report\n")
+        domain_map.write_text('{"clocks": []}')
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(mod, "run_managed_process", _writes_odd_shape)
+
+    res = wrapper.run()
+
+    assert "could not parse JSON report" in res.results["desc"], why
+    assert res.results["violations"] == 0
+    assert not report.exists(), why
+    assert not text.exists(), why
+    assert not domain_map.exists(), why
+    assert wrapper.read_report() == {}
