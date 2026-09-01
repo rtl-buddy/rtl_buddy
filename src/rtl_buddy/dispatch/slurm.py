@@ -103,6 +103,32 @@ _SACCT_FORMAT = (
 # `scontrol show config` renders one `Key = Value` per line, padded. The
 # value that matters here is the cluster's job-array ceiling (#509).
 _MAX_ARRAY_SIZE_RE = re.compile(r"^MaxArraySize\s*=\s*(\d+)\s*$", re.MULTILINE)
+# ...and the SECOND ceiling, which a cluster may set below it:
+# `SchedulerParameters=max_array_tasks=N`. slurm.conf(5) defines it as "the
+# maximum number of tasks that be included in a job array", defaulting to
+# MaxArraySize — a COUNT, inclusive, unlike MaxArraySize's exclusive index
+# bound. Its own example is the whole trap: max_array_tasks=1000 with
+# MaxArraySize=100001 permits task index 100000 but only 1000 tasks in one
+# array. `scontrol show config` keeps reporting the larger MaxArraySize, so
+# a slice sized from that alone is refused (#509 review).
+_SCHEDULER_PARAMS_RE = re.compile(r"^SchedulerParameters\s*=\s*(.*)$", re.MULTILINE)
+_MAX_ARRAY_TASKS_RE = re.compile(r"\bmax_array_tasks\s*=\s*(\d+)\b")
+
+
+def _max_array_tasks(config_text: str) -> int | None:
+    """``max_array_tasks`` from a ``scontrol show config`` dump, if set.
+
+    Read out of the ``SchedulerParameters`` line rather than the whole
+    dump, so nothing else that happens to mention the key can be taken for
+    the cluster's setting.
+    """
+    params = _SCHEDULER_PARAMS_RE.search(config_text)
+    if params is None:
+        return None
+    match = _MAX_ARRAY_TASKS_RE.search(params.group(1))
+    return int(match.group(1)) if match is not None else None
+
+
 # The probe is a courtesy, not a dependency: a slurmctld that is slow or
 # unreachable must cost a bounded wait and then leave chunking off, never
 # hang the head before it has submitted anything.
@@ -334,7 +360,10 @@ class SlurmDispatchBackend(DispatchBackend):
         # cluster probed, not of this process. The selection itself is
         # resolved on demand (see `cluster`), not frozen here, because
         # $SBATCH_CLUSTERS is part of it and is read when the probe runs.
-        self._elements_per_array_by_cluster: dict[str | None, int | None] = {}
+        # {selection: (elements per array or None, where it came from)}.
+        self._elements_per_array_by_cluster: dict[
+            str | None, tuple[int | None, str | None]
+        ] = {}
         self._acct_interval_s = self._resolve_accounting_frequency()
 
     def _resolve_accounting_frequency(self) -> float | None:
@@ -611,9 +640,9 @@ class SlurmDispatchBackend(DispatchBackend):
             self._elements_per_array_by_cluster[selection] = self._probe_max_elements(
                 cwd=cwd
             )
-        return self._elements_per_array_by_cluster[selection]
+        return self._elements_per_array_by_cluster[selection][0]
 
-    def _probe_max_elements(self, *, cwd: str | None) -> int | None:
+    def _probe_max_elements(self, *, cwd: str | None) -> tuple[int | None, str | None]:
         selection = self._cluster_selection()
         if self.max_array_size is not None:
             log_event(
@@ -626,7 +655,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 source="config",
                 cluster=selection,
             )
-            return self.max_array_size - 1
+            return self.max_array_size - 1, "config"
         if selection is not None and _is_multi_cluster(selection):
             # `--clusters=a,b` (and the reserved `all`) let Slurm pick
             # whichever can run the job soonest, and the decision is made at
@@ -639,7 +668,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 "which one runs the array is decided at submit, so no single "
                 "MaxArraySize applies"
             )
-            return None
+            return None, None
         cluster_argv = [] if selection is None else ["-M", selection]
         try:
             proc = subprocess.run(
@@ -657,17 +686,25 @@ class SlurmDispatchBackend(DispatchBackend):
             )
             value = int(match.group(1)) if match is not None else 0
             if value >= 2:
+                # MaxArraySize bounds the INDEX exclusively; max_array_tasks
+                # counts the tasks, inclusively. The smaller of the two is
+                # what an array may actually hold.
+                tasks = _max_array_tasks(proc.stdout)
+                limit = value - 1
+                if tasks is not None and 1 <= tasks < limit:
+                    limit = tasks
                 log_event(
                     logger,
                     logging.DEBUG,
                     "dispatch.max_array_size",
                     backend=self.name,
                     max_array_size=value,
-                    max_elements=value - 1,
+                    max_array_tasks=tasks,
+                    max_elements=limit,
                     source="scontrol",
                     cluster=selection,
                 )
-                return value - 1
+                return limit, "scontrol"
             # A cluster reporting MaxArraySize < 2 has arrays disabled; no
             # slice size would submit, so treat that as unknown too and let
             # sbatch give the authoritative refusal.
@@ -677,7 +714,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 f"(rc={proc.returncode})"
             )[:200]
         self._log_unknown(reason)
-        return None
+        return None, None
 
     def _log_unknown(self, reason: str) -> None:
         log_event(
@@ -694,34 +731,47 @@ class SlurmDispatchBackend(DispatchBackend):
             hint="set cfg-dispatch.max-array-size to split oversized groups",
         )
 
-    def _unknown_limit_hint(self, stderr: str) -> str:
-        """Why an oversized group was not split, for a failed array submit.
+    def _array_limit_hint(self, stderr: str) -> str:
+        """What to do about a rejected array, for a failed array submit.
 
         ``Batch job submission failed: Invalid job array specification`` is
-        what sbatch answers a group larger than the cluster's
-        ``MaxArraySize``, and a limit that could not be read is why this run
-        did not split it. The probe already says so — but at INFO, which a
+        what sbatch answers an array the cluster will not take, and the
+        recovery is always the same knob — but the reason differs, so the
+        sentence does. The probe's own diagnostic is INFO, which a
         default-verbosity console never shows, while THIS message is the one
         that fails the run in front of the user (#509).
 
-        Two guards, because a hint that shows up on every failed submit is
-        noise that buries the real recovery action: the limit must be
-        unknown (a known one already did the splitting), and sbatch must
-        have complained about the **array specification**. An invalid
-        account, partition or QoS is rejected with its own wording and has
-        nothing to do with array size. Matched case-insensitively on "job
-        array" rather than on the full sentence, so a Slurm that words the
-        rest of it differently still gets the hint.
+        Gated on the wording, because a hint on every failed submit is noise
+        that buries the real recovery action: an invalid account, partition
+        or QoS is rejected in its own words and has nothing to do with array
+        size. Matched case-insensitively on "job array" rather than on the
+        full sentence, so a Slurm that words the rest of it differently
+        still gets the hint.
+
+        With the limit KNOWN the array was already within everything the
+        probe could see — ``MaxArraySize`` and ``max_array_tasks`` both —
+        so the cluster is enforcing something it did not report (a site
+        patch, a newer limit, an association ceiling). Saying "the limit
+        could not be read" there would be false, and saying nothing would
+        leave the one actionable knob unnamed; the variant names the
+        effective limit, where it came from, and the override (#509
+        review).
         """
-        resolved = self._elements_per_array_by_cluster.get(self._cluster_selection())
-        if resolved is not None:
-            return ""
         if "job array" not in stderr.lower():
             return ""
+        limit, source = self._elements_per_array_by_cluster.get(
+            self._cluster_selection(), (None, None)
+        )
+        if limit is None:
+            return (
+                "; the cluster's MaxArraySize could not be read, so this group "
+                "was submitted as one array — set cfg-dispatch.max-array-size to "
+                "let rb split a group larger than that limit"
+            )
         return (
-            "; the cluster's MaxArraySize could not be read, so this group was "
-            "submitted as one array — set cfg-dispatch.max-array-size to let "
-            "rb split a group larger than that limit"
+            f"; rb sliced this group at {limit} element(s) per array, the limit "
+            f"it read from {source}, and the cluster refused it anyway — lower "
+            "cfg-dispatch.max-array-size to pin a smaller one"
         )
 
     def submit_array(
@@ -836,7 +886,7 @@ class SlurmDispatchBackend(DispatchBackend):
             raise FatalRtlBuddyError(
                 f"sbatch array submit failed{where} ({len(specs)} jobs, "
                 f"rc={proc.returncode}): {proc.stderr.strip()}"
-                f"{self._unknown_limit_hint(proc.stderr)}"
+                f"{self._array_limit_hint(proc.stderr)}"
             )
         base_id = proc.stdout.strip().split(";")[0]
         if not base_id:

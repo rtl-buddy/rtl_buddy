@@ -48,7 +48,7 @@ def _spec(**overrides) -> TestJobSpec:
     return TestJobSpec(**defaults)
 
 
-def _fake_run(calls, results, *, max_array_size=None):
+def _fake_run(calls, results, *, max_array_size=None, max_array_tasks=None):
     """subprocess.run stand-in: records argv, pops canned results.
 
     Any ``scontrol`` call — the MaxArraySize probe (#509), with or without
@@ -61,7 +61,7 @@ def _fake_run(calls, results, *, max_array_size=None):
 
     def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
         if list(argv[:1]) == ["scontrol"]:
-            return _scontrol_result(max_array_size)
+            return _scontrol_result(max_array_size, max_array_tasks)
         calls.append(list(argv))
         result = (
             results.pop(0)
@@ -73,12 +73,20 @@ def _fake_run(calls, results, *, max_array_size=None):
     return run
 
 
-def _scontrol_result(max_array_size):
-    """`scontrol show config` output, or a failure when the limit is unknown."""
+def _scontrol_result(max_array_size, max_array_tasks=None):
+    """`scontrol show config` output, or a failure when the limit is unknown.
+
+    ``SchedulerParameters`` is always rendered — a real dump has the line
+    whether or not it carries ``max_array_tasks`` — so the "not set" case
+    is the realistic one rather than a line the parser never sees.
+    """
     if max_array_size is None:
         return SimpleNamespace(
             returncode=1, stdout="", stderr="scontrol: error: Unable to contact slurm"
         )
+    params = "bf_window=2880,default_queue_depth=100"
+    if max_array_tasks is not None:
+        params += f",max_array_tasks={max_array_tasks}"
     return SimpleNamespace(
         returncode=0,
         stdout=(
@@ -86,6 +94,7 @@ def _scontrol_result(max_array_size):
             "MaxArrayJobs            = 20\n"
             f"MaxArraySize            = {max_array_size}\n"
             "MaxDBDMsgs              = 20000\n"
+            f"SchedulerParameters     = {params}\n"
         ),
         stderr="",
     )
@@ -1563,13 +1572,14 @@ def test_an_unrelated_submit_failure_offers_no_red_herring(monkeypatch, tmp_path
     assert "max-array-size" not in str(excinfo.value)
 
 
-def test_a_refused_array_with_a_known_limit_offers_no_red_herring(
+def test_a_refused_array_within_a_known_limit_points_at_the_override(
     monkeypatch, tmp_path
 ):
-    """A limit that IS known did the splitting; the hint would be wrong.
+    """The array was inside everything the probe could see, and still refused.
 
-    Deliberately the array-specification wording, so this pins the
-    known-limit guard rather than riding on the stderr one.
+    So the cluster enforces something it did not report, and the sentence
+    must say that rather than claim the limit could not be read — while
+    still naming the one knob that fixes it (#509 review).
     """
     calls = []
     results = [
@@ -1587,8 +1597,14 @@ def test_a_refused_array_with_a_known_limit_offers_no_red_herring(
         backend.submit_array(
             [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
         )
-    assert "Invalid job array specification" in str(excinfo.value)
-    assert "max-array-size" not in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "Invalid job array specification" in message
+    # 1000 = the pinned MaxArraySize of 1001 minus its exclusive index bound.
+    assert "1000 element(s) per array" in message
+    assert "read from config" in message
+    assert "lower cfg-dispatch.max-array-size" in message
+    # ...and NOT the unknown-limit sentence, which would be false here.
+    assert "could not be read" not in message
 
 
 def test_a_failed_slice_cancels_the_slices_already_submitted(monkeypatch, tmp_path):
@@ -1862,3 +1878,90 @@ def test_cluster_property_names_one_cluster_or_nothing(
         monkeypatch.setenv("SBATCH_CLUSTERS", env)
     cfg = DispatchConfigFile(sbatch_args=sbatch_args).initialise()
     assert SlurmDispatchBackend(cfg).cluster == expected
+
+
+# ------------------------------- SchedulerParameters max_array_tasks (#509)
+
+
+def test_max_array_tasks_caps_the_slice_below_max_array_size(monkeypatch, tmp_path):
+    """A cluster may cap tasks-per-array well below MaxArraySize.
+
+    `scontrol show config` keeps reporting the larger MaxArraySize, so
+    slicing from that alone hands sbatch an array the cluster refuses —
+    and, the limit now being non-None, the failure hint would once have
+    been the wrong one (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=1001, max_array_tasks=4),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    # max_array_tasks is a COUNT (inclusive), not an index bound: 4 means
+    # four elements per array, not three.
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_without_max_array_tasks_the_index_bound_still_governs(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=5),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_the_larger_of_the_two_ceilings_never_wins(monkeypatch, tmp_path, caplog):
+    """A max_array_tasks ABOVE the index bound cannot raise the slice."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=5, max_array_tasks=1000),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    # Both ceilings are recorded, so a reader can see which one governed.
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert (fields["max_array_size"], fields["max_array_tasks"]) == (5, 1000)
+    assert fields["max_elements"] == 4
+
+
+def test_max_array_tasks_is_read_from_the_scheduler_parameters_line():
+    parse = slurm_module._max_array_tasks
+    assert parse("MaxArraySize = 1001\n") is None
+    assert parse("SchedulerParameters = bf_window=2880\n") is None
+    assert parse("SchedulerParameters = max_array_tasks=64,bf_window=2880\n") == 64
+    assert parse("SchedulerParameters = bf_window=2880,max_array_tasks=64\n") == 64
+    # A key that merely ENDS in the name is a different parameter.
+    assert parse("SchedulerParameters = other_max_array_tasks=64\n") is None
+    # ...and a mention outside the SchedulerParameters line is not the setting.
+    assert parse("SomeOtherKey = max_array_tasks=64\n") is None
