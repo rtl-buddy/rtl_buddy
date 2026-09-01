@@ -77,6 +77,7 @@ from .config.dispatch import (
     compile_resource_origins,
     resolve_compile_resources,
     resolve_resources,
+    cpu_request_overrides,
 )
 from .dispatch import (
     LocalProcessBackend,
@@ -3196,6 +3197,43 @@ class RtlBuddy:
         suite_compile = suite_cfg.get_compile()
 
         # (2) Build job — unless nothing in this suite could use its output.
+        # `sbatch-args` is appended after the generated flags and therefore
+        # wins, and the `SBATCH_*` environment reaches sbatch through the
+        # inherited environment, so either can mean the reservation this
+        # suite resolved is NOT what its jobs are submitted with.
+        # Right-sizing must not take it for the request; recording nothing
+        # sends it back to the scheduler's own `ReqCPUS` (#505 review). NOT
+        # sanitized: a site that exports these means them.
+        #
+        # Read once, HERE, before this suite submits anything, and carried
+        # in the returned state to analysis. A regression submits every
+        # suite before collecting any, and a later suite's sweep hook is
+        # `exec()`d in this same process (see hooks.py) — so it can set or
+        # unset `SBATCH_*` between this submit and this suite's analysis.
+        # Re-reading the environment there would judge these jobs by a
+        # later suite's environment: the wrong cpu denominator, and an edit
+        # hint naming an override that was never active for them.
+        #
+        # From the BACKEND's arguments, not this suite's `cfg-dispatch`.
+        # The backend is built once from the orchestration config before the
+        # suite loop, while `root_cfg` is rebuilt for any suite that walks
+        # up to a different root_config.yaml — so the two lists diverge in a
+        # multi-root regression, and only the backend's is what `sbatch`
+        # receives. The generated reservation flags stay suite-derived (they
+        # come from this suite's resolved `resources:`); it is the verbatim
+        # passthrough that belongs to the backend (#505 review).
+        cpus_request_args = cpu_request_overrides(backend.effective_sbatch_args)
+        if cpus_request_args:
+            # DEBUG, once per suite submit: the override is deliberate
+            # configuration, and the only thing worth saying is why the
+            # advice is derived from sacct rather than from the YAML.
+            log_event(
+                logger,
+                logging.DEBUG,
+                "rightsize.request_from_scheduler",
+                suite_dir=suite_dir,
+                overrides=cpus_request_args,
+            )
         # For a builder with no shared-build support the build pass compiles
         # on a compute node and produces no stamp any sim job can reuse, so
         # submitting it burns a compile and adds queue latency for nothing
@@ -3273,6 +3311,20 @@ class RtlBuddy:
                     mem=resources.mem,
                     time=resources.time,
                     governed_by=governed_by,
+                )
+            for idx, _ in entry["rows"]:
+                # The cpus this test's jobs are submitted with, recorded for
+                # right-sizing: it is `--cpus-per-task` verbatim, so it is
+                # the REQUEST by construction. A site that allocates whole
+                # cores reports more back, and judging efficiency against
+                # that surplus advises a reduction to the value the
+                # tests.yaml already holds (#505). Recorded after the in-job
+                # compile max, so it is the number that actually governed
+                # the allocation.
+                self._record_cpu_request_metadata(
+                    suite_results[idx],
+                    per_task_cpus=resources.cpus,
+                    overrides=cpus_request_args,
                 )
             dispatch_dir = (
                 Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
@@ -3389,7 +3441,34 @@ class RtlBuddy:
             # reservation from the root config alone and has no suite_cfg
             # (#497) — same route as build_telemetry/build_compile_work.
             "suite_compile": suite_compile,
+            # What superseded this suite's resolved cpus, as it stood when
+            # these jobs were submitted. Snapshotted rather than recomputed
+            # at analysis, because the environment half of it can move under
+            # a later suite's in-process sweep hook (#505 review).
+            "cpus_override": cpus_request_args,
         }
+
+    @staticmethod
+    def _record_cpu_request_metadata(row, *, per_task_cpus, overrides):
+        """What right-sizing needs to know about ONE submission's cpus.
+
+        Written at submit and rewritten on every resubmission, because a
+        retry is a fresh `sbatch` with a fresh inherited environment and it
+        is the retry's telemetry the analysis ends up reading (#505 review).
+
+        - ``submitted_cpus_per_task`` is the generated ``--cpus-per-task``
+          verbatim. Recorded unconditionally: a task-count override
+          multiplies it rather than replacing it, so it stays the value the
+          compile floor bounds and the value the request decomposes into.
+        - ``requested_cpus`` is that same number *as the whole-job request*,
+          which it only is when nothing overrode it — hence ``None`` under
+          any override, sending the denominator to the scheduler's
+          ``ReqCPUS``.
+        - ``cpus_override`` is what did the overriding, for the edit hint.
+        """
+        row["submitted_cpus_per_task"] = per_task_cpus
+        row["requested_cpus"] = None if overrides else per_task_cpus
+        row["cpus_override"] = overrides
 
     def _announce_dispatched_suite(self, state, *, backend, suite):
         """Put a suite's job ids on the console, before the wait begins (#435).
@@ -3611,7 +3690,11 @@ class RtlBuddy:
             resubmitted_at = time.time()
             try:
                 pending = self._resubmit_retryable(
-                    backend, retryable, attempt=attempt, retry_cfg=retry_cfg
+                    backend,
+                    retryable,
+                    attempt=attempt,
+                    retry_cfg=retry_cfg,
+                    suite_results=suite_results,
                 )
                 submitted_at = resubmitted_at
             except (FatalRtlBuddyError, OSError, subprocess.SubprocessError) as e:
@@ -3644,7 +3727,9 @@ class RtlBuddy:
                 )
                 return suite_results
 
-    def _resubmit_retryable(self, backend, retryable, *, attempt, retry_cfg):
+    def _resubmit_retryable(
+        self, backend, retryable, *, attempt, retry_cfg, suite_results=None
+    ):
         """Re-launch the retryable jobs after their backoff; wait; return them.
 
         The delay is served by the **backend** (Slurm holds the job on
@@ -3666,6 +3751,7 @@ class RtlBuddy:
         their sum.
         """
         resubmitted = []
+        staged = []
         longest_delay = 0.0
         try:
             for idx, handle, classifier in retryable:
@@ -3698,14 +3784,78 @@ class RtlBuddy:
                 # directory) is kept by the stamp, not by the edge.
                 # Re-arming the edge is not an option: an afterok on a job
                 # the scheduler has forgotten never becomes satisfiable.
+                # A retry is a fresh `sbatch` from THIS moment's environment,
+                # not a replay of the first submission's. Between the two, a
+                # later suite's sweep hook has run in this process and may
+                # have set or unset `SBATCH_NTASKS`/`_NODES`/`_NTASKS_PER_NODE`
+                # — and it is this attempt's telemetry the analysis reads, so
+                # the row has to describe this attempt. Stale metadata here
+                # picks the wrong cpu denominator and names an override that
+                # was not in force (#505 review).
+                #
+                # Read now, beside the submit it describes, but applied only
+                # once the whole round has landed: an `sbatch` that refuses,
+                # or a wait that fails, leaves the caller holding the
+                # PREVIOUS attempt's results and telemetry, and those must
+                # not be paired with this attempt's reservation.
+                if suite_results is not None:
+                    staged.append(
+                        self._stage_cpu_request_metadata(
+                            suite_results[idx], spec, backend=backend
+                        )
+                    )
                 resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
             backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
+            # The round landed: every job of it was accepted and waited on,
+            # so the rows may now describe it. Anything short of that leaves
+            # them describing the attempt whose results the caller keeps.
+            self._commit_cpu_request_metadata(staged, backend=backend, attempt=attempt)
         except BaseException:
             # Same contract as the submit fan-out: a failure mid-retry must
             # not leave this attempt's jobs running behind the head.
             backend.cancel_all([h for _, h in resubmitted])
             raise
         return resubmitted
+
+    def _stage_cpu_request_metadata(self, row, spec, *, backend):
+        """Read this resubmission's cpu overrides; do NOT write them yet.
+
+        Returned staged, not applied, because a row's metadata must always
+        describe the attempt whose telemetry sits beside it. If this round's
+        `sbatch` is refused or its wait fails, the caller keeps the previous
+        attempt's results and telemetry — and a row already rewritten here
+        would pair those with the reservation of an attempt that never ran
+        (#505 review).
+        """
+        # The backend's own arguments, for the same reason the first
+        # submission uses them: it is the backend that appends them, and by
+        # now `root_cfg` may belong to a different suite entirely.
+        return (row, spec, cpu_request_overrides(backend.effective_sbatch_args))
+
+    def _commit_cpu_request_metadata(self, staged, *, backend, attempt):
+        """Apply a round's staged metadata, once that round has landed."""
+        for row, spec, overrides in staged:
+            was = row.get("cpus_override") or []
+            self._record_cpu_request_metadata(
+                row,
+                per_task_cpus=spec.resources.cpus,
+                overrides=overrides,
+            )
+            if overrides != was:
+                # Worth a line: the advice for this test is now derived from
+                # a different set of overrides than its first attempt was,
+                # and nothing else in the run would say so.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "rightsize.request_overrides_changed",
+                    backend=backend.name,
+                    test=spec.test_name,
+                    run_id=spec.run_id,
+                    attempt=attempt,
+                    was=was,
+                    now=overrides,
+                )
 
     @staticmethod
     def _retry_spec(spec, *, attempt):
@@ -4181,6 +4331,23 @@ class RtlBuddy:
                     # above got: one reservation, one attribution.
                     compile_origins=compile_origins,
                     suite_config_hint=suite_config_path or suite_display,
+                    # ...and whether the resolved reservation is what the
+                    # build job was actually submitted with: a `sbatch-args`
+                    # argument or an `SBATCH_*` variable that sets the cpu
+                    # request beats the generated flags, so neither the
+                    # ratio nor the decomposition may be stated from it
+                    # (#505 review).
+                    #
+                    # The submit-time snapshot, NOT a fresh read: a
+                    # regression submits every suite before collecting any,
+                    # and a later suite's sweep hook is `exec()`d in this
+                    # process, so `os.environ` here can be a different
+                    # environment from the one this build job inherited.
+                    # Recomputing would pick the wrong denominator and name
+                    # an override that was never active for it. This is also
+                    # what the per-test rows carry, so both halves of a
+                    # suite's advice describe one submission.
+                    cpus_override=(state or {}).get("cpus_override") or [],
                 )
             )
         for finding in findings:
@@ -4195,7 +4362,14 @@ class RtlBuddy:
                 "test": f.test,
                 "resource": f.resource,
                 "phase": f.phase,
-                "reserved": f.reserved,
+                # The requested reservation, with what the scheduler handed
+                # out beside it when the two differ — whole-core rounding is
+                # not something an edit to the named Field can move (#505).
+                "reserved": (
+                    f"{f.reserved} ({f.allocated} allocated)"
+                    if f.allocated
+                    else f.reserved
+                ),
                 "peak": f.peak,
                 "utilization": f"{f.utilization:.0%}",
                 "advice": f"{f.direction} → {f.suggested}",
@@ -4214,6 +4388,15 @@ class RtlBuddy:
             metadata.append(
                 "compile+sim rows measure a job that also compiled (its "
                 "builder cannot share a build), so the peak spans both phases"
+            )
+        if any(f.allocated for f in findings):
+            # Without this the parenthesised number reads as a second
+            # reservation to edit, when it is the scheduler's rounding.
+            metadata.append(
+                "Reserved is what the reservation asked for; the "
+                "parenthesised figure is what the scheduler allocated — a "
+                "site that hands out whole cores gives more than was "
+                "requested, and no edit to Field changes that"
             )
         compile_rows = [f for f in findings if f.phase == "compile"]
         if compile_rows:

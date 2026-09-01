@@ -85,7 +85,18 @@ fi
 eval "$cmd"
 """
 
-_SACCT_FORMAT = "JobID,State,ElapsedRaw,TimelimitRaw,AllocCPUS,ReqMem,TotalCPU,MaxRSS"
+_SACCT_FORMAT = (
+    "JobID,State,ElapsedRaw,TimelimitRaw,AllocCPUS,ReqCPUS,ReqMem,TotalCPU,MaxRSS"
+)
+
+# `AllocCPUS` is what the scheduler handed out, which is not what the
+# reservation asked for. A partition with `SelectTypeParameters=NONE` on
+# nodes with `ThreadsPerCore=2` allocates whole cores, so `--cpus-per-task=1`
+# comes back as `AllocCPUS=2` — and cpu efficiency measured against it caps a
+# single-threaded job at 0.5, firing the default over-threshold on every test
+# forever (#505). `ReqCPUS` is the number the project's YAML controls, so it
+# is carried alongside and right-sizing ratios against it; the allocated
+# figure stays, because it is what `squeue`/`sacct` show.
 
 # `MaxRSS` is a high-water mark over samples, so a job shorter than the
 # sampling interval reports whatever the first sample caught — near zero.
@@ -304,6 +315,17 @@ class SlurmDispatchBackend(DispatchBackend):
             sbatch_arg=_ACCT_FREQ_DEFAULT,
         )
         return _DEFAULT_ACCT_INTERVAL_S
+
+    @property
+    def effective_sbatch_args(self) -> list:
+        """What every submission of this backend really appends.
+
+        The list this backend was constructed with, plus the
+        ``--acctg-freq`` it prepends — i.e. the passthrough as submitted,
+        which is what right-sizing must judge a job's cpu request by
+        (#505 review).
+        """
+        return self.sbatch_args
 
     def accounting_interval_s(self) -> float | None:
         return self._acct_interval_s
@@ -715,9 +737,15 @@ class SlurmDispatchBackend(DispatchBackend):
         step rows (``.batch`` etc.), never the allocation row — usage is
         folded up to its parent job. Values per job:
         ``state``, ``elapsed_s``, ``timelimit_s`` (TimelimitRaw is in
-        MINUTES; normalized here), ``alloc_cpus``, ``req_mem_bytes``,
-        ``total_cpu_s``, ``max_rss_bytes``. Missing accounting (no
-        slurmdbd) returns ``{}`` and right-sizing degrades gracefully.
+        MINUTES; normalized here), ``alloc_cpus``, ``req_cpus``,
+        ``req_mem_bytes``, ``total_cpu_s``, ``max_rss_bytes``. Missing
+        accounting (no slurmdbd) returns ``{}`` and right-sizing degrades
+        gracefully.
+
+        ``alloc_cpus`` and ``req_cpus`` are both reported because they
+        differ wherever the site allocates whole cores: the first is what
+        `squeue` shows, the second is what a ``resources.cpus`` edit can
+        actually move, and right-sizing needs the second (#505).
         """
         if not handles:
             return {}
@@ -765,7 +793,17 @@ class SlurmDispatchBackend(DispatchBackend):
             fields = line.split("|")
             if len(fields) != len(_SACCT_FORMAT.split(",")):
                 continue
-            job_id, state, elapsed, limit, cpus, req_mem, total_cpu, max_rss = fields
+            (
+                job_id,
+                state,
+                elapsed,
+                limit,
+                cpus,
+                req_cpus,
+                req_mem,
+                total_cpu,
+                max_rss,
+            ) = fields
             base = job_id.split(".")[0]
             if base not in wanted:
                 continue
@@ -784,6 +822,10 @@ class SlurmDispatchBackend(DispatchBackend):
                     pass
                 try:
                     entry["alloc_cpus"] = int(cpus)
+                except ValueError:
+                    pass
+                try:
+                    entry["req_cpus"] = int(req_cpus)
                 except ValueError:
                     pass
                 if (req_mem_bytes := _parse_mem_to_bytes(req_mem)) is not None:

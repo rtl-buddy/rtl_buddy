@@ -132,7 +132,7 @@ def fake_backend(monkeypatch: pytest.MonkeyPatch) -> _FakeBackend:
     monkeypatch.setattr(
         rtl_buddy_module,
         "create_dispatch_backend",
-        lambda name, cfg: backend if name not in (None, "local") else None,
+        _backend_factory(backend),
     )
     return backend
 
@@ -344,7 +344,7 @@ def test_dispatch_creates_log_parent_before_submit(
 
     backend = _CheckBackend()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert result.exit_code == 0, result.output
@@ -382,7 +382,7 @@ def test_dispatch_cancels_already_submitted_on_midway_submit_failure(
 
     backend = _FlakyBackend()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
@@ -411,7 +411,7 @@ def test_build_compile_failure_surfaces_as_compile_fail(
 
     backend = _CompileFailBuild()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -473,7 +473,7 @@ def test_build_compile_failure_puts_the_real_error_in_the_summary(
 
     backend = _CompileFailBuild()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -537,7 +537,7 @@ def test_a_sim_failure_is_not_relabelled_as_the_build_job_s_compile_error(
 
     backend = _SimFailAfterBuildFail()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -586,7 +586,7 @@ def test_an_evidence_less_build_failure_keeps_the_retry_s_own_compile_fail(
 
     backend = _EvidencelessBuildFail()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -638,7 +638,7 @@ def test_an_inputs_changed_retry_s_own_failure_is_not_relabelled(
 
     backend = _DriftedBuildFail()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -737,7 +737,7 @@ def recording_backend(monkeypatch: pytest.MonkeyPatch) -> _RecordingBackend:
     monkeypatch.setattr(
         rtl_buddy_module,
         "create_dispatch_backend",
-        lambda name, cfg: backend if name not in (None, "local") else None,
+        _backend_factory(backend),
     )
     return backend
 
@@ -830,7 +830,7 @@ def test_collect_attaches_telemetry_to_results_and_envelope(
         }
     )
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -871,9 +871,80 @@ def _build_telemetry_backend(monkeypatch, *, builds=None, build_telemetry=None):
         },
     )
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     return backend
+
+
+def test_cpu_overrides_are_snapshotted_at_submit_not_reread_at_analysis(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The environment can move between a suite's submit and its analysis.
+
+    A dispatched regression submits every suite before collecting any, and
+    a suite's sweep hook is `exec()`d in this same process (hooks.py), so a
+    later suite's hook can set or unset `SBATCH_*` in the window between
+    this suite's jobs going out and its advice being computed. Re-reading
+    `os.environ` at analysis would judge these jobs by a different
+    environment: the wrong cpu denominator, and an `edit_hint` naming an
+    override that was never active for them (#505 review).
+
+    `wait_all` is that window — it runs after the last submit and before
+    the first collect — so mutating the environment there reproduces the
+    hook's effect exactly, without needing a second suite.
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    backend = _build_telemetry_backend(
+        monkeypatch,
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "req_cpus": 8,  # 4 tasks x the generated 2 cpus
+            "total_cpu_s": 200,  # 0.25 efficiency
+        },
+    )
+    backend.telemetry["fake-1"] = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 3600,
+        "alloc_cpus": 8,
+        "req_cpus": 8,
+        "total_cpu_s": 200.0,  # 0.25 efficiency
+    }
+
+    # Stand in for the later suite's sweep hook: same process, same window.
+    real_wait_all = backend.wait_all
+
+    def wait_all_then_change_the_environment(handles, **kwargs):
+        os.environ["SBATCH_NTASKS"] = "64"
+        return real_wait_all(handles, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_change_the_environment)
+
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert os.environ["SBATCH_NTASKS"] == "64", "the stand-in hook must have run"
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    cpus_rows = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus_rows, "both the test and the build job are over-reserved"
+    # Both halves of the suite's advice describe ONE submission: the
+    # environment as it stood when these jobs were sent.
+    assert {a["test"] for a in cpus_rows} == {"basic", "(build job)"}
+    for row in cpus_rows:
+        note = row["edit_hint"]["note"]
+        assert "`SBATCH_NTASKS=4`" in note, note
+        assert "64" not in note, note
 
 
 def test_collect_attaches_the_build_jobs_own_telemetry_to_its_envelope(
@@ -998,7 +1069,7 @@ def test_dispatch_fail_desc_names_scheduler_state(
         telemetry={"fake-1": {"state": "TIMEOUT", "elapsed_s": 3600}},
     )
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -1102,7 +1173,7 @@ def test_dispatched_collect_reenters_suite_context(
     )
     backend = _RecordingBackend()
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     entered = []
     rb = RtlBuddy(name="ctx")
@@ -1532,7 +1603,7 @@ def _telemetry_backend(monkeypatch):
         }
     )
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     return backend
 
@@ -1563,6 +1634,412 @@ def test_regression_machine_payload_carries_reservation_advice(
     assert mem["suggested"] == "1536M"
     assert mem["edit_hint"]["path"] == "tests[name=basic].resources.mem"
     assert mem["runs"] == 1
+
+
+def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head's own `--cpus-per-task` reaches right-sizing (#505).
+
+    The project reserves the default 1 cpu; the site allocates a whole core
+    and reports 2, with no `ReqCPUS` at all. Judged against the allocation a
+    fully-busy single-threaded run measures 0.5 efficiency and every test
+    gets advised down to the `cpus: 1` it already has. The row records what
+    the head submitted, so the ratio is 1.0 and there is nothing to say.
+    """
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "total_cpu_s": 25.0,  # 0.125 eff vs the allocation, 0.25 vs 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+    # `allocated` is on every finding, so the key set stays stable; it is
+    # only ever non-null on a cpus row.
+    assert advice, "the time/mem rows should still be there"
+    assert all(a["allocated"] is None for a in advice)
+
+
+@pytest.mark.parametrize(
+    "sbatch_args,named",
+    [
+        ("[--cpus-per-task=4]", "--cpus-per-task=4"),
+        # sbatch obeys the LAST occurrence of one option, and so must the hint.
+        ("[--cpus-per-task=2, --cpus-per-task=4]", "--cpus-per-task=4"),
+    ],
+)
+def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    sbatch_args: str,
+    named: str,
+):
+    """`sbatch-args` is appended last and wins, so the YAML is not the request.
+
+    The project resolves the default 1 cpu, but `cfg-dispatch.sbatch-args`
+    states a cpu request of 4 directly, and that is what the jobs run with.
+    Recording the resolved 1 as the request would analyse a genuinely
+    over-reserved run against cpus it never had and, with `cpus: 1` failing
+    the `cpus > 1` guard, silently drop the finding. The head records
+    nothing instead, so `ReqCPUS` carries it (#505 review). A task count
+    rather than a cpu count is covered separately: the denominator is the
+    same, the note is not.
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + f"\ncfg-dispatch:\n  sbatch-args: {sbatch_args}\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # what the override actually asked for
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    # `-D` so the DEBUG line explaining the fallback reaches the console:
+    # rb reconfigures the root logger, so caplog never sees a CLI run's
+    # events and the output is what can be asserted on.
+    result, _ = _invoke(
+        [
+            "-D",
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # Analysed against the 4 the override submitted, not the 1 the YAML
+    # resolved to -- which would have been dropped by the `cpus > 1` guard.
+    assert cpus["reserved"] == "4"
+    assert cpus["allocated"] is None
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
+    # ...and the hint names the argument, not the field it masks: editing
+    # `resources.cpus` would leave the next job's reservation where it is.
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert (
+        f"sbatch-args `{named}` sets this job's cpu request, "
+        "superseding tests[name=basic].resources.cpus" in cpus["edit_hint"]["note"]
+    )
+    # time still names its own field; a cpu argument supersedes nothing there.
+    (time_row,) = [a for a in advice if a["resource"] == "time"]
+    assert time_row["edit_hint"]["path"] == "tests[name=basic].resources.time"
+    # ...and the run says why the advice came from sacct rather than from
+    # the reservation, naming the argument responsible.
+    assert "sbatch-args" in result.output
+    assert named in result.output
+    assert "ReqCPUS" in result.output
+
+
+def test_an_sbatch_env_var_reaches_the_analysis_end_to_end(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`SBATCH_NTASKS` is inherited by `subprocess.run`, so sbatch reads it.
+
+    The project resolves the default 1 cpu and nothing in `sbatch-args`
+    touches cpus, but the environment asks for four tasks — a four-cpu job
+    that `requested_cpus` would call one, overstating efficiency fourfold.
+    The environment is deliberately NOT sanitized; it is recognised
+    instead, so the analysis falls back to `ReqCPUS` and the hint names the
+    variable rather than a YAML field it masks (#505 review).
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # Analysed against the 4 the environment asked for, not the 1 the YAML
+    # resolved to — which the `cpus > 1` guard would have dropped.
+    assert cpus["reserved"] == "4"
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
+    assert cpus["edit_hint"]["path"] == "env"
+    assert "file" not in cpus["edit_hint"]
+    assert (
+        "`SBATCH_NTASKS=4` multiplies this job's cpu request"
+        in (cpus["edit_hint"]["note"])
+    )
+
+
+def test_sbatch_cpus_per_task_in_the_environment_is_not_an_override(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The generated `--cpus-per-task` beats it, so nothing changes.
+
+    Command line > environment is sbatch's own precedence, and every
+    submit path states `--cpus-per-task`. Treating the variable as an
+    override would discard a request the head knows and resurrect the
+    spurious "reduce cpus to 1" this issue is about (#505 review).
+    """
+    monkeypatch.setenv("SBATCH_CPUS_PER_TASK", "4")
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "req_cpus": 2,  # the site rounded the one cpu asked for
+                "total_cpu_s": 50.0,  # 0.25 eff vs 2, 0.5 vs the requested 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        # Node SELECTION: restricts which nodes and hardware threads may be
+        # used; the generated `--cpus-per-task` still states the request.
+        "--threads-per-core=2",
+        "-B 2:4:1",
+        # Placement MAXIMA: cap where the tasks `--ntasks` asked for may
+        # land. Alone they request nothing at all (#505 review).
+        "--ntasks-per-core=2",
+        "--ntasks-per-socket=2",
+        "--ntasks-per-gpu=2",
+    ],
+)
+def test_a_placement_or_selection_arg_is_not_treated_as_a_cpu_override(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    arg: str,
+):
+    """These shape placement; they do not set the cpu request.
+
+    The generated `--cpus-per-task=1` still states what the job asks for,
+    so the head knows the request and must keep using it. Reading one of
+    these as an override would throw that away, fall back to a `ReqCPUS`
+    the site rounded to 2, and resurrect the exact spurious "reduce cpus
+    to 1" this issue is about — with the hint pointing at `sbatch-args`
+    for good measure (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + f"\ncfg-dispatch:\n  sbatch-args: [{arg}]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "req_cpus": 2,  # the site rounded the one cpu asked for
+                "total_cpu_s": 50.0,  # 0.25 eff vs 2, 0.5 vs the requested 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+    # ...and nothing was retargeted: the other rows still name the YAML.
+    (time_row,) = [a for a in advice if a["resource"] == "time"]
+    assert time_row["edit_hint"]["path"] == "tests[name=basic].resources.time"
+
+
+def test_a_lone_ntasks_override_does_not_claim_to_take_the_suggestion(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--ntasks` is a task count, so "write 2 in here" would mean 2 tasks.
+
+    End to end: one override argument, but not a cpu count. The finding
+    still has to reach the reader with the whole-job figure, and the note
+    must not tell them to put it into an argument that would not take it
+    (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  sbatch-args: [--ntasks=4]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5), whole-job
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus["edit_hint"]["note"]
+    assert "`--ntasks=4` multiplies this job's cpu request" in note
+    assert "change it there" not in note
+
+
+def test_orthogonal_sbatch_args_cpu_options_withhold_the_per_argument_edit(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--ntasks` x `--cpus-per-task` is a product, so neither takes the number.
+
+    End to end: the request is 4 tasks of 2 cpus, the run uses a quarter of
+    it, and the advice still has to reach the reader — but pointing at
+    either argument alone would be wrong in both directions and the finding
+    would recur (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n  sbatch-args: [--ntasks=4, --cpus-per-task=2]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 4 x 2
+                "total_cpu_s": 200.0,  # 0.25 efficiency against those 8
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "-D",
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "8"  # the product, from ReqCPUS
+    assert cpus["suggested"] == "3"  # ceil(8 x 0.25 x 1.5), whole-job
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus["edit_hint"]["note"]
+    assert (
+        "`--ntasks=4` and `--cpus-per-task=2` set this job's cpu request together"
+        in note
+    )
+    assert "product" not in note
+    assert "decompose it across them per sbatch's own precedence" in note
+    # The DEBUG line lists both arguments, for the same reason.
+    assert "`--ntasks=4` and `--cpus-per-task=2`" in result.output
 
 
 def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(
@@ -1881,7 +2358,7 @@ def test_randtest_machine_payload_carries_reservation_advice(
         }
     )
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     _mark_stub_builder_verilator(minimal_project)
     result, _ = _invoke(["--machine", "randtest", "basic", "3", "--dispatch", "slurm"])
@@ -1910,7 +2387,7 @@ def test_unresolvable_builder_does_not_abort_finished_run(
         }
     )
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     _mark_stub_builder_verilator(minimal_project)
 
@@ -2017,7 +2494,7 @@ def test_missing_result_does_not_blame_a_scheduler_off_slurm(
 
     backend = _PoolLikeBackend(write_results=False)
     monkeypatch.setattr(
-        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
     result, _ = _invoke(
         [
@@ -2320,8 +2797,12 @@ class _RetryBackend(_FakeBackend):
         state="TIMEOUT",
         capture=True,
         build_result=True,
+        cpu_telemetry=None,
     ):
         super().__init__(write_results=False)
+        # Reserved-vs-used numbers folded into every job's row, so a retry
+        # fleet can also exercise reservation advice (#505 review).
+        self.cpu_telemetry = cpu_telemetry or {}
         self.banner = banner
         self.passes_on_attempt = passes_on_attempt
         self.state = state
@@ -2387,14 +2868,33 @@ class _RetryBackend(_FakeBackend):
 
     def collect_telemetry(self, handles):
         self.telemetry_queries.append([h.job_id for h in handles])
-        return {h.job_id: {"state": self.states.get(h.job_id)} for h in handles}
+        return {
+            h.job_id: {**self.cpu_telemetry, "state": self.states.get(h.job_id)}
+            for h in handles
+        }
+
+
+def _backend_factory(backend):
+    """Stand in for `create_dispatch_backend`, the way a real one behaves.
+
+    `SlurmDispatchBackend.__init__` keeps the `sbatch_args` it was built
+    with, and right-sizing reads a job's cpu-request overrides off the
+    backend rather than off whichever `cfg-dispatch` is current (#505
+    review). A fake that ignores `cfg` would hide exactly that wiring.
+    """
+
+    def factory(name, cfg):
+        backend.effective_sbatch_args = list(getattr(cfg, "sbatch_args", None) or [])
+        return backend if name not in (None, "local") else None
+
+    return factory
 
 
 def _use_backend(monkeypatch: pytest.MonkeyPatch, backend):
     monkeypatch.setattr(
         rtl_buddy_module,
         "create_dispatch_backend",
-        lambda name, cfg: backend if name not in (None, "local") else None,
+        _backend_factory(backend),
     )
     return backend
 
@@ -3239,3 +3739,249 @@ def test_non_dispatched_test_payload_has_no_reservation_advice(
         line for line in result.output.splitlines() if line.startswith("{")
     ][-1]
     assert "reservation_advice" not in json.loads(payload_line)["payload"]
+
+
+def test_a_retry_re_snapshots_the_cpu_overrides_it_was_submitted_with(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry is a fresh sbatch from a possibly different environment.
+
+    The first attempt went out with nothing overriding cpus, so the row
+    recorded the resolved 1 as the request. Between then and the retry a
+    later suite's in-process sweep hook exported `SBATCH_NTASKS=4`, and
+    `_resubmit_retryable` submits into that environment — so the retry
+    really did ask for four cpus, and it is the retry's telemetry the
+    analysis reads. Keeping the first attempt's metadata would judge it
+    against a request of 1, which the `cpus > 1` guard drops, silently
+    losing valid advice (#505 review).
+
+    The first `wait_all` is that window: it runs after the first attempt is
+    submitted and before it is collected and resubmitted.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch,
+        _RetryBackend(
+            passes_on_attempt=2,
+            cpu_telemetry={
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            },
+        ),
+    )
+
+    real_wait_all = backend.wait_all
+
+    def wait_all_then_export(handles, **kwargs):
+        os.environ["SBATCH_NTASKS"] = "4"
+        return real_wait_all(handles, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_export)
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # The retry really was submitted, and into the changed environment.
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"  # the retry's request, not the first attempt's 1
+    assert cpus["edit_hint"]["path"] == "env"
+    assert (
+        "`SBATCH_NTASKS=4` multiplies this job's cpu request"
+        in (cpus["edit_hint"]["note"])
+    )
+
+
+@pytest.mark.parametrize("fail_at", ["submit", "wait"])
+def test_an_abandoned_retry_leaves_the_first_attempts_cpu_metadata(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_at: str,
+):
+    """Metadata must describe the attempt whose telemetry sits beside it.
+
+    The ambient `SBATCH_NTASKS` changes before the retry, but the retry is
+    then refused by `sbatch` — or its wait fails. The head deliberately
+    keeps the first attempt's results and telemetry after those cluster
+    failures, so the row must keep the first attempt's reservation too.
+    Rewriting it up front paired that telemetry with an attempt that never
+    ran, picking the wrong cpu denominator and naming an override that was
+    never in force for it (#505 review).
+
+    With the first attempt's metadata the resolved request is 1 cpu, which
+    the `cpus > 1` guard drops — so a cpus row appearing at all is the bug.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch,
+        _RetryBackend(
+            cpu_telemetry={
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 100.0,  # 0.25 efficiency
+            },
+        ),
+    )
+
+    real_wait_all = backend.wait_all
+    real_submit = backend.submit
+
+    def wait_all_then_export(handles, **kwargs):
+        # The window a later suite's in-process sweep hook would run in.
+        os.environ["SBATCH_NTASKS"] = "4"
+        if fail_at == "wait" and backend.wait_calls >= 1:
+            raise FatalRtlBuddyError("max-wait elapsed on the retry round")
+        return real_wait_all(handles, **kwargs)
+
+    def submit_or_refuse(spec, **kwargs):
+        if fail_at == "submit" and backend.attempts.get(spec.test_name):
+            raise FatalRtlBuddyError("sbatch: error: QOSMaxSubmitJobPerUserLimit")
+        return real_submit(spec, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_export)
+    monkeypatch.setattr(backend, "submit", submit_or_refuse)
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    # The retry was abandoned, not the run: the first attempt's rows stand.
+    assert "retry_abandoned" in result.output or "abandoned" in result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    # The first attempt asked for the resolved 1 cpu with nothing overriding
+    # it, and a one-cpu reservation has no cpus advice to give.
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+
+
+def _use_backend_with_fixed_args(monkeypatch, backend, sbatch_args):
+    """A backend built from a DIFFERENT config than the suite's.
+
+    The real shape: `_resolve_dispatch_backend` runs once, before the suite
+    loop, off the orchestration `root_config.yaml`; `root_cfg` is then
+    rebuilt for any suite that walks up to a different one. The backend
+    keeps the arguments it was constructed with, whatever the current
+    suite's `cfg-dispatch` says.
+    """
+
+    def factory(name, cfg):
+        backend.effective_sbatch_args = list(sbatch_args)
+        return backend if name not in (None, "local") else None
+
+    monkeypatch.setattr(rtl_buddy_module, "create_dispatch_backend", factory)
+    return backend
+
+
+def test_an_override_only_the_backend_carries_is_still_found(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The suite's `cfg-dispatch` is not what `sbatch` received.
+
+    In a multi-root regression the backend is built once from the
+    orchestration config while `root_cfg` is rebuilt per suite, so the
+    suite's `sbatch-args` can be empty while the backend really appends
+    `--ntasks=4`. Scanning the suite's config misses that override, records
+    the generated per-task cpus as the whole-job request, and the `cpus > 1`
+    guard then drops advice the run genuinely deserved (#505 review).
+    """
+    backend = _use_backend_with_fixed_args(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 4,
+                    "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                    "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+                }
+            }
+        ),
+        ["--ntasks=4"],
+    )
+    assert backend is not None
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert (
+        "`--ntasks=4` multiplies this job's cpu request" in (cpus["edit_hint"]["note"])
+    )
+
+
+def test_a_suite_override_the_backend_never_had_makes_no_false_hint(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The mirror case: the suite's config claims what sbatch never got.
+
+    Reading it would name `sbatch-args` as the thing to edit for a run
+    submitted without it — an edit hint pointing at an argument that was
+    never in force, which is the unappliable advice #505 exists to remove.
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n"
+        + "  resources: {cpus: 4}\n"
+        + "  sbatch-args: [--ntasks=4]\n"
+    )
+    _use_backend_with_fixed_args(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 4,
+                    "req_cpus": 4,  # just the generated 4; no task multiplier
+                    "total_cpu_s": 100.0,  # 0.25 efficiency
+                }
+            }
+        ),
+        [],  # ...but this backend appends nothing
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # The YAML field really does govern this run, so that is what to edit.
+    assert cpus["edit_hint"]["path"] == "tests[name=basic].resources.cpus"
+    assert "note" not in cpus["edit_hint"]

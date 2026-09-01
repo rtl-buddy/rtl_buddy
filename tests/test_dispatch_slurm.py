@@ -353,13 +353,14 @@ def test_wait_and_cancel_use_base_array_ids(monkeypatch):
 def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
     sacct_out = "\n".join(
         [
-            # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqMem|TotalCPU|MaxRSS
-            "500_1|COMPLETED|75|60|2|4G||",
-            "500_1.batch|COMPLETED|75||2||01:02.500|2948K",
-            "500_2|TIMEOUT|3600|60|2|4G||",
-            "500_2.batch|CANCELLED|3600||2||59:00.000|1.5G",
-            "42|COMPLETED|10|1|1|500M||",
-            "42.batch|COMPLETED|10||1||00:03.250|10240K",
+            # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqCPUS|ReqMem|TotalCPU|MaxRSS
+            "500_1|COMPLETED|75|60|2|2|4G||",
+            "500_1.batch|COMPLETED|75||2|2||01:02.500|2948K",
+            "500_2|TIMEOUT|3600|60|2|2|4G||",
+            "500_2.batch|CANCELLED|3600||2|2||59:00.000|1.5G",
+            # A whole-core site: one cpu asked for, two handed out (#505).
+            "42|COMPLETED|10|1|2|1|500M||",
+            "42.batch|COMPLETED|10||2|1||00:03.250|10240K",
         ]
     )
     calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]
@@ -381,6 +382,7 @@ def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
     assert t1["elapsed_s"] == 75
     assert t1["timelimit_s"] == 3600  # TimelimitRaw is minutes
     assert t1["alloc_cpus"] == 2
+    assert t1["req_cpus"] == 2
     assert t1["req_mem_bytes"] == 4 * 2**30
     assert t1["max_rss_bytes"] == 2948 * 1024
     assert t1["total_cpu_s"] == 62.5
@@ -390,6 +392,11 @@ def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
     assert t2["max_rss_bytes"] == int(1.5 * 2**30)
 
     assert telemetry["42"]["total_cpu_s"] == 3.25
+    # The requested cpus are carried alongside the allocated ones: right-sizing
+    # judges efficiency against what the reservation asked for, because that is
+    # the number a tests.yaml edit can move (#505).
+    assert telemetry["42"]["alloc_cpus"] == 2
+    assert telemetry["42"]["req_cpus"] == 1
 
 
 def test_collect_telemetry_no_accounting_degrades_to_empty(monkeypatch):
@@ -425,9 +432,9 @@ def test_collect_telemetry_sums_cpu_time_across_steps(monkeypatch):
     # while MaxRSS stays a high-water max.
     sacct_out = "\n".join(
         [
-            "9|COMPLETED|100|60|4|4G||",
-            "9.batch|COMPLETED|100||4||00:10.000|500M",
-            "9.0|COMPLETED|100||4||01:30.000|900M",
+            "9|COMPLETED|100|60|4|4|4G||",
+            "9.batch|COMPLETED|100||4|4||00:10.000|500M",
+            "9.0|COMPLETED|100||4|4||01:30.000|900M",
         ]
     )
     calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]
@@ -1136,3 +1143,81 @@ def test_max_wait_is_widened_by_a_backoff_the_head_asked_for(monkeypatch):
     _install(monkeypatch)
     SlurmDispatchBackend(cfg).wait_all(handles, extra_wait=600.0)
     assert clock["now"] == 200.0
+
+
+# ------- #505 review: why SBATCH_CPUS_PER_TASK is not treated as an override
+
+
+def test_every_submit_path_states_cpus_per_task_on_the_command_line(
+    monkeypatch, tmp_path
+):
+    """Load-bearing for right-sizing, not just cosmetic (#505 review).
+
+    sbatch's documented precedence is command line > environment > script,
+    so `SBATCH_CPUS_PER_TASK` in a site's environment is always beaten by
+    the flag rtl-buddy itself passes — which is why
+    `cpu_request_overrides()` deliberately does NOT treat that variable as
+    an override. Make any of these three paths emit the flag conditionally
+    and that reasoning stops holding, so pin all three here rather than
+    discover it through wrong advice.
+    """
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    def _argv_of(submit):
+        calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+        monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+        backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+        submit(backend)
+        (argv,) = calls
+        return argv
+
+    sim = _argv_of(lambda b: b.submit(_spec()))
+    array = _argv_of(
+        lambda b: b.submit_array(
+            [_spec(run_id=i) for i in (1, 2)],
+            array_dir=tmp_path / "array",
+            max_parallel=2,
+        )
+    )
+    build = _argv_of(
+        lambda b: b.submit_build(
+            BuildJobSpec(
+                suite_dir="/proj/verif/blk",
+                test_config_path="/proj/verif/blk/tests.yaml",
+                resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+                reg_level=0,
+                log_path=None,
+            )
+        )
+    )
+
+    for argv in (sim, array, build):
+        assert any(a.startswith("--cpus-per-task=") for a in argv), argv
+        # ...and none of them states the task or node counts, which is why
+        # the SBATCH_* variables for THOSE do reach sbatch and are treated
+        # as overrides.
+        assert not any(
+            a.startswith(("--ntasks", "-n", "--nodes", "-N")) for a in argv
+        ), argv
+
+
+def test_effective_sbatch_args_is_what_the_backend_will_append():
+    """Right-sizing reads its cpu overrides from here, so it must be real.
+
+    The backend is built once from the orchestration config, before the
+    suite loop, and keeps that list however `root_cfg` is later rebuilt —
+    which is exactly why the snapshot is taken from the backend and not
+    from whichever `cfg-dispatch` is current (#505 review).
+    """
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif", "--ntasks=4"]).initialise()
+    )
+    args = backend.effective_sbatch_args
+    assert "--partition=verif" in args and "--ntasks=4" in args
+    # ...including the accounting rate it prepends, since that is submitted too.
+    assert any(a.startswith("--acctg-freq") for a in args)
+    # It is the same list every submission appends, not a copy taken early.
+    assert args is backend.sbatch_args
+
+    bare = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    assert not [a for a in bare.effective_sbatch_args if not a.startswith("--acctg")]

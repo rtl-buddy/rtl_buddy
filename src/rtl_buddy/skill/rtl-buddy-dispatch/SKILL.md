@@ -56,6 +56,41 @@ of the global reservation.
   run. A `reduce` is withheld (`rightsize.build_advice_withheld`) when no build
   actually compiled, or when the job left no record of what it built, so
   right-size the build job from a run that rebuilt.
+- `cpus` advice is judged against the cpus the job **requested**, not the cpus
+  Slurm allocated: a site that hands out whole cores charges a `cpus: 1` job two
+  and no reservation edit can change that. The request is the `--cpus-per-task`
+  rtl_buddy itself submitted, so the rule holds even where `ReqCPUS` is rounded
+  too. Where request and allocation differ the table reads
+  `Reserved 4 (8 allocated)`; `allocated` is on every finding and is null
+  except on such a `cpus` row. Edit the requested figure named in `Field`.
+- ...unless `cfg-dispatch.sbatch-args` carries an argument that sets the job's
+  cpu request: `-c`/`--cpus-per-task`, or a task/node count `ReqCPUS`
+  raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`).
+  Node-selection constraints (`--threads-per-core`, `-B`), placement maxima
+  (`--ntasks-per-core`/`-socket`/`-gpu`) and `--exclusive` do not count — they
+  change what is selected, capped or allocated, not what is requested.
+- The environment counts too: `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and
+  `SBATCH_NODES` are inherited by the submit and are treated exactly like the
+  matching `sbatch-args` entry (command line beats environment; the
+  environment is never sanitized). `SBATCH_CPUS_PER_TASK` is NOT one — every
+  submit path states `--cpus-per-task`, which beats it. An env-only override
+  has `edit_hint.path` `env` and no `file`, since there is nothing to edit. Those are appended last and win — within
+  one option the last occurrence, as for sbatch. The advice then falls back to
+  `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line names the
+  arguments, and the `cpus` row's `edit_hint` points at
+  `cfg-dispatch.sbatch-args` with a note naming the field it masks — edit the
+  argument, not that field. `mem` and `time` rows are unaffected.
+- `suggested` is always the whole-job cpu count, but only ONE shape of override
+  takes it: exactly one `-c`/`--cpus-per-task` — write it straight in. A lone
+  task or node count (`--ntasks`, `--ntasks-per-*`, `--nodes`) is not a cpu
+  count, and several arguments combine by sbatch's own precedence, so in both
+  cases the note says the number is the whole-job figure and the decomposition
+  is yours. It never claims a product: `--ntasks=8 --nodes=2
+  --ntasks-per-node=4 --cpus-per-task=2` requests 16, not the product of four.
+- A DIRECT `-c`/`--cpus-per-task` override disables the compile `cpus` floor —
+  it replaces the generated flag, so that floor never reached sbatch. A task or
+  node count does not: `--cpus-per-task` is still in force, so the floor stays
+  and no suggestion goes below it.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 

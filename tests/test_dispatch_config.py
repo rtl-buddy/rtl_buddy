@@ -21,6 +21,8 @@ from rtl_buddy.config.dispatch import (
     mem_to_bytes,
     resolve_compile_resources,
     resolve_resources,
+    cpu_request_overrides,
+    sbatch_args_cpu_request_options,
     time_to_seconds,
 )
 from rtl_buddy.config.root import RootConfig
@@ -701,3 +703,340 @@ def test_parallel_is_not_a_field_of_a_suite_level_compile_block(
     resolved = resolve_compile_resources(cfg, block)
     assert resolved == JobResources(cpus=4, mem="48G")
     assert not hasattr(resolved, "parallel")
+
+
+# ------------- #505 review: a cpus override in sbatch-args is detectable
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["--cpus-per-task=4"], "--cpus-per-task=4"),
+        (["--cpus-per-task", "4"], "--cpus-per-task 4"),
+        (["-c", "4"], "-c 4"),
+        (["-c4"], "-c4"),
+        (["-c=4"], "-c=4"),
+        (
+            ["--partition=verif", "--cpus-per-task=4", "--exclusive"],
+            "--cpus-per-task=4",
+        ),
+        # A trailing flag with no value is malformed sbatch input, but it is
+        # still an override of intent: sbatch, not right-sizing, reports it.
+        (["--cpus-per-task"], "--cpus-per-task"),
+        # `ReqCPUS` is tasks x cpus-per-task, so a task count multiplies the
+        # job's cpus just as surely and leaves `requested_cpus` — a per-task
+        # number — under-counting the denominator (#505 review).
+        (["--ntasks=4"], "--ntasks=4"),
+        (["-n", "4"], "-n 4"),
+        (["-n4"], "-n4"),
+        # sbatch documents this one as a REQUEST when `--ntasks` is absent
+        # ("meant to be used with the --nodes option"), so `--nodes=2
+        # --ntasks-per-node=4` asks for eight tasks (#505 review).
+        (["--ntasks-per-node=2"], "--ntasks-per-node=2"),
+        (["--nodes=2"], "--nodes=2"),
+        (["-N", "2"], "-N 2"),
+    ],
+)
+def test_a_cpus_override_in_sbatch_args_is_found(args, expected):
+    """`sbatch-args` is appended last and wins, so it has to be seen (#505).
+
+    Right-sizing otherwise analyses a run against the cpus the YAML resolved
+    to rather than the cpus it was submitted with — the same class of bug
+    #505 fixed, arriving by the other door.
+    """
+    assert sbatch_args_cpu_request_options(args) == [expected]
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["-c", "4", "--cpus-per-task=8"], "--cpus-per-task=8"),
+        (["--cpus-per-task=8", "-c", "4"], "-c 4"),
+        (["-c4", "--partition=verif", "-c8"], "-c8"),
+        (["-n", "2", "--ntasks=8"], "--ntasks=8"),
+    ],
+)
+def test_the_last_occurrence_of_ONE_option_wins_like_sbatch(args, expected):
+    """sbatch obeys the FINAL occurrence, so the hint must name that one.
+
+    `[-c, 4, --cpus-per-task=8]` runs with 8; naming the first would send a
+    reader to an argument that is not in force. The short and long spellings
+    are the SAME option, so this is one entry and not two (#505 review).
+    """
+    assert sbatch_args_cpu_request_options(args) == [expected]
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["--ntasks=4", "--cpus-per-task=2"], ["--ntasks=4", "--cpus-per-task=2"]),
+        # Order of first appearance, so the note reads back in the order the
+        # project wrote them.
+        (["--cpus-per-task=2", "--ntasks=4"], ["--cpus-per-task=2", "--ntasks=4"]),
+        (["-n", "4", "-c", "2"], ["-n 4", "-c 2"]),
+        # Repetition still collapses per option, and keeps that option's
+        # first position while carrying its last value.
+        (
+            ["-n", "4", "--cpus-per-task=2", "--ntasks=8"],
+            ["--ntasks=8", "--cpus-per-task=2"],
+        ),
+        (
+            ["--nodes=2", "--ntasks-per-node=4", "--cpus-per-task=2"],
+            ["--nodes=2", "--ntasks-per-node=4", "--cpus-per-task=2"],
+        ),
+        # An excluded neighbour alongside a real one changes nothing.
+        (
+            ["--threads-per-core=2", "--ntasks=4", "--cpus-per-task=2"],
+            ["--ntasks=4", "--cpus-per-task=2"],
+        ),
+    ],
+)
+def test_distinct_cpu_options_multiply_instead_of_overriding(args, expected):
+    """`--ntasks` and `--cpus-per-task` are orthogonal, not rivals.
+
+    `ReqCPUS` is their product, so "the last one wins" is simply wrong
+    across different options: neither is superseded, and neither alone can
+    be handed a whole-job suggestion (#505 review).
+    """
+    assert sbatch_args_cpu_request_options(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        None,
+        ["--partition=verif"],
+        ["--constraint=haswell"],
+        ["--comment=nightly"],
+        ["--chdir=/tmp"],
+        ["--mem=8G", "--time=01:00:00"],
+        # Not a cpus count: the short options take a number.
+        ["-cfoo"],
+        ["-nodes"],
+        # `--nodelist` shares a prefix with `--nodes`, and `--ntasks-per-*`
+        # must not be read as a bare `--ntasks`.
+        ["--nodelist=node01"],
+        # Allocation, not request: `ReqCPUS` still describes the reservation,
+        # so the fallback is already right and there is nothing to retarget.
+        ["--exclusive"],
+        ["--overcommit"],
+        # Node SELECTION, not request: these restrict which nodes and
+        # hardware threads may be used while the generated `--cpus-per-task`
+        # still states the request, so the head still knows it and must not
+        # throw it away (#505 review).
+        ["--threads-per-core=2"],
+        ["--threads-per-core", "2"],
+        ["-B", "2:4:1"],
+        ["--extra-node-info=2:4:1"],
+        # Mutually exclusive with the `--cpus-per-task` every dispatched job
+        # carries, so sbatch rejects the pair: the "override" can never take
+        # effect, and a job that never runs has nothing to right-size.
+        ["--cpus-per-gpu=4"],
+        ["--cpus-per-gpu", "4"],
+        # Placement MAXIMA, not requests: they cap where the tasks
+        # `--ntasks` asked for may land ("request the maximum ntasks be
+        # invoked on each core/socket ... meant to be used with the
+        # --ntasks option"), so a lone one requests nothing. The `--ntasks`
+        # they accompany is in the set, so a real change is still caught.
+        ["--ntasks-per-core=2"],
+        ["--ntasks-per-socket=2"],
+        # Only takes effect beside a GPU request rtl-buddy neither generates
+        # nor tracks, so on its own it moves no cpu request.
+        ["--ntasks-per-gpu=2"],
+    ],
+)
+def test_args_that_do_not_touch_cpus_are_left_alone(args):
+    """`--constraint`/`--comment`/`--chdir` all start with `--c`."""
+    assert sbatch_args_cpu_request_options(args) == []
+
+
+def test_the_override_is_reported_verbatim_for_the_log_line():
+    assert sbatch_args_cpu_request_options(["--cpus-per-task=4"]) == [
+        "--cpus-per-task=4"
+    ]
+    assert sbatch_args_cpu_request_options(["-c", "4"]) == ["-c 4"]
+    assert sbatch_args_cpu_request_options(["--x", "--cpus-per-task", "16"]) == [
+        "--cpus-per-task 16"
+    ]
+
+
+# ---- #505 review: the SBATCH_* environment overrides the request too
+
+
+def test_an_sbatch_env_var_is_an_override_on_its_own():
+    """`subprocess.run` inherits the environment, so sbatch reads it.
+
+    `SBATCH_NTASKS=4` beside a generated `--cpus-per-task=2` requests eight
+    cpus, while the head recorded two — efficiency would be overstated
+    fourfold. The variable is not sanitized away (a site that exports it
+    means it); it is recognised (#505 review).
+    """
+    assert cpu_request_overrides([], {"SBATCH_NTASKS": "4"}) == ["SBATCH_NTASKS=4"]
+    assert cpu_request_overrides([], {"SBATCH_NODES": "2"}) == ["SBATCH_NODES=2"]
+    assert cpu_request_overrides([], {"SBATCH_NTASKS_PER_NODE": "2"}) == [
+        "SBATCH_NTASKS_PER_NODE=2"
+    ]
+
+
+def test_env_and_sbatch_args_are_both_reported():
+    """Different options, so they combine rather than supersede."""
+    assert cpu_request_overrides(["--cpus-per-task=2"], {"SBATCH_NTASKS": "4"}) == [
+        "--cpus-per-task=2",
+        "SBATCH_NTASKS=4",
+    ]
+
+
+def test_an_explicit_sbatch_arg_beats_the_environment():
+    """sbatch's own precedence: command line > environment > script.
+
+    The job runs with `--ntasks=8`, so naming the variable would send a
+    reader to a setting that is not in force — the same mistake as naming
+    the first of two occurrences of one option.
+    """
+    assert cpu_request_overrides(["--ntasks=8"], {"SBATCH_NTASKS": "4"}) == [
+        "--ntasks=8"
+    ]
+    # ...and only for the SAME option: an unrelated argument does not shadow
+    # the variable.
+    assert cpu_request_overrides(["--cpus-per-task=8"], {"SBATCH_NTASKS": "4"}) == [
+        "--cpus-per-task=8",
+        "SBATCH_NTASKS=4",
+    ]
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_a_blank_env_var_is_not_an_override(value):
+    """Exported-but-empty is how a shell unsets one in practice."""
+    assert cpu_request_overrides([], {"SBATCH_NTASKS": value}) == []
+
+
+def test_an_absent_environment_changes_nothing():
+    assert cpu_request_overrides([], {}) == []
+    assert cpu_request_overrides(["--ntasks=4"], {}) == ["--ntasks=4"]
+
+
+def test_sbatch_cpus_per_task_env_is_not_an_override():
+    """The generated `--cpus-per-task` always beats it.
+
+    sbatch's precedence is command line > environment, and both submit
+    paths emit `--cpus-per-task` unconditionally, so the variable can never
+    take effect. Treating it as an override would discard a request the
+    head knows — the same false positive `--cpus-per-gpu` was excluded for
+    (#505 review). `test_dispatch_slurm.py` pins the flag's presence, which
+    is what makes this true.
+    """
+    assert cpu_request_overrides([], {"SBATCH_CPUS_PER_TASK": "4"}) == []
+    # The variables Slurm defines for the options this set already excludes
+    # are out for their own reasons, and stay out.
+    assert cpu_request_overrides([], {"SBATCH_THREADS_PER_CORE": "2"}) == []
+    assert cpu_request_overrides([], {"SBATCH_CPUS_PER_GPU": "4"}) == []
+    assert cpu_request_overrides([], {"SBATCH_EXCLUSIVE": "1"}) == []
+
+
+def test_the_env_layer_reads_os_environ_by_default(monkeypatch):
+    """No `env=` argument means the environment the jobs will inherit."""
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+    assert cpu_request_overrides([]) == []
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    assert cpu_request_overrides([]) == ["SBATCH_NTASKS=4"]
+
+
+def test_the_args_only_scanner_ignores_the_environment(monkeypatch):
+    """`sbatch_args_cpu_request_options` stays what its name says."""
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    assert sbatch_args_cpu_request_options([]) == []
+
+
+# ---- #505 review: a GPU count + --ntasks-per-gpu derives the task count
+
+
+@pytest.mark.parametrize(
+    "args,env,expected",
+    [
+        # sbatch: "specify the GPUs wanted (e.g. via --gpus or --gres)
+        # without specifying --ntasks, and the total task count will be
+        # automatically determined" — so this pair asks for 4 tasks.
+        (["--gpus=2", "--ntasks-per-gpu=2"], {}, ["--gpus=2", "--ntasks-per-gpu=2"]),
+        (["-G", "2", "--ntasks-per-gpu=2"], {}, ["-G 2", "--ntasks-per-gpu=2"]),
+        (["-G2", "--ntasks-per-gpu", "2"], {}, ["-G2", "--ntasks-per-gpu 2"]),
+        (
+            ["--gres=gpu:2", "--ntasks-per-gpu=2"],
+            {},
+            ["--gres=gpu:2", "--ntasks-per-gpu=2"],
+        ),
+        (
+            ["--gpus-per-node=2", "--ntasks-per-gpu=2"],
+            {},
+            ["--gpus-per-node=2", "--ntasks-per-gpu=2"],
+        ),
+        (
+            ["--gpus-per-socket=1", "--ntasks-per-gpu=2"],
+            {},
+            ["--gpus-per-socket=1", "--ntasks-per-gpu=2"],
+        ),
+        # Either half may come from the environment; sbatch reads both.
+        (
+            [],
+            {"SBATCH_GPUS": "2", "SBATCH_NTASKS_PER_GPU": "2"},
+            ["SBATCH_GPUS=2", "SBATCH_NTASKS_PER_GPU=2"],
+        ),
+        (
+            ["--gpus=2"],
+            {"SBATCH_NTASKS_PER_GPU": "2"},
+            ["--gpus=2", "SBATCH_NTASKS_PER_GPU=2"],
+        ),
+        (
+            [],
+            {"SBATCH_GRES": "gpu:2", "SBATCH_NTASKS_PER_GPU": "2"},
+            ["SBATCH_GRES=gpu:2", "SBATCH_NTASKS_PER_GPU=2"],
+        ),
+    ],
+)
+def test_a_gpu_count_with_ntasks_per_gpu_is_a_task_count_override(args, env, expected):
+    """Neither half does this alone, so the advice has to name the pair.
+
+    Without it the row records the generated per-task cpus as the whole-job
+    request while the job actually asked for four times that, overstating
+    efficiency fourfold and suppressing real reduction advice (#505 review).
+    """
+    assert cpu_request_overrides(args, env) == expected
+
+
+@pytest.mark.parametrize(
+    "args,env",
+    [
+        # Round 10/11 stands: alone it caps placement and requests nothing.
+        (["--ntasks-per-gpu=2"], {}),
+        ([], {"SBATCH_NTASKS_PER_GPU": "2"}),
+        # A GPU count with no --ntasks-per-gpu derives no tasks either.
+        (["--gpus=2"], {}),
+        (["--gres=gpu:2"], {}),
+        ([], {"SBATCH_GPUS": "2"}),
+        # `--gres` carries many resource kinds; only a gpu one can pair.
+        (["--gres=fs:lustre", "--ntasks-per-gpu=2"], {}),
+        ([], {"SBATCH_GRES": "bandwidth:lustre:1", "SBATCH_NTASKS_PER_GPU": "2"}),
+        # Mutually exclusive with --ntasks-per-gpu, so that pair never runs.
+        (["--gpus-per-task=1", "--ntasks-per-gpu=2"], {}),
+    ],
+)
+def test_a_half_pair_derives_no_task_count(args, env):
+    assert cpu_request_overrides(args, env) == []
+
+
+@pytest.mark.parametrize(
+    "args,env",
+    [
+        (["--gpus=2", "--ntasks-per-gpu=2", "--ntasks=8"], {}),
+        (["--gpus=2", "--ntasks-per-gpu=2"], {"SBATCH_NTASKS": "8"}),
+    ],
+)
+def test_an_explicit_ntasks_reverses_the_derivation(args, env):
+    """With `--ntasks` given, `--ntasks-per-gpu` sets the GPU count instead.
+
+    The task count then comes from `--ntasks`, which is already an
+    override — so the pair must not be reported on top of it.
+    """
+    found = cpu_request_overrides(args, env)
+    assert [f for f in found if "ntasks-per-gpu" in f.lower()] == []
+    assert any(f.endswith("8") for f in found)

@@ -7,9 +7,12 @@ guardrails, and the Verilator-only gate on time advice.
 
 from __future__ import annotations
 
+import pytest
+
 from rtl_buddy.config.dispatch import RightsizeConfigFile
 from rtl_buddy.dispatch.rightsize import (
     RightsizeFinding,
+    _override_note,
     analyze_build_reservation,
     analyze_suite_reservations,
     format_mem,
@@ -30,6 +33,9 @@ def _row(
     compile_in_job=False,
     governed_by=None,
     compile_floor=None,
+    requested_cpus=None,
+    cpus_override=None,
+    submitted_cpus_per_task=None,
 ):
     results = (
         TestPassResults(name=test + "/results")
@@ -46,6 +52,12 @@ def _row(
         "compile_in_job": compile_in_job,
         "governed_by": governed_by or {},
         "compile_floor": compile_floor or {},
+        # What the head resolved and submitted as `--cpus-per-task` (#505).
+        "requested_cpus": requested_cpus,
+        # ...and the `sbatch-args` entry that superseded it, if any.
+        "cpus_override": cpus_override,
+        # The generated `--cpus-per-task`, still in force under a task count.
+        "submitted_cpus_per_task": submitted_cpus_per_task,
     }
 
 
@@ -764,6 +776,7 @@ def _build_advice(
     accounting_interval_s=None,
     compile_origins=None,
     suite_config_hint=None,
+    cpus_override=None,
 ):
     return analyze_build_reservation(
         telemetry,
@@ -776,6 +789,7 @@ def _build_advice(
         accounting_interval_s=accounting_interval_s,
         compile_origins=compile_origins,
         suite_config_hint=suite_config_hint,
+        cpus_override=cpus_override,
     )
 
 
@@ -893,7 +907,8 @@ def test_a_single_build_is_advised_even_at_a_wide_parallel():
         compile_work={"records": 1, "compiled": 1, "compiled_sec": 90.0},
     )
     (cpus_a,) = [f for f in findings if f.resource == "cpus"]
-    # ceil(8 x 0.25 x 1.5) = 3 -> not divided again by the four idle slots.
+    # The head submitted 8 x 4 = 32, so the ratio is 200 / (100 x 32) and
+    # ceil(32 x 0.0625 x 1.5) = 3 -- not divided again by the idle slots.
     assert cpus_a.suggested == "3"
     # ...but 3 > the 2 already configured, so the note explains the lever
     # that is actually oversized here.
@@ -911,6 +926,10 @@ def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
     already there, which is advice that never retires. The decomposition
     is therefore stated from the resolved `cfg-dispatch.compile.cpus`, with
     the allocated figure named separately so `sacct` still reconciles.
+
+    The same resolved value is the ratio's denominator and the reported
+    `reserved` (#505): this row carries no `req_cpus` at all, so without it
+    the whole finding would be stated in the site's rounded numbers.
     """
     findings = _build_advice(
         {
@@ -918,20 +937,25 @@ def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
             "elapsed_s": 100,
             "timelimit_s": 7200,
             "alloc_cpus": 8,  # the site rounded 3 up to a whole node's core count
-            "total_cpu_s": 100,  # 0.125 efficiency
+            "total_cpu_s": 100,  # 0.33 efficiency against the 3 requested
         },
         parallel=1,
         cpus=3,
     )
     (cpus_a,) = [f for f in findings if f.resource == "cpus"]
     note = cpus_a.edit_hint["note"]
-    assert "the build job reserved 3" not in note
-    assert "asked for 3 = 3 x compile.parallel 1" in note
-    assert "reported 8 allocated" in note
+    # One build slot, so the request is the per-build figure with nothing to
+    # decompose — and the site's rounding is named, not adopted.
+    assert "the build job reserved 3" in note
+    assert "the scheduler reported 8 allocated" in note
     # 8 would have been the sacct-derived per-build figure.
     assert "= 8 x" not in note
-    # The allocated figure is still what `squeue`/`sacct` shows.
-    assert cpus_a.reserved == "8"
+    # `reserved` is the number `cfg-dispatch.compile.cpus` holds; the
+    # allocation rides along as an additive field (#505).
+    assert cpus_a.reserved == "3"
+    assert cpus_a.allocated == "8"
+    assert cpus_a.utilization == 100 / 300
+    assert cpus_a.suggested == "2"  # ceil(3 x 0.333 x 1.5)
 
 
 def test_a_saturated_build_job_gets_no_cpus_advice(caplog):
@@ -1292,3 +1316,1239 @@ def test_the_per_build_clause_only_appears_under_a_build_cpus_row(monkeypatch):
         [_finding("compile"), _finding("compile", resource="cpus")], monkeypatch
     )
     assert any("cpus suggestion is per-build" in line for line in with_cpus)
+
+
+# ---------------------------- #505: cpus advice is judged against the REQUEST
+
+
+def test_whole_core_rounding_does_not_produce_cpus_advice():
+    """A single-threaded test on a whole-core site is not over-reserved.
+
+    `SelectTypeParameters=NONE` with `ThreadsPerCore=2` hands a job that
+    asked for one cpu two of them, so sacct reports `AllocCPUS=2` against
+    `ReqCPUS=1`. Judged against the allocation a single-threaded sim cannot
+    beat 0.5 efficiency and every test in the suite is advised down to the
+    `cpus: 1` its tests.yaml already says — advice no edit can retire
+    (#505). The request is the number the project controls, so it is the
+    number the ratio is taken against.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 2,  # the scheduler rounded 1 up to a whole core
+                "req_cpus": 1,
+                "total_cpu_s": 500.0,  # 0.25 eff vs the allocation, 0.5 vs 1 cpu
+            },
+        )
+    ]
+    assert [f for f in _analyze(rows) if f.resource == "cpus"] == []
+
+
+def test_cpu_efficiency_is_measured_against_the_requested_cpus():
+    """Rounding is the scheduler's; the reservation is doing fine.
+
+    4 allocated against 2 requested, with 1.2 cpu-seconds per wall second:
+    0.3 efficiency against the allocation (under the 0.5 threshold) but 0.6
+    against the request. Only the second number is about a reservation
+    anyone can edit.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 2,
+                "total_cpu_s": 1200.0,
+            },
+        )
+    ]
+    assert [f for f in _analyze(rows) if f.resource == "cpus"] == []
+
+
+def test_a_genuinely_over_reserved_test_still_gets_cpus_advice():
+    """Nothing rounded, nothing to excuse: 4 asked for, 4 given, 25% used."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,
+            },
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.direction == "reduce"
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"  # ceil(4 x 0.25 x 1.5)
+    # Request and allocation agree, so there is nothing extra to reconcile.
+    assert cpu.allocated is None
+    assert cpu.as_event()["allocated"] is None
+
+
+def test_a_cpus_finding_names_the_request_and_carries_the_allocation():
+    """`reserved` has to be the number the named Field holds.
+
+    8 allocated against 4 requested and a quarter of the request used: the
+    advice is real, but a row saying `Reserved 8` sends the reader to a
+    tests.yaml that says 4. The allocated figure is additive, so `sacct`
+    and `squeue` still reconcile.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,  # 0.25 eff against the requested 4
+            },
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.reserved == "4"
+    assert cpu.allocated == "8"
+    assert cpu.suggested == "2"
+    assert cpu.utilization == 0.25
+    assert cpu.as_event()["allocated"] == "8"
+
+
+def test_telemetry_without_a_request_still_ratios_against_the_allocation():
+    """Older telemetry (and any backend that reports only what it gave)."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "total_cpu_s": 1000.0,
+            },
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.reserved == "8"
+    assert cpu.allocated is None
+    assert cpu.suggested == "2"  # ceil(8 x 0.125 x 1.5)
+
+
+def test_a_build_job_is_also_judged_against_its_request():
+    """Same rounding, same fix, for the suite's build job (#495 row)."""
+    retired = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 2,
+            "req_cpus": 1,
+            "total_cpu_s": 50,  # 0.25 eff vs the allocation, 0.5 vs the request
+        },
+        parallel=1,
+        cpus=1,
+    )
+    assert [f for f in retired if f.resource == "cpus"] == []
+
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,  # rounded up to a whole node's cores
+            "req_cpus": 4,
+            "total_cpu_s": 100,  # 0.25 eff against the requested 4
+        },
+        parallel=1,
+        cpus=4,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert cpus_a.reserved == "4"
+    assert cpus_a.allocated == "8"
+    assert cpus_a.suggested == "2"  # ceil(4 x 0.25 x 1.5)
+    note = cpus_a.edit_hint["note"]
+    assert "the build job reserved 4" in note
+    assert "the scheduler reported 8 allocated" in note
+
+
+def _rendered_rows(findings, monkeypatch):
+    """The rows `_render_reservation_advice` hands to the table."""
+    import rtl_buddy.rtl_buddy as rbmod
+
+    captured = {}
+    monkeypatch.setattr(rbmod, "render_summary", lambda **kw: captured.update(kw))
+    rbmod.RtlBuddy._render_reservation_advice(object(), findings)
+    return captured["rows"], captured["metadata"]
+
+
+def test_the_table_shows_the_allocation_beside_the_request(monkeypatch):
+    plain = _finding("sim", resource="cpus")
+    rows, metadata = _rendered_rows([plain], monkeypatch)
+    assert rows[0]["reserved"] == "02:00:00"
+    assert not any("allocated" in line for line in metadata)
+
+    rounded = _finding("sim", resource="cpus")
+    rounded.reserved = "4"
+    rounded.allocated = "8"
+    rows, metadata = _rendered_rows([rounded], monkeypatch)
+    assert rows[0]["reserved"] == "4 (8 allocated)"
+    assert any("whole cores" in line for line in metadata)
+
+
+# ------------- #505 review: prefer the reservation rtl_buddy itself submitted
+
+
+def test_the_configured_request_beats_what_the_scheduler_reports():
+    """`--cpus-per-task` is the request; ReqCPUS is only a report of it.
+
+    A Slurm that normalizes `ReqCPUS` to the post-rounding figure would put
+    the allocation back in the denominator by another route. The head knows
+    what it submitted, so it says so, and the advice stays site-independent:
+    a `cpus: 1` test on a whole-core node is never advised down to 1.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 2,
+                "req_cpus": 2,  # the site rounded this one too
+                "total_cpu_s": 500.0,
+            },
+            requested_cpus=1,
+        )
+    ]
+    assert [f for f in _analyze(rows) if f.resource == "cpus"] == []
+
+
+def test_a_test_row_without_req_cpus_still_uses_the_configured_request():
+    """No `ReqCPUS` in telemetry at all — the head's own number carries it."""
+    retired = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 2,  # whole-core rounding, no request reported
+                "total_cpu_s": 500.0,
+            },
+            requested_cpus=1,
+        )
+    ]
+    assert [f for f in _analyze(retired) if f.resource == "cpus"] == []
+
+    over = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "total_cpu_s": 1000.0,  # 0.25 eff against the requested 4
+            },
+            requested_cpus=4,
+        )
+    ]
+    (cpu,) = [f for f in _analyze(over) if f.resource == "cpus"]
+    assert cpu.reserved == "4"
+    assert cpu.allocated == "8"
+    assert cpu.utilization == 0.25
+    assert cpu.suggested == "2"
+
+
+def test_a_build_row_without_req_cpus_still_uses_the_configured_request():
+    """Same for the build job: `compile.cpus x parallel` is what it asked."""
+    retired = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 2,  # whole-core rounding, no request reported
+            "total_cpu_s": 50,
+        },
+        parallel=1,
+        cpus=1,
+    )
+    assert [f for f in retired if f.resource == "cpus"] == []
+
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "req_cpus": 8,  # a site that normalizes ReqCPUS as well
+            "total_cpu_s": 100,  # 0.25 eff against the 4 the head submitted
+        },
+        parallel=1,
+        cpus=4,
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert cpus_a.reserved == "4"
+    assert cpus_a.allocated == "8"
+    assert cpus_a.utilization == 0.25
+    assert cpus_a.suggested == "2"
+
+
+# ------------ #505 review: sbatch-args can supersede the resolved reservation
+
+
+def test_a_cpus_override_in_sbatch_args_withdraws_the_configured_request():
+    """`cfg-dispatch.sbatch-args` is appended last, so it wins.
+
+    A `--cpus-per-task` written there means the reservation the head
+    resolved was never submitted, so it may state neither the ratio nor the
+    decomposition — both fall back to what the scheduler reports. The head
+    detects the override and simply does not offer its number.
+    """
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "alloc_cpus": 8,
+        "req_cpus": 8,  # what the override actually asked for
+        "total_cpu_s": 200,
+    }
+    # Without the override the configured 2 would be the denominator, and
+    # 200 / (100 x 2) = 1.0 is a saturated job with nothing to advise.
+    assert [
+        f for f in _build_advice(telemetry, parallel=1, cpus=2) if f.resource == "cpus"
+    ] == []
+
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            telemetry, parallel=1, cpus=2, cpus_override=["--cpus-per-task=8"]
+        )
+        if f.resource == "cpus"
+    ]
+    # 200 / (100 x 8) = 0.25 against the 8 the override submitted.
+    assert cpus_a.reserved == "8"
+    assert cpus_a.allocated is None
+    assert cpus_a.utilization == 0.25
+    assert cpus_a.suggested == "3"  # ceil(8 x 0.25 x 1.5)
+    # ...and the hint names the argument, not the field it masks: editing
+    # `compile.cpus` would not move the next job's reservation, so the
+    # finding would come back — the shape #505 is about.
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpus_a.edit_hint["file"] == "root_config.yaml"
+    note = cpus_a.edit_hint["note"]
+    assert "sbatch-args `--cpus-per-task=8` sets this job's cpu request" in note
+    assert "cfg-dispatch.compile.cpus" in note
+    # The superseded decomposition is gone with it.
+    assert "the build job reserved" not in note
+
+    # time advice is unaffected: `--cpus-per-task` masks nothing there.
+    (time_a,) = [
+        f
+        for f in _build_advice(
+            telemetry, parallel=1, cpus=2, cpus_override=["--cpus-per-task=8"]
+        )
+        if f.resource == "time"
+    ]
+    assert time_a.edit_hint["path"] == "cfg-dispatch.compile.time"
+
+
+def test_a_test_row_falls_back_when_the_head_records_no_request():
+    """The head's half of the same guard: it records nothing (#505 review).
+
+    `analyze_suite_reservations` needs no flag — a row whose
+    `requested_cpus` is absent is exactly the "ask the scheduler" case,
+    which is also what pre-#505 telemetry looks like.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,
+            },
+            requested_cpus=None,
+        )
+    ]
+    (cpu,) = [f for f in _analyze(rows) if f.resource == "cpus"]
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"
+
+
+# --------- #505 review: an override retargets the cpus edit hint too
+
+
+def test_a_cpus_override_retargets_the_per_test_edit_hint():
+    """Naming a masked field is advice that cannot be applied.
+
+    `sbatch-args` wins over the generated `--cpus-per-task`, so editing
+    `tests[name=t].resources.cpus` leaves the next job's reservation exactly
+    where it was and the finding returns on the following run — the
+    non-retiring shape #505 exists to stop. The hint names the argument
+    instead, and says which field it supersedes.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 2**30,
+                "total_cpu_s": 1000.0,  # 0.25 efficiency against the 4
+            },
+            requested_cpus=None,  # withdrawn by the override
+            cpus_override=["--cpus-per-task=4"],
+        )
+    ]
+    findings = _analyze(rows, root_config_path="root_config.yaml")
+    (cpu,) = [f for f in findings if f.resource == "cpus"]
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpu.edit_hint["file"] == "root_config.yaml"
+    note = cpu.edit_hint["note"]
+    assert "sbatch-args `--cpus-per-task=4` sets this job's cpu request" in note
+    assert "tests[name=t].resources.cpus" in note
+
+    # Only cpus is masked: mem and time still name the fields that govern
+    # them, since `--cpus-per-task` supersedes neither.
+    (mem,) = [f for f in findings if f.resource == "mem"]
+    assert mem.edit_hint["path"] == "tests[name=t].resources.mem"
+    assert "note" not in mem.edit_hint
+    (time_f,) = [f for f in findings if f.resource == "time"]
+    assert time_f.edit_hint["path"] == "tests[name=t].resources.time"
+
+
+def test_an_overridden_in_job_compile_row_names_the_field_it_masks():
+    """The note names whichever cpus field the layering would have chosen.
+
+    For a job that compiles inside itself the compile reservation can win
+    the `cpus` field, so the masked field is `cfg-dispatch.compile.cpus`
+    (or the suite's own `compile.cpus`) rather than the test's `resources`.
+    """
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 1000,
+        "timelimit_s": 3600,
+        "alloc_cpus": 4,
+        "req_cpus": 4,
+        "total_cpu_s": 1000.0,
+    }
+    rows = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            cpus_override=["-c 4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert "superseding cfg-dispatch.compile.cpus" in cpu.edit_hint["note"]
+
+    # ...and the suite's own compile block when that is the layer that won.
+    rows = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            cpus_override=["-c 4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(
+            rows,
+            root_config_path="root_config.yaml",
+            compile_origins={"cpus": "suite"},
+        )
+        if f.resource == "cpus"
+    ]
+    assert "superseding compile.cpus" in cpu.edit_hint["note"]
+
+
+# ------- #505 review: orthogonal cpu options multiply, so no one of them
+# ------- can be handed the suggestion
+
+
+def test_two_orthogonal_cpu_options_withhold_the_per_argument_suggestion():
+    """`--ntasks` x `--cpus-per-task` is a product, not a winner.
+
+    With one argument the whole-job suggestion goes straight into it. With
+    two the request is their product, so telling a reader to write 2 into
+    either would be wrong in both directions — and the finding would come
+    back on the next run, which is precisely the failure #505 is about. The
+    hint still names `sbatch-args` (that is where the edit belongs), states
+    the product, and hands the decomposition back.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 4 tasks x 2 cpus-per-task
+                "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+            },
+            requested_cpus=None,
+            cpus_override=["--ntasks=4", "--cpus-per-task=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "8"
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    note = cpu.edit_hint["note"]
+    assert (
+        "`--ntasks=4` and `--cpus-per-task=2` set this job's cpu request together"
+        in note
+    )
+    # No arithmetic claim: sbatch's own precedence decides how they combine.
+    assert "product" not in note
+    assert "decompose it across them per sbatch's own precedence" in note
+    # ...and it must NOT claim any single argument takes the number.
+    assert "sets this job's cpu request" not in note
+    assert "change it there" not in note
+    # The masked field is still named, so the reader knows what was lost.
+    assert "tests[name=t].resources.cpus" in note
+
+
+def test_one_cpu_option_still_takes_the_suggestion_directly():
+    """The single-argument note is unchanged: there is nothing to split."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 2000.0,
+            },
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=8"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    note = cpu.edit_hint["note"]
+    assert "sbatch-args `--cpus-per-task=8` sets this job's cpu request" in note
+    assert "Suggested value is the whole-job cpu count." in note
+    assert "product" not in note
+
+
+def test_the_build_row_withholds_it_too_under_orthogonal_options():
+    """Same rule for the suite's build job (#495 row)."""
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "alloc_cpus": 8,
+        "req_cpus": 8,  # 4 tasks x 2 cpus-per-task
+        "total_cpu_s": 200,  # 0.25 efficiency against those 8
+    }
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            telemetry,
+            parallel=1,
+            cpus=2,
+            cpus_override=["--ntasks=4", "--cpus-per-task=2"],
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpus_a.reserved == "8"
+    assert cpus_a.suggested == "3"
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus_a.edit_hint["note"]
+    assert (
+        "`--ntasks=4` and `--cpus-per-task=2` set this job's cpu request together"
+        in note
+    )
+    # No arithmetic claim: sbatch's own precedence decides how they combine.
+    assert "product" not in note
+    assert "decompose it across them per sbatch's own precedence" in note
+    assert "cfg-dispatch.compile.cpus" in note
+    # The superseded per-build decomposition stays gone.
+    assert "the build job reserved" not in note
+
+
+# ------- #505 review: a lone task/topology modifier is not a cpu count
+
+
+_MODIFIER_TELEMETRY = {
+    "state": "COMPLETED",
+    "elapsed_s": 1000,
+    "timelimit_s": 3600,
+    "alloc_cpus": 8,
+    "req_cpus": 8,
+    "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+}
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "--ntasks=4",
+        "-n 4",
+        "--ntasks-per-node=2",
+        "--nodes=2",
+        "-N 2",
+    ],
+)
+def test_a_lone_task_or_node_count_does_not_take_the_suggestion(arg):
+    """Writing 3 into `--ntasks` asks for three tasks, not three cpus.
+
+    Only `--cpus-per-task`/`--cpus-per-gpu` state a cpu count outright. A
+    task count or a topology modifier scales the request, so "change it
+    there" would be advice that cannot be applied and the finding would
+    return on the next run — the shape #505 exists to stop (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            _MODIFIER_TELEMETRY,
+            requested_cpus=None,
+            cpus_override=[arg],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
+    note = cpu.edit_hint["note"]
+    assert f"`{arg}` multiplies this job's cpu request" in note
+    # The generated `--cpus-per-task` is untouched, so the per-task field is
+    # still a lever and is named as one.
+    assert "the generated --cpus-per-task from tests[name=t].resources.cpus" in note
+    assert "no single one of them takes it" in note
+    # ...and it must NOT be the "write the number in here" wording.
+    assert "sets this job's cpu request" not in note
+    assert "change it there" not in note
+
+
+@pytest.mark.parametrize("arg", ["--cpus-per-task=8", "-c 8", "-c8", "-c=8"])
+def test_a_lone_direct_cpu_count_still_takes_the_suggestion(arg):
+    """`--cpus-per-task` names a cpu count, so the number goes straight in."""
+    rows = [_row("t", _MODIFIER_TELEMETRY, requested_cpus=None, cpus_override=[arg])]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    note = cpu.edit_hint["note"]
+    assert f"sbatch-args `{arg}` sets this job's cpu request" in note
+    assert "change it there" in note
+    assert "raises this job's cpu request" not in note
+
+
+def test_the_build_row_also_declines_a_lone_modifier():
+    """Same rule for the suite's build job (#495 row)."""
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 7200,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 200,  # 0.25 efficiency
+            },
+            parallel=1,
+            cpus=2,
+            cpus_override=["--ntasks-per-node=4"],
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpus_a.suggested == "3"
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus_a.edit_hint["note"]
+    assert "`--ntasks-per-node=4` multiplies this job's cpu request" in note
+    assert "cfg-dispatch.compile.cpus" in note
+    assert "change it there" not in note
+
+
+# ------- #505 review: the compile floor cannot clamp what it does not bound
+
+
+def test_an_override_disables_the_compile_cpus_floor():
+    """The floor bounds the GENERATED reservation, which sbatch never saw.
+
+    An in-job compile's allocation is max(sim, compile), so no reduce may
+    take it below the compile side — unless a `sbatch-args` cpu argument
+    supersedes that whole reservation, in which case the max never reaches
+    sbatch. Clamping to a floor of 8 under a request of 4 pushes every
+    suggestion up to 8, which is then dropped for not being below 4: a
+    genuinely over-reserved run reports nothing at all (#505 review).
+    """
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 1000,
+        "timelimit_s": 3600,
+        "alloc_cpus": 4,
+        "req_cpus": 4,  # the override's request
+        "total_cpu_s": 1000.0,  # 0.25 efficiency against those 4
+    }
+    floor = {"cpus": 8, "mem": "16G", "time": "02:00:00"}
+
+    # Without an override the floor is real: max(sim, compile) means the
+    # allocation cannot go below 8, so there is nothing to advise.
+    unoverridden = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor=floor,
+            requested_cpus=4,
+        )
+    ]
+    assert [f for f in _analyze(unoverridden) if f.resource == "cpus"] == []
+
+    # With one, the floor bounds a reservation that was never submitted.
+    overridden = [
+        _row(
+            "t",
+            telemetry,
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor=floor,
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(overridden, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"  # ceil(4 x 0.25 x 1.5), not clamped up to 8
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+
+    # The mem and time floors are untouched: `--cpus-per-task` supersedes
+    # neither, so those reservations really are still max(sim, compile).
+    assert [f for f in _analyze(overridden) if f.resource == "mem"] == []
+
+
+def test_the_note_makes_no_arithmetic_claim_about_four_arguments():
+    """`--ntasks=8 --nodes=2 --ntasks-per-node=4 --cpus-per-task=2` is 16.
+
+    Not the product of all four. sbatch's own precedence decides: `--ntasks`
+    wins and `--ntasks-per-node` degrades to a per-node maximum. An earlier
+    note said "the product of A x B x C x D", which is arithmetic it cannot
+    back up — and a reader who trusted it would compute the wrong
+    reservation. The note names the arguments and leaves the combining rule
+    to sbatch (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 16,
+                "req_cpus": 16,  # 8 tasks x 2 cpus, NOT 8 x 2 x 4 x 2
+                "total_cpu_s": 4000.0,  # 0.25 efficiency against those 16
+            },
+            requested_cpus=None,
+            cpus_override=[
+                "--ntasks=8",
+                "--nodes=2",
+                "--ntasks-per-node=4",
+                "--cpus-per-task=2",
+            ],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "16"
+    assert cpu.suggested == "6"  # ceil(16 x 0.25 x 1.5), the whole-job figure
+    note = cpu.edit_hint["note"]
+    # Every argument is named, in the order the project wrote them...
+    assert (
+        "`--ntasks=8`, `--nodes=2`, `--ntasks-per-node=4` and "
+        "`--cpus-per-task=2` set this job's cpu request together" in note
+    )
+    # ...and no arithmetic is claimed about how they combine.
+    assert "product" not in note
+    assert " x " not in note
+    assert "decompose it across them per sbatch's own precedence" in note
+
+
+# ------- #505 review: an SBATCH_* variable is an override with no file
+
+
+def test_an_env_override_names_the_variable_and_no_file():
+    """There is no YAML to edit, so the hint must not invent one.
+
+    `SBATCH_NTASKS=4` beside a generated `--cpus-per-task=2` requests
+    eight cpus. It supersedes the test's `resources.cpus` exactly as a
+    `sbatch-args` entry would, but it lives in the environment — pointing
+    an agent at a `file` would send it to edit something that does not
+    hold the value (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 4 tasks x the generated 2 cpus
+                "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+            },
+            requested_cpus=None,
+            cpus_override=["SBATCH_NTASKS=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "8"
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
+    assert cpu.edit_hint["path"] == "env"
+    assert "file" not in cpu.edit_hint
+    note = cpu.edit_hint["note"]
+    # A variable is not a cpu count: it multiplies the generated one.
+    assert "`SBATCH_NTASKS=4` multiplies this job's cpu request" in note
+    assert "the generated --cpus-per-task from tests[name=t].resources.cpus" in note
+    assert "the task count in the environment" in note
+    assert "sbatch-args" not in note
+
+
+def test_env_and_args_together_name_both_and_keep_the_file():
+    """`sbatch-args` is the actionable half, so the hint still points there.
+
+    The command line beats the environment, so an edit in `sbatch-args`
+    can defeat the variable — but the note has to name both, or a reader
+    who changes only the argument is surprised by the leftover factor.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 2000.0,
+            },
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=2", "SBATCH_NTASKS=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpu.edit_hint["file"] == "root_config.yaml"
+    note = cpu.edit_hint["note"]
+    assert "sbatch-args and the environment supersedes" in note
+    assert (
+        "`--cpus-per-task=2` and `SBATCH_NTASKS=4` set this job's cpu request" in note
+    )
+    assert "product" not in note
+
+
+def test_the_build_row_takes_an_env_override_too():
+    """Same rule for the suite's build job (#495 row)."""
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 7200,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 200,  # 0.25 efficiency
+            },
+            parallel=1,
+            cpus=2,
+            cpus_override=["SBATCH_NODES=4"],
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpus_a.reserved == "8"
+    assert cpus_a.edit_hint["path"] == "env"
+    assert "file" not in cpus_a.edit_hint
+    note = cpus_a.edit_hint["note"]
+    assert "`SBATCH_NODES=4` multiplies this job's cpu request" in note
+    assert "the generated --cpus-per-task from cfg-dispatch.compile.cpus" in note
+
+
+# ---- #505 review: a task count multiplies the floor, it does not clear it
+
+
+def test_a_task_count_override_keeps_the_per_task_compile_floor():
+    """`--ntasks=2` leaves `--cpus-per-task=8` alone and asks for two of it.
+
+    So the compile floor of 8 still holds, and no whole-job suggestion may
+    go below it: even one task costs 8 cpus, so a suggestion of 3 could
+    never be reached and the finding would recur on every run — the exact
+    failure #505 exists to stop. Clearing the floor, which is right for a
+    direct `-c` override because that one replaces the generated flag, let
+    exactly that through (#505 review).
+
+    The floor is NOT multiplied by the tasks observed: the task count is
+    one of the two levers the advice offers, so 8 really is reachable, by
+    dropping to a single task.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 16,
+                "req_cpus": 16,  # 2 tasks x the generated 8 cpus
+                "total_cpu_s": 1600.0,  # 0.10 efficiency against those 16
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 8, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,  # withdrawn: ReqCPUS is not the per-task value
+            submitted_cpus_per_task=8,
+            cpus_override=["--ntasks=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    # ceil(16 x 0.10 x 1.5) = 3, which is below the per-task floor and so
+    # is clamped up to it. Never below 8; and 8 is reachable at one task.
+    assert cpu.reserved == "16"
+    assert cpu.suggested == "8"
+    # The note states the decomposition as an observation, and names both
+    # levers rather than pointing only at the task count.
+    note = cpu.edit_hint["note"]
+    assert "the request is 8 per task x 2 tasks" in note
+    assert "lower cfg-dispatch.compile.cpus, the task count in sbatch-args" in note
+
+
+def test_a_direct_override_still_clears_the_floor():
+    """`-c` replaces the generated flag, so the floor it bounded is gone."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,  # 0.25 efficiency
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 8, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=8,
+            cpus_override=["--cpus-per-task=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.suggested == "2"  # ceil(4 x 0.25 x 1.5), not clamped up to 8
+
+
+def test_a_task_count_override_still_advises_what_it_can_reach():
+    """The floor scales; it does not silence everything above it.
+
+    4 cpus per task over 4 tasks is 16 requested against a floor of 2 per
+    task — 8 whole-job — so a suggestion of 12 is real and reachable, by
+    halving the tasks or the per-task field.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 16,
+                "req_cpus": 16,  # 4 tasks x the generated 4 cpus
+                "total_cpu_s": 8000.0,  # 0.50 efficiency... just under
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 2, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=4,
+            cpus_override=["--ntasks=4"],
+        )
+    ]
+    cfg = RightsizeConfigFile(over_threshold=0.6)
+    (cpu,) = [
+        f
+        for f in _analyze(rows, cfg=cfg, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "16"
+    assert cpu.suggested == "12"  # ceil(16 x 0.5 x 1.5), above the 2 x 4 floor
+    # The note decomposes the request from observation, not sbatch arithmetic.
+    assert "the request is 4 per task x 4 tasks" in cpu.edit_hint["note"]
+
+
+def test_an_unknowable_task_count_still_states_only_what_it_knows():
+    """A request that is not a whole multiple of the per-task cpus.
+
+    The floor is unaffected — it is per-task and never scaled — but the
+    note's "N per task x M tasks" clause is an observation, so it is
+    omitted rather than guessed at.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 10,
+                "req_cpus": 10,  # not a multiple of the generated 4
+                "total_cpu_s": 1000.0,  # 0.10 efficiency
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 4, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=4,
+            cpus_override=["--ntasks=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    # ceil(10 x 0.1 x 1.5) = 2, clamped up to the per-task floor of 4.
+    assert cpu.suggested == "4"
+    # ...and with no task count to state, the note says only what it knows.
+    assert "per task x" not in cpu.edit_hint["note"]
+
+
+# ---- #505 review: runs of one test that were not submitted alike
+
+
+def _mixed_seed_rows(second_override):
+    """Two seeds of one test, the second submitted under a changed request."""
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 1000,
+        "timelimit_s": 3600,
+        "alloc_cpus": 4,
+        "req_cpus": 4,
+        "total_cpu_s": 1000.0,  # 0.25 efficiency
+    }
+    return [
+        _row("t", telemetry, run_id=1, requested_cpus=4, submitted_cpus_per_task=4),
+        _row(
+            "t",
+            telemetry,
+            run_id=2,
+            requested_cpus=None,
+            submitted_cpus_per_task=4,
+            cpus_override=second_override,
+        ),
+    ]
+
+
+def test_cpus_advice_is_withheld_when_a_tests_runs_were_not_submitted_alike(caplog):
+    """One `reserved` and one `edit_hint` cannot describe two reservations.
+
+    A retry is submitted into whatever environment the process holds by
+    then, so when only some seeds of a test retried after the ambient
+    `SBATCH_*` changed, their rows describe a different request from the
+    rest. Efficiency is still the peak across every run, so a row built
+    from the first one's metadata would pair a retried run's ratio with
+    another run's lever — pointing at a YAML field when the environment is
+    what moved, or the reverse. Withheld, the same answer
+    `parallel-utilization-ambiguous` gives the build job (#505 review).
+    """
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        findings = _analyze(
+            _mixed_seed_rows(["SBATCH_NTASKS=4"]), root_config_path="root_config.yaml"
+        )
+
+    assert [f for f in findings if f.resource == "cpus"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.cpus_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "mixed-cpu-requests"
+    assert record.rtl_fields["test"] == "t"
+    assert record.rtl_fields["runs"] == 2
+    # The omission is legible, not a silent gap.
+    assert "no cpus advice for t" in caplog.text
+    assert "not all submitted with the same cpu request" in caplog.text
+
+
+def test_runs_submitted_alike_still_get_their_cpus_advice(caplog):
+    """The guard is about disagreement, not about having several runs."""
+    import logging
+
+    rows = _mixed_seed_rows(None)
+    # ...make the second row agree with the first again.
+    rows[1]["requested_cpus"] = 4
+    with caplog.at_level(logging.INFO):
+        (cpu,) = [
+            f
+            for f in _analyze(rows, root_config_path="root_config.yaml")
+            if f.resource == "cpus"
+        ]
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"
+    assert "cpus_advice_withheld" not in caplog.text
+
+
+def test_a_differing_per_task_value_alone_also_withholds():
+    """`submitted_cpus_per_task` is part of the request, so it counts too."""
+    rows = _mixed_seed_rows(None)
+    rows[1]["requested_cpus"] = 4
+    rows[1]["submitted_cpus_per_task"] = 2
+    assert [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ] == []
+
+
+def test_mem_and_time_advice_survive_a_mixed_cpu_request():
+    """Only the cpus row depends on the reservation that differed."""
+    rows = _mixed_seed_rows(["SBATCH_NTASKS=4"])
+    for row in rows:
+        row["results"].results["telemetry"] = {
+            **row["results"].results["telemetry"],
+            "req_mem_bytes": 8 * 2**30,
+            "max_rss_bytes": 2**30,
+        }
+    findings = _analyze(rows, root_config_path="root_config.yaml")
+    assert {f.resource for f in findings} == {"mem", "time"}
+
+
+def test_a_gpu_derived_task_count_reads_as_a_task_count_override():
+    """The pair multiplies the generated per-task cpus, like `--ntasks`.
+
+    So the compile floor survives, the per-task field stays a lever, and
+    the note names both halves — neither argument alone did this, and
+    pointing at one would send a reader to half the cause (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 2 gpus x 2 tasks-per-gpu x the generated 2
+                "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 2, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=2,
+            cpus_override=["--gpus=2", "--ntasks-per-gpu=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "8"
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), above the floor of 2
+    note = cpu.edit_hint["note"]
+    assert "`--gpus=2` and `--ntasks-per-gpu=2` multiply this job's cpu request" in note
+    assert "the generated --cpus-per-task from cfg-dispatch.compile.cpus" in note
+    # It multiplies, so it must not read as a direct replacement.
+    assert "change it there" not in note
+
+
+def test_the_documented_note_examples_are_the_notes_actually_emitted():
+    """docs/concepts/dispatch.md quotes these verbatim; keep them true.
+
+    The examples drifted twice while the wording was being corrected, and a
+    reader who trusts a stale one is told to edit the wrong field — the
+    same class of unappliable guidance #505 is about (#505 review).
+    """
+    from pathlib import Path
+
+    import rtl_buddy
+
+    docs = (
+        Path(rtl_buddy.__file__).resolve().parents[2]
+        / "docs"
+        / "concepts"
+        / "dispatch.md"
+    )
+    if not docs.is_file():  # pragma: no cover - installed without the docs tree
+        pytest.skip("docs tree not present next to the package")
+    text = docs.read_text()
+    masked = "tests[name=wr_single].resources.cpus"
+
+    for args, per_task, tasks in [
+        (["--cpus-per-task=4"], None, None),
+        (["--ntasks=4"], 8, 4),
+        (["--ntasks=4", "--cpus-per-task=2"], None, None),
+    ]:
+        note = _override_note(args, masked, per_task=per_task, tasks=tasks)
+        # The docs wrap these into a fenced block, so compare word streams.
+        assert " ".join(note.split()) in " ".join(text.split()), note

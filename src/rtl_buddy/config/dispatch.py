@@ -57,6 +57,7 @@ a cluster fact and not a suite one.
 """
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 
@@ -465,6 +466,300 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)
     return resolved
+
+
+# sbatch options that change what a job REQUESTS in cpus, i.e. that can make
+# `ReqCPUS` differ from the cpus-per-task the head resolved. Two families:
+# the cpu count itself, and the task/node counts `ReqCPUS` multiplies it by
+# (`ReqCPUS` = tasks x cpus-per-task).
+#
+# The set is deliberately NARROW, because a false positive is not free: it
+# discards a request the head knows, retargets the edit hint away from the
+# YAML field that really governs, and disables the compile cpus floor. Only
+# options that Slurm documents as changing the cpu REQUEST belong here.
+# Three near misses, all excluded:
+#
+# - `--exclusive` and `--overcommit` change what is *allocated*, not what is
+#   requested, so `ReqCPUS` — the fallback — still describes the reservation.
+# - `--threads-per-core` and `-B`/`--extra-node-info` are node-SELECTION
+#   constraints: they restrict which nodes and hardware threads may be used,
+#   while the generated `--cpus-per-task` still states the request. The head
+#   therefore still knows it, and must not throw it away (#505 review).
+# - `--cpus-per-gpu` is documented as mutually exclusive with
+#   `--cpus-per-task`, which `SlurmDispatchBackend._reservation_argv` emits
+#   unconditionally on every job — so sbatch rejects the pair and the
+#   "override" can never take effect. Detecting it would only degrade the
+#   advice for a submission that never runs.
+# - `--ntasks-per-core` and `--ntasks-per-socket` are documented as placement
+#   MAXIMA ("request the maximum ntasks be invoked on each core/socket ...
+#   meant to be used with the --ntasks option"): they cap where the tasks
+#   `--ntasks` asked for may land, and a lone one requests nothing. The
+#   `--ntasks` they accompany is in this set, so a real task-count change is
+#   still caught. `--ntasks-per-gpu` is left out of THIS table on the same
+#   footing — on its own it moves no cpu request — but it is not simply
+#   ignored: paired with a GPU count and no `--ntasks` it derives the task
+#   count, which `_gpu_derived_task_count` below picks up (#505 review).
+#
+# Keyed by the long form, valued by the short one, because the two are the
+# SAME option: `[-c 4, --cpus-per-task=8]` is one option written twice (the
+# last wins), not two multiplying each other.
+#
+# Split in two, because the difference decides whether advice can name one
+# of them: a DIRECT cpu count states the request outright, so a whole-job
+# suggestion can be written straight into it. A task or node count only
+# *scales* it, so the suggested number is not a value that argument takes.
+_DIRECT_CPU_COUNT_OPTS = {
+    "--cpus-per-task": "-c",
+}
+_CPU_SCALING_OPTS = {
+    # The task and node counts that raise the cpu request above one
+    # cpus-per-task. `--ntasks-per-node` earns its place because sbatch
+    # documents it as a REQUEST when `--ntasks` is absent ("request that
+    # ntasks be invoked on each node ... meant to be used with the --nodes
+    # option"), so `--nodes=2 --ntasks-per-node=4` asks for eight tasks; it
+    # degrades to a maximum only when `--ntasks` is also given, and that
+    # option is in this set too, so the pair is caught either way.
+    "--ntasks": "-n",
+    "--ntasks-per-node": None,
+    "--nodes": "-N",
+}
+_CPU_REQUEST_OPTS = {**_DIRECT_CPU_COUNT_OPTS, **_CPU_SCALING_OPTS}
+_CPU_REQUEST_SHORT_TO_LONG = {
+    short: long for long, short in _CPU_REQUEST_OPTS.items() if short
+}
+
+
+def sbatch_arg_sets_cpu_count_directly(arg: str) -> bool:
+    """Does this rendered ``sbatch-args`` entry state the cpu count itself?
+
+    ``-c``/``--cpus-per-task`` names a number of cpus, so a whole-job
+    suggestion can be written straight into it. ``--ntasks``,
+    ``--ntasks-per-node`` and ``-N``/``--nodes`` are task and node counts:
+    they raise the request rather than stating it, and telling a reader to
+    put a cpu count into one of them would be advice that cannot be
+    applied (#505 review).
+
+    Takes an entry as :func:`sbatch_args_cpu_request_options` renders it —
+    ``--cpus-per-task=4``, ``--cpus-per-task 4``, ``-c 4``, ``-c4``,
+    ``-c=4`` — so the caller never has to re-parse sbatch syntax.
+    """
+    # Whichever separator came first, the option token is what precedes it.
+    token = arg.split("=", 1)[0].split(" ", 1)[0]
+    if token in _DIRECT_CPU_COUNT_OPTS:
+        return True
+    short = _DIRECT_CPU_COUNT_OPTS["--cpus-per-task"]
+    # `-c`, `-c 4` and `-c=4` reduce to the bare short form; `-c4` keeps its
+    # value, which must be numeric or this is some other option entirely.
+    return token == short or (token.startswith(short) and token[len(short) :].isdigit())
+
+
+# The `SBATCH_*` input environment variables that sbatch documents as "same
+# as" one of the options above. They reach sbatch through `subprocess.run`,
+# which inherits the head's environment, and rtl-buddy deliberately does NOT
+# sanitize it — a site that exports these means them.
+#
+# `SBATCH_CPUS_PER_TASK` is absent for the same reason `--cpus-per-gpu` is:
+# sbatch's documented precedence is command line > environment > script, and
+# both submit paths emit `--cpus-per-task` unconditionally
+# (`_reservation_argv` and the array submit), so the variable is always
+# beaten by the flag rtl-buddy itself passes. It changes nothing, and
+# treating it as an override would discard a request the head knows
+# (#505 review). `tests/test_dispatch_slurm.py` pins that both paths still
+# emit the flag, so this stays true.
+_CPU_REQUEST_ENV_VARS = {
+    "SBATCH_NTASKS": "--ntasks",
+    "SBATCH_NTASKS_PER_NODE": "--ntasks-per-node",
+    "SBATCH_NODES": "--nodes",
+}
+
+
+# `--ntasks-per-gpu` is a placement cap on its own (see above), but sbatch
+# documents a second mode for it: "specify the GPUs wanted (e.g. via --gpus
+# or --gres) without specifying --ntasks, and the total task count will be
+# automatically determined". So a GPU count and `--ntasks-per-gpu` in the
+# same verbatim `sbatch-args` list, with no `--ntasks` anywhere, derives
+# tasks = gpus x ntasks-per-gpu — a task-count override exactly like
+# `--ntasks`, and one the generated `--cpus-per-task` is then multiplied by
+# (#505 review).
+#
+# `--gpus-per-task` is absent deliberately: sbatch documents it as mutually
+# exclusive with `--ntasks-per-gpu`, so that pair never runs.
+_GPU_COUNT_OPTS = {
+    "--gpus": "-G",
+    "--gpus-per-node": None,
+    "--gpus-per-socket": None,
+    # Only when it actually asks for gpus — `--gres=gpu:2`, not `--gres=fs:1`.
+    "--gres": None,
+}
+_GPU_COUNT_ENV_VARS = {
+    "SBATCH_GPUS": "--gpus",
+    "SBATCH_GPUS_PER_NODE": "--gpus-per-node",
+    "SBATCH_GPUS_PER_SOCKET": "--gpus-per-socket",
+    "SBATCH_GRES": "--gres",
+}
+_NTASKS_PER_GPU_OPT = {"--ntasks-per-gpu": None}
+_NTASKS_PER_GPU_ENV_VAR = "SBATCH_NTASKS_PER_GPU"
+
+
+def _gpu_derived_task_count(sbatch_args, env) -> dict[str, str]:
+    """The ``--gpus`` + ``--ntasks-per-gpu`` pair, when it sets the tasks.
+
+    Both halves may come from either source, since sbatch reads both.
+    Returns them together — the note has to name the pair, because neither
+    argument alone did this and pointing at one of them would send a reader
+    to a setting that is only half the cause.
+    """
+    per_gpu = _scan_options(sbatch_args, _NTASKS_PER_GPU_OPT)
+    if not per_gpu:
+        value = (env.get(_NTASKS_PER_GPU_ENV_VAR) or "").strip()
+        if value:
+            per_gpu = {"--ntasks-per-gpu": f"{_NTASKS_PER_GPU_ENV_VAR}={value}"}
+    if not per_gpu:
+        return {}
+    gpus = _scan_options(sbatch_args, _GPU_COUNT_OPTS)
+    # `--gres` carries many resource kinds; only a gpu one counts.
+    gres = _scan_options(sbatch_args, {"--gres": None}, value_must_contain="gpu")
+    gpus = {k: v for k, v in gpus.items() if k != "--gres"} | gres
+    for var, option in _GPU_COUNT_ENV_VARS.items():
+        value = (env.get(var) or "").strip()
+        if not value or option in gpus:
+            continue
+        if option == "--gres" and "gpu" not in value.lower():
+            continue
+        gpus[option] = f"{var}={value}"
+    if not gpus:
+        # A lone `--ntasks-per-gpu` requests nothing: it caps placement of
+        # tasks something else asked for. Round 10's exclusion stands.
+        return {}
+    return {**gpus, **per_gpu}
+
+
+def cpu_request_overrides(sbatch_args, env=None) -> list[str]:
+    """Everything that supersedes the cpus reservation the head resolved.
+
+    The union of :func:`sbatch_args_cpu_request_options` and the
+    ``SBATCH_*`` input environment variables that mean the same thing.
+    Both reach sbatch — ``sbatch-args`` because it is appended after the
+    generated flags, the environment because ``subprocess.run`` inherits
+    it — so both can make ``ReqCPUS`` differ from what rtl-buddy resolved,
+    and neither may be taken for the request (#505 review).
+
+    Command line beats environment, which is sbatch's own precedence: a
+    variable whose option is already written in ``sbatch-args`` is not
+    reported, because it is not what the job ran with. An unset or blank
+    variable is not an override at all.
+
+    Environment entries are rendered ``NAME=value`` and argument entries
+    keep their leading dash, so a caller can tell them apart by their first
+    character.
+    """
+    found = _scan_cpu_request_args(sbatch_args)
+    env = os.environ if env is None else env
+    for var, option in _CPU_REQUEST_ENV_VARS.items():
+        value = (env.get(var) or "").strip()
+        if not value or option in found:
+            continue
+        found[option] = f"{var}={value}"
+    # ...and the one combination that derives a task count rather than
+    # stating it. Only when nothing states one: with `--ntasks` present
+    # sbatch reads `--ntasks-per-gpu` the other way round, as the GPU count
+    # to satisfy, and `--ntasks` is already in `found` (#505 review).
+    if "--ntasks" not in found:
+        found.update(_gpu_derived_task_count(sbatch_args, env))
+    return list(found.values())
+
+
+def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:
+    """The ``sbatch-args`` entries that decide the job's cpu request.
+
+    ``cfg-dispatch.sbatch-args`` is appended verbatim *after* the generated
+    reservation flags, so an entry there wins — which is the documented
+    contract, and the reason right-sizing cannot always trust the
+    reservation it resolved. A non-empty result means the resolved ``cpus``
+    is not what the job was submitted with, so it must not be recorded as
+    the request: the analysis falls back to the scheduler's own ``ReqCPUS``,
+    and the ``cpus`` finding's edit hint names this key rather than the YAML
+    field it masks (#505 review).
+
+    Two families of option qualify, because ``ReqCPUS`` is *tasks x
+    cpus-per-task*: the cpu count (``-c``/``--cpus-per-task``) and the
+    task/node counts that raise it (``-n``/``--ntasks``,
+    ``--ntasks-per-node``, ``-N``/``--nodes``). Placement maxima
+    (``--ntasks-per-core``/``-socket``/``-gpu``), node-selection constraints
+    (``--threads-per-core``, ``-B``/``--extra-node-info``), allocation
+    modifiers (``--exclusive``, ``--overcommit``) and ``--cpus-per-gpu``
+    (which sbatch rejects alongside the ``--cpus-per-task`` every job
+    carries) are deliberately excluded — see the comment on
+    ``_CPU_REQUEST_OPTS``.
+
+    Returns one entry per DISTINCT option, in order of first appearance,
+    each rendered as written. Within an option the LAST occurrence wins,
+    because that is the one sbatch obeys — ``[-c, 4, --cpus-per-task=8]``
+    runs with 8, and is one option, not two. Across options there is no
+    "winner" at all: ``--ntasks`` and ``--cpus-per-task`` multiply, so a
+    caller holding two entries knows the request is their product and that
+    no single argument can be named as the one to edit.
+
+    Only ``cpus`` needs this. ``mem`` and ``time`` advice is already
+    measured against ``ReqMem``/``TimelimitRaw``, which sacct reports from
+    the allocation any override actually produced.
+    """
+    return list(_scan_cpu_request_args(sbatch_args).values())
+
+
+def _scan_cpu_request_args(sbatch_args) -> dict[str, str]:
+    """Canonical long option -> the entry that set it, as written.
+
+    Keyed so the environment layer in :func:`cpu_request_overrides` can
+    apply sbatch's command-line-beats-environment precedence per option
+    without re-parsing what this already worked out.
+    """
+    return _scan_options(sbatch_args, _CPU_REQUEST_OPTS)
+
+
+def _scan_options(sbatch_args, long_to_short, *, value_must_contain=None):
+    """Match one table of sbatch options against a verbatim argument list.
+
+    Handles every spelling sbatch's getopt takes: ``--long=value``,
+    ``--long value``, ``-x value`` and ``-x4``. ``value_must_contain``
+    narrows a match to values mentioning a substring, which is how
+    ``--gres`` is counted only when it asks for gpus.
+    """
+    args = list(sbatch_args or [])
+    short_to_long = {short: long for long, short in long_to_short.items() if short}
+    # Insertion-ordered by first appearance; re-assignment keeps that
+    # position, so a repeated option stays where it was first written and
+    # carries its last value.
+    found: dict[str, str] = {}
+
+    def keep(value):
+        return value_must_contain is None or value_must_contain in (value or "").lower()
+
+    for index, arg in enumerate(args):
+        if arg in long_to_short or arg in short_to_long:
+            # Value-in-the-next-argument form. A trailing flag with no value
+            # is malformed sbatch input, but it is still an override of
+            # intent, and sbatch — not right-sizing — is where it should be
+            # reported.
+            following = args[index + 1 : index + 2]
+            if following and not keep(following[0]):
+                continue
+            canonical = short_to_long.get(arg, arg)
+            found[canonical] = f"{arg} {following[0]}" if following else arg
+            continue
+        for long in long_to_short:
+            if arg.startswith(f"{long}=") and keep(arg.split("=", 1)[1]):
+                found[long] = arg
+                break
+        else:
+            for short, long in short_to_long.items():
+                # `-c4`/`-n4`, and `-c=4` defensively. A numeric value is
+                # required, so an unrelated `-cfoo` is not matched.
+                value = arg[len(short) :].lstrip("=") if arg.startswith(short) else ""
+                if value and value[0].isdigit() and keep(value):
+                    found[long] = arg
+                    break
+    return found
 
 
 def compile_parallel(dispatch_cfg) -> int:
