@@ -772,17 +772,28 @@ class SlurmDispatchBackend(DispatchBackend):
         tasks = (
             self.max_array_tasks if self.max_array_tasks is not None else probed_tasks
         )
-        if size is None:
-            self._log_unknown(reason or "no MaxArraySize available")
+        # A cap below 1 is not a ceiling anything could submit under; drop
+        # it rather than let it produce empty arrays. (The config field is
+        # validated >= 1, so this can only be a probed value.)
+        if tasks is not None and tasks < 1:
+            tasks = None
+        if size is None and tasks is None:
+            self._log_unknown(reason or "no array ceiling available")
             return _ArrayLimit(None)
 
         # MaxArraySize bounds the INDEX exclusively; max_array_tasks counts
-        # the tasks, inclusively. The smaller of the two is what an array
-        # may actually hold.
-        limit = size - 1
-        source = "config" if self.max_array_size is not None else "scontrol"
-        governed_by = _FIELD_MAX_ARRAY_SIZE
-        if tasks is not None and 1 <= tasks < limit:
+        # the tasks, inclusively. The smaller of whichever are known is what
+        # an array may actually hold — and EITHER alone is a real ceiling: a
+        # site that can state only its task cap (no scontrol on the submit
+        # host, or a multi-cluster selection) had that cap ignored, so a
+        # group larger than the value it explicitly configured was submitted
+        # whole and refused (#509 review).
+        limit = source = governed_by = None
+        if size is not None:
+            limit = size - 1
+            source = "config" if self.max_array_size is not None else "scontrol"
+            governed_by = _FIELD_MAX_ARRAY_SIZE
+        if tasks is not None and (limit is None or tasks < limit):
             limit = tasks
             source = "config" if self.max_array_tasks is not None else "scontrol"
             governed_by = _FIELD_MAX_ARRAY_TASKS
@@ -865,7 +876,10 @@ class SlurmDispatchBackend(DispatchBackend):
             cluster=self._cluster_selection(),
             # An oversized group is what this probe exists to split, so say
             # how to get chunking back when the cluster cannot be asked.
-            hint="set cfg-dispatch.max-array-size to split oversized groups",
+            hint=(
+                "set cfg-dispatch.max-array-size (and max-array-tasks, where "
+                "the cluster caps tasks per array) to split oversized groups"
+            ),
         )
 
     def _array_limit_hint(self, stderr: str) -> str:

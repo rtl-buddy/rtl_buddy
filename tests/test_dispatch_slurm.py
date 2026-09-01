@@ -2513,3 +2513,84 @@ def test_handle_key_round_trips_through_its_split():
     assert base_module.split_handle_key(key) == ("alpha", "77_1")
     # A local id has no cluster half and comes back untouched.
     assert base_module.split_handle_key("500_1") == (None, "500_1")
+
+
+def test_a_configured_task_cap_governs_without_any_max_array_size(
+    monkeypatch, tmp_path, caplog
+):
+    """A site that can state only its task cap must still be honoured.
+
+    With no scontrol to read MaxArraySize from, the explicitly configured
+    ceiling was ignored and the group went out whole — guaranteed to
+    violate the very number the project had written down (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    # scontrol fails, so max_array_size stays unknown throughout.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_tasks=4).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert fields["max_array_tasks"] == 4
+    assert fields["max_elements"] == 4
+    assert fields["source"] == "config"
+    assert fields["governed_by"] == "cfg-dispatch.max-array-tasks"
+    # Nothing was learned about MaxArraySize, so nothing is claimed.
+    assert "max_array_size" not in fields
+    # ...and the run is not told the limit is unknown, because it is not.
+    assert not _events(caplog, "dispatch.max_array_size_unknown")
+
+
+def test_a_task_cap_governs_under_a_multi_cluster_selection(monkeypatch, tmp_path):
+    """The other route to "no MaxArraySize": nothing to probe."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(
+        sbatch_args=["--clusters=alpha,beta"], max_array_tasks=2
+    ).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "arr"
+    )
+    assert probed == []
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_neither_ceiling_known_is_still_one_unsplit_array(
+    monkeypatch, tmp_path, caplog
+):
+    """The unchanged fallback: nothing configured, nothing probed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-10"]
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+    assert "max-array-tasks" in fields["hint"]
