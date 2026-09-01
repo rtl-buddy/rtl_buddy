@@ -215,14 +215,19 @@ invocation exactly:
 synthesis flow does not pass them to Yosys either; seeding the scan with them
 would make it skip a declaration that really is elaborated. A run whose
 filelist carries `+define+` macros that do not reach Yosys as written logs one
-`synth.filelist_defines_ignored` warning naming them — both the ones synthesis
-never sees and the ones it elaborates with a *different* value, the latter with
-both values shown. A bare `+define+X` counts as `X=1` only under
-`frontend: slang`, which normalises it; `read_verilog` and the simulator give
-it an empty body. That divergence from the
-simulation flow, which does apply them, predates this gate and is tracked
-separately — move the macro to the synth.yaml entry's `defines:` if the design
-needs it.
+`synth.filelist_defines_ignored` warning naming them, in three groups:
+
+- macros synthesis never sees at all;
+- macros it elaborates with a *different* value than the filelist gives, with
+  both values shown;
+- **bare** `+define+X` entries paired with a synthesis value, which cannot be
+  compared and are always reported. Tools disagree about what a valueless
+  macro expands to: Verilator and Yosys's `read_verilog` give it an empty body,
+  while Icarus and slang give it `1`. Write `+define+X=1` if a value is meant.
+
+That divergence from the simulation flow, which does apply these macros,
+predates this gate and is tracked separately — move the macro to the synth.yaml
+entry's `defines:` if the design needs it.
 
 `` `undefineall `` follows the frontend in use, which differ: slang clears the
 source's own macros but re-applies the command-line ones, so the seed above

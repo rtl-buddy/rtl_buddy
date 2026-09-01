@@ -1218,6 +1218,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "passed with a different value: "
                     + ", ".join(str(c) for c in conflicts)
                 )
+            if fields.get("ambiguous"):
+                parts.append(
+                    "bare, so no single value to compare (empty under Verilator "
+                    "and read_verilog, 1 under Icarus and slang): "
+                    + ", ".join(str(a) for a in fields["ambiguous"])
+                )
             return (
                 f'synthesis "{fields.get("synth")}": {fields.get("count")} '
                 "+define+ entr(ies) in the generated filelist do not reach "

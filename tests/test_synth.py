@@ -4553,17 +4553,15 @@ def _defines_event(caplog):
     ]
 
 
-def test_normalise_define_value_follows_the_frontend():
-    """A bare `+define+X` is not universally `X=1`. Verified by expanding the
-    macro in an expression: Verilator and `read_verilog` give it an empty body
-    (`assign y = 8'd0 + `X;` is a syntax error), while slang normalises it to
-    1 and the same source compiles."""
-    from rtl_buddy.tools.synth_yosys import normalise_define_value
+def test_an_explicit_filelist_value_is_compared_literally(tmp_path, caplog):
+    """A value written with `=` means the same thing to every tool, so it can
+    be compared. A bare entry cannot — see the ambiguity tests below."""
+    import logging
 
-    assert normalise_define_value(None, "slang") == "1"
-    assert normalise_define_value(None, "verilog") == ""
-    assert normalise_define_value("8", "slang") == "8"
-    assert normalise_define_value("", "verilog") == ""
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+W=8\n", {"W": 8}, "slang")
+        _scan_inputs(tmp_path, "+define+E=\n", {"E": ""}, "verilog")
+    assert _defines_event(caplog) == []
 
 
 def test_a_matching_filelist_value_is_quiet(tmp_path, caplog):
@@ -4608,25 +4606,74 @@ def test_a_matching_implicit_macro_is_quiet(tmp_path, caplog):
     assert _defines_event(caplog) == []
 
 
-def test_a_bare_filelist_define_matches_one_under_slang(tmp_path, caplog):
-    """slang normalises a bare predefine to 1, so `+define+DEBUG` and
-    `defines: {DEBUG: 1}` really are the same thing there."""
+@pytest.mark.parametrize("frontend", ["slang", "verilog"])
+def test_a_bare_filelist_define_is_always_reported(tmp_path, caplog, frontend):
+    """A bare `+define+X` has no single meaning to compare against.
+
+    Measured by expanding the macro in an expression (`-E` output as the
+    witness), the consumers disagree with each other: Verilator and Yosys's
+    `read_verilog` give it an EMPTY body, while Icarus and slang give it 1.
+    The filelist is read by whichever simulator the suite selects, so
+    resolving the entry against the *synthesis* frontend modelled the wrong
+    consumer — and under slang it silently suppressed this very pair even
+    though Verilator would build the design with an empty `DEBUG`.
+    """
     import logging
 
     with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, "slang")
-    assert _defines_event(caplog) == []
-
-
-def test_a_bare_filelist_define_conflicts_with_one_under_verilog(tmp_path, caplog):
-    """`read_verilog -DDEBUG` gives an empty body, so it is NOT `DEBUG=1`."""
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, "verilog")
+        _scan_inputs(tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, frontend)
     events = _defines_event(caplog)
     assert len(events) == 1
-    assert events[0].rtl_fields["conflicts"] == ["DEBUG (filelist='', synth='1')"]
+    fields = events[0].rtl_fields
+    assert fields["ambiguous"] == ["DEBUG (bare, synth='1')"]
+    assert fields["conflicts"] == []
+    assert fields["defines"] == []
+    assert fields["count"] == 1
+
+
+def test_a_bare_filelist_define_matching_an_implicit_macro_is_reported(
+    tmp_path, caplog
+):
+    """Same reasoning when the synth value came from the frontend itself."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+SYNTHESIS\n", None, "slang")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["ambiguous"] == ["SYNTHESIS (bare, synth='1')"]
+
+
+def test_a_bare_filelist_define_for_an_unset_name_is_just_not_passed(tmp_path, caplog):
+    """With no synth value there is nothing to be ambiguous against — it is
+    simply a macro synthesis never sees."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+ONLY_SIM\n", None, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["defines"] == ["ONLY_SIM"]
+    assert events[0].rtl_fields["ambiguous"] == []
+
+
+def test_all_three_kinds_are_reported_in_one_event(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(
+            tmp_path,
+            "+define+W=8\n+define+MISSING=1\n+define+BARE\n",
+            {"W": 16, "BARE": 1},
+            "verilog",
+        )
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["defines"] == ["MISSING"]
+    assert fields["conflicts"] == ["W (filelist='8', synth='16')"]
+    assert fields["ambiguous"] == ["BARE (bare, synth='1')"]
+    assert fields["count"] == 3
 
 
 def test_an_absent_name_is_still_reported_as_not_passed(tmp_path, caplog):
@@ -4673,6 +4720,21 @@ def test_the_defines_message_names_both_kinds():
     )
     assert "not passed to Yosys at all: MISSING" in msg
     assert "passed with a different value: WIDTH (filelist='8', synth='16')" in msg
+
+    with_bare = _human_message(
+        "synth.filelist_defines_ignored",
+        {
+            "synth": "block",
+            "defines": [],
+            "conflicts": [],
+            "ambiguous": ["BARE (bare, synth='1')"],
+            "count": 1,
+            "filelist": "synth.f",
+        },
+    )
+    assert "no single value to compare" in with_bare
+    assert "Verilator" in with_bare and "Icarus" in with_bare
+    assert "BARE (bare, synth='1')" in with_bare
 
 
 def test_a_conflicting_filelist_define_does_not_change_the_scan(tmp_path, caplog):

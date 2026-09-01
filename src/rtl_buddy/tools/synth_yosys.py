@@ -198,24 +198,21 @@ def implicit_defines(frontend: str) -> dict[str, str]:
     return dict(_VERILOG_IMPLICIT_DEFINES)
 
 
-def normalise_define_value(value: str | None, frontend: str) -> str:
-    """The body a `+define+` entry would give the macro under `frontend`.
-
-    A bare `+define+X` is not universally `X=1`, verified by expanding the
-    macro in an expression rather than only testing `\\`ifdef`:
-
-    - Verilator (the simulation builder) and Yosys's `read_verilog` both give
-      it an **empty** body, so `\\`X` substitutes nothing and
-      `assign y = 8'd0 + \\`X;` is a syntax error.
-    - slang normalises it to **1** (`Preprocessor::undefineAll()` appends
-      `" 1"` to a predefine with no `=`), so the same source compiles.
-
-    So `+define+X` equals `defines: {X: 1}` under slang and not under the
-    verilog frontend, and the equivalence test has to follow the frontend.
-    """
-    if value is not None:
-        return value
-    return "1" if frontend == "slang" else ""
+# What a *bare* `+define+X` (no `=`) gives the macro, measured by expanding it
+# in an expression rather than only testing `\`ifdef`, with `-E` output as the
+# witness:
+#
+#   Verilator  +define+X  -> empty   `assign y = 8'd0 + \`X;` becomes `+ ;`
+#   Icarus     -DX        -> 1       ...becomes `+ 1;`
+#   read_verilog -DX      -> empty   (verilog_frontend.cc leaves value "")
+#   read_slang   -DX      -> 1       (slang appends " 1" to a valueless predefine)
+#
+# The consumers disagree with each other, and rtl_buddy's simulation flow hands
+# the filelist to whichever builder the suite selects. So a bare entry has no
+# single meaning to compare against, and it is reported rather than resolved.
+BARE_DEFINE_MEANINGS = (
+    "empty under Verilator and read_verilog, 1 under Icarus and slang"
+)
 
 
 def lifetime_scan_inputs(
@@ -247,15 +244,26 @@ def lifetime_scan_inputs(
     # warning exists for: `+define+WIDTH=8` in the filelist with
     # `defines: {WIDTH: 16}` on the run means simulation builds an 8-bit
     # design and synthesis a 16-bit one.
+    #
+    # Only an entry carrying an explicit `=value` can be *compared*, because
+    # that value means the same thing to every tool. A bare entry cannot: see
+    # BARE_DEFINE_MEANINGS. Resolving it against the synth frontend was
+    # modelling the wrong consumer entirely -- the filelist is read by the
+    # simulator, which never hands it to synthesis -- and quietly suppressed
+    # the `+define+X` / `defines: {X: 1}` pair under slang even though
+    # Verilator gives that macro an empty body. Bare entries are reported.
     ignored: list[str] = []
     conflicts: list[str] = []
+    ambiguous: list[str] = []
     for name in sorted(filelist_defines):
-        want = normalise_define_value(filelist_defines[name], frontend)
+        value = filelist_defines[name]
         if name not in defines:
             ignored.append(name)
-        elif defines[name] != want:
-            conflicts.append(f"{name} (filelist={want!r}, synth={defines[name]!r})")
-    if ignored or conflicts:
+        elif value is None:
+            ambiguous.append(f"{name} (bare, synth={defines[name]!r})")
+        elif defines[name] != value:
+            conflicts.append(f"{name} (filelist={value!r}, synth={defines[name]!r})")
+    if ignored or conflicts or ambiguous:
         log_event(
             logger,
             logging.WARNING,
@@ -263,7 +271,8 @@ def lifetime_scan_inputs(
             synth=synth_name,
             defines=ignored,
             conflicts=conflicts,
-            count=len(ignored) + len(conflicts),
+            ambiguous=ambiguous,
+            count=len(ignored) + len(conflicts) + len(ambiguous),
             filelist=fl_path,
         )
     return incdirs, defines
