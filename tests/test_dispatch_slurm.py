@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from rtl_buddy.config.dispatch import DispatchConfigFile, JobResources
+from rtl_buddy.dispatch import base as base_module
 from rtl_buddy.dispatch.base import JobHandle, TestJobSpec
 from rtl_buddy.dispatch.slurm import SlurmDispatchBackend
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -2208,9 +2209,17 @@ def test_reaping_a_doomed_job_cancels_it_on_its_own_cluster(monkeypatch):
     assert ["scancel", "-M", "remote", "500"] in calls
 
 
-def test_telemetry_is_queried_on_the_clusters_that_ran_the_jobs(monkeypatch):
-    """sacct is per cluster as well, and a job id repeats across them."""
-    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+def test_telemetry_is_queried_once_per_cluster(monkeypatch):
+    """One query per cluster, because the rows carry no cluster of their own.
+
+    `_SACCT_FORMAT` has no cluster column, so a combined `-M a,b` answer
+    cannot be split back apart; asking each cluster separately makes the
+    provenance structural (#509 review).
+    """
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=0, stdout="", stderr="") for _ in range(2)],
+    )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
@@ -2220,15 +2229,108 @@ def test_telemetry_is_queried_on_the_clusters_that_ran_the_jobs(monkeypatch):
             JobHandle("200_1", _spec(run_id=2), cluster="alpha"),
         ]
     )
-    (argv,) = calls
-    assert argv[argv.index("-M") + 1] == "alpha,beta"
+    assert len(calls) == 2
+    for argv, cluster, job in zip(calls, ("beta", "alpha"), ("100", "200")):
+        assert argv[argv.index("-M") + 1] == cluster
+        assert argv[argv.index("--jobs") + 1] == job
 
 
-def test_local_telemetry_stays_unqualified(monkeypatch):
+def _sacct_row(job_id, *, elapsed, cpu):
+    """One `_SACCT_FORMAT` allocation row plus its `.batch` step row."""
+    return (
+        f"{job_id}|COMPLETED|{elapsed}|60|2|2|4G||\n"
+        f"{job_id}.batch|COMPLETED|{elapsed}|60|2|2|4G|{cpu}|1024K\n"
+    )
+
+
+def test_the_same_job_id_on_two_clusters_keeps_its_own_telemetry(monkeypatch):
+    """`--clusters=a,b` can put slices on clusters that reuse a number.
+
+    Keyed by id alone the two rows merge: the allocation values overwrite
+    each other and the step metrics are summed, so both handles are
+    right-sized from a job that never ran (#509 review).
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("77", elapsed=10, cpu="00:10"),
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("77", elapsed=900, cpu="15:00"),
+                stderr="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [
+            JobHandle("77", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    assert set(telemetry) == {"alpha:77", "beta:77"}
+    assert telemetry["alpha:77"]["elapsed_s"] == 10
+    assert telemetry["beta:77"]["elapsed_s"] == 900
+    # Step metrics stay with their own job rather than summing across both.
+    assert telemetry["alpha:77"]["total_cpu_s"] == 10.0
+    assert telemetry["beta:77"]["total_cpu_s"] == 900.0
+
+
+def test_telemetry_key_is_the_bare_job_id_off_a_cluster():
+    """The single-cluster/local shape every consumer already reads."""
+    assert base_module.telemetry_key(JobHandle("500_1", _spec())) == "500_1"
+    assert (
+        base_module.telemetry_key(JobHandle("500_1", _spec(), cluster="remote"))
+        == "remote:500_1"
+    )
+
+
+def test_one_clusters_missing_accounting_does_not_discard_the_others(monkeypatch):
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=1, stdout="", stderr="sacct: error: no cluster"),
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("200", elapsed=5, cpu="00:05"),
+                stderr="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [
+            JobHandle("100", _spec(run_id=1), cluster="alpha"),
+            JobHandle("200", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    assert set(telemetry) == {"beta:200"}
+
+
+def test_local_telemetry_argv_is_unchanged(monkeypatch):
+    """The single-cluster path must be byte-identical to before #509."""
     calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
-    backend.collect_telemetry([JobHandle("100_1", _spec(run_id=1))])
+    telemetry = backend.collect_telemetry(
+        [JobHandle("100_1", _spec(run_id=1)), JobHandle("100_2", _spec(run_id=2))]
+    )
     (argv,) = calls
-    assert "-M" not in argv
+    assert argv == [
+        "sacct",
+        "--parsable2",
+        "--noheader",
+        f"--format={slurm_module._SACCT_FORMAT}",
+        "--jobs",
+        "100",
+    ]
+    assert telemetry == {}

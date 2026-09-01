@@ -41,7 +41,13 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tool_manifest import require as require_tool
 from .argv import build_job_argv, test_job_argv
-from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
+from .base import (
+    BuildJobSpec,
+    DispatchBackend,
+    JobHandle,
+    TestJobSpec,
+    telemetry_key,
+)
 from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
@@ -1259,20 +1265,24 @@ class SlurmDispatchBackend(DispatchBackend):
             job_ids=group_job_ids(h.job_id for h in handles if h is not None),
         )
 
-    @staticmethod
-    def _telemetry_cluster_argv(handles: Sequence[JobHandle | None]) -> list[str]:
-        """``-M`` for every cluster the fleet was accepted on, if any."""
-        clusters = sorted(
-            {
-                cluster
-                for cluster in (getattr(h, "cluster", None) for h in handles if h)
-                if cluster
-            }
-        )
-        return ["-M", ",".join(clusters)] if clusters else []
-
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
-        """Reserved-vs-used per job from ``sacct``, keyed by handle job id.
+        """Reserved-vs-used per job from ``sacct``, keyed by :func:`telemetry_key`.
+
+        That key is the bare job id for a local or single-cluster run — the
+        shape every consumer has always seen — and ``<cluster>:<job id>``
+        for a job accepted elsewhere, because ids repeat across clusters.
+
+        ONE sacct per cluster, not one query naming them all: provenance is
+        then structural. ``_SACCT_FORMAT`` has no cluster column, so rows
+        returned by a combined ``-M a,b`` query cannot be told apart, and
+        two jobs sharing a number would have their allocation rows
+        overwrite each other and their step metrics summed together (#509
+        review). Adding the column would work too, but it makes correctness
+        depend on parsing a field whose rendering varies by Slurm version
+        and widens a pinned machine contract; grouping by the cluster the
+        submission recorded reuses the grouping cancellation already uses
+        and cannot be misparsed. A single-cluster run still issues exactly
+        one query, argv unchanged.
 
         Queries WITHOUT ``-X``: ``MaxRSS``/``TotalCPU`` only populate on
         step rows (``.batch`` etc.), never the allocation row — usage is
@@ -1290,6 +1300,31 @@ class SlurmDispatchBackend(DispatchBackend):
         """
         if not handles:
             return {}
+        telemetry: dict[str, dict] = {}
+        for cluster, base_ids in self._base_ids_by_cluster(handles).items():
+            # A cluster whose accounting is unreachable must not discard
+            # what the others answered, so each group is folded in on its
+            # own; a single-cluster run still ends with {} on failure.
+            telemetry.update(
+                self._telemetry_on(handles, cluster=cluster, base_ids=base_ids)
+            )
+        return telemetry
+
+    def _telemetry_on(
+        self,
+        handles: Sequence[JobHandle | None],
+        *,
+        cluster: str | None,
+        base_ids: list[str],
+    ) -> dict[str, dict]:
+        """One cluster's ``sacct`` rows, keyed by :func:`telemetry_key`."""
+        # Only THIS cluster's handles are matchable, which is what keeps a
+        # shared job number from crossing over.
+        wanted = {
+            h.job_id: telemetry_key(h)
+            for h in handles
+            if h is not None and getattr(h, "cluster", None) == cluster
+        }
         # Telemetry is strictly additive — no failure mode of it may fail a
         # run whose jobs have all completed. sacct may be absent (client
         # packaging varies; sbatch present does not guarantee sacct) or wedged
@@ -1301,14 +1336,12 @@ class SlurmDispatchBackend(DispatchBackend):
                     "--parsable2",
                     "--noheader",
                     f"--format={_SACCT_FORMAT}",
-                    # Accounting is per cluster too, and a job id repeats
-                    # across clusters — an unqualified query would find
-                    # nothing for a remote fleet, or the wrong local job of
-                    # that number (#509 review). sacct takes the whole set
-                    # at once, so this stays one call.
-                    *self._telemetry_cluster_argv(handles),
+                    # Accounting is per cluster, and a job id repeats across
+                    # clusters — unqualified, this finds nothing for a remote
+                    # fleet, or the wrong local job of that number (#509).
+                    *(["-M", cluster] if cluster else []),
                     "--jobs",
-                    ",".join(self._base_ids(handles)),
+                    ",".join(base_ids),
                 ],
                 capture_output=True,
                 text=True,
@@ -1321,6 +1354,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 logging.INFO,
                 "dispatch.telemetry_unavailable",
                 backend=self.name,
+                cluster=cluster,
                 error=str(e)[:200],
             )
             return {}
@@ -1330,11 +1364,11 @@ class SlurmDispatchBackend(DispatchBackend):
                 logging.INFO,
                 "dispatch.telemetry_unavailable",
                 backend=self.name,
+                cluster=cluster,
                 error=proc.stderr.strip()[:200],
             )
             return {}
 
-        wanted = {h.job_id for h in handles}
         telemetry: dict[str, dict] = {}
         for line in proc.stdout.splitlines():
             fields = line.split("|")
@@ -1352,9 +1386,10 @@ class SlurmDispatchBackend(DispatchBackend):
                 max_rss,
             ) = fields
             base = job_id.split(".")[0]
-            if base not in wanted:
+            key = wanted.get(base)
+            if key is None:
                 continue
-            entry = telemetry.setdefault(base, {})
+            entry = telemetry.setdefault(key, {})
             if "." not in job_id:
                 # Allocation row: state + reservation-side numbers.
                 entry["state"] = state

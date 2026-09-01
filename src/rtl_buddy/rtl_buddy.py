@@ -85,7 +85,7 @@ from .dispatch import (
     validate_backend_name,
 )
 from .dispatch.argv import job_log_path
-from .dispatch.base import BuildJobSpec, TestJobSpec
+from .dispatch.base import BuildJobSpec, TestJobSpec, telemetry_key
 from .dispatch.plan import (
     read_plan_config,
     read_plan_configs,
@@ -4033,7 +4033,7 @@ class RtlBuddy:
             query_handles = [build_handle, *query_handles]
         telemetry = backend.collect_telemetry(query_handles)
         if attempt == 0 and build_handle is not None:
-            build_tele = telemetry.get(build_handle.job_id)
+            build_tele = telemetry.get(telemetry_key(build_handle))
             if build_tele:
                 # (a) travels with the artifact, the way a sim job's does —
                 # attach_telemetry_json validates no filetype, so the build
@@ -4059,7 +4059,9 @@ class RtlBuddy:
                 else None
             )
         for idx, handle in pending:
-            tele = telemetry.get(handle.job_id)
+            # Keyed by handle, not by job id: two jobs on different clusters
+            # can carry the same id, and telemetry keeps them apart (#509).
+            tele = telemetry.get(telemetry_key(handle))
             try:
                 envelope = load_result_json(
                     handle.spec.result_json, expected_run_token=run_token

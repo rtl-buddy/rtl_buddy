@@ -129,6 +129,23 @@ class JobHandle:
     cluster: str | None = None
 
 
+def telemetry_key(handle: JobHandle) -> str:
+    """Key identifying one handle in a :meth:`collect_telemetry` result.
+
+    A job id is unique only within its cluster, and a run can span
+    clusters — ``--clusters=a,b`` places each array wherever it can start
+    first — so two handles can legitimately carry the SAME id. Keying
+    telemetry by id alone then merges their rows: allocation values
+    overwrite each other, step metrics sum across unrelated jobs, and both
+    jobs are right-sized from the mixture (#509 review).
+
+    Prefixed with the cluster only where there is one, so a local or
+    single-cluster run keys by the bare job id exactly as before.
+    """
+    cluster = getattr(handle, "cluster", None)
+    return f"{cluster}:{handle.job_id}" if cluster else handle.job_id
+
+
 class DispatchBackend(ABC):
     """One remote-execution flavor (slurm today; LSF/SGE are future).
 
@@ -240,7 +257,12 @@ class DispatchBackend(ABC):
     effective_sbatch_args: tuple = ()
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
-        """Per-job reserved-vs-used accounting, keyed by job id.
+        """Per-job reserved-vs-used accounting, keyed by :func:`telemetry_key`.
+
+        That is the bare job id for every backend that cannot submit off
+        the local cluster, so a consumer's lookup is unchanged; use the
+        helper rather than the id, since a Slurm run spanning clusters
+        keys the jobs it accepted elsewhere by ``<cluster>:<job id>``.
 
         Returns an empty mapping when the backend has no accounting
         source (right-sizing then degrades gracefully). Values are
