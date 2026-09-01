@@ -14,6 +14,7 @@ from ..errors import FatalRtlBuddyError
 from .base import (
     BuildJobSpec,
     DispatchBackend,
+    ElabJobSpec,
     JobHandle,
     TestJobSpec,
     split_handle_key,
@@ -25,6 +26,7 @@ from .slurm import SlurmDispatchBackend
 __all__ = [
     "BuildJobSpec",
     "DispatchBackend",
+    "ElabJobSpec",
     "JobHandle",
     "TestJobSpec",
     "LocalProcessBackend",

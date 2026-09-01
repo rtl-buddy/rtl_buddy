@@ -1134,6 +1134,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+elab = [
+    { name = "pyslang" },
+]
 graph-extract = [
     { name = "rtl-buddy-graph-extract" },
 ]
@@ -1147,6 +1150,7 @@ mut = [
 [package.dev-dependencies]
 dev = [
     { name = "mcp" },
+    { name = "pyslang" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -1157,6 +1161,7 @@ lint = [
 ]
 test = [
     { name = "mcp" },
+    { name = "pyslang" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -1168,6 +1173,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.21.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
     { name = "pyserde", extras = ["yaml"], specifier = ">=0.27.0" },
+    { name = "pyslang", marker = "extra == 'elab'", specifier = ">=10.0.0,<12" },
     { name = "pywellen", specifier = ">=0.20.0,<0.25" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "rtl-buddy-graph-extract", marker = "extra == 'graph-extract'", specifier = ">=0.1.0" },
@@ -1176,11 +1182,12 @@ requires-dist = [
     { name = "typer", specifier = ">=0.19.2" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["graph-extract", "mcp", "mut"]
+provides-extras = ["elab", "graph-extract", "mcp", "mut"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mcp", specifier = ">=1.2.0" },
+    { name = "pyslang", specifier = ">=10.0.0,<12" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
@@ -1189,6 +1196,7 @@ dev = [
 lint = [{ name = "ruff", specifier = ">=0.11.0" }]
 test = [
     { name = "mcp", specifier = ">=1.2.0" },
+    { name = "pyslang", specifier = ">=10.0.0,<12" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },

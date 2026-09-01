@@ -284,6 +284,7 @@ class ToolSpec:
         "Subcommand readiness" section of the report.
       optional: ``True`` means missing this tool does not gate
         subcommand readiness.
+      required_by: Subcommands for which an otherwise optional tool is required.
       description: Short one-liner shown by ``--explain``.
       notes: Free-form additional context for ``--explain``.
     """
@@ -301,6 +302,7 @@ class ToolSpec:
     description: str = ""
     notes: str = ""
     aliases: tuple[str, ...] = ()
+    required_by: tuple[str, ...] = ()
 
 
 @dataclass
@@ -793,14 +795,15 @@ def _builtin_manifest() -> list[ToolSpec]:
             binaries=("pyslang",),
             version_cmd=None,
             version_regex=None,
-            minimum_version=None,
+            minimum_version="10.0.0",
             detection=(PythonPackageDetector("pyslang"),),
             install_hint={
-                "any": "uv pip install pyslang  (only needed for --frontend slang)",
+                "any": "uv add 'rtl_buddy[elab]'  (or uv pip install 'pyslang>=10,<12')",
             },
-            used_by=("hier", "synth", "cdc"),
+            used_by=("hier", "synth", "cdc", "elab", "elab-regression"),
             optional=True,
-            description="Python slang frontend — alternative parser for rb hier / synth / cdc",
+            description="Python slang frontend for model elaboration and optional parsing flows",
+            required_by=("elab", "elab-regression"),
         ),
         ToolSpec(
             name="mcp",
@@ -1291,14 +1294,15 @@ def subcommand_readiness(
                 },
             )
             slot["tools"].append(spec.name)
-            if not spec.optional:
+            required = not spec.optional or sub in spec.required_by
+            if required:
                 slot["optional_only"] = False
             st = by_name.get(spec.name)
             if st is None:
                 continue
-            if st.status == "missing" and not spec.optional:
+            if st.status == "missing" and required:
                 slot["missing"].append(spec.name)
-            elif st.status == "outdated" and not spec.optional:
+            elif st.status == "outdated" and required:
                 slot["outdated"].append(spec.name)
 
     out: dict[str, dict] = {}

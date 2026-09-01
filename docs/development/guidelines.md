@@ -34,6 +34,8 @@ Use these roots unless a command documents a narrower exception:
 | `test` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | compile: `<artifact>`; sim: `<artifact>` |
 | `randtest` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | compile: `<artifact>`; sim: `<artifact>/run-NNNN` |
 | `regression` | `dirname(regression.yaml)` | each suite's `<suite>/artefacts/<test>` | same as `test` per suite |
+| `elab` | `dirname(models.yaml)` | `<model_root>/artefacts/elab/<model>/<base-or-profile>` | `<artifact>` |
+| `elab-regression` | `dirname(elab_regression.yaml)` | each model's `artefacts/elab/<model>/<profile>` | each profile artifact |
 | `wave --resim` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | same as `test` |
 | `synth` | `dirname(synth.yaml)` | `<suite>/artefacts/<synth>` | `<artifact>` |
 | `fpv` | `dirname(fpv.yaml)` | `<suite>/artefacts/<fpv>` | `<artifact>` |
@@ -62,6 +64,8 @@ Resolve config-owned paths from the config file that owns them:
 - `regression.yaml` resolves listed suite configs relative to itself.
 - `tests.yaml` resolves testbench filelists, hook script paths, and suite-local runtime assets relative to the suite directory.
 - `models.yaml` resolves model filelist entries relative to the `models.yaml` file that defined them.
+- `models.yaml` also owns elaboration profile sources, include directories, and output artifacts; profiles never carry another model path.
+- `elab_regression.yaml` resolves its explicit `model-configs` relative to the manifest.
 - `synth.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, and `fpga.yaml` resolve their own fields relative to their config directory.
 
 Pass absolute paths to external tools unless a value is intentionally artifact-relative.

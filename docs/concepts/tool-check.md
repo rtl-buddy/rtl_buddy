@@ -17,7 +17,7 @@ rb tool-check --format json           # bare JSON for scripts
 rb --machine tool-check               # standard machine envelope
 ```
 
-Optional tools appear by default. Use `--no-include-optional` to hide them. The report contains:
+Optional tools appear by default. Use `--no-include-optional` to hide them. A tool may be optional globally but required by a command that is itself optional: pyslang does not block the core install, but it does block `elab` and `elab-regression`. The report contains:
 
 - **Tools:** canonical name, `ok` / `missing` / `outdated`, detected version, resolved path, minimum version, and optional status.
 - **Subcommand readiness:** each declared `rb` command and the dependencies that block it. An optional feature does not make unrelated commands unready.
@@ -40,7 +40,7 @@ Exit behavior depends on the invocation:
 | `rb tool-check --required-for <subcommand>` | 0 | That command's required tools are ready |
 | `rb tool-check --required-for <subcommand>` | 2 | That command is blocked |
 
-`--required-for` implies enforcement. Optional dependencies do not fail `--strict`.
+`--required-for` implies enforcement. Optional dependencies do not fail the global `--strict` check, but they do fail a focused check for a command that declares them required.
 
 The JSON payload contains `tools`, `subcommands`, and `exit_code`. Each `tools` entry carries `status`, `version`, `path`, `optional`, and `minimum_version` when one is declared. Optional binaries are deliberately absent from it: they are documentation of what a tool can additionally use, not a state anything can gate on, so machine consumers see no field for them. `rb --machine tool-check --explain <tool>` mirrors the human explanation verbatim in the payload's `instructions` field, which is where they do appear. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
 

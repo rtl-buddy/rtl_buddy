@@ -98,6 +98,8 @@ Pass `--machine` before the subcommand:
 ```bash
 rb --machine test basic
 rb --machine regression -c regression.yaml
+rb --machine elab core -c models.yaml
+rb --machine elab-regression -c elab_regression.yaml
 ```
 
 Machine mode:
@@ -135,6 +137,7 @@ Common payload conventions:
 
 - listing commands use `payload.names`;
 - regression results use `payload.results` and include `suite`;
+- elaboration results include top, source and diagnostic counts, elapsed time, peak memory, and `result_json`;
 - `docs list` uses `payload.pages`;
 - coverage and formal commands attach structured metrics and artefact paths to their results.
 

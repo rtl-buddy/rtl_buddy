@@ -7,15 +7,9 @@ description: Use rtl_buddy for basic RTL testing, analysis, and implementation w
 
 Run `rb --version` at the top of every run summary.
 
-Use this skill for basic work and feature discovery. Start with `rb --help`,
-`rb <command> --help`, `rb --machine docs list`, or
-`rb --machine docs show quickstart`.
-Use `rb --machine docs show reference/yaml` for schemas and
-`rb --machine docs show known-issues` before working around surprising behavior.
-All documentation slugs below mean `rb --machine docs show <slug>`.
-Before running a named flow, discover the real config and entry names with
-`--list` where supported. Names and paths below show command shape; do not copy
-placeholders into a project without checking them.
+Start with command help or `rb --machine docs list`. Use the local
+`reference/yaml` and `known-issues` docs for schemas and surprises. Discover
+real config and entry names with `--list`; paths below only show command shape.
 
 ## Use `--machine` for automation
 
@@ -24,10 +18,8 @@ exception and returns the requested page as bare JSON. For row-producing tests
 and flows, parse `payload.results[*].result` and `desc`; inspect the
 command-specific payload otherwise. Never scrape the human table.
 
-`filelist`, `hier`, `wave`, and `axi-profile` are output/pass-through commands
-without an rtl_buddy envelope. `rb mcp` owns stdout as a long-running JSON-RPC
-server. Machine mode makes `rtl_buddy.log` JSONL for commands that initialize a
-log; it does not make every command create one.
+`filelist`, `hier`, `wave`, and `axi-profile` are pass-through commands. `rb mcp`
+owns stdout. Machine mode makes initialized `rtl_buddy.log` files JSONL.
 
 Run and regression commands normally exit 0 when every result counts as
 successful, 1 for any `FAIL` or strict `XPASS`, and 2 for fatal configuration or
@@ -64,11 +56,20 @@ closure:
 rb --machine filelist my_model run.f -c path/to/models.yaml
 ```
 
+Use `elab` to parse, type-check, and elaborate that same model. Bare runs need
+no profile; optional `models.yaml` profiles add gate-specific deltas, and an
+explicit manifest groups profiles for regression.
+
+```bash
+rb --machine elab my_model -c path/to/models.yaml
+rb --machine elab-regression -c path/to/elab_regression.yaml
+```
+
 Config-relative inputs and default outputs anchor on the config file's directory,
 not necessarily the shell cwd. Regression suite outputs anchor on each suite
 config; orchestration output anchors on the regression manifest. Explicit CLI
 output paths follow shell semantics. Docs: `concepts/execution-context`,
-`concepts/root-config`, and `reference/yaml`.
+`concepts/root-config`, `concepts/elaboration`, and `reference/yaml`.
 
 ## Lint and CDC
 

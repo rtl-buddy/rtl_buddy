@@ -57,6 +57,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+# `rb elab` and `rb elab-regression`. Imported only by the isolated worker,
+# so the core CLI and every existing command remain usable without this extra.
+elab = ["pyslang >= 10.0.0, <12"]
 # `rb mut` mutation testing. rtl-buddy-xeno is a library rtl_buddy
 # imports lazily (runner/mut_runner.py), not a subprocess tool, so it
 # installs into the same environment via this extra rather than via
@@ -132,6 +135,7 @@ test = [
   "pytest>=9.0.3",
   "pytest-cov>=6.0.0",
   "pytest-asyncio>=0.24.0",
+  "pyslang>=10.0.0,<12",
   # So CI actually exercises the `rb mcp` SDK boundary. The tests that
   # need it still skip when it is absent (a contributor without the
   # extra must not see red), but the skip must not be the CI outcome.

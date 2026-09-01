@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 from ..seed_mode import SeedMode
-from .base import BuildJobSpec, TestJobSpec
+from .base import BuildJobSpec, ElabJobSpec, RunnableJobSpec, TestJobSpec
 
 
 def job_log_path(result_json: str | Path) -> Path:
@@ -134,3 +134,27 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
     if spec.replay_run_id is not None:
         argv += ["--replay-run-id", str(spec.replay_run_id)]
     return argv
+
+
+def elab_job_argv(spec: ElabJobSpec) -> list[str]:
+    """The ``rb _elab-job`` invocation for one model/profile pair."""
+    argv = _rb_argv(spec)
+    argv += [
+        "_elab-job",
+        spec.model_name,
+        "-c",
+        spec.model_config_path,
+        "--result-json",
+        str(spec.result_json),
+        "--cpus",
+        str(spec.resources.cpus),
+    ]
+    if spec.profile_name is not None:
+        argv += ["--profile", spec.profile_name]
+    return argv
+
+
+def job_argv(spec: RunnableJobSpec) -> list[str]:
+    if isinstance(spec, ElabJobSpec):
+        return elab_job_argv(spec)
+    return test_job_argv(spec)

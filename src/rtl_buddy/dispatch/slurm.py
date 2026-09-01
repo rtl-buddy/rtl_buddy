@@ -43,17 +43,25 @@ from typing import NamedTuple
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tool_manifest import require as require_tool
-from .argv import build_job_argv, test_job_argv
+from .argv import build_job_argv, elab_job_argv, test_job_argv
 from .base import (
     BuildJobSpec,
     DispatchBackend,
     JobHandle,
+    RunnableJobSpec,
     TestJobSpec,
     telemetry_key,
 )
 from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
+
+
+def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
+    if isinstance(spec, TestJobSpec):
+        return test_job_argv(spec)
+    return elab_job_argv(spec)
+
 
 # Queue states that mean "still occupying the queue". Anything else
 # (COMPLETED/FAILED/TIMEOUT/CANCELLED...) has finished as far as the
@@ -1060,7 +1068,7 @@ class SlurmDispatchBackend(DispatchBackend):
         return [f"--begin=now+{seconds}"] if seconds > 0 else []
 
     def _sbatch_argv(
-        self, spec: TestJobSpec, dependency: str | None, delay_sec: float = 0.0
+        self, spec: RunnableJobSpec, dependency: str | None, delay_sec: float = 0.0
     ) -> list[str]:
         cmd = self._reservation_argv(
             spec.resources,
@@ -1072,12 +1080,12 @@ class SlurmDispatchBackend(DispatchBackend):
         cmd += self._dependency_argv(dependency)
         cmd += self._begin_argv(delay_sec)
         cmd += self.sbatch_args
-        cmd += ["--wrap", shlex.join(test_job_argv(spec))]
+        cmd += ["--wrap", shlex.join(_runnable_job_argv(spec))]
         return cmd
 
     def submit(
         self,
-        spec: TestJobSpec,
+        spec: RunnableJobSpec,
         *,
         dependency: str | None = None,
         delay_sec: float = 0.0,
@@ -1094,21 +1102,21 @@ class SlurmDispatchBackend(DispatchBackend):
             raise FatalRtlBuddyError(
                 f"sbatch returned no job id for {spec.display_name()}"
             )
-        log_event(
-            logger,
-            logging.INFO,
-            "dispatch.submitted",
-            backend=self.name,
-            job_id=job_id,
-            test=spec.test_name,
-            run_id=spec.run_id,
-            dependency=dependency,
-            begin_delay_sec=delay_sec or None,
-            time=spec.resources.time,
-            cpus=spec.resources.cpus,
-            mem=spec.resources.mem,
-            cluster=cluster,
-        )
+        fields = {
+            "backend": self.name,
+            "job_id": job_id,
+            "dependency": dependency,
+            "begin_delay_sec": delay_sec or None,
+            "time": spec.resources.time,
+            "cpus": spec.resources.cpus,
+            "mem": spec.resources.mem,
+            "cluster": cluster,
+        }
+        if isinstance(spec, TestJobSpec):
+            fields.update(test=spec.test_name, run_id=spec.run_id)
+        else:
+            fields.update(model=spec.model_name, profile=spec.profile_name)
+        log_event(logger, logging.INFO, "dispatch.submitted", **fields)
         return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
 
     def _cluster_selection(self) -> str | None:
@@ -1378,7 +1386,7 @@ class SlurmDispatchBackend(DispatchBackend):
 
     def submit_array(
         self,
-        specs: list[TestJobSpec],
+        specs: list[RunnableJobSpec],
         *,
         array_dir: Path,
         max_parallel: int | None = None,
@@ -1431,7 +1439,7 @@ class SlurmDispatchBackend(DispatchBackend):
 
     def _submit_one_array(
         self,
-        specs: list[TestJobSpec],
+        specs: list[RunnableJobSpec],
         *,
         array_dir: Path,
         max_parallel: int | None,
@@ -1442,7 +1450,7 @@ class SlurmDispatchBackend(DispatchBackend):
         array_dir.mkdir(parents=True, exist_ok=True)
         manifest = array_dir / "manifest.txt"
         manifest.write_text(
-            "".join(shlex.join(test_job_argv(spec)) + "\n" for spec in specs)
+            "".join(shlex.join(_runnable_job_argv(spec)) + "\n" for spec in specs)
         )
         script = array_dir / "array.sh"
         script.write_text(_ARRAY_SCRIPT)
@@ -1459,7 +1467,12 @@ class SlurmDispatchBackend(DispatchBackend):
             array_range += f"%{max_parallel}"
         # `/k` names the slice, so a split group is legible in squeue
         # instead of looking like several unrelated arrays.
-        job_name = f"rb:{specs[0].test_name}+{len(specs) - 1}"
+        first_name = (
+            specs[0].test_name
+            if isinstance(specs[0], TestJobSpec)
+            else specs[0].display_name()
+        )
+        job_name = f"rb:{first_name}+{len(specs) - 1}"
         if slice_count > 1:
             job_name += f"/{slice_index}"
         resources = specs[0].resources
