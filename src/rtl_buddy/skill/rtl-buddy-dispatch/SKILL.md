@@ -87,10 +87,10 @@ of the global reservation.
   cases the note says the number is the whole-job figure and the decomposition
   is yours. It never claims a product: `--ntasks=8 --nodes=2
   --ntasks-per-node=4 --cpus-per-task=2` requests 16, not the product of four.
-- An override also disables the compile `cpus` floor: that floor bounds the
-  generated `max(sim, compile)` reservation, which sbatch never saw, so leaving
-  it in would clamp every suggestion up and then discard it. `mem` and `time`
-  floors are untouched.
+- A DIRECT `-c`/`--cpus-per-task` override disables the compile `cpus` floor —
+  it replaces the generated flag, so that floor never reached sbatch. A task or
+  node count does not: `--cpus-per-task` is still in force, so the floor stays
+  and no suggestion goes below it.
 - Right-size from representative regression levels and seeds, then rerun until
   the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
 
