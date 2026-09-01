@@ -20,42 +20,41 @@ import pywellen
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
-from .pywellen_compat import require_random_access_api
 
 logger = logging.getLogger(__name__)
 
 
-def _iter_vars(scope, h):
+def _iter_vars(scope):
     """Yield non-parameter, non-memory-element vars in this scope.
 
-    FST exposes memory array elements as vars whose `name(h)` starts
+    FST exposes memory array elements as vars whose `name` starts
     with `[` (the bracketed index, parent scope is the array name).
     These don't correspond to gate-level nets in the synth netlist and
     confuse the SAIF parser when nested under INSTANCE, so we skip them.
     """
-    for v in scope.vars(h):
-        if v.var_type() == "Parameter":
+    for v in scope.vars():
+        if v.var_type == "Parameter":
             continue
-        if v.name(h).startswith("["):
+        if v.name.startswith("["):
             continue
         yield v
 
 
 def _max_time(w: pywellen.Waveform) -> int:
-    h = w.hierarchy
     mx = 0
 
     def walk(scope):
         nonlocal mx
-        for v in _iter_vars(scope, h):
-            sig = w.get_signal(v)
-            for t, _ in sig.all_changes():
-                if t > mx:
-                    mx = t
-        for s in scope.scopes(h):
+        for v in _iter_vars(scope):
+            # Changes are time-ordered, so the last one carries the max time;
+            # index the materialised list (Signal itself rejects negative idx).
+            changes = v.signal[:]
+            if changes and changes[-1][0] > mx:
+                mx = changes[-1][0]
+        for s in scope.scopes():
             walk(s)
 
-    for s in h.top_scopes():
+    for s in w.scopes():
         walk(s)
     return mx
 
@@ -122,31 +121,30 @@ def _emit_net(out, indent: int, name: str, stats: dict) -> None:
     out.write(f"{pad})\n")
 
 
-def _emit_scope(out, w: pywellen.Waveform, scope, h, indent: int, end_t: int) -> None:
+def _emit_scope(out, scope, indent: int, end_t: int) -> None:
     pad = "  " * indent
-    out.write(f"{pad}(INSTANCE {scope.name(h)}\n")
+    out.write(f"{pad}(INSTANCE {scope.name}\n")
 
-    vars_here = list(_iter_vars(scope, h))
+    vars_here = list(_iter_vars(scope))
     if vars_here:
         out.write(f"{pad}  (NET\n")
         for v in vars_here:
-            sig = w.get_signal(v)
-            changes = list(sig.all_changes())
-            width = v.bitwidth() or 1
+            changes = v.signal[:]
+            width = v.bitwidth or 1
             if width == 1:
-                _emit_net(out, indent + 2, v.name(h), _bit_stats(changes, 0, end_t))
+                _emit_net(out, indent + 2, v.name, _bit_stats(changes, 0, end_t))
             else:
                 for b in range(width):
                     _emit_net(
                         out,
                         indent + 2,
-                        f"{v.name(h)}\\[{b}\\]",
+                        f"{v.name}\\[{b}\\]",
                         _bit_stats(changes, b, end_t),
                     )
         out.write(f"{pad}  )\n")
 
-    for s in scope.scopes(h):
-        _emit_scope(out, w, s, h, indent + 1, end_t)
+    for s in scope.scopes():
+        _emit_scope(out, s, indent + 1, end_t)
 
     out.write(f"{pad})\n")
 
@@ -154,8 +152,7 @@ def _emit_scope(out, w: pywellen.Waveform, scope, h, indent: int, end_t: int) ->
 def convert(trace_path: Path, saif_path: Path) -> None:
     """Convert FST/VCD at `trace_path` to SAIF v2.0 at `saif_path`.
 
-    Raises FatalRtlBuddyError on input-not-found, pywellen open failure,
-    or a pywellen without the random-access Waveform API (#263).
+    Raises FatalRtlBuddyError on input-not-found or pywellen open failure.
     """
     if not trace_path.is_file():
         log_event(
@@ -165,10 +162,6 @@ def convert(trace_path: Path, saif_path: Path) -> None:
             path=str(trace_path),
         )
         raise FatalRtlBuddyError(f"trace file not found: {trace_path}")
-
-    # Guard before any Waveform API touch — under pywellen >=0.25 the
-    # w.hierarchy access below would otherwise die with a raw AttributeError.
-    require_random_access_api("rb saif")
 
     try:
         w = pywellen.Waveform(str(trace_path))
@@ -182,11 +175,26 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         )
         raise FatalRtlBuddyError(f"could not open {trace_path}: {e}") from e
 
-    h = w.hierarchy
-    ts = h.timescale()
-    ts_value = int(ts.factor)
-    ts_unit = str(ts.unit).lower()
-    end_t = _max_time(w)
+    # pywellen >=0.25 flattened the hierarchy onto Waveform (no more
+    # ``w.hierarchy``): timescale, scope walking and signal reads all happen via
+    # the trace-reader API. Keep these touches under one guard so a reader/API
+    # break surfaces as a clear FatalRtlBuddyError, not a raw AttributeError.
+    try:
+        ts = w.timescale
+        ts_value = int(ts.factor)
+        ts_unit = str(ts.unit).lower()
+        end_t = _max_time(w)
+    except Exception as e:
+        log_event(
+            logger,
+            logging.ERROR,
+            "saif.read_failed",
+            path=str(trace_path),
+            error=str(e),
+        )
+        raise FatalRtlBuddyError(
+            f"could not read waveform from {trace_path}: {e}"
+        ) from e
 
     saif_path.parent.mkdir(parents=True, exist_ok=True)
     with saif_path.open("w") as out:
@@ -201,8 +209,8 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         out.write("  (DIVIDER /)\n")
         out.write(f"  (TIMESCALE {ts_value} {ts_unit})\n")
         out.write(f"  (DURATION {end_t})\n")
-        for s in h.top_scopes():
-            _emit_scope(out, w, s, h, 1, end_t)
+        for s in w.scopes():
+            _emit_scope(out, s, 1, end_t)
         out.write(")\n")
 
     log_event(

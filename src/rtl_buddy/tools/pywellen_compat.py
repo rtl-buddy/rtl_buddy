@@ -3,18 +3,20 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Guard for pywellen's random-access Waveform API (removed in 0.25).
+"""Guard for the pywellen >=0.25 random-access Waveform API.
 
-pywellen 0.25.0 rewrote ``Waveform`` to a streaming-only surface, removing
-the random-access API that ``rb wave`` value annotations and ``rb saif``
-depend on (#263). The dependency is bounded to ``<0.25`` in pyproject, but
-that doesn't protect environments that force-resolved a newer pywellen
-(e.g. a stale tool venv). This guard turns that situation into a clear
-FatalRtlBuddyError up front instead of blank annotations or an
-AttributeError traceback mid-run.
+pywellen is pre-1.0 and its minor bumps rewrite the public API: 0.25.0
+replaced the 0.20-0.24 random-access surface (``get_signal_from_path`` /
+``value_at_time``) with the current ``wf[path]`` / ``Signal.value_at`` one
+that ``rb wave`` value annotations and ``rb saif`` now depend on (#263). The
+dependency is bounded to ``>=0.25.2,<0.26`` in pyproject, but that doesn't
+protect environments that force-resolved an out-of-range pywellen (e.g. a
+stale tool venv pinning <0.25, or a future incompatible bump). This guard
+turns that situation into a clear FatalRtlBuddyError up front instead of
+blank annotations or an AttributeError traceback mid-run.
 
-Remove together with the ``<0.25`` bound when the readers are ported to
-the streaming API.
+``tests/test_pywellen_api.py`` is the CI-time half of the same guard; keep
+the two in sync when the depended-on surface changes.
 """
 
 from __future__ import annotations
@@ -28,8 +30,9 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 #: The random-access ``Waveform`` attributes rtl_buddy's trace readers use,
-#: present through pywellen 0.24.2 and removed in 0.25.0.
-RANDOM_ACCESS_API = ("hierarchy", "get_signal", "get_signal_from_path")
+#: introduced in pywellen 0.25.0 (``wf[path]`` lookup, top-scope enumeration,
+#: and the timescale getter).
+RANDOM_ACCESS_API = ("__getitem__", "scopes", "timescale")
 
 
 def pywellen_version() -> str:
@@ -61,6 +64,7 @@ def require_random_access_api(tool: str) -> None:
     )
     raise FatalRtlBuddyError(
         f"pywellen {version} lacks the random-access Waveform API {tool} "
-        f"requires (missing: {', '.join(missing)}; removed in pywellen 0.25) — "
-        f"reinstall with 'pywellen>=0.20.0,<0.25' (rtl_buddy#263)"
+        f"requires (missing: {', '.join(missing)}; the current surface arrived "
+        f"in pywellen 0.25.0) — reinstall with 'pywellen>=0.25.2,<0.26' "
+        f"(rtl_buddy#263)"
     )

@@ -76,21 +76,28 @@ class WaveformValueReader:
     Look up signal values at a specific FST timestamp using pywellen.
 
     The pywellen Waveform is loaded lazily on the first query and reused.
-    A genuine lookup miss (signal not in the waveform) returns None/empty;
-    a missing or unreadable trace, or a pywellen without the random-access
-    Waveform API, raises FatalRtlBuddyError instead of silently blanking
-    every annotation (#263). WaveLauncher calls check() on the main thread
-    before Surfer starts so those failures abort the command up front.
+    A genuine lookup miss (signal absent from the dump, or no value yet at the
+    cursor time) returns None quietly. An *unexpected* pywellen error — e.g. an
+    API/version mismatch — is logged once at ERROR and then returns None, so a
+    broken trace reader surfaces loudly instead of silently blanking every
+    annotation.
+
+    Targets the pywellen >=0.25 random-access API: ``wf[path]`` resolves a
+    hierarchical name to a ``Var`` (or ``Scope``), ``Var.signal`` lazily loads
+    the signal body, and ``Signal.value_at(t)`` is an O(log n) point query.
     """
 
     def __init__(self, fst_path: str):
         self._fst_path = fst_path
         self._waveform = None
+        self._api_break_logged = False
 
     def check(self) -> None:
-        """Validate the trace path and the pywellen API surface.
+        """Validate the trace path and the pywellen API surface up front.
 
-        Cheap (no waveform load). Raises FatalRtlBuddyError on failure.
+        Cheap (no waveform load). Raises FatalRtlBuddyError so a missing
+        trace or an out-of-range pywellen fails loudly before Surfer starts,
+        instead of silently blanking annotations mid-run (#263).
         """
         if not os.path.isfile(self._fst_path):
             log_event(
@@ -104,9 +111,10 @@ class WaveformValueReader:
 
     def _load(self):
         if self._waveform is None:
-            self.check()
             import pywellen  # type: ignore[import-untyped]  # noqa: PLC0415
 
+            if not os.path.isfile(self._fst_path):
+                raise FileNotFoundError(self._fst_path)
             # pywellen emits terminal capability queries to stderr on load; suppress them
             import sys
 
@@ -114,65 +122,89 @@ class WaveformValueReader:
             sys.stderr = open(os.devnull, "w")  # noqa: WPS515
             try:
                 self._waveform = pywellen.Waveform(self._fst_path)
-            except Exception as e:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "wave.trace_open_failed",
-                    path=self._fst_path,
-                    error=str(e),
-                )
-                raise FatalRtlBuddyError(
-                    f"could not open waveform trace {self._fst_path}: {e}"
-                ) from e
             finally:
                 sys.stderr.close()
                 sys.stderr = old_stderr
         return self._waveform
 
-    def get_value(self, variable: str, timestamp: int) -> str | None:
-        """Return the signal value string at *timestamp* (FST ticks).
+    def _log_api_break(self, exc: Exception) -> None:
+        """Log an unexpected pywellen error once, loudly, then stay silent.
 
-        Returns None when the signal is not in the waveform; anything else
-        (broken trace, API break) propagates loudly.
+        Separates a real trace-reader/API break from an ordinary
+        signal-not-found miss, so a future pywellen rewrite cannot blank
+        annotations without leaving a trace in the log.
         """
-        wf = self._load()
+        if self._api_break_logged:
+            return
+        self._api_break_logged = True
+        log_event(
+            logger,
+            logging.ERROR,
+            "wave.value_reader.api_error",
+            path=self._fst_path,
+            error=repr(exc),
+        )
+
+    def _value_at(self, wf, path: str, timestamp: int) -> str | None:
+        """Resolve *path* and read its value at *timestamp*.
+
+        Returns None for a genuine lookup miss (signal not in the dump, or no
+        value yet at *timestamp*); logs once and returns None for any other
+        (unexpected) pywellen error.
+        """
         try:
-            sig = wf.get_signal_from_path(variable)
-        except RuntimeError:
-            # pywellen lookup miss ("No var at path ...")
+            var = wf[path]
+        except KeyError:
             return None
-        return str(sig.value_at_time(timestamp))
+        try:
+            value = var.signal.value_at(timestamp)
+        except Exception as exc:
+            # Not a lookup miss: the pywellen API itself misbehaved. Surface it
+            # loudly (once) rather than silently blanking the annotation.
+            self._log_api_break(exc)
+            return None
+        return None if value is None else str(value)
+
+    def get_value(self, variable: str, timestamp: int) -> str | None:
+        """Return the signal value string at *timestamp* (FST ticks), or None."""
+        try:
+            wf = self._load()
+        except (FileNotFoundError, OSError):
+            return None
+        return self._value_at(wf, variable, timestamp)
 
     def get_scope_signals(self, scope_path: str) -> list[tuple[str, str]]:
         """Return [(signal_name, full_fst_path), ...] for all vars directly under scope_path."""
-        wf = self._load()
-        h = wf.hierarchy
-        results = []
-        for scope in h.top_scopes():
-            results.extend(self._walk_scope(h, scope, scope_path))
-        return results
-
-    def _walk_scope(self, h, scope, target_path: str) -> list[tuple[str, str]]:
-        if scope.full_name(h) == target_path:
-            return [(v.name(h), v.full_name(h)) for v in scope.vars(h)]
-        # recurse into child scopes
-        results = []
-        for child in scope.scopes(h):
-            results.extend(self._walk_scope(h, child, target_path))
-        return results
+        try:
+            wf = self._load()
+        except (FileNotFoundError, OSError):
+            return []
+        try:
+            item = wf[scope_path]
+        except KeyError:
+            return []
+        # A hierarchical path can resolve to a Var rather than a Scope; only a
+        # Scope exposes vars(). Guard so a non-scope path yields [], not an error.
+        vars_of = getattr(item, "vars", None)
+        if vars_of is None:
+            return []
+        try:
+            return [(v.name, v.full_name) for v in vars_of()]
+        except Exception as exc:
+            self._log_api_break(exc)
+            return []
 
     def get_values_bulk(self, full_paths: list[str], timestamp: int) -> dict[str, str]:
-        """Return {full_path: value} for all paths present in the waveform."""
-        wf = self._load()
+        """Return {full_path: value} for all paths that resolve successfully."""
+        try:
+            wf = self._load()
+        except (FileNotFoundError, OSError):
+            return {}
         out = {}
         for path in full_paths:
-            try:
-                sig = wf.get_signal_from_path(path)
-            except RuntimeError:
-                # pywellen lookup miss — path not in waveform, omit
-                continue
-            out[path] = str(sig.value_at_time(timestamp))
+            value = self._value_at(wf, path, timestamp)
+            if value is not None:
+                out[path] = value
         return out
 
 
