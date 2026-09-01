@@ -274,11 +274,39 @@ _DEPENDENCY_OR_SEPARATOR = "?"
 # shorter one would read `--deadline` as a dependency.
 _DEPENDENCY_OPT = "--dependency"
 _DEPENDENCY_MIN_ABBREV = "--dep"
-# What the informational probe counts as "still in flight". `--states`
-# takes the long names. COMPLETING is included deliberately: such a job is
-# still finishing, so naming it explains a wait that has not ended. Every
-# state left out is a job whose build is over.
-_DEDUP_STATES = "PENDING,RUNNING,CONFIGURING,SUSPENDED,COMPLETING"
+# What the informational probe counts as "still in flight": every
+# NON-TERMINAL state in Slurm's job_state_codes(7), because that is
+# exactly the set `singleton` waits on — it defers this job until every
+# earlier one of the same name and user has *terminated* (#507 review).
+# The unglamorous half of the list is the half that matters: a
+# predecessor parked in REQUEUE_HOLD or SPECIAL_EXIT is precisely the
+# indefinitely-held job the documented `scancel` recovery is for, and a
+# filter that omitted those suppressed the warning naming its id.
+#
+# Spelled out rather than omitted, which is the trap here: `squeue` with
+# no `--states` does NOT list every live job, it reports "pending,
+# running, and completing jobs" (squeue(1)), so dropping the flag would
+# NARROW this filter and reintroduce the bug for CONFIGURING and
+# SUSPENDED as well. `--states=all` is not the default and would go the
+# other way, naming jobs that have already finished.
+_DEDUP_STATES = ",".join(
+    (
+        "PENDING",
+        "RUNNING",
+        "SUSPENDED",
+        "CONFIGURING",
+        "COMPLETING",
+        "STAGE_OUT",
+        "SIGNALING",
+        "RESIZING",
+        "REQUEUED",
+        "REQUEUE_HOLD",
+        "REQUEUE_FED",
+        "SPECIAL_EXIT",
+        "REVOKED",
+        "PREEMPTED",
+    )
+)
 # The probe sits between the user and their submission, so it is
 # time-boxed: a wedged squeue must cost a few seconds and a DEBUG line,
 # never the run. It only feeds a log line — the guarantee is the
@@ -707,6 +735,12 @@ class SlurmDispatchBackend(DispatchBackend):
         explains the resulting wait can *name* the jobs being waited on.
         Nothing branches on it but that line.
 
+        The filter is every non-terminal state (:data:`_DEDUP_STATES`),
+        which is the set ``singleton`` itself waits on — including the
+        held ones (``REQUEUE_HOLD``, ``SPECIAL_EXIT``) a stuck
+        predecessor sits in, since those are the ids the documented
+        recovery needs most.
+
         Which is why every failure here is a DEBUG line, an empty answer,
         and no second attempt this run (see :meth:`_retire_dedup_probe`):
         a submit host with no ``squeue``, one that errors, or one that
@@ -757,23 +791,44 @@ class SlurmDispatchBackend(DispatchBackend):
         # LOCAL queue, which for a remote submission means either silence
         # or, worse, local ids named in a warning about a remote wait.
         cluster_argv = [] if self.cluster is None else ["-M", self.cluster]
-        argv = [
-            "squeue",
-            *cluster_argv,
-            "--noheader",
-            "--format=%i",
-            f"--user={user}",
-            f"--name={job_name}",
-            f"--states={_DEDUP_STATES}",
-        ]
+
+        def _argv(states: str | None) -> list[str]:
+            return [
+                "squeue",
+                *cluster_argv,
+                "--noheader",
+                "--format=%i",
+                f"--user={user}",
+                f"--name={job_name}",
+                *([] if states is None else [f"--states={states}"]),
+            ]
+
         try:
             proc = subprocess.run(
-                argv,
+                _argv(_DEDUP_STATES),
                 capture_output=True,
                 text=True,
                 cwd=cwd,
                 timeout=_DEDUP_TIMEOUT_SEC,
             )
+            if proc.returncode != 0:
+                # An error return, and the state list is the one thing here
+                # a squeue can reject outright: the newer names in it
+                # (SIGNALING, STAGE_OUT, REQUEUE_FED) postdate older Slurms,
+                # which answer `Invalid job state specified` and take the
+                # whole probe down with them. Asking again without the flag
+                # falls back to squeue's own default — pending, running and
+                # completing — which is less than this wants but is what the
+                # probe had before it was widened, so an old cluster keeps
+                # its warning instead of losing it. Only on an error return:
+                # a timeout or a missing binary must stay a single cost.
+                proc = subprocess.run(
+                    _argv(None),
+                    capture_output=True,
+                    text=True,
+                    cwd=cwd,
+                    timeout=_DEDUP_TIMEOUT_SEC,
+                )
         except (OSError, subprocess.SubprocessError) as e:
             return self._retire_dedup_probe(str(e), **fields)
         if proc.returncode != 0:

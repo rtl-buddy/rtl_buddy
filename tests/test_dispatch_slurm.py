@@ -2905,6 +2905,9 @@ def test_a_squeue_that_errors_keeps_the_guarantee_and_loses_the_line(
     calls, results = (
         [],
         [
+            # Both attempts fail: the state-filtered one and the fallback
+            # that drops `--states` for an older squeue.
+            SimpleNamespace(returncode=1, stdout="", stderr="squeue: error: nope"),
             SimpleNamespace(returncode=1, stdout="", stderr="squeue: error: nope"),
             SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
         ],
@@ -2916,7 +2919,7 @@ def test_a_squeue_that_errors_keeps_the_guarantee_and_loses_the_line(
         handle = backend.submit_build(_build_spec())
 
     assert handle.job_id == "900"
-    _probe, argv = calls
+    _probe, _fallback, argv = calls
     assert "--dependency=singleton" in argv
     (record,) = [
         r
@@ -3484,3 +3487,129 @@ def test_an_abbreviated_job_name_cannot_take_the_identity_either(
         index for index, arg in enumerate(argv) if arg in sbatch_args
     )
     assert f"--name={slurm_module.build_job_name(spec)}" in probe
+
+
+def test_the_probe_asks_for_every_non_terminal_state():
+    """`singleton` waits for earlier same-name jobs to TERMINATE, so the
+    probe that names them has to ask about every state that is not a
+    termination — the held ones especially. A predecessor parked in
+    `REQUEUE_HOLD` or `SPECIAL_EXIT` is the indefinitely-stuck job the
+    documented `scancel` recovery exists for, and the old filter left
+    exactly those ids unreportable.
+    """
+    states = slurm_module._DEDUP_STATES.split(",")
+    for non_terminal in (
+        "PENDING",
+        "RUNNING",
+        "SUSPENDED",
+        "CONFIGURING",
+        "COMPLETING",
+        "STAGE_OUT",
+        "SIGNALING",
+        "RESIZING",
+        "REQUEUED",
+        "REQUEUE_HOLD",
+        "REQUEUE_FED",
+        "SPECIAL_EXIT",
+        "REVOKED",
+        "PREEMPTED",
+    ):
+        assert non_terminal in states, non_terminal
+    # ...and nothing that has already ended: naming a finished job as one
+    # this run is waiting for would be a false alarm.
+    for terminal in (
+        "COMPLETED",
+        "CANCELLED",
+        "FAILED",
+        "TIMEOUT",
+        "NODE_FAIL",
+        "BOOT_FAIL",
+        "DEADLINE",
+        "OUT_OF_MEMORY",
+    ):
+        assert terminal not in states, terminal
+
+
+def test_a_held_predecessor_is_named(monkeypatch, caplog):
+    """The end-to-end version of the same claim: a job squeue reports only
+    because the filter asks about held states still reaches the warning."""
+    import logging
+
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        backend.submit_build(_build_spec())
+
+    probe, _argv = calls
+    (states,) = [a for a in probe if a.startswith("--states=")]
+    assert "REQUEUE_HOLD" in states and "SPECIAL_EXIT" in states
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["41"]
+
+
+def test_a_squeue_that_rejects_the_state_list_falls_back_once(monkeypatch, caplog):
+    """Older Slurms predate `SIGNALING` / `STAGE_OUT` / `REQUEUE_FED` and
+    answer `Invalid job state specified`, which would take the whole probe
+    down. One retry without `--states` leaves such a site with squeue's own
+    default — pending, running, completing — which is what the probe had
+    before it was widened, rather than with nothing.
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="squeue: error: Invalid job state"
+            ),
+            SimpleNamespace(returncode=0, stdout="41\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        backend.submit_build(_build_spec())
+
+    filtered, fallback, argv = calls
+    assert any(a.startswith("--states=") for a in filtered)
+    assert not any(a.startswith("--states=") for a in fallback)
+    # The rest of the query is unchanged, so the fallback still asks about
+    # this user's jobs of this name.
+    assert [a for a in fallback if a.startswith(("--user=", "--name="))] == [
+        a for a in filtered if a.startswith(("--user=", "--name="))
+    ]
+    assert argv[0] == "sbatch"
+    # The probe survived, so the warning still names the job ahead.
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["41"]
+
+
+def test_a_wedged_squeue_is_not_retried(monkeypatch):
+    """The fallback is for an error return, not for a hang: retrying a
+    timeout would double the one cost the probe promised to bound."""
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            raise slurm_module.subprocess.TimeoutExpired("squeue", timeout)
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch"]
