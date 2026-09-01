@@ -93,8 +93,7 @@ of the global reservation.
   task or node count (`--ntasks`, `--ntasks-per-*`, `--nodes`) is not a cpu
   count, and several arguments combine by sbatch's own precedence, so in both
   cases the note says the number is the whole-job figure and the decomposition
-  is yours. It never claims a product: `--ntasks=8 --nodes=2
-  --ntasks-per-node=4 --cpus-per-task=2` requests 16, not the product of four.
+  is yours.
 - A DIRECT `-c`/`--cpus-per-task` override disables the compile `cpus` floor —
   it replaces the generated flag, so that floor never reached sbatch. A task or
   node count does not: `--cpus-per-task` is still in force, so the floor stays
