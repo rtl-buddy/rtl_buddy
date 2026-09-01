@@ -26,7 +26,10 @@ from ..logging_utils import log_event
 #: an existing project. The leading character may not be ``.``, which is
 #: what rules out ``.`` and ``..``; ``/`` and ``\\`` are absent from the
 #: class entirely, which rules out every separator and absolute path.
-MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+#: Anchored with ``\\Z``, not ``$``: Python's ``$`` also matches before a
+#: trailing newline, so ``"blk_a\\n"`` would otherwise pass a rule whose
+#: whole purpose is that the value carries no newline.
+MODEL_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 
 
 def validate_model_name(name: str, path: str) -> None:
@@ -54,6 +57,69 @@ def validate_model_name(name: str, path: str) -> None:
         f"must start with a letter, digit or underscore and contain only "
         f"letters, digits, underscore, dot or hyphen. Path separators, "
         f"absolute paths, '.' and '..' are refused."
+    )
+
+
+#: A model ``top:`` must be a **simple** SystemVerilog identifier. It is
+#: the module name every backend elaborates from, and it does not stay in
+#: HDL: the FPGA flows join it into artefact paths (``<top>.bit``), and
+#: the Yosys, Vivado and OpenROAD generators interpolate it into Tcl
+#: (``set top <top>``, ``synth_design -top <top>``). None of those quote
+#: it, so a value carrying a path separator, a newline or a shell/Tcl
+#: metacharacter would write outside the artefact directory or append
+#: commands to a generated script. This rule is what makes the
+#: downstream interpolation safe, and it is enforced once, here, rather
+#: than escaped differently in each flow.
+#:
+#: SystemVerilog also has *escaped* identifiers — a backslash, then
+#: printable characters, then whitespace — which legally admit ``/``,
+#: ``;`` and ``$``. Those are refused outright rather than escaped
+#: per-tool: no flow can name a file or a Tcl token after one safely,
+#: and a design that needs one cannot be driven through these flows
+#: anyway.
+#:
+#: ``get_top()`` falls back to the model ``name`` when ``top:`` is unset,
+#: and :data:`MODEL_NAME_RE` is wider (it allows ``-`` and ``.``) — but it
+#: admits no separator, no whitespace and no metacharacter either, so the
+#: same safety invariant holds on both paths.
+#: Anchored with ``\\Z`` for the reason :data:`MODEL_NAME_RE` states.
+MODEL_TOP_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_$]*\Z")
+
+
+def validate_model_top(top: str, name: str, path: str) -> None:
+    """Raise unless ``top`` is a simple SystemVerilog identifier.
+
+    Args:
+      top: the ``top:`` field as written.
+      name: the model declaring it, for the message.
+      path: the models.yaml it came from, for the message.
+
+    Raises:
+      FatalRtlBuddyError: naming the file, the model, the value and the rule.
+    """
+    if isinstance(top, str) and MODEL_TOP_RE.match(top):
+        return
+    escaped = isinstance(top, str) and top.startswith("\\")
+    log_event(
+        logger,
+        logging.ERROR,
+        "model_config.invalid_model_top",
+        path=path,
+        name=name,
+        top=top,
+    )
+    detail = (
+        "SystemVerilog escaped identifiers are refused here: no flow can "
+        "name an artefact file or a Tcl token after one safely."
+        if escaped
+        else "It must start with a letter or underscore and contain only "
+        "letters, digits, underscore or '$'."
+    )
+    raise FatalRtlBuddyError(
+        f"{path}: model {name!r} declares top {top!r}, which is not a simple "
+        f"SystemVerilog identifier. {detail} The top is elaborated by every "
+        f"backend and also lands in artefact names and generated Tcl, so a "
+        f"path separator, newline or shell/Tcl metacharacter is refused."
     )
 
 
@@ -278,6 +344,8 @@ class ModelConfigLoader:
             # Before anything else: the name is a path segment everywhere
             # downstream, and one consumer deletes the directory it names.
             validate_model_name(model.name, path)
+            if model.top is not None:
+                validate_model_top(model.top, model.name, path)
             if model.name in seen:
                 log_event(
                     logger,

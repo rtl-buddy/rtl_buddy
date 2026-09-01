@@ -1454,6 +1454,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('first_type')} and {fields.get('second_type')} — "
                 "keeping the first; rename one so the id is unique"
             )
+        case "model_config.invalid_model_top":
+            return (
+                f"{fields.get('path')}: model {fields.get('name')!r} declares "
+                f"top {fields.get('top')!r}, which is not a simple "
+                "SystemVerilog identifier — the top is elaborated by every "
+                "backend and also lands in artefact names and generated Tcl, "
+                "so it must start with a letter or underscore and contain "
+                "only letters, digits, underscore or '$'"
+            )
         case "model_config.invalid_model_name":
             return (
                 f"{fields.get('path')}: model name {fields.get('name')!r} is "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -2150,3 +2151,126 @@ def test_the_invalid_model_name_event_has_a_human_message_case():
     assert msg != "model config invalid_model_name"
     assert "design/x/models.yaml" in msg
     assert ".." in msg
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — the top is an HDL identifier AND a script token (#479)
+# ---------------------------------------------------------------------------
+
+
+def _models_yaml_with_top(tmp_path, top: str):
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    filelist: ["a.sv"]\n'
+        f"    top: {json.dumps(top)}\n"
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    "top",
+    [
+        "..",
+        "a/b",
+        "/abs/top",
+        "a\nb",
+        "axi_xbar\n",
+        "top; rm -rf /",
+        "$display",
+        "a b",
+        "9x",
+        "",
+        "\\escaped.id",
+    ],
+)
+def test_model_config_loader_refuses_a_top_that_is_not_an_identifier(tmp_path, top):
+    """`top:` does not stay in HDL.
+
+    The FPGA flows join it into an artefact path (``<top>.bit``) and the
+    Yosys, Vivado and OpenROAD generators interpolate it into Tcl
+    (``set top <top>``), none of them quoting it. A separator, a newline
+    or a shell/Tcl metacharacter would write outside the artefact
+    directory or append commands to a generated script, so the value is
+    constrained once, at load, instead of escaped differently per tool.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, top)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "not a simple SystemVerilog identifier" in message
+    assert "blk_a" in message
+
+
+def test_an_escaped_identifier_top_says_why_it_is_refused(tmp_path):
+    """SystemVerilog escaped identifiers are legal HDL and refused anyway.
+
+    ``\\a/b;c `` is a valid module name, and there is no safe way to name
+    an artefact file or a Tcl token after it. Refusing it outright beats
+    per-tool escaping, so the message has to say that rather than claim
+    the name is malformed.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, "\\a/b;c")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    assert "escaped identifiers are refused" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("top", ["top", "axi_xbar", "_t1", "a$b"])
+def test_model_config_loader_accepts_simple_identifier_tops(tmp_path, top):
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, top)
+    assert ModelConfigLoader(str(path)).get_model("blk_a").get_top() == top
+
+
+def test_a_model_without_a_top_is_not_top_checked(tmp_path):
+    """`top:` is optional; the fallback is the already-validated name.
+
+    ``MODEL_NAME_RE`` is wider than the identifier rule — it admits ``-``
+    and ``.`` — but it admits no separator, whitespace or metacharacter
+    either, so the safety invariant holds on both paths.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "my-model"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    assert ModelConfigLoader(str(path)).get_model("my-model").get_top() == "my-model"
+
+
+@pytest.mark.parametrize("value", ["blk_a\n", "axi_xbar\n"])
+def test_a_trailing_newline_passes_neither_rule(value):
+    """Python's ``$`` also matches before a trailing newline.
+
+    Both rules exist to guarantee the value carries no newline, so both
+    anchor with ``\\Z``; ``$`` would have let ``"axi_xbar\\n"`` through the
+    very check meant to stop it.
+    """
+    from rtl_buddy.config.model import MODEL_NAME_RE, MODEL_TOP_RE
+
+    assert not MODEL_NAME_RE.match(value)
+    assert not MODEL_TOP_RE.match(value)
+
+
+def test_the_invalid_model_top_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "model_config.invalid_model_top",
+        {"path": "design/x/models.yaml", "name": "blk_a", "top": "a/b"},
+    )
+    assert msg != "model config invalid_model_top"
+    assert "design/x/models.yaml" in msg
+    assert "blk_a" in msg
+    assert "a/b" in msg
