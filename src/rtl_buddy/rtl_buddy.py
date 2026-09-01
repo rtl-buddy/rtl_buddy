@@ -3,6 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
+import hashlib
 import logging
 import os
 import re
@@ -167,6 +168,15 @@ from .xplr import ledger as xplr_ledger
 from .xplr import mockflow as xplr_mockflow
 
 logger = logging.getLogger(__name__)
+
+
+def _dispatch_suite_identity(config_path: str | Path) -> str:
+    """Stable filesystem component identifying one resolved suite config."""
+    resolved = Path(config_path).resolve()
+    stem = re.sub(r"[^A-Za-z0-9_.-]", "_", resolved.stem).strip("._-")
+    stem = (stem or "suite")[:48]
+    digest = hashlib.sha256(os.fsencode(str(resolved))).hexdigest()[:12]
+    return f"{stem}-{digest}"
 
 
 def _graph_where(node: dict) -> str:
@@ -3118,12 +3128,68 @@ class RtlBuddy:
             backend.cancel_all(handles)
             raise
 
+    @staticmethod
+    def _dispatch_regression_namespaces(suite_configs):
+        """Namespace only suites whose resolved command root is shared."""
+        roots = [str(Path(cfg.get_path()).resolve().parent) for cfg in suite_configs]
+        counts = {}
+        for root in roots:
+            counts[root] = counts.get(root, 0) + 1
+        return {
+            str(Path(cfg.get_path()).resolve()): (
+                _dispatch_suite_identity(cfg.get_path())
+                if counts[str(Path(cfg.get_path()).resolve().parent)] > 1
+                else None
+            )
+            for cfg in suite_configs
+        }
+
+    @staticmethod
+    def _validate_dispatch_test_artifacts(prepared_suites):
+        """Reject cross-suite test artefact collisions before submission."""
+        owners = {}
+        for prepared in prepared_suites:
+            if prepared["dispatch_namespace"] is None:
+                continue
+            suite_cfg = prepared["suite_cfg"]
+            suite_path = str(Path(suite_cfg.get_path()).resolve())
+            suite_dir = str(Path(suite_path).parent)
+            for entry in prepared["entries"]:
+                test_name = entry["cfg"].get_name()
+                artifact_dir = test_artifact_dir(suite_dir, test_name)
+                key = str(artifact_dir)
+                previous = owners.get(key)
+                if previous is None:
+                    owners[key] = (suite_path, test_name)
+                    continue
+                previous_path, previous_name = previous
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "dispatch.test_artifact_collision",
+                    suite_dir=suite_dir,
+                    artifact_dir=artifact_dir,
+                    first_suite=previous_path,
+                    first_test=previous_name,
+                    second_suite=suite_path,
+                    second_test=test_name,
+                )
+                raise FatalRtlBuddyError(
+                    "cannot dispatch regression: expanded tests "
+                    f"{previous_name!r} from {previous_path} and {test_name!r} "
+                    f"from {suite_path} share artifact directory {artifact_dir}; "
+                    "rename one test or place the suite configs in separate "
+                    "directories"
+                )
+
     def _dispatch_suite_submit(
         self,
         suite_cfg,
         backend,
         *,
         run_token,
+        prepared=None,
+        dispatch_namespace=None,
         test_name=None,
         reg_level=None,
         start_level=None,
@@ -3157,17 +3223,20 @@ class RtlBuddy:
             run_ids = [None]
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         dispatch_cfg = self.root_cfg.get_dispatch_cfg()
-        suite_results = []
-
-        # (1) Plan: one sweep expansion for the whole suite, on the head.
-        entries = self._plan_dispatch_suite(
-            suite_cfg,
-            test_name=test_name,
-            reg_level=reg_level,
-            start_level=start_level,
-            run_ids=run_ids,
-            suite_results=suite_results,
-        )
+        if prepared is None:
+            suite_results = []
+            # (1) Plan: one sweep expansion for the whole suite, on the head.
+            entries = self._plan_dispatch_suite(
+                suite_cfg,
+                test_name=test_name,
+                reg_level=reg_level,
+                start_level=start_level,
+                run_ids=run_ids,
+                suite_results=suite_results,
+            )
+        else:
+            entries = prepared["entries"]
+            suite_results = prepared["suite_results"]
         if not entries:
             # Every test filtered out by -l/-s: nothing to compile or run.
             # Submitting a build job here would queue an rb _build-job that
@@ -3175,6 +3244,8 @@ class RtlBuddy:
             return {"suite_results": suite_results, "pending": [], "build_handle": None}
 
         dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
+        if dispatch_namespace is not None:
+            dispatch_root /= dispatch_namespace
         # ``run_token`` is the head's per-invocation nonce (one per regression
         # run, shared across suites). Threaded to every sim job through the
         # plan; each job stamps it into its result envelope so collection
@@ -3260,6 +3331,7 @@ class RtlBuddy:
                 dispatch_cfg=dispatch_cfg,
                 reg_level=reg_level,
                 start_level=start_level,
+                dispatch_root=dispatch_root,
                 plan_path=plan_path,
                 planned=len(entries),
                 suite_compile=suite_compile,
@@ -3563,6 +3635,7 @@ class RtlBuddy:
         dispatch_cfg,
         reg_level,
         start_level,
+        dispatch_root,
         plan_path,
         planned,
         suite_compile=None,
@@ -3584,7 +3657,7 @@ class RtlBuddy:
         the submit host, which is the build job's job (#458), so the cap is
         an upper bound on the concurrency, never a promise of it.
         """
-        dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
+        dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
         parallel = max(1, min(compile_parallel(dispatch_cfg), planned))
         # `parallel` stays a cfg-dispatch knob: it sizes the build job's
@@ -4650,28 +4723,60 @@ class RtlBuddy:
         # every consumer.
         orchestration_ctx = ctx
         if dispatch_backend is not None:
-            # Submit every suite before waiting: builds run per suite on
-            # the head, but the job fleet spans all suites, so slow
-            # suites overlap instead of serializing (#351 P2).
+            # Expand every suite before the first submission. Besides keeping
+            # sweep hooks head-only, this lets the regression reject two
+            # co-located configs whose expanded tests would write the same
+            # per-test artefact directory before either job can touch it.
+            suite_configs = list(self.reg_cfg.get_suite_configs())
+            namespaces = self._dispatch_regression_namespaces(suite_configs)
+            prepared_suites = []
+            for suite_cfg in suite_configs:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                    cwd=os.path.dirname(suite_cfg.get_path()),
+                )
+                self._enter_command_context(primary_config=suite_cfg.get_path())
+                suite_results = []
+                entries = self._plan_dispatch_suite(
+                    suite_cfg,
+                    test_name=None,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    run_ids=[None],
+                    suite_results=suite_results,
+                )
+                prepared_suites.append(
+                    {
+                        "suite_cfg": suite_cfg,
+                        "entries": entries,
+                        "suite_results": suite_results,
+                        "dispatch_namespace": namespaces[
+                            str(Path(suite_cfg.get_path()).resolve())
+                        ],
+                    }
+                )
+            self._validate_dispatch_test_artifacts(prepared_suites)
+
+            # Submit every suite before waiting: the job fleet spans all
+            # suites, so slow suites overlap instead of serializing (#351 P2).
             submitted = []
             all_handles = []
             # One nonce for the whole regression run, shared across suites, so
             # a collector rejects any envelope not from this run (#362).
             run_token = uuid.uuid4().hex
             try:
-                for suite_cfg in self.reg_cfg.get_suite_configs():
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "regression.suite_start",
-                        suite=suite_cfg.get_path(),
-                        cwd=os.path.dirname(suite_cfg.get_path()),
-                    )
+                for prepared in prepared_suites:
+                    suite_cfg = prepared["suite_cfg"]
                     self._enter_command_context(primary_config=suite_cfg.get_path())
                     state = self._dispatch_suite_submit(
                         suite_cfg,
                         dispatch_backend,
                         run_token=run_token,
+                        prepared=prepared,
+                        dispatch_namespace=prepared["dispatch_namespace"],
                         reg_level=reg_level,
                         start_level=start_level,
                     )
@@ -4689,11 +4794,9 @@ class RtlBuddy:
                     if state["build_handle"] is not None:
                         all_handles.append(state["build_handle"])
                     all_handles.extend(handle for _, handle in state["pending"])
-                    # Planning the next suite is real head-side work (its
-                    # sweep hook shells out). A backend that runs jobs itself
-                    # would leave a slot freed during that window idle, so
-                    # give it a chance to refill before moving on; a
-                    # scheduler-backed backend no-ops here.
+                    # A backend that runs jobs itself may have freed a slot
+                    # during the next suite's submission, so give it a chance
+                    # to refill; a scheduler-backed backend no-ops here.
                     dispatch_backend.advance()
                 if all_handles:
                     dispatch_backend.wait_all(all_handles)

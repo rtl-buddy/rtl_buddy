@@ -163,6 +163,22 @@ def _mark_stub_builder_verilator(project: Path):
     _set_stub_builder_family(project, "verilator")
 
 
+def _write_colocated_suites(project: Path) -> Path:
+    """Add a second tests config with distinct names in the same directory."""
+    second = project / "other-tests.yaml"
+    second.write_text(
+        (project / "tests.yaml")
+        .read_text()
+        .replace("  - name: basic\n", "  - name: other_basic\n")
+        .replace("  - name: extra\n", "  - name: other_extra\n")
+    )
+    (project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - other-tests.yaml\n"
+    )
+    return second
+
+
 def test_dispatched_regression_passes(
     minimal_project: Path,
     fake_backend: _FakeBackend,
@@ -682,6 +698,24 @@ def test_dispatch_writes_plan_and_threads_it_to_jobs(
     assert build.plan_path is not None and Path(build.plan_path).is_file()
     sim = fake_backend.submitted[0]
     assert sim.plan_path == build.plan_path
+    # A suite whose command root is not shared keeps the established flat
+    # .dispatch layout.
+    dispatch_root = minimal_project / "artefacts" / ".dispatch"
+    assert Path(build.plan_path).parent == dispatch_root
+    assert Path(build.result_json).parent == dispatch_root
+    assert Path(build.log_path).parent == dispatch_root
+
+
+def test_dispatch_suite_identity_is_stable_and_filesystem_safe(tmp_path: Path):
+    config = tmp_path / "suite config !.yaml"
+    identity = rtl_buddy_module._dispatch_suite_identity(config)
+    assert identity == rtl_buddy_module._dispatch_suite_identity(config)
+    stem, separator, digest = identity.rpartition("-")
+    assert separator and stem == "suite_config"
+    assert len(digest) == 12 and set(digest) <= set("0123456789abcdef")
+    assert identity != rtl_buddy_module._dispatch_suite_identity(
+        tmp_path / "other" / config.name
+    )
 
 
 # ------------------------------------------------- P2: arrays / cross-suite
@@ -731,6 +765,45 @@ class _RecordingBackend(_FakeBackend):
         return self.telemetry
 
 
+class _DelayedPlanBackend(_RecordingBackend):
+    """Consume every plan only when the regression begins its global wait."""
+
+    def __init__(self):
+        super().__init__(write_results=False)
+        self.consumed_build_plans = {}
+        self.consumed_sim_plans = {}
+
+    def submit_build(self, spec):
+        self.build_submitted.append(spec)
+        return JobHandle(job_id=f"delayed-build-{len(self.build_submitted)}", spec=spec)
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        self.submitted.append(spec)
+        self.dependencies.append(dependency)
+        return JobHandle(job_id=f"delayed-sim-{len(self.submitted)}", spec=spec)
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        # This is intentionally the first plan read. Both suites have already
+        # submitted, matching a scheduler that leaves the first suite queued
+        # until the second suite has replaced any colliding scratch files.
+        for spec in self.build_submitted:
+            self.consumed_build_plans[Path(spec.test_config_path).name] = [
+                cfg.get_name() for cfg in read_plan_configs(spec.plan_path)
+            ]
+        for spec in self.submitted:
+            configs = {cfg.get_name() for cfg in read_plan_configs(spec.plan_path)}
+            self.consumed_sim_plans[Path(spec.test_config_path).name] = configs
+            assert spec.test_name in configs
+            write_result_json(
+                spec.result_json,
+                test_name=spec.test_name,
+                run_id=spec.run_id,
+                results=TestPassResults(name=spec.test_name + "/results"),
+                run_token=read_plan_token(spec.plan_path),
+            )
+        super().wait_all(handles, extra_wait=extra_wait)
+
+
 @pytest.fixture
 def recording_backend(monkeypatch: pytest.MonkeyPatch) -> _RecordingBackend:
     backend = _RecordingBackend()
@@ -742,21 +815,91 @@ def recording_backend(monkeypatch: pytest.MonkeyPatch) -> _RecordingBackend:
     return backend
 
 
-def test_regression_waits_once_across_suites(
+def test_regression_namespaces_colocated_suites_and_waits_once(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
     recording_backend: _RecordingBackend,
 ):
-    # Two suites in the reg config → jobs from both must be in flight
-    # before the single global wait.
-    (minimal_project / "regression.yaml").write_text(
-        "rtl-buddy-filetype: reg_config\n"
-        "test-configs:\n  - tests.yaml\n  - tests.yaml\n"
-    )
+    # Two distinct configs share one command root. Their jobs must all be in
+    # flight before the single wait, without sharing any suite-scoped path.
+    _mark_stub_builder_verilator(minimal_project)
+    _write_colocated_suites(minimal_project)
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert result.exit_code == 0, result.output
     assert len(recording_backend.submitted) == 2
+    assert len(recording_backend.build_submitted) == 2
     assert recording_backend.wait_calls == 1
+
+    plans = [Path(spec.plan_path) for spec in recording_backend.build_submitted]
+    assert len(set(plans)) == 2
+    namespaces = {plan.parent for plan in plans}
+    dispatch_root = minimal_project / "artefacts" / ".dispatch"
+    assert {path.parent for path in namespaces} == {dispatch_root}
+    for namespace in namespaces:
+        stem, separator, digest = namespace.name.rpartition("-")
+        assert separator and stem
+        assert len(digest) == 12 and set(digest) <= set("0123456789abcdef")
+
+    for build in recording_backend.build_submitted:
+        namespace = Path(build.plan_path).parent
+        assert Path(build.result_json).parent == namespace
+        assert Path(build.log_path).parent == namespace
+    assert {
+        Path(call["array_dir"]).parent for call in recording_backend.array_calls
+    } == namespaces
+
+    planned = {
+        Path(json.loads(path.read_text())["suite_config"]).name: [
+            test["name"] for test in json.loads(path.read_text())["tests"]
+        ]
+        for path in plans
+    }
+    assert planned == {"tests.yaml": ["basic"], "other-tests.yaml": ["other_basic"]}
+
+
+def test_colocated_suite_plans_survive_until_delayed_job_consumption(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Queued jobs consume their own plan after every suite has submitted."""
+    _mark_stub_builder_verilator(minimal_project)
+    _write_colocated_suites(minimal_project)
+    backend = _DelayedPlanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    expected = {"tests.yaml": ["basic"], "other-tests.yaml": ["other_basic"]}
+    assert backend.consumed_build_plans == expected
+    assert {
+        name: sorted(tests) for name, tests in backend.consumed_sim_plans.items()
+    } == expected
+
+
+def test_colocated_duplicate_test_artifact_is_rejected_before_submission(
+    minimal_project: Path,
+    recording_backend: _RecordingBackend,
+):
+    duplicate = minimal_project / "duplicate-tests.yaml"
+    duplicate.write_text((minimal_project / "tests.yaml").read_text())
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - duplicate-tests.yaml\n"
+    )
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code != 0, result.output
+    assert recording_backend.build_submitted == []
+    assert recording_backend.submitted == []
+    assert recording_backend.array_calls == []
+    assert "expanded tests 'basic'" in result.output
+    assert "tests.yaml" in result.output
+    assert "duplicate-tests.yaml" in result.output
+    assert str(minimal_project / "artefacts" / "basic") in result.output
 
 
 def test_same_resources_group_into_one_array(
@@ -1167,9 +1310,17 @@ def test_dispatched_collect_reenters_suite_context(
     # Two suites; a missing envelope for suite 1 must log under suite 1's
     # own root, not the last-entered suite — assert collect re-enters the
     # per-suite command context.
+    other_dir = minimal_project / "other"
+    other_dir.mkdir()
+    other_suite = other_dir / "tests.yaml"
+    other_suite.write_text(
+        (minimal_project / "tests.yaml")
+        .read_text()
+        .replace("model_path: models.yaml", "model_path: ../models.yaml")
+    )
     (minimal_project / "regression.yaml").write_text(
         "rtl-buddy-filetype: reg_config\n"
-        "test-configs:\n  - tests.yaml\n  - tests.yaml\n"
+        "test-configs:\n  - tests.yaml\n  - other/tests.yaml\n"
     )
     backend = _RecordingBackend()
     monkeypatch.setattr(
@@ -1191,9 +1342,9 @@ def test_dispatched_collect_reenters_suite_context(
         rb.app, ["regression", "-c", "regression.yaml", "--dispatch", "slurm"]
     )
     assert result.exit_code == 0, result.output
-    # The suite context is entered again during the collect phase (more
-    # entries than the single submit-phase entry per suite).
-    assert entered.count(str(minimal_project / "tests.yaml")) >= 4
+    # Each suite is entered for planning, submission, and collection.
+    assert entered.count(str(minimal_project / "tests.yaml")) == 3
+    assert entered.count(str(other_suite)) == 3
 
 
 # ------------------------------------ #358: builders that compile in-job
