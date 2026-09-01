@@ -854,3 +854,44 @@ def test_openxc7_stage_failure_clears_a_colliding_top_netlist(tmp_path, monkeypa
     assert isinstance(res, FpgaFailResults)
     assert not (artefacts / "manifest.json").exists()
     assert not (artefacts / "manifest.fasm").exists()
+
+
+def test_openxc7_clears_a_renamed_tops_protected_netlist(tmp_path, monkeypatch):
+    """Ownership is durable. A run topped `graph` claims `graph.json`; after
+    the top is renamed, `own` names only the new top and `graph.json` matches
+    `rb graph`'s protected name again — without the ledger it would survive
+    every clear from then on (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    def _pipeline(top):
+        def _run(cmd, **kwargs):
+            exe = os.path.basename(cmd[0])
+            if exe == "yosys":
+                kwargs["stdout"].write(_fixture("yosys_openxc7.log"))
+                (artefacts / f"{top}.json").write_text("{}")
+                return ManagedProcessResult(returncode=0)
+            if exe == "nextpnr-xilinx":
+                kwargs["stdout"].write(_fixture("nextpnr_xilinx_pass.log"))
+                (artefacts / f"{top}.fasm").write_text("# fasm\n")
+            return ManagedProcessResult(returncode=0)
+
+        return _run
+
+    # Run 1: top is `graph`, which is also `rb graph`'s protected basename.
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "graph")
+    _mock_toolchain(monkeypatch, _pipeline("graph"))
+    assert isinstance(backend.run(), FpgaPassResults)
+    assert (artefacts / "graph.json").exists()
+
+    # Run 2: the top is renamed. The previous top's netlist is this flow's
+    # output, not a sibling's, and must go.
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "other_top")
+    _mock_toolchain(monkeypatch, _pipeline("other_top"))
+    assert isinstance(backend.run(), FpgaPassResults)
+
+    assert not (artefacts / "graph.json").exists()
+    assert not (artefacts / "graph.fasm").exists()
+    assert (artefacts / "other_top.json").exists()

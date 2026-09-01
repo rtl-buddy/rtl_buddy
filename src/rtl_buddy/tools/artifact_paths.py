@@ -137,6 +137,55 @@ PROTECTED_OUTPUT_PATTERNS = (
     *SIBLING_OUTPUT_NAMES,
 )
 
+#: Where a flow records the output names it has claimed in an artefact
+#: directory. A dotfile with none of the managed suffixes, so no suffix clear
+#: can ever match it.
+OWNED_LEDGER_NAME = ".rb-owned"
+
+
+def read_owned_ledger(artefact_dir: str | Path) -> set[str]:
+    """Return the output names a flow has previously claimed here.
+
+    Ownership has to be *durable*, not re-derived from the current config.
+    A flow names its outputs after the design's top, so deriving the
+    always-clear set from today's ``get_top()`` covers only today's names:
+    change a run's top from ``graph`` to something else and the old
+    ``graph.json`` matches a sibling's protected name again, surviving every
+    clear from then on (#469). The ledger remembers what this directory's
+    flow wrote, so a renamed top's leftovers stay clearable.
+
+    A missing or unreadable ledger is simply an empty claim — a first run,
+    or a directory written by an rtl_buddy that predates this.
+    """
+    path = Path(artefact_dir) / OWNED_LEDGER_NAME
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return set()
+    return {
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+
+def write_owned_ledger(artefact_dir: str | Path, names: Iterable[str]) -> None:
+    """Record ``names`` as owned by this directory's flow.
+
+    Best-effort: a directory we cannot write is not worth failing a run over,
+    since the only cost is that a future rename leaves a file behind — the
+    same behaviour as before the ledger existed.
+    """
+    path = Path(artefact_dir) / OWNED_LEDGER_NAME
+    body = "\n".join(
+        ["# Output names rtl_buddy owns in this directory (#469). Generated."]
+        + sorted(names)
+    )
+    try:
+        path.write_text(body + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
 
 def sanitize_artifact_component(name: str) -> str:
     """
@@ -288,7 +337,10 @@ def clear_managed_outputs(
       own: exact filenames this flow is about to write, or has just
         written. These are cleared unconditionally, ahead of the protected
         patterns — a flow always owns its own outputs no matter what they
-        are called. Without it a design whose top module is `graph`,
+        are called. Unioned with the names this directory's flow claimed on
+        previous runs (:func:`read_owned_ledger`) and persisted back, so
+        renaming a run's top does not strand the previous top's outputs
+        behind a sibling's protected name. Without it a design whose top module is `graph`,
         `manifest` or `record` produced a `<top>.json` netlist matching a
         *sibling's* protected name, so the flow could not clear its own
         output: a failed rerun left the previous netlist published, and a
@@ -315,7 +367,10 @@ def clear_managed_outputs(
     """
     directory = Path(artefact_dir)
     suffixes = tuple(suffixes)
-    own = set(own)
+    declared = set(own)
+    # Everything this directory's flow has ever claimed, not just what the
+    # current config names — see `read_owned_ledger`.
+    own = declared | read_owned_ledger(directory)
     keep = set(keep) - own
     try:
         entries = sorted(directory.iterdir())
@@ -333,9 +388,14 @@ def clear_managed_outputs(
             fnmatch(name, pat) for pat in PROTECTED_OUTPUT_PATTERNS
         )
 
-    return clear_stale_artefacts(
+    removed = clear_stale_artefacts(
         [entry for entry in entries if _doomed(entry.name)], owner=owner
     )
+    if declared:
+        # Only a caller that actually declares ownership updates the claim;
+        # one that passes no `own` is not speaking for this directory.
+        write_owned_ledger(directory, own)
+    return removed
 
 
 test_artifact_dir.__test__ = False

@@ -253,7 +253,9 @@ class OpenXc7Fpga(BaseFpga):
         protected name, and without this the flow could not clear its own
         output — a failed rerun left the previous netlist published, and a
         Yosys run that exited 0 without writing handed the stale JSON on to
-        nextpnr.
+        nextpnr. `clear_managed_outputs` unions that with the names this
+        directory's flow claimed on earlier runs, so renaming the top away
+        from a protected basename does not strand the old one either.
         """
         top = self.fpga_cfg.get_top()
         stale = clear_managed_outputs(

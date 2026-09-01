@@ -1139,3 +1139,81 @@ def test_clear_managed_outputs_own_clears_even_without_a_matching_suffix(tmp_pat
     )
 
     assert [os.path.basename(p) for p in removed] == ["odd_name.xyz"]
+
+
+def test_owned_ledger_round_trips(tmp_path):
+    """The ledger is how ownership survives a rename (#469)."""
+    from rtl_buddy.tools.artifact_paths import (
+        OWNED_LEDGER_NAME,
+        read_owned_ledger,
+        write_owned_ledger,
+    )
+
+    assert read_owned_ledger(tmp_path) == set()
+
+    write_owned_ledger(tmp_path, ["b.json", "a.bit"])
+    assert read_owned_ledger(tmp_path) == {"a.bit", "b.json"}
+    # A dotfile with none of the managed suffixes, so no suffix clear can
+    # ever match it.
+    text = (tmp_path / OWNED_LEDGER_NAME).read_text()
+    assert text.startswith("#")
+    assert OWNED_LEDGER_NAME.startswith(".")
+
+
+def test_owned_ledger_missing_or_unreadable_is_an_empty_claim(tmp_path):
+    """A first run, or a directory written by an rtl_buddy that predates the
+    ledger, behaves exactly as before it existed (#469)."""
+    from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, read_owned_ledger
+
+    assert read_owned_ledger(tmp_path / "never-made") == set()
+
+    # A directory where the file should be is unreadable, not fatal.
+    (tmp_path / OWNED_LEDGER_NAME).mkdir()
+    assert read_owned_ledger(tmp_path) == set()
+
+
+def test_clear_managed_outputs_clears_a_renamed_tops_protected_output(tmp_path):
+    """Ownership is durable, not re-derived. A run topped `graph` claims
+    `graph.json`; after the top is renamed, `own` no longer names it and it
+    matches `rb graph`'s protected name again — the ledger is what keeps it
+    clearable (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    suffixes = (".json", ".bit")
+
+    # Run 1: top is `graph`, a protected basename.
+    clear_managed_outputs(
+        tmp_path, suffixes, owner="demo", own=["graph.json", "graph.bit"]
+    )
+    (tmp_path / "graph.json").write_text("run 1 netlist")
+
+    # Run 2: the top is renamed. The old netlist must still go.
+    clear_managed_outputs(
+        tmp_path, suffixes, owner="demo", own=["other.json", "other.bit"]
+    )
+
+    assert not (tmp_path / "graph.json").exists()
+
+
+def test_clear_managed_outputs_spares_a_sibling_dir_it_never_owned(tmp_path):
+    """The ledger distinguishes a previously-owned protected name from a
+    genuinely sibling-owned one: a directory this flow has never written has
+    no claim, so `rb graph`'s own output is untouched (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    theirs = tmp_path / "graph.json"
+    theirs.write_text("written by rb graph")
+
+    clear_managed_outputs(tmp_path, (".json",), owner="demo", own=["other.json"])
+
+    assert theirs.read_text() == "written by rb graph"
+
+
+def test_clear_managed_outputs_without_own_does_not_claim_the_directory(tmp_path):
+    """A caller that declares no ownership is not speaking for the directory,
+    so it must not write a claim (#469)."""
+    from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, clear_managed_outputs
+
+    clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+
+    assert not (tmp_path / OWNED_LEDGER_NAME).exists()
