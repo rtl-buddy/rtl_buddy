@@ -267,6 +267,33 @@ def test_suites_are_reported_as_they_drain_in_order(console, caplog):
     assert "passed" not in err
 
 
+def test_a_suite_is_not_drained_while_a_same_id_job_elsewhere_is_queued(
+    console, caplog
+):
+    """Two clusters can issue the same job number (#509).
+
+    Membership keyed by the bare id would hold ONE entry for both, so the
+    suite would be reported finished the moment either of them left the
+    queue — while the other is still pending.
+    """
+    console()
+    clock = _Clock()
+    handles = [
+        JobHandle("77", _handle("77").spec, cluster="alpha"),
+        JobHandle("77", _handle("77").spec, cluster="beta"),
+    ]
+    progress = DispatchProgress(
+        handles, backend="slurm", interval=60.0, max_wait=None, clock=clock
+    )
+
+    progress.observe(["beta:77"])  # alpha's 77 is gone, beta's is not
+    assert not _records(caplog, "dispatch.suite_drained")
+    clock.advance(100)
+    progress.observe([])
+    drained = _records(caplog, "dispatch.suite_drained")
+    assert [f["jobs"] for f in drained] == [2]
+
+
 def test_a_drained_suite_is_reported_once(console, caplog):
     console()
     clock = _Clock()
@@ -307,6 +334,64 @@ def test_max_wait_fails_with_the_outstanding_ids_and_warns(console, caplog):
         if r.__dict__.get("rtl_event") == "dispatch.max_wait_exceeded"
     ]
     assert record.levelno == logging.WARNING
+
+
+def test_the_deadline_renders_a_command_slurm_would_accept(console, caplog):
+    """`-j alpha:77_1` is not a job id (#509 review).
+
+    The outstanding set is keyed by handle so two clusters' identically
+    numbered jobs stay apart, but that key is this process's invention.
+    The post-mortem command has to put the halves back: the bare id, with
+    `-M alpha` beside it.
+    """
+    console()
+    clock = _Clock()
+    handles = [
+        JobHandle("77_1", _handle("77_1").spec, cluster="alpha"),
+        JobHandle("77_2", _handle("77_2").spec, cluster="alpha"),
+    ]
+    progress = DispatchProgress(
+        handles, backend="slurm", interval=60.0, max_wait=120.0, clock=clock
+    )
+    progress.observe(["alpha:77_1", "alpha:77_2"])
+    clock.advance(121)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        progress.observe(["alpha:77_1", "alpha:77_2"])
+
+    message = str(excinfo.value)
+    assert "alpha:77" not in message
+    assert "squeue -M alpha -j '77_[1-2]'" in message
+    assert "sacct -M alpha -j '77_[1-2]'" in message
+    (fields,) = _records(caplog, "dispatch.max_wait_exceeded")
+    # The scheduler id and its cluster travel separately, not glued.
+    assert fields["jobs"] == ["77_[1-2]"]
+    assert fields["clusters"] == ["alpha"]
+    assert fields["queries"] == [
+        "squeue -M alpha -j '77_[1-2]'",
+        "sacct -M alpha -j '77_[1-2]'",
+    ]
+
+
+def test_the_local_deadline_names_no_cluster(console, caplog):
+    """Off a cluster the command carries no -M and the field is absent."""
+    console()
+    clock = _Clock()
+    handles = [_handle(f"9_{i}") for i in (1, 2)]
+    progress = DispatchProgress(
+        handles, backend="slurm", interval=60.0, max_wait=120.0, clock=clock
+    )
+    progress.observe(["9_1", "9_2"])
+    clock.advance(121)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        progress.observe(["9_1", "9_2"])
+
+    message = str(excinfo.value)
+    assert "-M" not in message
+    assert "squeue -j '9_[1-2]'" in message
+    (fields,) = _records(caplog, "dispatch.max_wait_exceeded")
+    assert fields["jobs"] == ["9_[1-2]"]
+    # log_event drops None fields, so "no cluster" reads as absence.
+    assert "clusters" not in fields
 
 
 def test_no_deadline_means_the_wait_is_unbounded(console, caplog):

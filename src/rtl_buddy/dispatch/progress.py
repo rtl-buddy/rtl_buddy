@@ -43,6 +43,7 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_console_event, log_event
+from .base import split_handle_key, telemetry_key
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,12 @@ class DispatchProgress:
             label = labels.get(suite_dir)
             if label is None:
                 continue
-            self._suite_jobs.setdefault(label, set()).add(handle.job_id)
+            # Keyed the way the backend reports outstanding jobs: a job id
+            # alone is unique only within its cluster, and a fleet spread
+            # over two of them can hold the same number twice — one entry
+            # for both would report a suite finished while its twin is
+            # still queued (#509 review).
+            self._suite_jobs.setdefault(label, set()).add(telemetry_key(handle))
         self._drained: set[str] = set()
 
     # ---- reporting ---------------------------------------------------
@@ -265,7 +271,28 @@ class DispatchProgress:
             )
 
     def _fail_on_deadline(self, outstanding: Sequence[str], elapsed: float) -> None:
-        grouped = group_job_ids(outstanding)
+        # The outstanding set is keyed by handle, which for a job accepted on
+        # another cluster reads `alpha:77_1` — an identity this process
+        # invented. THIS message hands the reader a post-mortem command, so
+        # the two halves come apart again here: Slurm wants the bare id with
+        # `-M alpha` beside it, and `-j alpha:77_1` is not a job id (#509
+        # review).
+        by_cluster: dict[str | None, list[str]] = {}
+        for key in outstanding:
+            cluster, job_id = split_handle_key(key)
+            by_cluster.setdefault(cluster, []).append(job_id)
+        grouped: list[str] = []
+        queries: list[str] = []
+        for cluster, job_ids in by_cluster.items():
+            ids = group_job_ids(job_ids)
+            grouped += ids
+            # Quoted: the grouped form carries brackets, which a shell would
+            # otherwise try to glob.
+            selector = f"'{','.join(ids)}'"
+            where = f" -M {cluster}" if cluster else ""
+            queries.append(f"squeue{where} -j {selector}")
+            queries.append(f"sacct{where} -j {selector}")
+        clusters = [c for c in by_cluster if c]
         log_event(
             self._logger,
             logging.WARNING,
@@ -275,12 +302,17 @@ class DispatchProgress:
             remaining=len(outstanding),
             total=self._total,
             elapsed_s=round(elapsed, 1),
+            # Bare scheduler ids, as before — the cluster travels beside
+            # them rather than glued to them.
             jobs=grouped,
+            clusters=clusters or None,
+            queries=queries,
         )
         raise FatalRtlBuddyError(
             f"dispatch: {len(outstanding)} of {self._total} job(s) were still "
             f"outstanding after cfg-dispatch.max-wait ({self._max_wait}s) on the "
             f"{self._backend} backend — cancelling the fleet. Outstanding job "
-            f"ids: {' '.join(grouped)} (query them with squeue/sacct for a "
-            "post-mortem; raise max-wait if the run legitimately takes longer)."
+            f"ids: {' '.join(grouped)} (query them with "
+            f"{'; '.join(queries)} for a post-mortem; raise max-wait if the "
+            "run legitimately takes longer)."
         )

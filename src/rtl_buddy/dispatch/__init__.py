@@ -11,7 +11,14 @@ ABC — one host's process pool, or a cluster.
 """
 
 from ..errors import FatalRtlBuddyError
-from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
+from .base import (
+    BuildJobSpec,
+    DispatchBackend,
+    JobHandle,
+    TestJobSpec,
+    split_handle_key,
+    telemetry_key,
+)
 from .local_parallel import LocalProcessBackend
 from .slurm import SlurmDispatchBackend
 
@@ -23,6 +30,8 @@ __all__ = [
     "LocalProcessBackend",
     "SlurmDispatchBackend",
     "create_dispatch_backend",
+    "split_handle_key",
+    "telemetry_key",
     "validate_backend_name",
 ]
 

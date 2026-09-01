@@ -113,10 +113,58 @@ class TestJobSpec:
 
 @dataclass
 class JobHandle:
-    """An accepted submission: the backend's job id plus its spec."""
+    """An accepted submission: the backend's job id plus its spec.
+
+    ``cluster`` records WHERE the scheduler accepted it, for the backends
+    that can submit somewhere other than the local cluster (Slurm's
+    ``-M``/``--clusters``, #509). A job id is only unique within its
+    cluster, so every later command about this job — cancelling it above
+    all — has to be issued against the same one. ``None`` means "the local
+    cluster", which is every submission a single-cluster site makes and
+    every job the local-parallel pool runs.
+    """
 
     job_id: str
     spec: object
+    cluster: str | None = None
+
+
+def telemetry_key(handle: JobHandle) -> str:
+    """Identity of one handle in any per-job mapping the head keeps.
+
+    Named for its first consumer (:meth:`collect_telemetry`), used by
+    every mapping that must not merge two jobs: the collector's result and
+    the wait's outstanding set / per-suite membership alike.
+
+    A job id is unique only within its cluster, and a run can span
+    clusters — ``--clusters=a,b`` places each array wherever it can start
+    first — so two handles can legitimately carry the SAME id. Keying
+    telemetry by id alone then merges their rows: allocation values
+    overwrite each other, step metrics sum across unrelated jobs, and both
+    jobs are right-sized from the mixture (#509 review).
+
+    Prefixed with the cluster only where there is one, so a local or
+    single-cluster run keys by the bare job id exactly as before.
+    """
+    cluster = getattr(handle, "cluster", None)
+    return f"{cluster}:{handle.job_id}" if cluster else handle.job_id
+
+
+def split_handle_key(key: str) -> tuple[str | None, str]:
+    """Inverse of :func:`telemetry_key`: ``(cluster, scheduler job id)``.
+
+    The qualified key is an INTERNAL identity — it keeps two clusters'
+    identically numbered jobs apart in the head's own mappings — and a
+    scheduler has never heard of it. Anything user-facing (a recovery
+    command, an id to paste into ``squeue``) has to take the two halves
+    apart again, because Slurm wants the bare id and ``-M <cluster>``
+    beside it, not ``alpha:77`` (#509 review).
+
+    Unambiguous by construction: a Slurm job id is digits, underscores and
+    brackets, and a cluster name is a bare word — neither contains a colon.
+    """
+    cluster, sep, job_id = key.partition(":")
+    return (cluster, job_id) if sep else (None, key)
 
 
 class DispatchBackend(ABC):
@@ -168,11 +216,15 @@ class DispatchBackend(ABC):
         """Submit a group of jobs with identical resolved resources.
 
         Backends with native array support (Slurm) override this to
-        submit one array job; the default just loops :meth:`submit`.
+        submit the group as one array — or as several, where the group is
+        larger than the scheduler's own array limit (#509); the default
+        just loops :meth:`submit`. Either way the returned handles are in
+        spec order and describe one logical group.
         ``array_dir`` is a scratch directory on the shared filesystem
         for the array's manifest/script/logs; ``max_parallel`` caps how
-        many elements run concurrently; ``dependency`` (a build-job id)
-        gates every element on that job succeeding.
+        many elements run concurrently **per submitted array**;
+        ``dependency`` (a build-job id) gates every element on that job
+        succeeding.
         """
         return [self.submit(spec, dependency=dependency) for spec in specs]
 
@@ -226,7 +278,12 @@ class DispatchBackend(ABC):
     effective_sbatch_args: tuple = ()
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
-        """Per-job reserved-vs-used accounting, keyed by job id.
+        """Per-job reserved-vs-used accounting, keyed by :func:`telemetry_key`.
+
+        That is the bare job id for every backend that cannot submit off
+        the local cluster, so a consumer's lookup is unchanged; use the
+        helper rather than the id, since a Slurm run spanning clusters
+        keys the jobs it accepted elsewhere by ``<cluster>:<job id>``.
 
         Returns an empty mapping when the backend has no accounting
         source (right-sizing then degrades gracefully). Values are

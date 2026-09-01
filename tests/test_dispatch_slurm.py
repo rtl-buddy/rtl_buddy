@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from rtl_buddy.config.dispatch import DispatchConfigFile, JobResources
+from rtl_buddy.dispatch import base as base_module
 from rtl_buddy.dispatch.base import JobHandle, TestJobSpec
 from rtl_buddy.dispatch.slurm import SlurmDispatchBackend
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -28,6 +29,14 @@ def _no_tool_check(monkeypatch):
     monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_cluster(monkeypatch):
+    # $SBATCH_CLUSTERS selects a cluster exactly as `--clusters` does
+    # (#509), so a developer or CI host that exports it would otherwise
+    # change what every probe in this module asks for.
+    monkeypatch.delenv("SBATCH_CLUSTERS", raising=False)
+
+
 def _spec(**overrides) -> TestJobSpec:
     defaults = dict(
         test_name="basic",
@@ -40,10 +49,20 @@ def _spec(**overrides) -> TestJobSpec:
     return TestJobSpec(**defaults)
 
 
-def _fake_run(calls, results):
-    """subprocess.run stand-in: records argv, pops canned results."""
+def _fake_run(calls, results, *, max_array_size=None, max_array_tasks=None):
+    """subprocess.run stand-in: records argv, pops canned results.
+
+    Any ``scontrol`` call — the MaxArraySize probe (#509), with or without
+    the ``-M <cluster>`` a cross-cluster ``sbatch-args`` adds — is answered from
+    ``max_array_size`` instead — neither recorded nor popped — so a test
+    about sbatch argv keeps asserting on sbatch calls alone. ``None`` (the
+    default) makes the probe fail, i.e. no chunking. The probe itself is
+    covered by the tests in the chunking section, which record it.
+    """
 
     def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            return _scontrol_result(max_array_size, max_array_tasks)
         calls.append(list(argv))
         result = (
             results.pop(0)
@@ -53,6 +72,33 @@ def _fake_run(calls, results):
         return result
 
     return run
+
+
+def _scontrol_result(max_array_size, max_array_tasks=None):
+    """`scontrol show config` output, or a failure when the limit is unknown.
+
+    ``SchedulerParameters`` is always rendered — a real dump has the line
+    whether or not it carries ``max_array_tasks`` — so the "not set" case
+    is the realistic one rather than a line the parser never sees.
+    """
+    if max_array_size is None:
+        return SimpleNamespace(
+            returncode=1, stdout="", stderr="scontrol: error: Unable to contact slurm"
+        )
+    params = "bf_window=2880,default_queue_depth=100"
+    if max_array_tasks is not None:
+        params += f",max_array_tasks={max_array_tasks}"
+    return SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "Configuration data as of 2026-08-31T12:00:00\n"
+            "MaxArrayJobs            = 20\n"
+            f"MaxArraySize            = {max_array_size}\n"
+            "MaxDBDMsgs              = 20000\n"
+            f"SchedulerParameters     = {params}\n"
+        ),
+        stderr="",
+    )
 
 
 def test_submit_builds_sbatch_argv_and_parses_job_id(monkeypatch):
@@ -1221,3 +1267,1330 @@ def test_effective_sbatch_args_is_what_the_backend_will_append():
 
     bare = SlurmDispatchBackend(DispatchConfigFile().initialise())
     assert not [a for a in bare.effective_sbatch_args if not a.startswith("--acctg")]
+
+
+# ------------------------------------- MaxArraySize chunking (#509)
+
+
+def _events(caplog, event):
+    """The `rtl_fields` of every record logged for one rtl_event."""
+    return [
+        r.__dict__["rtl_fields"]
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == event
+    ]
+
+
+def _array_ranges(calls):
+    """The `--array=` value of every sbatch call, in submission order."""
+    return [
+        arg.split("=", 1)[1]
+        for argv in calls
+        for arg in argv
+        if arg.startswith("--array=")
+    ]
+
+
+def test_a_group_larger_than_max_array_size_is_split_across_arrays(
+    monkeypatch, tmp_path
+):
+    """`sbatch --array=1-1128` on a MaxArraySize=1001 cluster is refused and
+    the whole run dies; the group must be chunked instead (#509)."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    # max-array-size is Slurm's MaxArraySize: the largest task index is one
+    # below it, so 5 means at most four elements per array.
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    specs = [_spec(run_id=i) for i in range(1, 11)]
+    array_dir = tmp_path / "array-001"
+    handles = backend.submit_array(specs, array_dir=array_dir)
+
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    # Concatenated in spec order, so collection sees one logical group.
+    assert [h.job_id for h in handles] == [
+        "100_1",
+        "100_2",
+        "100_3",
+        "100_4",
+        "101_1",
+        "101_2",
+        "101_3",
+        "101_4",
+        "102_1",
+        "102_2",
+    ]
+    assert [h.spec for h in handles] == specs
+
+    # One manifest per slice, each covering exactly its own elements, so %a
+    # still maps 1:1 onto a manifest line.
+    for index, expected in ((1, 4), (2, 4), (3, 2)):
+        slice_dir = array_dir / f"slice-{index}"
+        assert len((slice_dir / "manifest.txt").read_text().splitlines()) == expected
+        assert (slice_dir / "array.sh").read_text().startswith("#!/bin/bash")
+        assert f"--output={slice_dir}/slurm-%a.log" in calls[index - 1]
+        assert calls[index - 1][-2:] == [
+            str(slice_dir / "array.sh"),
+            str(slice_dir / "manifest.txt"),
+        ]
+    assert "--run-id 5" in (array_dir / "slice-2" / "manifest.txt").read_text()
+
+    # Element logs never collide across slices: each is under its own slice.
+    assert specs[0].log_path == array_dir / "slice-1" / "slurm-1.log"
+    assert specs[4].log_path == array_dir / "slice-2" / "slurm-1.log"
+    assert specs[9].log_path == array_dir / "slice-3" / "slurm-2.log"
+
+    # The job name says which slice of the group this array is.
+    names = [a for argv in calls for a in argv if a.startswith("--job-name=")]
+    assert names == [
+        "--job-name=rb:basic+3/1",
+        "--job-name=rb:basic+3/2",
+        "--job-name=rb:basic+1/3",
+    ]
+
+
+def test_a_group_within_the_limit_keeps_todays_single_array_layout(
+    monkeypatch, tmp_path
+):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=11).initialise())
+
+    specs = [_spec(run_id=i) for i in range(1, 11)]
+    array_dir = tmp_path / "array-001"
+    backend.submit_array(specs, array_dir=array_dir)
+
+    assert _array_ranges(calls) == ["1-10"]
+    # No slice-N/ subdirectory: unchunked artefact paths do not move.
+    assert (array_dir / "manifest.txt").exists()
+    assert not (array_dir / "slice-1").exists()
+    assert specs[0].log_path == array_dir / "slurm-1.log"
+
+
+def test_an_unknown_limit_submits_one_array_as_before(monkeypatch, tmp_path, caplog):
+    """No `scontrol` and no config override: chunking is off, not guessed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+
+    assert _array_ranges(calls) == ["1-10"]
+    assert len(_events(caplog, "dispatch.max_array_size_unknown")) == 1
+    # ...and the single-array event still reports itself as one slice of one.
+    (fields,) = _events(caplog, "dispatch.array_submitted")
+    assert (fields["slice"], fields["slices"]) == (1, 1)
+
+
+def test_the_throttle_applies_per_slice(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)],
+        array_dir=tmp_path / "arr",
+        max_parallel=3,
+    )
+    # %N caps each array, so the group's peak concurrency is slices x N; the
+    # last slice is smaller than the cap and needs no throttle at all.
+    assert _array_ranges(calls) == ["1-4%3", "1-4%3", "1-2"]
+
+
+def test_max_array_size_is_read_from_scontrol_once_per_backend(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102, 103)
+    ]
+    probes = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            probes.append((list(argv), cwd, timeout))
+            return _scontrol_result(4)
+        return _fake_run(calls, results)(
+            argv, capture_output=capture_output, text=text, cwd=cwd, timeout=timeout
+        )
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+    backend.submit_array(
+        [_spec(run_id=i) for i in (5, 6, 7, 8)], array_dir=tmp_path / "b"
+    )
+
+    # MaxArraySize 4 => task indices 0..3 => at most three 1-based elements.
+    assert _array_ranges(calls) == ["1-3", "1-1", "1-3", "1-1"]
+    # Resolved once and cached: the second group re-uses the first probe.
+    assert len(probes) == 1
+    argv, cwd, timeout = probes[0]
+    assert argv == ["scontrol", "show", "config"]
+    assert cwd == "/proj/verif/blk"  # explicit, per the engineering guidelines
+    assert timeout is not None  # time-boxed: a wedged scontrol must not hang
+
+
+def test_the_configured_limit_wins_over_scontrol(monkeypatch, tmp_path):
+    """A site whose submit host has no usable `scontrol` pins the value."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=3).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+    # The probe still runs — it is the only source of the SECOND ceiling,
+    # `max_array_tasks` (#509 review) — but its MaxArraySize does not win.
+    assert probed == [["scontrol", "show", "config"]]
+
+
+def test_both_ceilings_pinned_need_no_probe_at_all(monkeypatch, tmp_path):
+    """A site with no scontrol states both, and nothing is shelled out."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=2).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+    assert probed == []
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_an_unusable_scontrol_answer_disables_chunking_loudly(
+    monkeypatch, tmp_path, caplog
+):
+    """rc=0 but no MaxArraySize line: unknown, and said so once."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            return SimpleNamespace(
+                returncode=0, stdout="SlurmVersion = 24.05\n", stderr=""
+            )
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
+    assert _array_ranges(calls) == ["1-3"]
+    # "Loudly" is the whole point: silence here is a cluster whose groups
+    # will be refused by sbatch with nothing in the log to say why.
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "no usable MaxArraySize" in fields["error"]
+
+
+def test_a_wedged_scontrol_does_not_fail_the_submit(monkeypatch, tmp_path, caplog):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            raise slurm_module.subprocess.TimeoutExpired(cmd=argv, timeout=timeout or 0)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
+    assert _array_ranges(calls) == ["1-3"]
+    assert len(_events(caplog, "dispatch.max_array_size_unknown")) == 1
+
+
+def test_a_refused_array_names_the_unread_limit(monkeypatch, tmp_path):
+    """The reporter's exact failure, made actionable on the console.
+
+    `Invalid job array specification` IS an oversized group, and the probe
+    that would have split it only says so at INFO — which a default console
+    never shows. The error that fails the run carries the fix instead.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "Invalid job array specification" in str(excinfo.value)
+    assert "cfg-dispatch.max-array-size" in str(excinfo.value)
+
+
+def test_an_unrelated_submit_failure_offers_no_red_herring(monkeypatch, tmp_path):
+    """An unknown limit is not a reason to blame every rejected submit.
+
+    An invalid account/partition/QoS has its own recovery action, and a
+    MaxArraySize hint stapled to it buries the sentence that matters.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid partition name specified",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    # The limit is unknown here — the other guard alone must not be what
+    # keeps the hint away.
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "Invalid partition name" in str(excinfo.value)
+    assert "max-array-size" not in str(excinfo.value)
+
+
+def test_a_refused_array_within_a_known_limit_points_at_the_override(
+    monkeypatch, tmp_path
+):
+    """The array was inside everything the probe could see, and still refused.
+
+    So the cluster enforces something it did not report, and the sentence
+    must say that rather than claim the limit could not be read — while
+    still naming the one knob that fixes it (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=1001).initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    assert "Invalid job array specification" in message
+    # 1000 = the pinned MaxArraySize of 1001 minus its exclusive index bound.
+    assert "1000 element(s) per array" in message
+    assert "read from config" in message
+    assert "lower cfg-dispatch.max-array-size" in message
+    # ...and NOT the unknown-limit sentence, which would be false here.
+    assert "could not be read" not in message
+
+
+def test_a_failed_slice_cancels_the_slices_already_submitted(monkeypatch, tmp_path):
+    """The caller only learns of handles this call RETURNS, so a mid-group
+    failure has to clean up its own earlier slices or orphan them."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="Invalid job array"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="sbatch array submit failed"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+
+    assert calls[-1] == ["scancel", "100"]
+
+
+def test_selected_cluster_reads_every_spelling_and_takes_the_last():
+    """sbatch takes four forms and lets a later one override an earlier."""
+    parse = slurm_module._selected_cluster
+    assert parse([]) is None
+    assert parse(["--partition=verif"]) is None
+    assert parse(["-M", "remote"]) == "remote"
+    assert parse(["-Mremote"]) == "remote"
+    assert parse(["--clusters=remote"]) == "remote"
+    assert parse(["--clusters", "remote"]) == "remote"
+    assert parse(["--cluster=remote"]) == "remote"
+    # A project appending an override to a shared list must win here for
+    # the same reason it wins at submit.
+    assert parse(["-M", "first", "--clusters=second"]) == "second"
+    # A dangling option selects nothing rather than eating the next flag.
+    assert parse(["--partition=verif", "-M"]) is None
+
+
+def test_selected_cluster_ignores_prefixes_sbatch_itself_refuses():
+    """`--clusters` has no unambiguous abbreviation, so none is accepted.
+
+    sbatch resolves unambiguous long-option prefixes, but every prefix of
+    `--clusters` is also a prefix of `--cluster-constraint`, so getopt_long
+    rejects them and the command line never runs. Matching them here would
+    read a selection out of a submit that cannot happen — and the same
+    loose match would take a `--cluster-constraint` FEATURE list for a
+    cluster name, which is the failure that matters.
+    """
+    parse = slurm_module._selected_cluster
+    for ambiguous in ("--cl", "--clus", "--clust", "--cluste"):
+        assert parse([f"{ambiguous}=remote"]) is None, ambiguous
+        assert parse([ambiguous, "remote"]) is None, ambiguous
+    # The colliding option is a feature list, and must never be read as one.
+    assert parse(["--cluster-constraint=haswell"]) is None
+    assert parse(["--cluster-constraint", "haswell"]) is None
+    # ...while a real selection alongside it is still found.
+    assert parse(["--cluster-constraint=haswell", "-M", "remote"]) == "remote"
+    assert parse(["--clusters=remote", "--cluster-constraint=haswell"]) == "remote"
+
+
+def test_the_probe_asks_the_cluster_the_jobs_are_submitted_to(monkeypatch, tmp_path):
+    """`scontrol show config` unqualified reads the LOCAL cluster, whose
+    MaxArraySize is not the one the arrays are submitted against (#509)."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probes = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probes.append(list(argv))
+            return _scontrol_result(3)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=remote"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.cluster == "remote"
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+
+    assert probes == [["scontrol", "-M", "remote", "show", "config"]]
+    # ...and the remote cluster's answer is what chunks the group.
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_several_clusters_leave_the_limit_unknown(monkeypatch, tmp_path, caplog):
+    """`--clusters=a,b` is resolved at submit, so no single limit applies."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(sbatch_args=["-M", "alpha,beta"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
+    assert _array_ranges(calls) == ["1-3"]
+    # Probing either one would pin a limit the other may not have.
+    assert probed == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "alpha,beta" in fields["error"]
+    assert fields["cluster"] == "alpha,beta"
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+
+
+def test_a_pinned_limit_needs_no_cluster_probe(monkeypatch, tmp_path):
+    """The config value is the answer for whichever cluster is selected."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(
+        sbatch_args=["-M", "alpha,beta"], max_array_size=4
+    ).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array([_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a")
+    assert probed == []
+    assert _array_ranges(calls) == ["1-3"]
+
+
+def test_an_ambiguous_cluster_still_earns_the_submit_failure_hint(
+    monkeypatch, tmp_path
+):
+    """Unknown is unknown, however it became unknown."""
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=alpha,beta"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "cfg-dispatch.max-array-size" in str(excinfo.value)
+
+
+def _probe_recording_run(calls, results, *, max_array_size, probes):
+    """A fake subprocess.run that RECORDS the scontrol probe argv."""
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probes.append(list(argv))
+            return _scontrol_result(max_array_size)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    return run
+
+
+def test_the_cluster_can_come_from_the_environment(monkeypatch, tmp_path):
+    """Slurm reads $SBATCH_CLUSTERS as `--clusters`, so the probe must too."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "from-env")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.cluster == "from-env"
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "-M", "from-env", "show", "config"]]
+
+
+def test_sbatch_args_beat_the_environment(monkeypatch, tmp_path):
+    """Slurm gives the command line precedence; so does the probe."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "from-env")
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=from-args"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.cluster == "from-args"
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "-M", "from-args", "show", "config"]]
+
+
+def test_a_blank_environment_selection_means_the_local_cluster(monkeypatch):
+    """An exported-but-empty variable selects nothing, as it does for sbatch."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "   ")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.cluster is None
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "show", "config"]]
+
+
+def test_several_clusters_in_the_environment_leave_the_limit_unknown(
+    monkeypatch, caplog
+):
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=1001, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "alpha,beta")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        assert backend._max_elements_per_array(cwd="/proj/verif/blk") is None
+    assert probes == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert fields["cluster"] == "alpha,beta"
+
+
+def test_the_reserved_all_selection_leaves_the_limit_unknown(monkeypatch, caplog):
+    """`--clusters=all` names no single cluster (#509 review).
+
+    `scontrol -M all show config` answers with one config block per
+    cluster, so a first-match regex would pin whichever sorted first — a
+    limit belonging to a cluster the array may never be submitted to.
+    """
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=1001, probes=probes),
+    )
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=all"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("INFO"):
+        assert backend._max_elements_per_array(cwd="/proj/verif/blk") is None
+    assert probes == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert fields["cluster"] == "all"
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args,env,expected",
+    [
+        ([], None, None),
+        (["-M", "remote"], None, "remote"),
+        ([], "from-env", "from-env"),
+        (["--clusters=alpha,beta"], None, None),
+        (["--clusters=all"], None, None),
+        (["--clusters=ALL"], None, None),
+        ([], "alpha,beta", None),
+    ],
+)
+def test_cluster_property_names_one_cluster_or_nothing(
+    monkeypatch, sbatch_args, env, expected
+):
+    """`backend.cluster` is the single cluster a `-M` may name, or None.
+
+    Any per-cluster scheduler query (squeue, sacct, scontrol) reads this,
+    so a multi-cluster selection has to resolve to None: qualifying a query
+    with one name out of several would ask about a cluster nothing was
+    necessarily submitted to.
+    """
+    if env is not None:
+        monkeypatch.setenv("SBATCH_CLUSTERS", env)
+    cfg = DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    assert SlurmDispatchBackend(cfg).cluster == expected
+
+
+# ------------------------------- SchedulerParameters max_array_tasks (#509)
+
+
+def test_max_array_tasks_caps_the_slice_below_max_array_size(monkeypatch, tmp_path):
+    """A cluster may cap tasks-per-array well below MaxArraySize.
+
+    `scontrol show config` keeps reporting the larger MaxArraySize, so
+    slicing from that alone hands sbatch an array the cluster refuses —
+    and, the limit now being non-None, the failure hint would once have
+    been the wrong one (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=1001, max_array_tasks=4),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    # max_array_tasks is a COUNT (inclusive), not an index bound: 4 means
+    # four elements per array, not three.
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_without_max_array_tasks_the_index_bound_still_governs(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=5),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_the_larger_of_the_two_ceilings_never_wins(monkeypatch, tmp_path, caplog):
+    """A max_array_tasks ABOVE the index bound cannot raise the slice."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=5, max_array_tasks=1000),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    # Both ceilings are recorded, so a reader can see which one governed.
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert (fields["max_array_size"], fields["max_array_tasks"]) == (5, 1000)
+    assert fields["max_elements"] == 4
+
+
+def test_max_array_tasks_is_read_from_the_scheduler_parameters_line():
+    parse = slurm_module._max_array_tasks
+    assert parse("MaxArraySize = 1001\n") is None
+    assert parse("SchedulerParameters = bf_window=2880\n") is None
+    assert parse("SchedulerParameters = max_array_tasks=64,bf_window=2880\n") == 64
+    assert parse("SchedulerParameters = bf_window=2880,max_array_tasks=64\n") == 64
+    # A key that merely ENDS in the name is a different parameter.
+    assert parse("SchedulerParameters = other_max_array_tasks=64\n") is None
+    # ...and a mention outside the SchedulerParameters line is not the setting.
+    assert parse("SomeOtherKey = max_array_tasks=64\n") is None
+
+
+def test_a_pinned_max_array_size_still_honours_the_probed_task_cap(
+    monkeypatch, tmp_path
+):
+    """The recommended override must not hide the cluster's OTHER ceiling.
+
+    `cfg-dispatch.max-array-size` is what every diagnostic tells a site to
+    set, so if it also suppressed the `max_array_tasks` probe the advice
+    would hand back the same oversized slices it was meant to fix (#509
+    review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=9999, max_array_tasks=4),
+    )
+    # Config wins for MaxArraySize (1001 -> 1000 elements); the probe still
+    # supplies max_array_tasks, and 4 is smaller, so 4 governs.
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=1001).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_a_pinned_task_cap_needs_no_scontrol(monkeypatch, tmp_path, caplog):
+    """A site without scontrol can state the second ceiling on its own."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    # scontrol fails: the pinned pair is the only source of either ceiling.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=4).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    # The governing value came from config, and the event says which.
+    assert fields["source"] == "config"
+
+
+def test_the_config_source_event_carries_both_ceilings(monkeypatch, caplog):
+    """`max_array_tasks` is reported on the config path too (#509 review).
+
+    `log_event` drops `None` fields for every event in the package, so the
+    field is present whenever a cap is known — configured or probed — and
+    absent only when none is.
+    """
+    calls, results = [], []
+    # No scontrol at all, so nothing but the config can supply a ceiling.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+
+    with caplog.at_level("DEBUG"):
+        SlurmDispatchBackend(
+            DispatchConfigFile(max_array_size=1001, max_array_tasks=250).initialise()
+        )._max_elements_per_array(cwd="/proj/verif/blk")
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert fields["max_array_size"] == 1001
+    assert fields["max_array_tasks"] == 250
+    assert fields["max_elements"] == 250
+    assert fields["source"] == "config"
+
+    # ...and with no cap known anywhere, the key is simply absent.
+    caplog.clear()
+    with caplog.at_level("DEBUG"):
+        SlurmDispatchBackend(
+            DispatchConfigFile(max_array_size=1001).initialise()
+        )._max_elements_per_array(cwd="/proj/verif/blk")
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert "max_array_tasks" not in fields
+    assert fields["max_elements"] == 1000
+
+
+# ---------------------------- cancelling where the jobs actually are (#509)
+
+
+def test_parsable_submission_splits_the_cluster_suffix():
+    parse = slurm_module._parsable_submission
+    assert parse("500\n") == ("500", None)
+    assert parse("500;remote\n") == ("500", "remote")
+    # A trailing separator with nothing after it is not a cluster name.
+    assert parse("500;\n") == ("500", None)
+
+
+def test_a_submission_records_the_cluster_that_accepted_it(monkeypatch, tmp_path):
+    """`sbatch --parsable` answers `jobid;cluster` for a remote submit."""
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=0, stdout="500;remote\n", stderr="")],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handle = backend.submit(_spec())
+    # The id stays the bare number — the cluster is not part of it...
+    assert handle.job_id == "500"
+    # ...but it is remembered, because an id only means anything there.
+    assert handle.cluster == "remote"
+
+
+def test_array_handles_carry_the_cluster_and_a_failed_slice_cancels_there(
+    monkeypatch, tmp_path
+):
+    """The slice-failure cleanup must reach the cluster it submitted to.
+
+    Without the `-M`, `scancel 100` is issued against the LOCAL cluster and
+    the earlier remote slices keep running (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100;remote\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="Invalid job array"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="sbatch array submit failed"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert calls[-1] == ["scancel", "-M", "remote", "100"]
+
+
+def test_a_selected_cluster_stands_in_when_sbatch_names_none(monkeypatch, tmp_path):
+    """A Slurm that omits the suffix still put the job where -M pointed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["-M", "remote"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.submit(_spec()).cluster == "remote"
+
+
+def test_cancel_all_issues_one_scancel_per_cluster(monkeypatch):
+    """One `--clusters=a,b` group can be spread over both, so one -M cannot
+    cover it; and a purely local fleet keeps today's bare command."""
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.cancel_all(
+        [
+            JobHandle("100_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("100_2", _spec(run_id=2), cluster="alpha"),
+            JobHandle("200_1", _spec(run_id=3), cluster="beta"),
+            JobHandle("7", _spec(run_id=4)),
+            None,
+        ]
+    )
+    assert calls == [
+        ["scancel", "-M", "alpha", "100"],
+        ["scancel", "-M", "beta", "200"],
+        ["scancel", "7"],
+    ]
+
+
+def test_reaping_a_doomed_job_cancels_it_on_its_own_cluster(monkeypatch):
+    """squeue answers with bare ids, so the reap needs the submissions' record."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="500_1|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # drained
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    # Raw config: a 0 poll interval is rejected by initialise(), and the
+    # other wait tests in this module construct it the same way.
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all([JobHandle("500_1", _spec(), cluster="remote")])
+    assert ["scancel", "-M", "remote", "500"] in calls
+
+
+def test_telemetry_is_queried_once_per_cluster(monkeypatch):
+    """One query per cluster, because the rows carry no cluster of their own.
+
+    `_SACCT_FORMAT` has no cluster column, so a combined `-M a,b` answer
+    cannot be split back apart; asking each cluster separately makes the
+    provenance structural (#509 review).
+    """
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=0, stdout="", stderr="") for _ in range(2)],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.collect_telemetry(
+        [
+            JobHandle("100_1", _spec(run_id=1), cluster="beta"),
+            JobHandle("200_1", _spec(run_id=2), cluster="alpha"),
+        ]
+    )
+    assert len(calls) == 2
+    for argv, cluster, job in zip(calls, ("beta", "alpha"), ("100", "200")):
+        assert argv[argv.index("-M") + 1] == cluster
+        assert argv[argv.index("--jobs") + 1] == job
+
+
+def _sacct_row(job_id, *, elapsed, cpu):
+    """One `_SACCT_FORMAT` allocation row plus its `.batch` step row."""
+    return (
+        f"{job_id}|COMPLETED|{elapsed}|60|2|2|4G||\n"
+        f"{job_id}.batch|COMPLETED|{elapsed}|60|2|2|4G|{cpu}|1024K\n"
+    )
+
+
+def test_the_same_job_id_on_two_clusters_keeps_its_own_telemetry(monkeypatch):
+    """`--clusters=a,b` can put slices on clusters that reuse a number.
+
+    Keyed by id alone the two rows merge: the allocation values overwrite
+    each other and the step metrics are summed, so both handles are
+    right-sized from a job that never ran (#509 review).
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("77", elapsed=10, cpu="00:10"),
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("77", elapsed=900, cpu="15:00"),
+                stderr="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [
+            JobHandle("77", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    assert set(telemetry) == {"alpha:77", "beta:77"}
+    assert telemetry["alpha:77"]["elapsed_s"] == 10
+    assert telemetry["beta:77"]["elapsed_s"] == 900
+    # Step metrics stay with their own job rather than summing across both.
+    assert telemetry["alpha:77"]["total_cpu_s"] == 10.0
+    assert telemetry["beta:77"]["total_cpu_s"] == 900.0
+
+
+def test_telemetry_key_is_the_bare_job_id_off_a_cluster():
+    """The single-cluster/local shape every consumer already reads."""
+    assert base_module.telemetry_key(JobHandle("500_1", _spec())) == "500_1"
+    assert (
+        base_module.telemetry_key(JobHandle("500_1", _spec(), cluster="remote"))
+        == "remote:500_1"
+    )
+
+
+def test_one_clusters_missing_accounting_does_not_discard_the_others(monkeypatch):
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=1, stdout="", stderr="sacct: error: no cluster"),
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("200", elapsed=5, cpu="00:05"),
+                stderr="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [
+            JobHandle("100", _spec(run_id=1), cluster="alpha"),
+            JobHandle("200", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    assert set(telemetry) == {"beta:200"}
+
+
+def test_local_telemetry_argv_is_unchanged(monkeypatch):
+    """The single-cluster path must be byte-identical to before #509."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [JobHandle("100_1", _spec(run_id=1)), JobHandle("100_2", _spec(run_id=2))]
+    )
+    (argv,) = calls
+    assert argv == [
+        "sacct",
+        "--parsable2",
+        "--noheader",
+        f"--format={slurm_module._SACCT_FORMAT}",
+        "--jobs",
+        "100",
+    ]
+    assert telemetry == {}
+
+
+# ------------------------------- polling every cluster that ran a slice (#509)
+
+
+def test_the_wait_polls_every_cluster_and_outlasts_the_first_to_drain(monkeypatch):
+    """A remote slice absent from the LOCAL queue is not a drained slice.
+
+    One unqualified squeue reports the jobs it cannot see as gone, so the
+    wait would return and collection would read result files for jobs that
+    are still queued (#509 review). Both slices here carry job id 77.
+    """
+    queued = SimpleNamespace(
+        returncode=0, stdout="77_1|None|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    empty = SimpleNamespace(returncode=0, stdout="", stderr="")
+    calls, results = (
+        [],
+        [
+            empty,  # poll 1, alpha: already drained...
+            queued,  # ...poll 1, beta: still queued, so the wait must go on
+            empty,  # poll 2, alpha
+            empty,  # poll 2, beta
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    slept = []
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: slept.append(s))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("77_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77_1", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    # Two polls, each asking both clusters — not one unqualified query.
+    assert [argv[argv.index("-M") + 1] for argv in calls] == [
+        "alpha",
+        "beta",
+        "alpha",
+        "beta",
+    ]
+    # ...and it did not return on the first poll, when beta was queued.
+    assert len(slept) == 1
+
+
+def test_a_pending_slice_is_not_covered_by_its_twin_on_another_cluster(monkeypatch):
+    """The outstanding set is keyed per cluster, so ids cannot stand in."""
+    queued = SimpleNamespace(
+        returncode=0, stdout="77|None|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run([], [queued, queued]))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    handles = [
+        JobHandle("77", _spec(run_id=1), cluster="alpha"),
+        JobHandle("77", _spec(run_id=2), cluster="beta"),
+    ]
+    states = {}
+    for cluster in ("alpha", "beta"):
+        records = [slurm_module._parse_squeue_line("77|None|PENDING|0:00|rb:basic")]
+        cluster_states, _ = backend._outstanding(records, handles, cluster=cluster)
+        states.update(cluster_states)
+    # Two jobs outstanding, not one collapsed entry.
+    assert states == {"alpha:77": "pending", "beta:77": "pending"}
+
+
+def test_a_doomed_job_is_reaped_on_the_cluster_that_reported_it(monkeypatch):
+    """squeue answered for one cluster, so its ids belong to that cluster."""
+    doomed = SimpleNamespace(
+        returncode=0,
+        stdout="77_1|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+        stderr="",
+    )
+    empty = SimpleNamespace(returncode=0, stdout="", stderr="")
+    calls, results = [], [empty, doomed, empty, empty, empty]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("77_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77_1", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    # beta reported it, so beta is where it is cancelled — never alpha.
+    assert ["scancel", "-M", "beta", "77"] in calls
+    assert ["scancel", "-M", "alpha", "77"] not in calls
+
+
+def test_the_local_wait_argv_is_unchanged(monkeypatch):
+    """The single-cluster path must be byte-identical to before #509."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [JobHandle("500_1", _spec(run_id=1)), JobHandle("500_2", _spec(run_id=2))]
+    )
+    (argv,) = calls
+    assert argv == [
+        "squeue",
+        "--noheader",
+        f"--format={slurm_module._SQUEUE_FORMAT}",
+        f"--states={slurm_module._ACTIVE_STATES}",
+        "--jobs",
+        "500",
+    ]
+
+
+def test_a_task_cap_rejection_points_at_max_array_tasks(monkeypatch, tmp_path):
+    """The knob that produced the slice is the knob to lower (#509 review).
+
+    A hidden cap below a configured `max-array-tasks: 500` used to be
+    answered with "lower max-array-size", which would have the site state a
+    MaxArraySize its cluster does not have — the exact confusion the
+    separate task-count field exists to remove.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=500).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    assert "500 element(s) per array" in message
+    assert "lower cfg-dispatch.max-array-tasks" in message
+    assert "max-array-size" not in message
+
+
+def test_a_size_governed_rejection_still_points_at_max_array_size(
+    monkeypatch, tmp_path
+):
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=101, max_array_tasks=1000),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    # 101 - 1 = 100 elements, below the 1000-task cap, so size governed.
+    assert "100 element(s) per array" in message
+    assert "read from scontrol" in message
+    assert "lower cfg-dispatch.max-array-size" in message
+    assert "max-array-tasks" not in message
+
+
+def test_handle_key_round_trips_through_its_split():
+    key = base_module.telemetry_key(JobHandle("77_1", _spec(), cluster="alpha"))
+    assert base_module.split_handle_key(key) == ("alpha", "77_1")
+    # A local id has no cluster half and comes back untouched.
+    assert base_module.split_handle_key("500_1") == (None, "500_1")
+
+
+def test_a_configured_task_cap_governs_without_any_max_array_size(
+    monkeypatch, tmp_path, caplog
+):
+    """A site that can state only its task cap must still be honoured.
+
+    With no scontrol to read MaxArraySize from, the explicitly configured
+    ceiling was ignored and the group went out whole — guaranteed to
+    violate the very number the project had written down (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    # scontrol fails, so max_array_size stays unknown throughout.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_tasks=4).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert fields["max_array_tasks"] == 4
+    assert fields["max_elements"] == 4
+    assert fields["source"] == "config"
+    assert fields["governed_by"] == "cfg-dispatch.max-array-tasks"
+    # Nothing was learned about MaxArraySize, so nothing is claimed.
+    assert "max_array_size" not in fields
+    # ...and the run is not told the limit is unknown, because it is not.
+    assert not _events(caplog, "dispatch.max_array_size_unknown")
+
+
+def test_a_task_cap_governs_under_a_multi_cluster_selection(monkeypatch, tmp_path):
+    """The other route to "no MaxArraySize": nothing to probe."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(
+        sbatch_args=["--clusters=alpha,beta"], max_array_tasks=2
+    ).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "arr"
+    )
+    assert probed == []
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_neither_ceiling_known_is_still_one_unsplit_array(
+    monkeypatch, tmp_path, caplog
+):
+    """The unchanged fallback: nothing configured, nothing probed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-10"]
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+    assert "max-array-tasks" in fields["hint"]

@@ -29,17 +29,26 @@ head process cwd is re-anchored per suite during a regression.
 
 import logging
 import math
+import os
+import re
 import shlex
 import subprocess
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tool_manifest import require as require_tool
 from .argv import build_job_argv, test_job_argv
-from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
+from .base import (
+    BuildJobSpec,
+    DispatchBackend,
+    JobHandle,
+    TestJobSpec,
+    telemetry_key,
+)
 from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
@@ -97,6 +106,118 @@ _SACCT_FORMAT = (
 # forever (#505). `ReqCPUS` is the number the project's YAML controls, so it
 # is carried alongside and right-sizing ratios against it; the allocated
 # figure stays, because it is what `squeue`/`sacct` show.
+
+# `scontrol show config` renders one `Key = Value` per line, padded. The
+# value that matters here is the cluster's job-array ceiling (#509).
+_MAX_ARRAY_SIZE_RE = re.compile(r"^MaxArraySize\s*=\s*(\d+)\s*$", re.MULTILINE)
+# ...and the SECOND ceiling, which a cluster may set below it:
+# `SchedulerParameters=max_array_tasks=N`. slurm.conf(5) defines it as "the
+# maximum number of tasks that be included in a job array", defaulting to
+# MaxArraySize — a COUNT, inclusive, unlike MaxArraySize's exclusive index
+# bound. Its own example is the whole trap: max_array_tasks=1000 with
+# MaxArraySize=100001 permits task index 100000 but only 1000 tasks in one
+# array. `scontrol show config` keeps reporting the larger MaxArraySize, so
+# a slice sized from that alone is refused (#509 review).
+_SCHEDULER_PARAMS_RE = re.compile(r"^SchedulerParameters\s*=\s*(.*)$", re.MULTILINE)
+_MAX_ARRAY_TASKS_RE = re.compile(r"\bmax_array_tasks\s*=\s*(\d+)\b")
+
+
+def _max_array_tasks(config_text: str) -> int | None:
+    """``max_array_tasks`` from a ``scontrol show config`` dump, if set.
+
+    Read out of the ``SchedulerParameters`` line rather than the whole
+    dump, so nothing else that happens to mention the key can be taken for
+    the cluster's setting.
+    """
+    params = _SCHEDULER_PARAMS_RE.search(config_text)
+    if params is None:
+        return None
+    match = _MAX_ARRAY_TASKS_RE.search(params.group(1))
+    return int(match.group(1)) if match is not None else None
+
+
+# The probe is a courtesy, not a dependency: a slurmctld that is slow or
+# unreachable must cost a bounded wait and then leave chunking off, never
+# hang the head before it has submitted anything.
+_SCONTROL_TIMEOUT_S = 30
+# Options by which `sbatch-args` sends the jobs to another cluster. The
+# probe has to follow them: `scontrol show config` with no cluster reads
+# the LOCAL slurmctld, whose MaxArraySize says nothing about the cluster
+# the arrays are actually submitted to (#509 review).
+# sbatch resolves any UNAMBIGUOUS long-option prefix (GNU getopt_long), so
+# a selector may legitimately be written short. `--clusters` has no such
+# abbreviation: every proper prefix of it, `--cl` through `--cluster`, is
+# also a prefix of `--cluster-constraint` — sbatch's only other `--cl`
+# option — so getopt_long calls them ambiguous and sbatch exits rather than
+# submitting. (The rest of its `c` options diverge at `--c` already:
+# --chdir, --comment, --constraint, --container*, --contiguous, --core-spec,
+# --cores-per-socket, --cpu-freq, --cpus-per-*.) Matching a prefix here
+# would therefore read a selection out of a command line that cannot run,
+# and `--cluster-constraint=<list>` — a FEATURE list, not a cluster — is
+# exactly what a loose prefix match would swallow.
+#
+# `--cluster` singular is kept because the cost is asymmetric: several
+# Slurm clients register it explicitly as an alias of `--clusters`, and if
+# sbatch is not one of them it is one of those ambiguous prefixes, so the
+# submit fails at sbatch before this probe's answer could matter. Missing a
+# real selection, by contrast, silently sizes slices from the wrong
+# cluster's limit — the bug this probe exists to avoid.
+_CLUSTER_OPTS = ("-M", "--clusters", "--cluster")
+# Slurm documents this as the equivalent of `--clusters`, with the command
+# line winning — so `sbatch-args` is consulted first and this only fills in
+# for a site that exports the selection instead of writing it (#509 review).
+_CLUSTER_ENV = "SBATCH_CLUSTERS"
+# The reserved value: query EVERY registered cluster and submit to whichever
+# can start first. Like a comma-separated list it names no single cluster.
+_CLUSTER_ALL = "all"
+
+
+def _is_multi_cluster(value: str) -> bool:
+    """Does this selection name more than one cluster?
+
+    Both spellings Slurm gives for "let the scheduler choose": an explicit
+    ``a,b`` list and the reserved ``all``. Which cluster runs the array is
+    then decided at submit, so no single ``MaxArraySize`` describes it —
+    and ``scontrol -M all show config`` answers with one config block per
+    cluster, where a first-match regex would silently pick a limit
+    belonging to whichever cluster sorted first.
+    """
+    return "," in value or value.strip().lower() == _CLUSTER_ALL
+
+
+def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
+    """The cluster ``sbatch-args`` submits to, or ``None`` for the local one.
+
+    All four spellings Slurm takes: ``-M name``, ``-Mname``,
+    ``--clusters=name`` and ``--clusters name``, plus the ``--cluster``
+    singular (see :data:`_CLUSTER_OPTS`). The LAST occurrence wins, which
+    is how sbatch itself resolves a repeated option — so a project
+    appending an override to a shared list gets the same answer here as at
+    submit.
+
+    Shorter abbreviations are NOT accepted, and that is not an omission:
+    ``--clusters`` has no unambiguous prefix, because ``--cluster-constraint``
+    shares every one of them. Reading ``--clus=x`` as a selection would be
+    reading it out of a command line sbatch refuses to run, and it is the
+    same match that would mistake a ``--cluster-constraint`` feature list
+    for a cluster name.
+
+    The value is returned verbatim, comma-separated multi-cluster lists
+    included: deciding what to do about those belongs to the caller, which
+    is the only place that can say what it costs.
+    """
+    selected = None
+    for index, arg in enumerate(sbatch_args):
+        if arg in _CLUSTER_OPTS:
+            following = sbatch_args[index + 1 :]
+            if following:
+                selected = following[0]
+        elif arg.startswith(("--clusters=", "--cluster=")):
+            selected = arg.split("=", 1)[1]
+        elif arg.startswith("-M") and len(arg) > 2:
+            selected = arg[2:]
+    return selected or None
+
 
 # `MaxRSS` is a high-water mark over samples, so a job shorter than the
 # sampling interval reports whatever the first sample caught — near zero.
@@ -218,6 +339,42 @@ def _expand_squeue_id(
     return [f"{base}_{index}" for index in expanded] or [job_id]
 
 
+# The two cfg-dispatch fields an array ceiling can come from. Which one
+# GOVERNED a slice decides which one a rejected slice must be lowered on:
+# telling a site to shrink `max-array-size` when its `max_array_tasks` is
+# the binding cap misstates the cluster's index ceiling, and is exactly
+# what the separate task-count field exists to avoid (#509 review).
+_FIELD_MAX_ARRAY_SIZE = "cfg-dispatch.max-array-size"
+_FIELD_MAX_ARRAY_TASKS = "cfg-dispatch.max-array-tasks"
+
+
+class _ArrayLimit(NamedTuple):
+    """The resolved slice size, and enough provenance to advise on it.
+
+    ``elements`` is ``None`` when no limit could be established at all;
+    ``source`` is where the governing value came from (``config`` or
+    ``scontrol``) and ``governed_by`` is WHICH ceiling it was.
+    """
+
+    elements: int | None
+    source: str | None = None
+    governed_by: str | None = None
+
+
+def _parsable_submission(stdout: str) -> tuple[str, str | None]:
+    """``(job id, cluster)`` from ``sbatch --parsable`` output.
+
+    It prints ``jobid`` for a local submission and ``jobid;cluster`` for one
+    the multi-cluster path accepted elsewhere. The cluster half used to be
+    split off and dropped, which is fine for identifying the job and wrong
+    for acting on it: ids are unique per cluster, so a later ``scancel``
+    issued without it hits the LOCAL cluster's job of that number —
+    cancelling nothing, or something else entirely (#509 review).
+    """
+    job_id, _, cluster = stdout.strip().partition(";")
+    return job_id.strip(), (cluster.strip() or None)
+
+
 def _task_sampling_interval(value: str) -> float | None:
     """Seconds between task samples in an ``--acctg-freq`` value.
 
@@ -262,6 +419,23 @@ class SlurmDispatchBackend(DispatchBackend):
         # an unbounded wait, i.e. today's behaviour plus a heartbeat.
         self.progress_interval = getattr(dispatch_cfg, "progress_interval", 60.0)
         self.max_wait = getattr(dispatch_cfg, "max_wait", None)
+        # The cluster's MaxArraySize, when the project pinned one (#509).
+        # Resolution itself is deferred to the first array submit — see
+        # _max_elements_per_array — so constructing a backend never shells
+        # out, and a run with no array never probes at all.
+        self.max_array_size = getattr(dispatch_cfg, "max_array_size", None)
+        # The second ceiling, for a site that cannot run `scontrol` at all:
+        # `SchedulerParameters=max_array_tasks` caps the tasks in ONE array
+        # independently of MaxArraySize, so it needs its own field — pinning
+        # a smaller max-array-size instead would state the wrong ceiling and
+        # still be wrong the moment the real MaxArraySize matters (#509).
+        self.max_array_tasks = getattr(dispatch_cfg, "max_array_tasks", None)
+        # ...cached per cluster selection: the answer is a property of the
+        # cluster probed, not of this process. The selection itself is
+        # resolved on demand (see `cluster`), not frozen here, because
+        # $SBATCH_CLUSTERS is part of it and is read when the probe runs.
+        # {selection: (elements per array or None, where it came from)}.
+        self._elements_per_array_by_cluster: dict[str | None, _ArrayLimit] = {}
         self._acct_interval_s = self._resolve_accounting_frequency()
 
     def _resolve_accounting_frequency(self) -> float | None:
@@ -390,7 +564,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 f"sbatch failed for build job (rc={proc.returncode}): "
                 f"{proc.stderr.strip()}"
             )
-        job_id = proc.stdout.strip().split(";")[0]
+        job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
             raise FatalRtlBuddyError("sbatch returned no job id for build job")
         log_event(
@@ -406,8 +580,22 @@ class SlurmDispatchBackend(DispatchBackend):
             # The cpus above are already scaled by this (#495); logging both
             # is what makes a 16-CPU build job's reservation legible.
             parallel=spec.parallel,
+            cluster=cluster,
         )
-        return JobHandle(job_id=job_id, spec=spec)
+        return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+
+    def _accepted_on(self, stdout: str) -> tuple[str, str | None]:
+        """``(job id, cluster)`` for a submission this backend just made.
+
+        Falls back to the cluster this backend SELECTED when sbatch names
+        none: a Slurm that omits the ``;cluster`` half still put the job
+        where ``-M`` pointed, and cancelling it locally would be the same
+        miss. The selection is ``None`` for a multi-cluster one (``a,b``,
+        ``all``) — precisely the case where sbatch's own answer is the only
+        way to know where the job landed, which is why it is preferred.
+        """
+        job_id, cluster = _parsable_submission(stdout)
+        return job_id, cluster or self.cluster
 
     @staticmethod
     def _begin_argv(delay_sec: float) -> list[str]:
@@ -454,8 +642,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 f"sbatch failed for {spec.display_name()} "
                 f"(rc={proc.returncode}): {proc.stderr.strip()}"
             )
-        # --parsable prints "jobid" or "jobid;cluster".
-        job_id = proc.stdout.strip().split(";")[0]
+        job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
             raise FatalRtlBuddyError(
                 f"sbatch returned no job id for {spec.display_name()}"
@@ -473,8 +660,274 @@ class SlurmDispatchBackend(DispatchBackend):
             time=spec.resources.time,
             cpus=spec.resources.cpus,
             mem=spec.resources.mem,
+            cluster=cluster,
         )
-        return JobHandle(job_id=job_id, spec=spec)
+        return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+
+    def _cluster_selection(self) -> str | None:
+        """Cluster selection as written, or ``None`` for the local cluster.
+
+        ``sbatch-args`` first, then ``$SBATCH_CLUSTERS``: Slurm documents
+        the variable as the equivalent of ``--clusters`` with the command
+        line taking precedence, and this backend passes ``sbatch-args``
+        verbatim to sbatch, so the same precedence has to hold here or the
+        probe would describe a different cluster than the submit. Read at
+        probe time rather than frozen at construction, since the
+        environment a head runs in is not this object's to snapshot. An
+        empty or whitespace-only variable selects nothing, exactly as it
+        does for sbatch.
+
+        Multi-cluster values (``a,b``, ``all``) come back verbatim — they
+        are still what the user wrote, and the diagnostics name them.
+        """
+        selected = _selected_cluster(self.sbatch_args)
+        if selected is not None:
+            return selected
+        return (os.environ.get(_CLUSTER_ENV) or "").strip() or None
+
+    @property
+    def cluster(self) -> str | None:
+        """The ONE cluster this backend addresses, or ``None``.
+
+        ``None`` covers three cases that a per-cluster scheduler query must
+        treat alike: no selection (the local cluster), a comma-separated
+        list, and the reserved ``all``. In the latter two Slurm picks the
+        cluster at submit, so there is no single name any probe could be
+        qualified with — a caller that appended ``-M <this>`` to a query
+        would be asking about a cluster nothing was necessarily submitted
+        to. Read :meth:`_cluster_selection` for what the user actually
+        wrote.
+        """
+        selection = self._cluster_selection()
+        if selection is None or _is_multi_cluster(selection):
+            return None
+        return selection
+
+    def _max_elements_per_array(self, *, cwd: str | None) -> int | None:
+        """Elements one array may hold, resolved once per backend instance.
+
+        Slurm's ``MaxArraySize`` bounds the task *index* exclusively — "the
+        maximum job array task index value will be one less than
+        MaxArraySize to allow for an index value of zero" (slurm.conf(5)) —
+        and this backend's manifests are 1-based, since ``%a`` is a manifest
+        line number. The largest array it may submit is therefore
+        ``1-(MaxArraySize-1)``: ``MaxArraySize - 1`` elements, not
+        ``MaxArraySize``.
+
+        ``cfg-dispatch.max-array-size`` wins where it is set (a submit host
+        with no working ``scontrol``, or a site that wants a finer split);
+        otherwise the value is read from ``scontrol show config``.
+        ``None`` means "unknown" — submit the group whole, exactly as
+        before #509 — because guessing a ceiling would split groups on
+        clusters that never needed it.
+        """
+        selection = self._cluster_selection()
+        if selection not in self._elements_per_array_by_cluster:
+            self._elements_per_array_by_cluster[selection] = self._probe_max_elements(
+                cwd=cwd
+            )
+        return self._elements_per_array_by_cluster[selection].elements
+
+    def _probe_max_elements(self, *, cwd: str | None) -> "_ArrayLimit":
+        """Effective elements-per-array, layering config over the probe.
+
+        TWO ceilings decide it and they are configured independently, so
+        they are layered independently: ``cfg-dispatch.max-array-size``
+        over the probed ``MaxArraySize``, ``cfg-dispatch.max-array-tasks``
+        over the probed ``max_array_tasks``, and the slice is the smaller
+        of what each layer yields. A pinned ``max-array-size`` therefore no
+        longer hides a cluster's task cap: it wins for its OWN ceiling and
+        the probe still supplies the other (#509 review). The probe is
+        skipped only when it can add nothing — both values pinned — or when
+        there is no single cluster to ask.
+
+        Returns an :class:`_ArrayLimit`: the slice size plus where the
+        GOVERNING value came from and which ceiling it was, so a rejected
+        slice can be sent to the knob that actually produced it.
+        """
+        selection = self._cluster_selection()
+        ambiguous = selection is not None and _is_multi_cluster(selection)
+        probed_size = probed_tasks = None
+        reason = None
+        if self.max_array_size is None or self.max_array_tasks is None:
+            if ambiguous:
+                # `--clusters=a,b` (and the reserved `all`) let Slurm pick
+                # whichever can run the job soonest, and the decision is
+                # made at submit. Probing one of them would pin a limit the
+                # others may not have — and `-M all` answers with several
+                # config blocks, so the regex would take whichever came
+                # first. The honest answer is "unknown", recovered by the
+                # pinned config values.
+                reason = (
+                    f"the cluster selection ({selection}) names several "
+                    "clusters; which one runs the array is decided at "
+                    "submit, so no single MaxArraySize applies"
+                )
+            else:
+                probed_size, probed_tasks, reason = self._scontrol_ceilings(
+                    cwd=cwd, selection=selection
+                )
+
+        size = self.max_array_size if self.max_array_size is not None else probed_size
+        tasks = (
+            self.max_array_tasks if self.max_array_tasks is not None else probed_tasks
+        )
+        # A cap below 1 is not a ceiling anything could submit under; drop
+        # it rather than let it produce empty arrays. (The config field is
+        # validated >= 1, so this can only be a probed value.)
+        if tasks is not None and tasks < 1:
+            tasks = None
+        if size is None and tasks is None:
+            self._log_unknown(reason or "no array ceiling available")
+            return _ArrayLimit(None)
+
+        # MaxArraySize bounds the INDEX exclusively; max_array_tasks counts
+        # the tasks, inclusively. The smaller of whichever are known is what
+        # an array may actually hold — and EITHER alone is a real ceiling: a
+        # site that can state only its task cap (no scontrol on the submit
+        # host, or a multi-cluster selection) had that cap ignored, so a
+        # group larger than the value it explicitly configured was submitted
+        # whole and refused (#509 review).
+        limit = source = governed_by = None
+        if size is not None:
+            limit = size - 1
+            source = "config" if self.max_array_size is not None else "scontrol"
+            governed_by = _FIELD_MAX_ARRAY_SIZE
+        if tasks is not None and (limit is None or tasks < limit):
+            limit = tasks
+            source = "config" if self.max_array_tasks is not None else "scontrol"
+            governed_by = _FIELD_MAX_ARRAY_TASKS
+        log_event(
+            logger,
+            logging.DEBUG,
+            "dispatch.max_array_size",
+            backend=self.name,
+            max_array_size=size,
+            # Emitted on every source path, so a reader never has to guess
+            # whether a task cap was consulted. Absent only when no cap is
+            # known — neither configured nor probed — since `log_event`
+            # drops `None` fields for every event in this package.
+            max_array_tasks=tasks,
+            max_elements=limit,
+            source=source,
+            # Which of the two ceilings produced `max_elements` — the field
+            # a rejected slice has to be lowered on.
+            governed_by=governed_by,
+            cluster=selection,
+        )
+        return _ArrayLimit(limit, source, governed_by)
+
+    def _scontrol_ceilings(
+        self, *, cwd: str | None, selection: str | None
+    ) -> tuple[int | None, int | None, str | None]:
+        """``(MaxArraySize, max_array_tasks, why not)`` from one scontrol call.
+
+        Best effort by construction: every failure mode returns ``None``
+        ceilings and a reason string rather than raising, because a limit
+        that cannot be read must cost the run nothing more than the
+        chunking it disables.
+        """
+        cluster_argv = [] if selection is None else ["-M", selection]
+        try:
+            proc = subprocess.run(
+                ["scontrol", *cluster_argv, "show", "config"],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=_SCONTROL_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return None, None, str(e)[:200]
+        if proc.returncode != 0:
+            return (
+                None,
+                None,
+                (
+                    proc.stderr.strip()
+                    or f"`scontrol show config` failed (rc={proc.returncode})"
+                )[:200],
+            )
+        match = _MAX_ARRAY_SIZE_RE.search(proc.stdout)
+        value = int(match.group(1)) if match is not None else 0
+        tasks = _max_array_tasks(proc.stdout)
+        if value < 2:
+            # A cluster reporting MaxArraySize < 2 has arrays disabled; no
+            # slice size would submit, so treat that as unknown and let
+            # sbatch give the authoritative refusal.
+            return (
+                None,
+                tasks,
+                (
+                    proc.stderr.strip()
+                    or "no usable MaxArraySize in `scontrol show config` (rc=0)"
+                )[:200],
+            )
+        return value, tasks, None
+
+    def _log_unknown(self, reason: str) -> None:
+        log_event(
+            logger,
+            logging.INFO,
+            "dispatch.max_array_size_unknown",
+            backend=self.name,
+            error=reason,
+            # As written, not the resolved single cluster: a multi-cluster
+            # selection resolves to None and naming it is the diagnosis.
+            cluster=self._cluster_selection(),
+            # An oversized group is what this probe exists to split, so say
+            # how to get chunking back when the cluster cannot be asked.
+            hint=(
+                "set cfg-dispatch.max-array-size (and max-array-tasks, where "
+                "the cluster caps tasks per array) to split oversized groups"
+            ),
+        )
+
+    def _array_limit_hint(self, stderr: str) -> str:
+        """What to do about a rejected array, for a failed array submit.
+
+        ``Batch job submission failed: Invalid job array specification`` is
+        what sbatch answers an array the cluster will not take, and the
+        recovery is always the same knob — but the reason differs, so the
+        sentence does. The probe's own diagnostic is INFO, which a
+        default-verbosity console never shows, while THIS message is the one
+        that fails the run in front of the user (#509).
+
+        Gated on the wording, because a hint on every failed submit is noise
+        that buries the real recovery action: an invalid account, partition
+        or QoS is rejected in its own words and has nothing to do with array
+        size. Matched case-insensitively on "job array" rather than on the
+        full sentence, so a Slurm that words the rest of it differently
+        still gets the hint.
+
+        With the limit KNOWN the array was already within everything the
+        probe could see — ``MaxArraySize`` and ``max_array_tasks`` both —
+        so the cluster is enforcing something it did not report (a site
+        patch, a newer limit, an association ceiling). Saying "the limit
+        could not be read" there would be false, and saying nothing would
+        leave the one actionable knob unnamed; the variant names the
+        effective limit, where it came from, and the override (#509
+        review).
+        """
+        if "job array" not in stderr.lower():
+            return ""
+        resolved = self._elements_per_array_by_cluster.get(
+            self._cluster_selection(), _ArrayLimit(None)
+        )
+        if resolved.elements is None:
+            return (
+                "; the cluster's MaxArraySize could not be read, so this group "
+                "was submitted as one array — set cfg-dispatch.max-array-size to "
+                "let rb split a group larger than that limit"
+            )
+        # Named for the ceiling that actually produced the slice: sending a
+        # site to `max-array-size` when its task cap was binding would have
+        # it state a MaxArraySize the cluster does not have (#509 review).
+        return (
+            f"; rb sliced this group at {resolved.elements} element(s) per "
+            f"array, the {resolved.governed_by} limit it read from "
+            f"{resolved.source}, and the cluster refused it anyway — lower "
+            f"{resolved.governed_by} to pin a smaller one"
+        )
 
     def submit_array(
         self,
@@ -484,10 +937,61 @@ class SlurmDispatchBackend(DispatchBackend):
         max_parallel: int | None = None,
         dependency: str | None = None,
     ) -> list[JobHandle]:
+        """Submit one resource group, split across arrays if it must be (#509).
+
+        A group larger than the cluster's ``MaxArraySize`` is not a legal
+        ``--array=1-N``: sbatch refuses it outright, which used to fail the
+        whole run at the first oversized group. It is submitted as several
+        arrays instead, each with its own manifest, and the handles are
+        returned concatenated in spec order so collection, cancellation and
+        the right-sizing table still see one logical group.
+        """
         if len(specs) <= 1:
             return [self.submit(spec, dependency=dependency) for spec in specs]
 
         array_dir = Path(array_dir)
+        limit = self._max_elements_per_array(cwd=specs[0].suite_dir)
+        if limit is None or len(specs) <= limit:
+            slices = [specs]
+        else:
+            slices = [specs[i : i + limit] for i in range(0, len(specs), limit)]
+
+        handles: list[JobHandle] = []
+        for index, slice_specs in enumerate(slices, start=1):
+            # One subdirectory per slice when chunked, so `%a` keeps mapping
+            # 1:1 onto a manifest line and `slurm-%a.log` cannot collide
+            # between slices. A group that fits in one array keeps exactly
+            # today's layout — no `slice-1/` — so unchunked artefact paths
+            # do not move.
+            slice_dir = array_dir if len(slices) == 1 else array_dir / f"slice-{index}"
+            try:
+                handles += self._submit_one_array(
+                    slice_specs,
+                    array_dir=slice_dir,
+                    max_parallel=max_parallel,
+                    dependency=dependency,
+                    slice_index=index,
+                    slice_count=len(slices),
+                )
+            except BaseException:
+                # The caller only learns of the handles this call RETURNS, so
+                # its own cancel-on-failure cannot cover slices submitted
+                # here. Cancelling them is this method's job.
+                if handles:
+                    self.cancel_all(handles)
+                raise
+        return handles
+
+    def _submit_one_array(
+        self,
+        specs: list[TestJobSpec],
+        *,
+        array_dir: Path,
+        max_parallel: int | None,
+        dependency: str | None,
+        slice_index: int,
+        slice_count: int,
+    ) -> list[JobHandle]:
         array_dir.mkdir(parents=True, exist_ok=True)
         manifest = array_dir / "manifest.txt"
         manifest.write_text(
@@ -502,14 +1006,21 @@ class SlurmDispatchBackend(DispatchBackend):
             spec.log_path = array_dir / f"slurm-{i}.log"
 
         array_range = f"1-{len(specs)}"
+        # The throttle caps each ARRAY, so a chunked group's peak
+        # concurrency is slices x max_parallel — documented, not hidden.
         if max_parallel is not None and max_parallel < len(specs):
             array_range += f"%{max_parallel}"
+        # `/k` names the slice, so a split group is legible in squeue
+        # instead of looking like several unrelated arrays.
+        job_name = f"rb:{specs[0].test_name}+{len(specs) - 1}"
+        if slice_count > 1:
+            job_name += f"/{slice_index}"
         resources = specs[0].resources
         cmd = [
             "sbatch",
             "--parsable",
             f"--array={array_range}",
-            f"--job-name=rb:{specs[0].test_name}+{len(specs) - 1}",
+            f"--job-name={job_name}",
             f"--chdir={specs[0].suite_dir}",
             f"--time={resources.time}",
             f"--cpus-per-task={resources.cpus}",
@@ -525,14 +1036,18 @@ class SlurmDispatchBackend(DispatchBackend):
         proc = subprocess.run(
             cmd, capture_output=True, text=True, cwd=specs[0].suite_dir
         )
+        where = f" (slice {slice_index}/{slice_count})" if slice_count > 1 else ""
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
-                f"sbatch array submit failed ({len(specs)} jobs, "
+                f"sbatch array submit failed{where} ({len(specs)} jobs, "
                 f"rc={proc.returncode}): {proc.stderr.strip()}"
+                f"{self._array_limit_hint(proc.stderr)}"
             )
-        base_id = proc.stdout.strip().split(";")[0]
+        base_id, cluster = self._accepted_on(proc.stdout)
         if not base_id:
-            raise FatalRtlBuddyError("sbatch returned no job id for array submit")
+            raise FatalRtlBuddyError(
+                f"sbatch returned no job id for array submit{where}"
+            )
         log_event(
             logger,
             logging.INFO,
@@ -544,9 +1059,14 @@ class SlurmDispatchBackend(DispatchBackend):
             time=resources.time,
             cpus=resources.cpus,
             mem=resources.mem,
+            # Additive: 1/1 for a group that fits in one array, so a reader
+            # (and the log) can always tell a split from a whole group.
+            slice=slice_index,
+            slices=slice_count,
+            cluster=cluster,
         )
         return [
-            JobHandle(job_id=f"{base_id}_{i}", spec=spec)
+            JobHandle(job_id=f"{base_id}_{i}", spec=spec, cluster=cluster)
             for i, spec in enumerate(specs, start=1)
         ]
 
@@ -566,7 +1086,49 @@ class SlurmDispatchBackend(DispatchBackend):
             seen.setdefault(h.job_id.split("_")[0], None)
         return list(seen)
 
-    def _reap_never_satisfied(self, lines, *, cwd) -> list[dict]:
+    @staticmethod
+    def _base_ids_by_cluster(
+        handles: Sequence[JobHandle | None],
+    ) -> dict[str | None, list[str]]:
+        """Unique base ids grouped by the cluster that accepted them.
+
+        A run can span clusters even within one resource group: a
+        ``--clusters=a,b`` submission lets Slurm place each array wherever
+        it can start first, so the slices of ONE group may live on
+        different clusters. Cancelling them therefore cannot be one command
+        with one ``-M``; it is one command per cluster.
+        """
+        grouped: dict[str | None, dict[str, None]] = {}
+        for h in handles:
+            if h is None:
+                continue
+            base = h.job_id.split("_")[0]
+            grouped.setdefault(getattr(h, "cluster", None), {}).setdefault(base, None)
+        return {cluster: list(ids) for cluster, ids in grouped.items()}
+
+    def _scancel(
+        self, ids_by_cluster: dict[str | None, list[str]], *, cwd
+    ) -> list[tuple[str | None, list[str], subprocess.CompletedProcess]]:
+        """One ``scancel`` per cluster; the results, for the caller to report.
+
+        ``scancel`` acts on the local cluster unless ``-M`` says otherwise,
+        the same rule sbatch follows, so ids accepted elsewhere have to be
+        cancelled with the matching selection or the command reaches a
+        different cluster's job numbering (#509 review).
+        """
+        results = []
+        for cluster, ids in ids_by_cluster.items():
+            argv = ["scancel", *(["-M", cluster] if cluster else []), *ids]
+            results.append(
+                (
+                    cluster,
+                    ids,
+                    subprocess.run(argv, capture_output=True, text=True, cwd=cwd),
+                )
+            )
+        return results
+
+    def _reap_never_satisfied(self, lines, *, cwd, cluster=None) -> list[dict]:
         """Split queued jobs into those still coming and those already dead.
 
         A job whose ``afterok`` build failed is reported PENDING with reason
@@ -604,13 +1166,16 @@ class SlurmDispatchBackend(DispatchBackend):
                 "dispatch.dependency_never_satisfied",
                 backend=self.name,
                 jobs=doomed,
+                cluster=cluster,
             )
             # Cancel by base id: one scancel clears a whole pending array.
+            # These ids came from a squeue asked about ONE cluster, so that
+            # is the cluster to cancel them on — an unqualified scancel
+            # would aim at the local one (#509 review).
             base_ids = list(dict.fromkeys(j.split("_")[0] for j in doomed))
-            proc = subprocess.run(
-                ["scancel", *base_ids], capture_output=True, text=True, cwd=cwd
-            )
-            if proc.returncode != 0:
+            for cluster, ids, proc in self._scancel({cluster: base_ids}, cwd=cwd):
+                if proc.returncode == 0:
+                    continue
                 # These jobs are already out of `remaining`, so the run will
                 # finish and leave them queued. Say so — a transient
                 # slurmctld failure here is only recoverable by hand.
@@ -619,14 +1184,15 @@ class SlurmDispatchBackend(DispatchBackend):
                     logging.WARNING,
                     "dispatch.cancel_failed",
                     backend=self.name,
-                    jobs=base_ids,
+                    jobs=ids,
+                    cluster=cluster,
                     returncode=proc.returncode,
                     error=proc.stderr.strip()[:200],
                 )
         return remaining
 
-    def _outstanding(self, records, handle_ids):
-        """Queue records → ({outstanding handle id: state}, longest running).
+    def _outstanding(self, records, handles, *, cluster=None):
+        """Queue records → ({outstanding handle key: state}, longest running).
 
         The queue speaks in lines and the run is counted in jobs, so every
         record is expanded to the handle ids it covers (an array pending as
@@ -634,19 +1200,31 @@ class SlurmDispatchBackend(DispatchBackend):
         no known handle still counts as itself: dropping it would let the
         wait end while that job is queued, and being conservative here
         costs at most an over-count for one poll.
+
+        Keyed by :func:`telemetry_key`, and matched only against the
+        handles of the cluster this poll asked: a job id repeats across
+        clusters, so an unqualified key would let one cluster's job stand
+        in for another's and take the twin out of the outstanding set with
+        it (#509 review). ``records`` therefore has to come from a squeue
+        that named ``cluster``.
         """
-        known = set(handle_ids)
+        keys = {
+            h.job_id: telemetry_key(h)
+            for h in handles
+            if h is not None and getattr(h, "cluster", None) == cluster
+        }
+        handle_ids = list(keys)
         outstanding: dict[str, str] = {}
         longest = None
         for record in records:
             running = record["state"] == _SQUEUE_RUNNING_STATE
             expanded = [
-                job_id
+                keys[job_id]
                 for job_id in _expand_squeue_id(record["id"], handle_ids)
-                if job_id in known
-            ] or [record["id"]]
-            for job_id in expanded:
-                outstanding[job_id] = "running" if running else "pending"
+                if job_id in keys
+            ] or [f"{cluster}:{record['id']}" if cluster else record["id"]]
+            for key in expanded:
+                outstanding[key] = "running" if running else "pending"
             if running:
                 # %M is the same [DD-]HH:MM:SS shape sacct's TotalCPU uses.
                 elapsed = _parse_cpu_time_to_seconds(record["time"])
@@ -657,9 +1235,13 @@ class SlurmDispatchBackend(DispatchBackend):
     def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
         if not handles:
             return
-        ids = ",".join(self._base_ids(handles))
         cwd = self._cwd_of(handles)
-        handle_ids = [h.job_id for h in handles if h is not None]
+        # One poll per cluster the fleet was accepted on. `squeue` answers
+        # for the LOCAL cluster unless `-M` says otherwise, so a single
+        # unqualified poll reports a remote slice as absent — which reads
+        # as drained, and collection would run while it is still queued
+        # (#509 review). Grouped the way cancellation and telemetry are.
+        by_cluster = self._base_ids_by_cluster(handles)
         progress = DispatchProgress(
             handles,
             backend=self.name,
@@ -675,27 +1257,40 @@ class SlurmDispatchBackend(DispatchBackend):
             clock=time.monotonic,
         )
         while True:
-            proc = subprocess.run(
-                [
-                    "squeue",
-                    "--noheader",
-                    f"--format={_SQUEUE_FORMAT}",
-                    f"--states={_ACTIVE_STATES}",
-                    "--jobs",
-                    ids,
-                ],
-                capture_output=True,
-                text=True,
-                cwd=cwd,
-            )
-            # squeue errors ("Invalid job id specified") once every job
-            # has aged out of the queue — that is completion, not failure.
-            records = (
-                self._reap_never_satisfied(proc.stdout.splitlines(), cwd=cwd)
-                if proc.returncode == 0
-                else []
-            )
-            if not records:
+            states: dict[str, str] = {}
+            longest = None
+            for cluster, base_ids in by_cluster.items():
+                proc = subprocess.run(
+                    [
+                        "squeue",
+                        "--noheader",
+                        f"--format={_SQUEUE_FORMAT}",
+                        f"--states={_ACTIVE_STATES}",
+                        *(["-M", cluster] if cluster else []),
+                        "--jobs",
+                        ",".join(base_ids),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=cwd,
+                )
+                # squeue errors ("Invalid job id specified") once every job
+                # has aged out of the queue — that is completion, not
+                # failure, and it is per cluster: the others are still asked.
+                if proc.returncode != 0:
+                    continue
+                records = self._reap_never_satisfied(
+                    proc.stdout.splitlines(), cwd=cwd, cluster=cluster
+                )
+                cluster_states, cluster_longest = self._outstanding(
+                    records, handles, cluster=cluster
+                )
+                states.update(cluster_states)
+                if cluster_longest is not None and (
+                    longest is None or cluster_longest[1] > longest[1]
+                ):
+                    longest = cluster_longest
+            if not states:
                 progress.finish()
                 log_event(
                     logger,
@@ -705,33 +1300,49 @@ class SlurmDispatchBackend(DispatchBackend):
                     jobs=len(handles),
                 )
                 return
-            states, longest = self._outstanding(records, handle_ids)
             progress.observe(states.keys(), states=states, longest=longest)
             time.sleep(self.poll_interval)
 
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         if not handles:
             return
-        # Base ids: cancelling an array id cancels every element.
-        subprocess.run(
-            ["scancel", *self._base_ids(handles)],
-            capture_output=True,
-            text=True,
-            cwd=self._cwd_of(handles),
-        )
+        # Base ids: cancelling an array id cancels every element. One
+        # command per cluster, since an id only means anything on the
+        # cluster that issued it.
+        by_cluster = self._base_ids_by_cluster(handles)
+        self._scancel(by_cluster, cwd=self._cwd_of(handles))
         log_event(
             logger,
             logging.WARNING,
             "dispatch.cancelled",
             backend=self.name,
             jobs=len(handles),
+            # Additive, and absent on a single-cluster site: which clusters
+            # the cancellation had to reach.
+            clusters=sorted(c for c in by_cluster if c) or None,
             # An interrupted or failed run must leave the ids on the console:
             # they are the only route to `squeue`/`sacct` afterwards (#435).
             job_ids=group_job_ids(h.job_id for h in handles if h is not None),
         )
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
-        """Reserved-vs-used per job from ``sacct``, keyed by handle job id.
+        """Reserved-vs-used per job from ``sacct``, keyed by :func:`telemetry_key`.
+
+        That key is the bare job id for a local or single-cluster run — the
+        shape every consumer has always seen — and ``<cluster>:<job id>``
+        for a job accepted elsewhere, because ids repeat across clusters.
+
+        ONE sacct per cluster, not one query naming them all: provenance is
+        then structural. ``_SACCT_FORMAT`` has no cluster column, so rows
+        returned by a combined ``-M a,b`` query cannot be told apart, and
+        two jobs sharing a number would have their allocation rows
+        overwrite each other and their step metrics summed together (#509
+        review). Adding the column would work too, but it makes correctness
+        depend on parsing a field whose rendering varies by Slurm version
+        and widens a pinned machine contract; grouping by the cluster the
+        submission recorded reuses the grouping cancellation already uses
+        and cannot be misparsed. A single-cluster run still issues exactly
+        one query, argv unchanged.
 
         Queries WITHOUT ``-X``: ``MaxRSS``/``TotalCPU`` only populate on
         step rows (``.batch`` etc.), never the allocation row — usage is
@@ -749,6 +1360,31 @@ class SlurmDispatchBackend(DispatchBackend):
         """
         if not handles:
             return {}
+        telemetry: dict[str, dict] = {}
+        for cluster, base_ids in self._base_ids_by_cluster(handles).items():
+            # A cluster whose accounting is unreachable must not discard
+            # what the others answered, so each group is folded in on its
+            # own; a single-cluster run still ends with {} on failure.
+            telemetry.update(
+                self._telemetry_on(handles, cluster=cluster, base_ids=base_ids)
+            )
+        return telemetry
+
+    def _telemetry_on(
+        self,
+        handles: Sequence[JobHandle | None],
+        *,
+        cluster: str | None,
+        base_ids: list[str],
+    ) -> dict[str, dict]:
+        """One cluster's ``sacct`` rows, keyed by :func:`telemetry_key`."""
+        # Only THIS cluster's handles are matchable, which is what keeps a
+        # shared job number from crossing over.
+        wanted = {
+            h.job_id: telemetry_key(h)
+            for h in handles
+            if h is not None and getattr(h, "cluster", None) == cluster
+        }
         # Telemetry is strictly additive — no failure mode of it may fail a
         # run whose jobs have all completed. sacct may be absent (client
         # packaging varies; sbatch present does not guarantee sacct) or wedged
@@ -760,8 +1396,12 @@ class SlurmDispatchBackend(DispatchBackend):
                     "--parsable2",
                     "--noheader",
                     f"--format={_SACCT_FORMAT}",
+                    # Accounting is per cluster, and a job id repeats across
+                    # clusters — unqualified, this finds nothing for a remote
+                    # fleet, or the wrong local job of that number (#509).
+                    *(["-M", cluster] if cluster else []),
                     "--jobs",
-                    ",".join(self._base_ids(handles)),
+                    ",".join(base_ids),
                 ],
                 capture_output=True,
                 text=True,
@@ -774,6 +1414,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 logging.INFO,
                 "dispatch.telemetry_unavailable",
                 backend=self.name,
+                cluster=cluster,
                 error=str(e)[:200],
             )
             return {}
@@ -783,11 +1424,11 @@ class SlurmDispatchBackend(DispatchBackend):
                 logging.INFO,
                 "dispatch.telemetry_unavailable",
                 backend=self.name,
+                cluster=cluster,
                 error=proc.stderr.strip()[:200],
             )
             return {}
 
-        wanted = {h.job_id for h in handles}
         telemetry: dict[str, dict] = {}
         for line in proc.stdout.splitlines():
             fields = line.split("|")
@@ -805,9 +1446,10 @@ class SlurmDispatchBackend(DispatchBackend):
                 max_rss,
             ) = fields
             base = job_id.split(".")[0]
-            if base not in wanted:
+            key = wanted.get(base)
+            if key is None:
                 continue
-            entry = telemetry.setdefault(base, {})
+            entry = telemetry.setdefault(key, {})
             if "." not in job_id:
                 # Allocation row: state + reservation-side numbers.
                 entry["state"] = state

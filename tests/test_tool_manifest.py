@@ -558,6 +558,70 @@ def test_slurm_gates_test_as_well_as_regression():
     assert "rb test --dispatch slurm" in slurm.notes
 
 
+def test_slurm_explains_scontrol_as_an_optional_probe():
+    """`rb tool-check --explain slurm` must name scontrol and what it buys.
+
+    The backend shells out to `scontrol show config` for the cluster's
+    MaxArraySize (#509). Missing scontrol is not a gate — chunking simply
+    stays off — but a site that hits `Invalid job array specification`
+    needs the manifest to say so and to name the config fallback, since
+    --explain is what the bundled skill tells agents to read.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    slurm = by_name["slurm"]
+
+    # NOT in `binaries`: that tuple is any-of and feeds the version probe.
+    assert "scontrol" not in slurm.binaries
+    assert "scontrol" in slurm.optional_binaries
+
+    text = tm.explain(slurm)
+    assert "scontrol" in text
+    assert "MaxArraySize" in text
+    assert "cfg-dispatch.max-array-size" in text
+    # Still optional overall: sbatch is the version probe and the gate.
+    assert slurm.version_cmd[0] == "sbatch"
+    assert slurm.optional
+
+
+def test_an_optional_binary_alone_does_not_make_a_tool_present(monkeypatch, tmp_path):
+    """A host with `scontrol` but no `sbatch` cannot dispatch (#509 review).
+
+    Detection is any-of over `binaries` and `probe_version` substitutes the
+    found path into `version_cmd`, so listing the auxiliary binary there
+    would report `ok` — and run `scontrol --version` to say so — on a host
+    that cannot submit a single job.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _make_exe(bindir / "scontrol")
+    monkeypatch.setenv("PATH", str(bindir))
+
+    by_name = {s.name: s for s in tm.get_manifest()}
+    status = tm.check_tool(by_name["slurm"])
+    assert status.status == "missing"
+    assert status.path is None
+
+    # ...while the real client on the same PATH is found as usual.
+    _make_exe(bindir / "sbatch")
+    assert tm.check_tool(by_name["slurm"], probe_versions=False).status == "ok"
+
+
+def test_optional_binaries_are_listed_with_their_role_not_as_status():
+    """--explain must not let an optional binary read as the tool's status."""
+    spec = tm.ToolSpec(
+        name="stub",
+        binaries=("stub-tool",),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(tm.PathDetector(),),
+        optional_binaries={"stub-extra": "buys the extra thing"},
+    )
+    text = tm.explain(spec)
+    assert "stub-extra: buys the extra thing" in text
+    assert "not required" in text
+
+
 def test_rtl_buddy_view_declares_floor_and_version_probe():
     """rtl-buddy-view carries a 0.3.0 FLOOR (no upper cap) and a probe.
 
@@ -1018,6 +1082,31 @@ def test_cli_tool_check_machine_explain_alias_keeps_canonical_name(tmp_path: Pat
     payload = json.loads(result.stdout)["payload"]
     assert list(payload["tools"]) == ["rtl-buddy-view"]
     assert "rtl-buddy-sch" not in payload["tools"]
+
+
+def test_cli_machine_tool_check_keeps_optional_binaries_out_of_the_payload(
+    tmp_path: Path,
+):
+    """Optional binaries are documentation, not a state to gate on (#509).
+
+    They appear in the human explanation — which `--machine` mirrors in
+    `instructions` — and nowhere in the structured `tools` entry, so no
+    consumer can build a readiness check on one.
+    """
+    result = _run_rb(
+        "--machine",
+        "tool-check",
+        "--explain",
+        "slurm",
+        "--no-probe-versions",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)["payload"]
+    entry = payload["tools"]["slurm"]
+    assert set(entry) <= {"status", "version", "path", "optional", "minimum_version"}
+    assert "scontrol" not in json.dumps(payload["tools"])
+    assert "scontrol" in payload["instructions"]
 
 
 def test_cli_tool_check_explain_unknown_hint_surfaces_aliases(tmp_path: Path):

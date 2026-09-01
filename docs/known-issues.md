@@ -82,11 +82,17 @@ Shareable builders compile once per compile key. Builders that cannot share comp
 
 ## local-parallel enforces only the job count
 
-The `local-parallel` backend ignores CPU, memory, time, array-throttle, and right-sizing settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
+The `local-parallel` backend ignores CPU, memory, time, array-throttle, array-size, and right-sizing settings. `max-jobs-per-array` and `max-array-size` describe Slurm job arrays, of which this backend submits none, so neither throttles nor splits anything here. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
 
 `cfg-dispatch.compile.parallel` is the exception: it is not a reservation but concurrency the build job itself honours, and that job occupies one pool slot while fanning out inside it. The real ceiling on the host is therefore `jobs` multiplied by `compile.parallel`, and nothing clamps it. Size the two together.
 
 Normal interruption terminates the worker process groups. `SIGKILL` of the head process cannot run cleanup and can orphan `rb _test-job` children; inspect and stop them after a hard CI timeout or `kill -9`.
+
+## Oversized resource groups are split into several arrays
+
+A resource group larger than the cluster's Slurm `MaxArraySize` cannot be one job array. rtl_buddy submits it as several, each holding at most `MaxArraySize - 1` elements — or fewer where the cluster sets `SchedulerParameters=max_array_tasks`, an inclusive cap on the tasks in one array that `scontrol` reports separately and that the slice size takes the minimum with. Two consequences are worth planning for: `max-jobs-per-array` throttles each slice, so the group's peak concurrency is that throttle multiplied by the number of slices; and a slice's manifest and element logs live under `slice-N/` in the run's dispatch directory instead of directly in it. A group that fits in a single array keeps the flat layout.
+
+The limit is read from `scontrol show config` once per cluster per run, before the run's first array submit, with the `-M` of any cross-cluster `sbatch-args` so the answer describes the cluster the arrays are submitted to. `SBATCH_CLUSTERS` selects a cluster the same way, with `sbatch-args` winning. A selection naming several clusters — `--clusters=a,b`, or the reserved `all` — leaves the limit unknown, since Slurm chooses between them at submit; pin `cfg-dispatch.max-array-size` for those. Where the submit host cannot run `scontrol`, nothing is split and sbatch refuses an oversized group with `Invalid job array specification`; set `cfg-dispatch.max-array-size` to the cluster's value, and `cfg-dispatch.max-array-tasks` too where the cluster caps tasks-per-array below it — each ceiling is configured, and layered over the probe, on its own, and either one alone is enough to split a group. `dispatch.max_array_size_unknown` in the run log names that case, and the submit failure itself repeats the hint. A resolved limit is recorded at debug level as `dispatch.max_array_size`, whose `source` field reads `config` or `scontrol`.
 
 ## Quote dispatch time values
 

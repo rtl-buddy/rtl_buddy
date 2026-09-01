@@ -27,6 +27,11 @@ execution backend for regression test runs:
       poll-interval: 10        # seconds between queue polls while collecting
       progress-interval: 60    # seconds between console progress lines (0 = quiet)
       max-wait: 7200           # seconds the head waits before failing loudly
+      max-jobs-per-array: 200  # %N throttle on EACH submitted Slurm array
+      max-array-size: 1001     # the cluster's Slurm MaxArraySize; omit it to
+                               # read the value from `scontrol show config`
+      max-array-tasks: 1000    # its SchedulerParameters=max_array_tasks, if the
+                               # cluster caps tasks-per-array below that
       jobs: 4                  # local-parallel only: concurrent subprocesses
       retry:                   # optional; entirely off unless attempts > 0
         attempts: 2            # EXTRA attempts after the first
@@ -315,6 +320,27 @@ class DispatchConfigFile:
     # (sbatch --array=1-N%cap). Peak concurrency across a run is roughly
     # this times the number of arrays (resource groups x suites).
     max_jobs_per_array: int = field(rename="max-jobs-per-array", default=200)
+    # The cluster's Slurm ``MaxArraySize`` (slurm.conf), which bounds how
+    # many elements ONE array may hold. Slurm documents it as an exclusive
+    # bound on the task index — "the maximum job array task index value
+    # will be one less than MaxArraySize" — and rtl_buddy's manifests are
+    # 1-based, so 1001 permits ``--array=1-1000``. A resource group larger
+    # than that is split across several arrays rather than being refused by
+    # sbatch (#509). ``None`` (the default) reads the value from ``scontrol
+    # show config``; set it where the submit host cannot run scontrol, or to
+    # split groups more finely than the cluster requires.
+    max_array_size: int | None = field(rename="max-array-size", default=None)
+    # The cluster's ``SchedulerParameters=max_array_tasks``, the SECOND
+    # ceiling on one array: slurm.conf calls it "the maximum number of
+    # tasks that be included in a job array", an inclusive COUNT rather
+    # than ``MaxArraySize``'s exclusive index bound, and a cluster may set
+    # it well below. It has its own field because it is its own limit —
+    # pinning a smaller ``max-array-size`` to stand in for it would state
+    # the wrong MaxArraySize and mislead every message derived from it.
+    # ``None`` (the default) reads it from ``scontrol show config``
+    # alongside MaxArraySize; the effective slice is the smaller of the two
+    # ceilings, whichever layer each came from (#509).
+    max_array_tasks: int | None = field(rename="max-array-tasks", default=None)
     # Concurrent subprocesses for the `local-parallel` backend — one global
     # pool, not a per-array throttle (there are no arrays off a scheduler).
     # `None` means the backend's own default, min(4, cpu_count); `--jobs`
@@ -374,6 +400,20 @@ class DispatchConfigFile:
                 f"cfg-dispatch max-jobs-per-array must be >= 1 "
                 f"(got {self.max_jobs_per_array})."
             )
+        if self.max_array_size is not None and self.max_array_size < 2:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch max-array-size must be >= 2 when set (got "
+                f"{self.max_array_size}); it is Slurm's MaxArraySize, whose "
+                "largest task index is one BELOW it, so 2 is the smallest "
+                "value that still permits a one-element array."
+            )
+        if self.max_array_tasks is not None and self.max_array_tasks < 1:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch max-array-tasks must be >= 1 when set (got "
+                f"{self.max_array_tasks}); it is Slurm's max_array_tasks, a "
+                "COUNT of the tasks one array may hold, so 1 is the smallest "
+                "value that still permits an array."
+            )
         if self.jobs is not None and self.jobs < 1:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch jobs must be >= 1 (got {self.jobs}); a pool of "
@@ -394,6 +434,8 @@ class DispatchConfigFile:
             progress_interval=self.progress_interval,
             max_wait=self.max_wait,
             max_jobs_per_array=self.max_jobs_per_array,
+            max_array_size=self.max_array_size,
+            max_array_tasks=self.max_array_tasks,
             jobs=self.jobs,
             rightsize=self.rightsize,
             retry=self.retry.validated() if self.retry is not None else None,
@@ -412,6 +454,8 @@ class DispatchConfig:
     progress_interval: float = 60.0
     max_wait: float | None = None
     max_jobs_per_array: int = 200
+    max_array_size: int | None = None
+    max_array_tasks: int | None = None
     jobs: int | None = None
     rightsize: RightsizeConfigFile | None = None
     retry: RetryConfigFile | None = None

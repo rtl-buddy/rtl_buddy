@@ -865,6 +865,23 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"Submitted job {fields.get('job_id')} for {target}" + (
                 f", gated on build {gate}" if gate else ""
             )
+        case "dispatch.array_submitted":
+            slices = fields.get("slices") or 1
+            # A group too big for one array is split (#509); say which piece
+            # this is, so the log shows the split rather than several
+            # unexplained arrays for one resource group.
+            piece = f" (slice {fields.get('slice')}/{slices})" if slices > 1 else ""
+            return (
+                f"Submitted array job {fields.get('job_id')} "
+                f"[{fields.get('array')}] for {fields.get('jobs')} test(s){piece}"
+            )
+        case "dispatch.max_array_size_unknown":
+            return (
+                "dispatch: could not read the cluster's MaxArraySize "
+                f"({fields.get('error')}), so a resource group is submitted as "
+                "one array — sbatch refuses a group larger than that limit; "
+                "set cfg-dispatch.max-array-size to have such groups split"
+            )
         case "dispatch.drained":
             return (
                 f"All {fields.get('jobs')} dispatched job(s) finished on the "

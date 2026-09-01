@@ -260,7 +260,18 @@ class ToolSpec:
         spec's name or alias; :func:`get_manifest` asserts that.
       binaries: Binary names to look for. The first one found wins. For
         Python packages this is typically a single human-readable name
-        (e.g. ``("pyslang",)``) used only for display.
+        (e.g. ``("pyslang",)``) used only for display. This is the tool's
+        REQUIRED core: detection and the version probe both read it, so a
+        binary listed here must be one whose presence means the tool is
+        usable.
+      optional_binaries: ``{binary: what it buys}`` for auxiliary
+        executables that ENRICH the tool without being required — Slurm's
+        ``scontrol``, which supplies ``MaxArraySize``. Deliberately NOT
+        part of ``binaries``: detection is any-of and the version probe
+        substitutes the found path into ``version_cmd``, so a host with
+        only the auxiliary binary would otherwise be reported ``ok`` for a
+        tool it cannot actually use (#509 review). ``--explain`` lists
+        these with their role; nothing else reads them.
       version_cmd: Argv prefix that, when run, prints a version. ``None``
         skips probing for this tool.
       version_regex: Pattern applied to combined stdout+stderr of
@@ -283,6 +294,7 @@ class ToolSpec:
     version_regex: str | None
     minimum_version: str | None
     detection: tuple[Detector, ...]
+    optional_binaries: dict[str, str] = field(default_factory=dict)
     install_hint: dict[str, str] = field(default_factory=dict)
     used_by: tuple[str, ...] = ()
     optional: bool = False
@@ -394,6 +406,13 @@ def _builtin_manifest() -> list[ToolSpec]:
             version_regex=r"slurm[- ]?(?:wlm\s+)?([\d.]+)",
             minimum_version=None,
             detection=(PathDetector(),),
+            optional_binaries={
+                "scontrol": "`scontrol show config` supplies the cluster's "
+                "MaxArraySize, which lets dispatch split a resource group too "
+                "large for one job array; without it set "
+                "cfg-dispatch.max-array-size, or sbatch refuses the group with "
+                "`Invalid job array specification`",
+            },
             install_hint={
                 "macos": "no native macOS build; use a Linux submit host, or a "
                 "single-node Slurm-in-Docker container for local testing",
@@ -403,12 +422,15 @@ def _builtin_manifest() -> list[ToolSpec]:
             },
             used_by=("regression", "randtest", "test"),
             optional=True,
-            description="Slurm workload manager client (sbatch/squeue/sacct/scancel)",
+            description="Slurm workload manager client "
+            "(sbatch/squeue/sacct/scancel; scontrol optional)",
             notes="Only needed for `regression --dispatch slurm` (and randtest, "
             "and `rb test --dispatch slurm`). "
             "Requires a shared filesystem between the submit host and compute "
             "nodes; sacct (slurmdbd accounting) drives reservation right-sizing "
-            "telemetry and degrades gracefully when absent.",
+            "telemetry and degrades gracefully when absent. scontrol is an "
+            "optional probe, not part of the required client — see the "
+            "optional binaries above.",
         ),
         ToolSpec(
             name="surfer",
@@ -1377,6 +1399,13 @@ def explain(spec: ToolSpec, status: ToolStatus | None = None) -> str:
             lines.append(f"  Path:    {status.path}")
     if spec.used_by:
         lines.append(f"  Used by: {', '.join(f'rb {s}' for s in spec.used_by)}")
+    if spec.optional_binaries:
+        # Listed apart from Install/Status on purpose: these are not part of
+        # what "ok" above means, so a reader must not read their absence into
+        # the status or their presence as satisfying it.
+        lines.append("  Optional binaries (not required; not detected as this tool):")
+        for binary, role in spec.optional_binaries.items():
+            lines.append(f"    {binary}: {role}")
     if spec.install_hint:
         lines.append("  Install:")
         for platform, hint in spec.install_hint.items():
