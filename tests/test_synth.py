@@ -4721,3 +4721,39 @@ def test_a_module_scope_struct_returning_function_still_fails_the_gate(
     result = ys.run()
     assert isinstance(result, SynthFailResults)
     assert "function free_fn" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Type-reference return types (review round 13, item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_an_out_of_block_method_returning_a_type_reference_passes_the_gate(
+    tmp_path, monkeypatch
+):
+    """`type(int)`'s `(` used to be taken for the argument list, so the scan
+    never saw the `C::` and failed an automatic class method under the default
+    slang gate."""
+    src = dedent("""\
+        module my_module;
+          function type(int) C::f(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_a_module_scope_type_reference_function_fails_with_its_own_name(
+    tmp_path, monkeypatch
+):
+    src = dedent("""\
+        module my_module;
+          function type(x) free_fn(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function free_fn" in result.results["desc"]

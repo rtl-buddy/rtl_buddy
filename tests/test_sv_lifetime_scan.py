@@ -1456,3 +1456,145 @@ def test_a_parameterised_and_struct_returning_out_of_block_method():
         endmodule
     """)
     assert scan_text(src, "m.sv") == []
+
+
+# ---------------------------------------------------------------------------
+# Parenthesised return types (review round 13, item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_type_reference_return_type_on_an_out_of_block_method_is_exempt():
+    """`type(expr)` is a type reference (LRM 6.23). Its `(` used to be read as
+    the argument list, so the scan stopped before the `C::` and reported an
+    automatic class method as a static free function called `type`."""
+    src = dedent("""\
+        module m;
+          function type(int) C::f(); return 0; endfunction
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_type_reference_return_type_on_a_module_scope_function_is_named_right():
+    src = dedent("""\
+        module m;
+          function type(x) g(); return 0; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "g")]
+
+
+def test_type_reference_return_type_with_no_argument_list():
+    src = dedent("""\
+        module m;
+          function type(x) noargs; return 0; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "noargs")]
+
+
+def test_automatic_still_exempts_a_type_reference_returning_function():
+    src = dedent("""\
+        module m;
+          function automatic type(x) g(); return 0; endfunction
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_a_type_reference_containing_a_call_is_skipped_whole():
+    src = dedent("""\
+        module m;
+          function type(a + b(1)) g(); return 0; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["g"]
+
+
+def test_a_type_reference_does_not_desynchronise_later_declarations():
+    src = dedent("""\
+        module m;
+          function type(x) first(); return 0; endfunction
+          function int second(input int a); return a; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["first", "second"]
+
+
+def test_an_unclosed_type_reference_does_not_hang_the_scan():
+    src = "module m;\n  function type(x g(); return 0; endfunction\n"
+    assert isinstance(scan_text(src, "m.sv"), list)
+
+
+def test_an_escaped_identifier_named_type_is_not_a_type_reference():
+    r"""`\type` is a name, so the `(` after it really is the argument list."""
+    src = "module m;\n  function int \\type (input int a); return a; endfunction\nendmodule\n"
+    assert [f.name for f in scan_text(src, "m.sv")] == ["type"]
+
+
+def test_other_legal_parenthesised_return_type_shapes_are_already_handled():
+    """Checked against slang: an anonymous enum body and a packed dimension
+    holding a call are both legal, and neither confuses the scan."""
+    enum_src = dedent("""\
+        module m;
+          function enum { A, B } from_enum(); return A; endfunction
+        endmodule
+    """)
+    dim_src = dedent("""\
+        module m;
+          function bit [$clog2(W)-1:0] from_dim(); return 0; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(enum_src, "m.sv")] == ["from_enum"]
+    assert [f.name for f in scan_text(dim_src, "m.sv")] == ["from_dim"]
+
+
+# ---------------------------------------------------------------------------
+# A class method may not have a static lifetime (review round 13, item 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # In-class declaration.
+        "class C;\n  function static int f(input int a); return a; endfunction\nendclass\n",
+        "class C;\n  task static run(input int a); endtask\nendclass\n",
+        "class C;\n  virtual function static int f(input int a); return a; endfunction\nendclass\n",
+        # Out-of-block definition.
+        "module m;\n  function static int C::f(input int a); return a; endfunction\nendmodule\n",
+        "module m;\n  task static C::run(input int a); endtask\nendmodule\n",
+    ],
+)
+def test_a_static_lifetime_on_a_class_method_is_not_reported(src):
+    """`function static` on a class method is uncompilable, not a hazard.
+
+    slang rejects every one of these at parse time with "class methods cannot
+    have static lifetime" (Parser_members.cpp raises MethodStaticLifetime for
+    an in-class declaration and for a `::`-scoped out-of-block one alike), so
+    there is no elaboration and no netlist to corrupt. Reporting them would
+    fail the run for code the frontend already rejects with a better message.
+    """
+    assert scan_text(src, "m.sv") == []
+
+
+def test_a_class_static_method_qualifier_is_still_exempt():
+    """`static function` — the qualifier BEFORE the keyword — declares a
+    class-static method and is perfectly legal; it is not a lifetime."""
+    src = dedent("""\
+        class C;
+          static function int g(input int a); return a; endfunction
+        endclass
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_an_explicit_static_lifetime_outside_a_class_is_still_reported():
+    """Where the qualifier IS legal, it is still the finding it always was."""
+    src = dedent("""\
+        module m;
+          function static int f(input int a); return a; endfunction
+          task static run(input int a); endtask
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["f", "run"]

@@ -441,11 +441,14 @@ def _parse_subroutine_header(
     `void run;` without needing a type grammar.
 
     Only the header's *own* `(` or `;` stops the scan, so every grouping a
-    return type can bring has to be tracked: `[ ]` for packed ranges, `{ }`
-    for an anonymous `struct`/`union` body -- whose member declarations end in
-    `;`, which used to stop the scan mid-type and name the subroutine after
-    its last member -- and `#( )` for a parameterisation, skipped whole so its
-    `(` is not read as the argument list (`function R#(int) C::f(`).
+    return type can bring has to be tracked: `[ ]` for packed ranges (which
+    may hold a call, `bit [$clog2(W)-1:0] g(`), `{ }` for an anonymous
+    `struct`/`union`/`enum` body -- whose members end in `;` or `,`, and whose
+    `;` used to stop the scan mid-type and name the subroutine after its last
+    member -- and two parenthesised groups skipped whole so their `(` is not
+    read as the argument list: `#( )` for a parameterisation
+    (`function R#(int) C::f(`) and `type( )` for a type reference
+    (`function type(expr) C::f(`, LRM 6.23).
 
     `qualified` says an **unescaped** `::` or `.` separator was consumed, so
     the declaration is an out-of-block definition of a method declared
@@ -487,6 +490,23 @@ def _parse_subroutine_header(
                 # still to come. Skip the balanced group so its `(` is not
                 # read as the argument list.
                 j = _skip_parens(tokens, j + 1)
+                continue
+            elif (
+                bracket == 0
+                and brace == 0
+                and tok.text == "("
+                and j > index + 1
+                and tokens[j - 1].kind == _WORD
+                and not tokens[j - 1].escaped
+                and tokens[j - 1].text == "type"
+            ):
+                # `type(expr)` is a type reference used as the return type, so
+                # this `(` opens the type, not the argument list. Skipping the
+                # group lets the scan reach the real name -- and the `C::`
+                # ahead of it, which decides whether this is an out-of-block
+                # class method. `type` itself is then replaced as the name by
+                # the identifier that follows.
+                j = _skip_parens(tokens, j)
                 continue
             elif bracket == 0 and tok.text in ("(", ";"):
                 break
@@ -659,6 +679,22 @@ def _walk(tokens: list[_Token]) -> list[LifetimeFinding]:
                 if _is_class_method(stack) or "virtual" in pending or external:
                     # An out-of-body `function int C::f(...)` defines a class
                     # method; the class it belongs to is elsewhere.
+                    #
+                    # This deliberately outranks an explicit `static`. A class
+                    # method may NOT have a static lifetime -- slang rejects
+                    # every arm of this condition at parse time with "class
+                    # methods cannot have static lifetime" (its parser raises
+                    # MethodStaticLifetime for an in-class declaration and for
+                    # a `::`-scoped out-of-block one alike), so
+                    # `function static int C::f(...)`, `virtual function
+                    # static ...` and an in-class `function static ...` are
+                    # all uncompilable. Reporting them would be a finding
+                    # against code that has no netlist to corrupt, on a run
+                    # the frontend already fails with a clearer message.
+                    # `static function` -- the qualifier BEFORE the keyword --
+                    # is a different thing, a class-static method, and is
+                    # legal; it never reaches `explicit`, which only reads the
+                    # lifetime slot after the keyword.
                     automatic = True
                 elif explicit == "automatic":
                     automatic = True
