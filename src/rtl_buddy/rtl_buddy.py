@@ -77,7 +77,7 @@ from .config.dispatch import (
     compile_resource_origins,
     resolve_compile_resources,
     resolve_resources,
-    sbatch_args_cpu_request_options,
+    cpu_request_overrides,
 )
 from .dispatch import (
     LocalProcessBackend,
@@ -3247,13 +3247,15 @@ class RtlBuddy:
         groups = {}  # (cpus, mem, time) -> list[(row index, TestJobSpec)]
         compile_resources = resolve_compile_resources(dispatch_cfg, suite_compile)
         # `sbatch-args` is appended after the generated flags and therefore
-        # wins, so an argument there that sets the job's cpu request means
-        # the reservation resolved above is NOT what the jobs are submitted
-        # with. Right-sizing must not take it for the request; recording
-        # nothing sends it back to the scheduler's own `ReqCPUS` (#505
-        # review). More than one such argument means they multiply
-        # (`ReqCPUS` = tasks x cpus-per-task), which the advice has to say.
-        cpus_request_args = sbatch_args_cpu_request_options(
+        # wins, and the `SBATCH_*` environment reaches sbatch through the
+        # inherited environment, so either can mean the reservation resolved
+        # above is NOT what the jobs are submitted with. Right-sizing must
+        # not take it for the request; recording nothing sends it back to
+        # the scheduler's own `ReqCPUS` (#505 review). Read here, at submit
+        # time, because that is when the environment these jobs inherit is
+        # the environment being read — and NOT sanitized: a site that
+        # exports these means them.
+        cpus_request_args = cpu_request_overrides(
             getattr(dispatch_cfg, "sbatch_args", None)
         )
         if cpus_request_args:
@@ -3265,7 +3267,7 @@ class RtlBuddy:
                 logging.DEBUG,
                 "rightsize.request_from_scheduler",
                 suite_dir=suite_dir,
-                sbatch_args=cpus_request_args,
+                overrides=cpus_request_args,
             )
         for entry in entries:
             cfg = entry["cfg"]
@@ -4219,12 +4221,12 @@ class RtlBuddy:
                     compile_origins=compile_origins,
                     suite_config_hint=suite_config_path or suite_display,
                     # ...and whether the resolved reservation is what the
-                    # build job was actually submitted with: an argument in
-                    # `sbatch-args` that sets the cpu request is appended
-                    # after the generated flags and wins, so neither the
+                    # build job was actually submitted with: a `sbatch-args`
+                    # argument or an `SBATCH_*` variable that sets the cpu
+                    # request beats the generated flags, so neither the
                     # ratio nor the decomposition may be stated from it
                     # (#505 review).
-                    cpus_override=sbatch_args_cpu_request_options(
+                    cpus_override=cpu_request_overrides(
                         getattr(self.root_cfg.get_dispatch_cfg(), "sbatch_args", None)
                     ),
                 )

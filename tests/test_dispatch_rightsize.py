@@ -1830,7 +1830,7 @@ def test_two_orthogonal_cpu_options_withhold_the_per_argument_suggestion():
     )
     # No arithmetic claim: sbatch's own precedence decides how they combine.
     assert "product" not in note
-    assert "decompose it across those arguments per sbatch's own precedence" in note
+    assert "decompose it across them per sbatch's own precedence" in note
     # ...and it must NOT claim any single argument takes the number.
     assert "sets this job's cpu request" not in note
     assert "change it there" not in note
@@ -1896,7 +1896,7 @@ def test_the_build_row_withholds_it_too_under_orthogonal_options():
     )
     # No arithmetic claim: sbatch's own precedence decides how they combine.
     assert "product" not in note
-    assert "decompose it across those arguments per sbatch's own precedence" in note
+    assert "decompose it across them per sbatch's own precedence" in note
     assert "cfg-dispatch.compile.cpus" in note
     # The superseded per-build decomposition stays gone.
     assert "the build job reserved" not in note
@@ -2106,4 +2106,112 @@ def test_the_note_makes_no_arithmetic_claim_about_four_arguments():
     # ...and no arithmetic is claimed about how they combine.
     assert "product" not in note
     assert " x " not in note
-    assert "decompose it across those arguments per sbatch's own precedence" in note
+    assert "decompose it across them per sbatch's own precedence" in note
+
+
+# ------- #505 review: an SBATCH_* variable is an override with no file
+
+
+def test_an_env_override_names_the_variable_and_no_file():
+    """There is no YAML to edit, so the hint must not invent one.
+
+    `SBATCH_NTASKS=4` beside a generated `--cpus-per-task=2` requests
+    eight cpus. It supersedes the test's `resources.cpus` exactly as a
+    `sbatch-args` entry would, but it lives in the environment — pointing
+    an agent at a `file` would send it to edit something that does not
+    hold the value (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 4 tasks x the generated 2 cpus
+                "total_cpu_s": 2000.0,  # 0.25 efficiency against those 8
+            },
+            requested_cpus=None,
+            cpus_override=["SBATCH_NTASKS=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "8"
+    assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
+    assert cpu.edit_hint["path"] == "env"
+    assert "file" not in cpu.edit_hint
+    note = cpu.edit_hint["note"]
+    assert "the environment supersedes tests[name=t].resources.cpus" in note
+    # A variable is not an argument, and it is not a cpu count either.
+    assert "`SBATCH_NTASKS=4` raises this job's cpu request" in note
+    assert "that variable does not take it" in note
+    assert "sbatch-args" not in note
+
+
+def test_env_and_args_together_name_both_and_keep_the_file():
+    """`sbatch-args` is the actionable half, so the hint still points there.
+
+    The command line beats the environment, so an edit in `sbatch-args`
+    can defeat the variable — but the note has to name both, or a reader
+    who changes only the argument is surprised by the leftover factor.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 2000.0,
+            },
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=2", "SBATCH_NTASKS=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpu.edit_hint["file"] == "root_config.yaml"
+    note = cpu.edit_hint["note"]
+    assert "sbatch-args and the environment supersedes" in note
+    assert (
+        "`--cpus-per-task=2` and `SBATCH_NTASKS=4` set this job's cpu request" in note
+    )
+    assert "product" not in note
+
+
+def test_the_build_row_takes_an_env_override_too():
+    """Same rule for the suite's build job (#495 row)."""
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 7200,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 200,  # 0.25 efficiency
+            },
+            parallel=1,
+            cpus=2,
+            cpus_override=["SBATCH_NODES=4"],
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpus_a.reserved == "8"
+    assert cpus_a.edit_hint["path"] == "env"
+    assert "file" not in cpus_a.edit_hint
+    note = cpus_a.edit_hint["note"]
+    assert "the environment supersedes cfg-dispatch.compile.cpus" in note
+    assert "`SBATCH_NODES=4` raises this job's cpu request" in note

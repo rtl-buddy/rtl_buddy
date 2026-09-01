@@ -1143,3 +1143,59 @@ def test_max_wait_is_widened_by_a_backoff_the_head_asked_for(monkeypatch):
     _install(monkeypatch)
     SlurmDispatchBackend(cfg).wait_all(handles, extra_wait=600.0)
     assert clock["now"] == 200.0
+
+
+# ------- #505 review: why SBATCH_CPUS_PER_TASK is not treated as an override
+
+
+def test_every_submit_path_states_cpus_per_task_on_the_command_line(
+    monkeypatch, tmp_path
+):
+    """Load-bearing for right-sizing, not just cosmetic (#505 review).
+
+    sbatch's documented precedence is command line > environment > script,
+    so `SBATCH_CPUS_PER_TASK` in a site's environment is always beaten by
+    the flag rtl-buddy itself passes — which is why
+    `cpu_request_overrides()` deliberately does NOT treat that variable as
+    an override. Make any of these three paths emit the flag conditionally
+    and that reasoning stops holding, so pin all three here rather than
+    discover it through wrong advice.
+    """
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    def _argv_of(submit):
+        calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+        monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+        backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+        submit(backend)
+        (argv,) = calls
+        return argv
+
+    sim = _argv_of(lambda b: b.submit(_spec()))
+    array = _argv_of(
+        lambda b: b.submit_array(
+            [_spec(run_id=i) for i in (1, 2)],
+            array_dir=tmp_path / "array",
+            max_parallel=2,
+        )
+    )
+    build = _argv_of(
+        lambda b: b.submit_build(
+            BuildJobSpec(
+                suite_dir="/proj/verif/blk",
+                test_config_path="/proj/verif/blk/tests.yaml",
+                resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+                reg_level=0,
+                log_path=None,
+            )
+        )
+    )
+
+    for argv in (sim, array, build):
+        assert any(a.startswith("--cpus-per-task=") for a in argv), argv
+        # ...and none of them states the task or node counts, which is why
+        # the SBATCH_* variables for THOSE do reach sbatch and are treated
+        # as overrides.
+        assert not any(
+            a.startswith(("--ntasks", "-n", "--nodes", "-N")) for a in argv
+        ), argv

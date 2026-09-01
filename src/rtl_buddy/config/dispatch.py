@@ -57,6 +57,7 @@ a cluster fact and not a suite one.
 """
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 
@@ -552,6 +553,55 @@ def sbatch_arg_sets_cpu_count_directly(arg: str) -> bool:
     return token == short or (token.startswith(short) and token[len(short) :].isdigit())
 
 
+# The `SBATCH_*` input environment variables that sbatch documents as "same
+# as" one of the options above. They reach sbatch through `subprocess.run`,
+# which inherits the head's environment, and rtl-buddy deliberately does NOT
+# sanitize it — a site that exports these means them.
+#
+# `SBATCH_CPUS_PER_TASK` is absent for the same reason `--cpus-per-gpu` is:
+# sbatch's documented precedence is command line > environment > script, and
+# both submit paths emit `--cpus-per-task` unconditionally
+# (`_reservation_argv` and the array submit), so the variable is always
+# beaten by the flag rtl-buddy itself passes. It changes nothing, and
+# treating it as an override would discard a request the head knows
+# (#505 review). `tests/test_dispatch_slurm.py` pins that both paths still
+# emit the flag, so this stays true.
+_CPU_REQUEST_ENV_VARS = {
+    "SBATCH_NTASKS": "--ntasks",
+    "SBATCH_NTASKS_PER_NODE": "--ntasks-per-node",
+    "SBATCH_NODES": "--nodes",
+}
+
+
+def cpu_request_overrides(sbatch_args, env=None) -> list[str]:
+    """Everything that supersedes the cpus reservation the head resolved.
+
+    The union of :func:`sbatch_args_cpu_request_options` and the
+    ``SBATCH_*`` input environment variables that mean the same thing.
+    Both reach sbatch — ``sbatch-args`` because it is appended after the
+    generated flags, the environment because ``subprocess.run`` inherits
+    it — so both can make ``ReqCPUS`` differ from what rtl-buddy resolved,
+    and neither may be taken for the request (#505 review).
+
+    Command line beats environment, which is sbatch's own precedence: a
+    variable whose option is already written in ``sbatch-args`` is not
+    reported, because it is not what the job ran with. An unset or blank
+    variable is not an override at all.
+
+    Environment entries are rendered ``NAME=value`` and argument entries
+    keep their leading dash, so a caller can tell them apart by their first
+    character.
+    """
+    found = _scan_cpu_request_args(sbatch_args)
+    env = os.environ if env is None else env
+    for var, option in _CPU_REQUEST_ENV_VARS.items():
+        value = (env.get(var) or "").strip()
+        if not value or option in found:
+            continue
+        found[option] = f"{var}={value}"
+    return list(found.values())
+
+
 def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:
     """The ``sbatch-args`` entries that decide the job's cpu request.
 
@@ -587,6 +637,16 @@ def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:
     measured against ``ReqMem``/``TimelimitRaw``, which sacct reports from
     the allocation any override actually produced.
     """
+    return list(_scan_cpu_request_args(sbatch_args).values())
+
+
+def _scan_cpu_request_args(sbatch_args) -> dict[str, str]:
+    """Canonical long option -> the entry that set it, as written.
+
+    Keyed so the environment layer in :func:`cpu_request_overrides` can
+    apply sbatch's command-line-beats-environment precedence per option
+    without re-parsing what this already worked out.
+    """
     args = list(sbatch_args or [])
     # Insertion-ordered by first appearance; re-assignment keeps that
     # position, so a repeated option stays where it was first written and
@@ -614,7 +674,7 @@ def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:
                 if value and value[0].isdigit():
                     found[long] = arg
                     break
-    return list(found.values())
+    return found
 
 
 def compile_parallel(dispatch_cfg) -> int:

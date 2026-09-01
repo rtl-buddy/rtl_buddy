@@ -252,6 +252,10 @@ One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **
 
 `--ntasks-per-node` is in the second family because sbatch documents it as a *request* when `--ntasks` is absent ("request that ntasks be invoked on each node … meant to be used with the `--nodes` option"), so `--nodes=2 --ntasks-per-node=4` asks for eight tasks. It degrades to a per-node maximum when `--ntasks` is also given — and that option is in the set too, so the pair is caught either way.
 
+The same applies to the **environment**. `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and `SBATCH_NODES` are sbatch's documented input variables for those options, and they reach sbatch because the dispatched submit inherits the head's environment — `SBATCH_NTASKS=4` beside the generated `--cpus-per-task=2` requests eight cpus. rtl_buddy reads them at submit time and treats them exactly like the equivalent `sbatch-args` entry. It does **not** sanitize the environment: a site that exports these means them. Command line beats environment, which is sbatch's own precedence, so a variable whose option is already written in `sbatch-args` is not reported — the job did not run with it. An unset or blank variable is not an override at all.
+
+`SBATCH_CPUS_PER_TASK` is the one that looks like it should count and does not, for the same reason as `--cpus-per-gpu`: every submit path states `--cpus-per-task` on the command line, which beats the variable, so it can never take effect.
+
 All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: each distinct option is reported, because they combine rather than supersede one another.
 
 The set is deliberately narrow, because a false positive is not free — it discards a request rtl_buddy knows, retargets the edit hint away from the field that really governs, and disables the compile floor. Four near misses are excluded:
@@ -261,7 +265,7 @@ The set is deliberately narrow, because a false positive is not free — it disc
 - `--ntasks-per-core` and `--ntasks-per-socket` are **placement maxima** ("request the maximum ntasks be invoked on each core/socket … meant to be used with the `--ntasks` option"): they cap where the tasks `--ntasks` asked for may land, and a lone one requests nothing. The `--ntasks` they accompany is in the set, so a real task-count change is still caught.
 - `--cpus-per-gpu` is documented as mutually exclusive with `--cpus-per-task`, which every dispatched job carries, so sbatch rejects the pair. A job submitted that way never runs, and there is nothing to right-size. `--ntasks-per-gpu` is left out on the same conservative footing: it only takes effect beside a GPU request (`--gpus` / `--gres`) that rtl_buddy neither generates nor tracks.
 
-Where such an argument is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names the arguments responsible.
+Where such an argument or variable is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names what was responsible.
 
 The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at `root_config.yaml`) and its `note` says which field was superseded, for example:
 
@@ -290,6 +294,8 @@ sbatch-args supersedes tests[name=wr_single].resources.cpus: `--ntasks=4` and
 whole-job cpu count — decompose it across those arguments per sbatch's own
 precedence; no single one of them takes it.
 ```
+
+An override that came only from the environment names no file at all: its `edit_hint.path` is `env` and there is no `file` key, because a variable lives in nothing an agent can edit. Where an `sbatch-args` entry is also in play the hint keeps pointing there — the command line is what can defeat the variable — and the note names both.
 
 An override also disables the **compile cpus floor**. That floor exists because a job compiling inside itself is allocated `max(sim, compile)`, so no reduction can take it below the compile side — but an override supersedes that generated reservation entirely, and sbatch never sees the max. Left in place it clamps every suggestion up to the floor and then discards it for not being below the request, so a genuinely over-reserved run reports nothing at all. The `mem` and `time` floors are untouched, since no cpu argument supersedes them.
 

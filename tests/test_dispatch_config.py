@@ -21,6 +21,7 @@ from rtl_buddy.config.dispatch import (
     mem_to_bytes,
     resolve_compile_resources,
     resolve_resources,
+    cpu_request_overrides,
     sbatch_args_cpu_request_options,
     time_to_seconds,
 )
@@ -858,3 +859,90 @@ def test_the_override_is_reported_verbatim_for_the_log_line():
     assert sbatch_args_cpu_request_options(["--x", "--cpus-per-task", "16"]) == [
         "--cpus-per-task 16"
     ]
+
+
+# ---- #505 review: the SBATCH_* environment overrides the request too
+
+
+def test_an_sbatch_env_var_is_an_override_on_its_own():
+    """`subprocess.run` inherits the environment, so sbatch reads it.
+
+    `SBATCH_NTASKS=4` beside a generated `--cpus-per-task=2` requests eight
+    cpus, while the head recorded two — efficiency would be overstated
+    fourfold. The variable is not sanitized away (a site that exports it
+    means it); it is recognised (#505 review).
+    """
+    assert cpu_request_overrides([], {"SBATCH_NTASKS": "4"}) == ["SBATCH_NTASKS=4"]
+    assert cpu_request_overrides([], {"SBATCH_NODES": "2"}) == ["SBATCH_NODES=2"]
+    assert cpu_request_overrides([], {"SBATCH_NTASKS_PER_NODE": "2"}) == [
+        "SBATCH_NTASKS_PER_NODE=2"
+    ]
+
+
+def test_env_and_sbatch_args_are_both_reported():
+    """Different options, so they combine rather than supersede."""
+    assert cpu_request_overrides(["--cpus-per-task=2"], {"SBATCH_NTASKS": "4"}) == [
+        "--cpus-per-task=2",
+        "SBATCH_NTASKS=4",
+    ]
+
+
+def test_an_explicit_sbatch_arg_beats_the_environment():
+    """sbatch's own precedence: command line > environment > script.
+
+    The job runs with `--ntasks=8`, so naming the variable would send a
+    reader to a setting that is not in force — the same mistake as naming
+    the first of two occurrences of one option.
+    """
+    assert cpu_request_overrides(["--ntasks=8"], {"SBATCH_NTASKS": "4"}) == [
+        "--ntasks=8"
+    ]
+    # ...and only for the SAME option: an unrelated argument does not shadow
+    # the variable.
+    assert cpu_request_overrides(["--cpus-per-task=8"], {"SBATCH_NTASKS": "4"}) == [
+        "--cpus-per-task=8",
+        "SBATCH_NTASKS=4",
+    ]
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_a_blank_env_var_is_not_an_override(value):
+    """Exported-but-empty is how a shell unsets one in practice."""
+    assert cpu_request_overrides([], {"SBATCH_NTASKS": value}) == []
+
+
+def test_an_absent_environment_changes_nothing():
+    assert cpu_request_overrides([], {}) == []
+    assert cpu_request_overrides(["--ntasks=4"], {}) == ["--ntasks=4"]
+
+
+def test_sbatch_cpus_per_task_env_is_not_an_override():
+    """The generated `--cpus-per-task` always beats it.
+
+    sbatch's precedence is command line > environment, and both submit
+    paths emit `--cpus-per-task` unconditionally, so the variable can never
+    take effect. Treating it as an override would discard a request the
+    head knows — the same false positive `--cpus-per-gpu` was excluded for
+    (#505 review). `test_dispatch_slurm.py` pins the flag's presence, which
+    is what makes this true.
+    """
+    assert cpu_request_overrides([], {"SBATCH_CPUS_PER_TASK": "4"}) == []
+    # The variables Slurm defines for the options this set already excludes
+    # are out for their own reasons, and stay out.
+    assert cpu_request_overrides([], {"SBATCH_THREADS_PER_CORE": "2"}) == []
+    assert cpu_request_overrides([], {"SBATCH_CPUS_PER_GPU": "4"}) == []
+    assert cpu_request_overrides([], {"SBATCH_EXCLUSIVE": "1"}) == []
+
+
+def test_the_env_layer_reads_os_environ_by_default(monkeypatch):
+    """No `env=` argument means the environment the jobs will inherit."""
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+    assert cpu_request_overrides([]) == []
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    assert cpu_request_overrides([]) == ["SBATCH_NTASKS=4"]
+
+
+def test_the_args_only_scanner_ignores_the_environment(monkeypatch):
+    """`sbatch_args_cpu_request_options` stays what its name says."""
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    assert sbatch_args_cpu_request_options([]) == []

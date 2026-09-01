@@ -1698,6 +1698,99 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     assert "ReqCPUS" in result.output
 
 
+def test_an_sbatch_env_var_reaches_the_analysis_end_to_end(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`SBATCH_NTASKS` is inherited by `subprocess.run`, so sbatch reads it.
+
+    The project resolves the default 1 cpu and nothing in `sbatch-args`
+    touches cpus, but the environment asks for four tasks — a four-cpu job
+    that `requested_cpus` would call one, overstating efficiency fourfold.
+    The environment is deliberately NOT sanitized; it is recognised
+    instead, so the analysis falls back to `ReqCPUS` and the hint names the
+    variable rather than a YAML field it masks (#505 review).
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # Analysed against the 4 the environment asked for, not the 1 the YAML
+    # resolved to — which the `cpus > 1` guard would have dropped.
+    assert cpus["reserved"] == "4"
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
+    assert cpus["edit_hint"]["path"] == "env"
+    assert "file" not in cpus["edit_hint"]
+    assert (
+        "`SBATCH_NTASKS=4` raises this job's cpu request" in (cpus["edit_hint"]["note"])
+    )
+
+
+def test_sbatch_cpus_per_task_in_the_environment_is_not_an_override(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The generated `--cpus-per-task` beats it, so nothing changes.
+
+    Command line > environment is sbatch's own precedence, and every
+    submit path states `--cpus-per-task`. Treating the variable as an
+    override would discard a request the head knows and resurrect the
+    spurious "reduce cpus to 1" this issue is about (#505 review).
+    """
+    monkeypatch.setenv("SBATCH_CPUS_PER_TASK", "4")
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "req_cpus": 2,  # the site rounded the one cpu asked for
+                "total_cpu_s": 50.0,  # 0.25 eff vs 2, 0.5 vs the requested 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+
+
 @pytest.mark.parametrize(
     "arg",
     [
@@ -1872,7 +1965,7 @@ def test_orthogonal_sbatch_args_cpu_options_withhold_the_per_argument_edit(
         in note
     )
     assert "product" not in note
-    assert "decompose it across those arguments per sbatch's own precedence" in note
+    assert "decompose it across them per sbatch's own precedence" in note
     # The DEBUG line lists both arguments, for the same reason.
     assert "`--ntasks=4` and `--cpus-per-task=2`" in result.output
 

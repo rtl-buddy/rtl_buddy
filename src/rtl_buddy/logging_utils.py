@@ -529,7 +529,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "`--acctg-freq=task=<seconds>` to control it."
             )
         case "rightsize.request_from_scheduler":
-            args = fields.get("sbatch_args") or []
+            args = fields.get("overrides") or []
             # Listed, not multiplied: several of them combine by sbatch's own
             # precedence, which this line does not try to reproduce (#505).
             quoted = [f"`{a}`" for a in args]
@@ -539,11 +539,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
             )
             return (
-                f"cfg-dispatch.sbatch-args sets {named}, which is appended "
-                "after the generated flags and wins — so the resolved cpus "
-                "is not this job's cpu request. CPU-efficiency advice for "
-                "this suite is measured against the scheduler's own ReqCPUS "
-                "instead, and its edit hint names sbatch-args."
+                f"{named} sets this job's cpu request — cfg-dispatch."
+                "sbatch-args is appended after the generated flags, and the "
+                "SBATCH_* environment reaches sbatch too, so the resolved "
+                "cpus is not what the job asks for. CPU-efficiency advice "
+                "for this suite is measured against the scheduler's own "
+                "ReqCPUS instead."
             )
         case "rightsize.mem_advice_unsampled":
             tests = fields.get("tests") or []

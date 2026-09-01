@@ -167,6 +167,25 @@ def format_time(seconds: float) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
 
 
+def _is_arg_override(entry: str) -> bool:
+    """Did this override come from ``sbatch-args`` rather than the env?
+
+    :func:`~rtl_buddy.config.dispatch.cpu_request_overrides` renders
+    arguments with their leading dash and environment variables as
+    ``NAME=value``, so the first character is the whole discriminator.
+    """
+    return entry.startswith("-")
+
+
+def _override_source(entries: list) -> str:
+    """Where a reader has to go to change the request."""
+    from_args = any(_is_arg_override(e) for e in entries)
+    from_env = any(not _is_arg_override(e) for e in entries)
+    if from_args and from_env:
+        return "sbatch-args and the environment"
+    return "sbatch-args" if from_args else "the environment"
+
+
 def _join_args(quoted: list) -> str:
     """``A``, ``B`` and ``C`` — a list, deliberately NOT a product.
 
@@ -205,24 +224,30 @@ def _override_note(sbatch_args: list, masked_path: str) -> str:
     exactly the unappliable advice this rule exists to prevent.
     """
     quoted = [f"`{arg}`" for arg in sbatch_args]
-    if len(quoted) == 1 and sbatch_arg_sets_cpu_count_directly(sbatch_args[0]):
+    source = _override_source(sbatch_args)
+    if (
+        len(quoted) == 1
+        and _is_arg_override(sbatch_args[0])
+        and sbatch_arg_sets_cpu_count_directly(sbatch_args[0])
+    ):
         return (
             f"sbatch-args {quoted[0]} sets this job's cpu request, "
             f"superseding {masked_path}; change it there. Suggested value "
             "is the whole-job cpu count."
         )
     if len(quoted) == 1:
+        noun = "argument" if _is_arg_override(sbatch_args[0]) else "variable"
         return (
-            f"sbatch-args supersedes {masked_path}: {quoted[0]} raises "
+            f"{source} supersedes {masked_path}: {quoted[0]} raises "
             "this job's cpu request rather than stating it. Suggested "
-            "value is the whole-job cpu count — that argument does not "
+            f"value is the whole-job cpu count — that {noun} does not "
             "take it, so work out the reservation that reaches it "
             "yourself."
         )
     return (
-        f"sbatch-args supersedes {masked_path}: {_join_args(quoted)} set "
+        f"{source} supersedes {masked_path}: {_join_args(quoted)} set "
         "this job's cpu request together. Suggested value is the whole-job "
-        "cpu count — decompose it across those arguments per sbatch's own "
+        "cpu count — decompose it across them per sbatch's own "
         "precedence; no single one of them takes it."
     )
 
@@ -460,11 +485,16 @@ def analyze_build_reservation(
                 if origins.get("cpus") == "suite" and suite_config_hint
                 else "cfg-dispatch.compile.cpus"
             )
+            # An environment variable lives in no file, so there is nothing
+            # honest to point a `file` at; `sbatch-args` wins over it (the
+            # command line beats the environment) and is the actionable
+            # half whenever both are in play (#505 review).
+            from_args = any(_is_arg_override(e) for e in cpus_override)
             edit = {
-                "path": "cfg-dispatch.sbatch-args",
+                "path": "cfg-dispatch.sbatch-args" if from_args else "env",
                 "note": _override_note(cpus_override, masked),
             }
-            if root_config_hint:
+            if from_args and root_config_hint:
                 edit["file"] = root_config_hint
             return edit
         # Point at whichever file holds the value that WON. A suite-level
@@ -785,11 +815,14 @@ def analyze_suite_reservations(
             # and the finding comes back — the very shape #505 exists to
             # stop.
             if resource_field == "cpus" and _cpus_override:
+                # ...and an environment variable lives in no file, so the
+                # hint names the environment instead of a path to edit.
+                from_args = any(_is_arg_override(e) for e in _cpus_override)
                 edit = {
-                    "path": "cfg-dispatch.sbatch-args",
+                    "path": "cfg-dispatch.sbatch-args" if from_args else "env",
                     "note": _override_note(_cpus_override, masked_cpus_path),
                 }
-                if root_config_path:
+                if from_args and root_config_path:
                     edit["file"] = root_config_path
                 return edit
             # A field the compile reservation won is masked by the max, so

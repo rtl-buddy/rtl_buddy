@@ -68,7 +68,13 @@ of the global reservation.
   raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`).
   Node-selection constraints (`--threads-per-core`, `-B`), placement maxima
   (`--ntasks-per-core`/`-socket`/`-gpu`) and `--exclusive` do not count — they
-  change what is selected, capped or allocated, not what is requested. Those are appended last and win — within
+  change what is selected, capped or allocated, not what is requested.
+- The environment counts too: `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and
+  `SBATCH_NODES` are inherited by the submit and are treated exactly like the
+  matching `sbatch-args` entry (command line beats environment; the
+  environment is never sanitized). `SBATCH_CPUS_PER_TASK` is NOT one — every
+  submit path states `--cpus-per-task`, which beats it. An env-only override
+  has `edit_hint.path` `env` and no `file`, since there is nothing to edit. Those are appended last and win — within
   one option the last occurrence, as for sbatch. The advice then falls back to
   `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line names the
   arguments, and the `cpus` row's `edit_hint` points at
