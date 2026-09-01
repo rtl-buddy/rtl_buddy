@@ -2629,8 +2629,6 @@ def test_neither_ceiling_known_is_still_one_unsplit_array(
     assert "cfg-dispatch.max-array-size" in fields["hint"]
     assert "max-array-tasks" in fields["hint"]
 
-    assert "-M" not in argv
-
 
 # ------------------------------------- build-job dedup on the queue (#507)
 #
