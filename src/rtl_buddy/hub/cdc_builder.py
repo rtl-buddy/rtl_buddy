@@ -136,6 +136,19 @@ def _source_files_from_filelist(fl_path: str) -> list[str]:
     return paths
 
 
+def _clear_cached_map(out_path: Path, model_name: str) -> None:
+    """Drop the cached domain map, logging what went."""
+    removed = clear_stale_artefacts([out_path], owner=model_name)
+    if removed:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "hub.cdc_builder.stale_artefacts_removed",
+            model=model_name,
+            paths=removed,
+        )
+
+
 def build_domain_map(
     *,
     project_root: Path,
@@ -155,6 +168,18 @@ def build_domain_map(
     overlay and a dark toggle would be worse than a clear startup
     error.
     """
+    # Before every step that can fail. The map lives in the *persistent*
+    # `.rtl-buddy/cache/`, so a warm cache outlives the build that filled it,
+    # and each of the steps below — back-pointer resolution, SDC and waiver
+    # validation, filelist generation, the analyzer lookup — can raise. Any
+    # of them raising over a previous build's map leaves the hub rendering a
+    # clock overlay for a design state this build never confirmed (#469).
+    # There is no missing-tool carve-out here, unlike the tool flows: this is
+    # the hub's own derived cache rather than a user-produced artefact, and a
+    # rebuild that cannot run must not leave stale data to be served.
+    out_path = domain_map_path(project_root, model_cfg.name)
+    _clear_cached_map(out_path, model_cfg.name)
+
     analysis = _resolve_cdc_analysis(model_cfg)
     if analysis is None:
         return None
@@ -173,7 +198,6 @@ def build_domain_map(
 
     cache = cache_dir(project_root)
     cache.mkdir(parents=True, exist_ok=True)
-    out_path = domain_map_path(project_root, model_cfg.name)
 
     # Build a CDC-friendly filelist (unrolled + deduplicated). We
     # write into the same artefacts area RtlBuddyCdc uses so a
@@ -230,22 +254,6 @@ def build_domain_map(
         analysis=analysis.get_name(),
         path=str(out_path),
     )
-    # The domain map lives in the *persistent* `.rtl-buddy/cache/`, not in a
-    # per-run artefact dir, so a warm cache long outlives the run that filled
-    # it. Exit 1 is tolerated below (rule violations still emit a map), so a
-    # crash exiting 1 would leave the `is_file()` gate satisfied by the
-    # previous build's map and the hub would render it with no error (#469).
-    # Removing it first makes that gate mean "this invocation wrote one".
-    removed = clear_stale_artefacts([out_path], owner=analysis.get_name())
-    if removed:
-        log_event(
-            logger,
-            logging.DEBUG,
-            "hub.cdc_builder.stale_artefacts_removed",
-            model=model_cfg.name,
-            analysis=analysis.get_name(),
-            paths=removed,
-        )
     with open(log_path, "w") as logf:
         logf.write("$ " + " ".join(cmd) + "\n")
         logf.flush()
@@ -259,6 +267,10 @@ def build_domain_map(
     # they don't impede the overlay (the domain map still gets
     # emitted); we hard-fail on anything worse.
     if proc.returncode not in (0, 1):
+        # The analyzer writes the map before it finishes, so an unsupported
+        # exit code can arrive with the file already recreated — clear it
+        # again or the rejected build's map is what the hub serves (#469).
+        _clear_cached_map(out_path, model_cfg.name)
         raise FatalRtlBuddyError(
             f"cdc analysis {analysis.get_name()!r}: rtl-buddy-cdc "
             f"exited with code {proc.returncode}; see {log_path}"

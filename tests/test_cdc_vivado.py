@@ -411,3 +411,34 @@ def test_vivado_cdc_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
     assert isinstance(res, CdcFailResults)
     assert "could not parse CDC report" in res.results["desc"]
     assert not report.exists()
+
+
+def test_vivado_cdc_bad_part_clears_the_previous_report(tmp_path, monkeypatch):
+    """`_resolve_part` raises before Vivado is ever reached. That is a config
+    error, but raising it over a previously successful run's `cdc.rpt` leaves
+    exactly the stale report this fix removes — a config error is a failed
+    run, not a skip (#469)."""
+    backend = _make_backend(tmp_path, part=None)
+    stale = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", stale)
+
+    _mock_env(monkeypatch, _fake_vivado("vivado_cdc_clean.rpt"))
+
+    with pytest.raises(FatalRtlBuddyError, match="opts.part"):
+        backend.run()
+
+    assert not stale.exists()
+
+
+def test_vivado_cdc_skip_still_keeps_the_previous_report(tmp_path, monkeypatch):
+    """The missing-Vivado skip keeps its exemption: a box without Vivado never
+    ran it, so it must not delete a report a box that has it produced (#469)."""
+    backend = _make_backend(tmp_path)
+    kept = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", kept)
+
+    monkeypatch.setattr(cdc_vivado_module.shutil, "which", lambda _name: None)
+    res = backend.run()
+
+    assert isinstance(res, CdcSkipResults)
+    assert kept.exists()

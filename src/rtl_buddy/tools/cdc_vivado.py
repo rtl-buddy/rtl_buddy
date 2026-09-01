@@ -310,6 +310,20 @@ class VivadoCdc:
 
     # --- run ----------------------------------------------------------------
 
+    def _clear_stale_report(self) -> None:
+        """Remove the previous run's `cdc.rpt`."""
+        stale = clear_stale_artefacts(
+            [self._report_path()], owner=self.cdc_cfg.get_name()
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cdc.stale_artefacts_removed",
+                analysis=self.cdc_cfg.get_name(),
+                paths=stale,
+            )
+
     def _fail_after_vivado(self, desc: str) -> CdcFailResults:
         """Fail a run that has already invoked Vivado, publishing no report.
 
@@ -319,13 +333,24 @@ class VivadoCdc:
         the next run's parse would read (#469). Every post-Vivado failure
         return goes through here.
         """
-        clear_stale_artefacts([self._report_path()], owner=self.cdc_cfg.get_name())
+        self._clear_stale_report()
         return CdcFailResults(name=self.cdc_cfg.get_name(), violations=0, desc=desc)
 
     def run(self) -> CdcResults:
-        # Resolve up front: a missing part is a config error (exit 2),
-        # even when vivado is absent.
-        part = self._resolve_part()
+        # Resolved up front, and ahead of the tool skip below, because a
+        # missing or invalid `opts.part` is a config error (exit 2) whether
+        # or not Vivado is installed. Raising it over a previously successful
+        # run's `cdc.rpt` would leave exactly the stale report this fix
+        # removes, so a config error clears on its way out — it is a failed
+        # run, not a skip (#469).
+        try:
+            part = self._resolve_part()
+        except Exception:
+            # Every exception, not a list of the expected ones — enumerating
+            # them is how the open backend came to miss `FilelistError`.
+            # Re-raised at once, so nothing is masked.
+            self._clear_stale_report()
+            raise
         executable = self.tool_cfg.get_executable() or "vivado"
 
         log_event(
@@ -361,17 +386,7 @@ class VivadoCdc:
         # cannot pick up an earlier run's crossings (#469). Deliberately
         # *after* the skip: a box without Vivado never ran the tool, so it has
         # no business deleting a report a box with Vivado produced.
-        stale = clear_stale_artefacts(
-            [self._report_path()], owner=self.cdc_cfg.get_name()
-        )
-        if stale:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "cdc.stale_artefacts_removed",
-                analysis=self.cdc_cfg.get_name(),
-                paths=stale,
-            )
+        self._clear_stale_report()
 
         sdc_path = self.cdc_cfg.get_constraints()
         if not os.path.isfile(sdc_path):

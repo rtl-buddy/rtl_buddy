@@ -291,3 +291,99 @@ def test_build_domain_map_still_accepts_a_map_this_build_wrote(tmp_path, monkeyp
 
     result = cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
     assert "fresh_clk" in result.read_text()
+
+
+def _seed_cached_map(tmp_path) -> Path:
+    """A domain map left in the persistent cache by an earlier build."""
+    stale = cdc_builder.domain_map_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "clocks": ["stale_clk"]}')
+    return stale
+
+
+def test_build_domain_map_clears_the_cache_before_back_pointer_resolution(tmp_path):
+    """The cache is cleared before every step that can fail. A bad `cdc:`
+    back-pointer raises during resolution, and the hub must not go on serving
+    the previous build's overlay for a design state this build never
+    confirmed (#469)."""
+    model = _seed_project(tmp_path, cdc_field="does_not_exist.yaml")
+    stale = _seed_cached_map(tmp_path)
+
+    with pytest.raises(FatalRtlBuddyError):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_the_cache_when_the_sdc_is_missing(tmp_path):
+    """Same for SDC validation, which also raises before the analyzer runs."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    (tmp_path / "demo.sdc").unlink()
+    stale = _seed_cached_map(tmp_path)
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_the_cache_when_the_analyzer_is_absent(
+    tmp_path, monkeypatch
+):
+    """And for the analyzer lookup. Unlike the tool flows there is no
+    missing-tool carve-out here: this is the hub's own derived cache, not a
+    user-produced artefact, so a rebuild that cannot run must not leave stale
+    data to be served (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    stale = _seed_cached_map(tmp_path)
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: None)
+
+    with pytest.raises(FatalRtlBuddyError):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_the_cache_when_the_back_pointer_is_gone(tmp_path):
+    """A model that no longer requests an overlay returns None — and must not
+    leave the map an earlier configuration cached (#469)."""
+    model = ModelConfig(name="demo", filelist=[], path=str(tmp_path / "models.yaml"))
+    stale = _seed_cached_map(tmp_path)
+
+    assert cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model) is None
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_a_map_the_analyzer_wrote_then_rejected(
+    tmp_path, monkeypatch
+):
+    """The analyzer writes the map before it finishes, so an unsupported exit
+    code arrives with the file already recreated. Clearing only up front would
+    leave the rejected build's map as what the hub serves (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    out_path = cdc_builder.domain_map_path(tmp_path, "demo")
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def _writes_then_dies(cmd, stdout=None, stderr=None, **kwargs):
+        target = Path(cmd[cmd.index("--emit-domain-map") + 1])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('{"clocks": ["half built"]}')
+        return type("R", (), {"returncode": 2})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", _writes_then_dies)
+
+    with pytest.raises(FatalRtlBuddyError, match="exited with code 2"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not out_path.exists()
