@@ -267,6 +267,33 @@ def test_suites_are_reported_as_they_drain_in_order(console, caplog):
     assert "passed" not in err
 
 
+def test_a_suite_is_not_drained_while_a_same_id_job_elsewhere_is_queued(
+    console, caplog
+):
+    """Two clusters can issue the same job number (#509).
+
+    Membership keyed by the bare id would hold ONE entry for both, so the
+    suite would be reported finished the moment either of them left the
+    queue — while the other is still pending.
+    """
+    console()
+    clock = _Clock()
+    handles = [
+        JobHandle("77", _handle("77").spec, cluster="alpha"),
+        JobHandle("77", _handle("77").spec, cluster="beta"),
+    ]
+    progress = DispatchProgress(
+        handles, backend="slurm", interval=60.0, max_wait=None, clock=clock
+    )
+
+    progress.observe(["beta:77"])  # alpha's 77 is gone, beta's is not
+    assert not _records(caplog, "dispatch.suite_drained")
+    clock.advance(100)
+    progress.observe([])
+    drained = _records(caplog, "dispatch.suite_drained")
+    assert [f["jobs"] for f in drained] == [2]
+
+
 def test_a_drained_suite_is_reported_once(console, caplog):
     console()
     clock = _Clock()

@@ -43,6 +43,7 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_console_event, log_event
+from .base import telemetry_key
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,12 @@ class DispatchProgress:
             label = labels.get(suite_dir)
             if label is None:
                 continue
-            self._suite_jobs.setdefault(label, set()).add(handle.job_id)
+            # Keyed the way the backend reports outstanding jobs: a job id
+            # alone is unique only within its cluster, and a fleet spread
+            # over two of them can hold the same number twice — one entry
+            # for both would report a suite finished while its twin is
+            # still queued (#509 review).
+            self._suite_jobs.setdefault(label, set()).add(telemetry_key(handle))
         self._drained: set[str] = set()
 
     # ---- reporting ---------------------------------------------------

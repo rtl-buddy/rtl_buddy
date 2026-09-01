@@ -130,7 +130,11 @@ class JobHandle:
 
 
 def telemetry_key(handle: JobHandle) -> str:
-    """Key identifying one handle in a :meth:`collect_telemetry` result.
+    """Identity of one handle in any per-job mapping the head keeps.
+
+    Named for its first consumer (:meth:`collect_telemetry`), used by
+    every mapping that must not merge two jobs: the collector's result and
+    the wait's outstanding set / per-suite membership alike.
 
     A job id is unique only within its cluster, and a run can span
     clusters — ``--clusters=a,b`` places each array wherever it can start

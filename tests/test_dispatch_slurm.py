@@ -2334,3 +2334,113 @@ def test_local_telemetry_argv_is_unchanged(monkeypatch):
         "100",
     ]
     assert telemetry == {}
+
+
+# ------------------------------- polling every cluster that ran a slice (#509)
+
+
+def test_the_wait_polls_every_cluster_and_outlasts_the_first_to_drain(monkeypatch):
+    """A remote slice absent from the LOCAL queue is not a drained slice.
+
+    One unqualified squeue reports the jobs it cannot see as gone, so the
+    wait would return and collection would read result files for jobs that
+    are still queued (#509 review). Both slices here carry job id 77.
+    """
+    queued = SimpleNamespace(
+        returncode=0, stdout="77_1|None|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    empty = SimpleNamespace(returncode=0, stdout="", stderr="")
+    calls, results = (
+        [],
+        [
+            empty,  # poll 1, alpha: already drained...
+            queued,  # ...poll 1, beta: still queued, so the wait must go on
+            empty,  # poll 2, alpha
+            empty,  # poll 2, beta
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    slept = []
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: slept.append(s))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("77_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77_1", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    # Two polls, each asking both clusters — not one unqualified query.
+    assert [argv[argv.index("-M") + 1] for argv in calls] == [
+        "alpha",
+        "beta",
+        "alpha",
+        "beta",
+    ]
+    # ...and it did not return on the first poll, when beta was queued.
+    assert len(slept) == 1
+
+
+def test_a_pending_slice_is_not_covered_by_its_twin_on_another_cluster(monkeypatch):
+    """The outstanding set is keyed per cluster, so ids cannot stand in."""
+    queued = SimpleNamespace(
+        returncode=0, stdout="77|None|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run([], [queued, queued]))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    handles = [
+        JobHandle("77", _spec(run_id=1), cluster="alpha"),
+        JobHandle("77", _spec(run_id=2), cluster="beta"),
+    ]
+    states = {}
+    for cluster in ("alpha", "beta"):
+        records = [slurm_module._parse_squeue_line("77|None|PENDING|0:00|rb:basic")]
+        cluster_states, _ = backend._outstanding(records, handles, cluster=cluster)
+        states.update(cluster_states)
+    # Two jobs outstanding, not one collapsed entry.
+    assert states == {"alpha:77": "pending", "beta:77": "pending"}
+
+
+def test_a_doomed_job_is_reaped_on_the_cluster_that_reported_it(monkeypatch):
+    """squeue answered for one cluster, so its ids belong to that cluster."""
+    doomed = SimpleNamespace(
+        returncode=0,
+        stdout="77_1|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+        stderr="",
+    )
+    empty = SimpleNamespace(returncode=0, stdout="", stderr="")
+    calls, results = [], [empty, doomed, empty, empty, empty]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("77_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77_1", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    # beta reported it, so beta is where it is cancelled — never alpha.
+    assert ["scancel", "-M", "beta", "77"] in calls
+    assert ["scancel", "-M", "alpha", "77"] not in calls
+
+
+def test_the_local_wait_argv_is_unchanged(monkeypatch):
+    """The single-cluster path must be byte-identical to before #509."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [JobHandle("500_1", _spec(run_id=1)), JobHandle("500_2", _spec(run_id=2))]
+    )
+    (argv,) = calls
+    assert argv == [
+        "squeue",
+        "--noheader",
+        f"--format={slurm_module._SQUEUE_FORMAT}",
+        f"--states={slurm_module._ACTIVE_STATES}",
+        "--jobs",
+        "500",
+    ]

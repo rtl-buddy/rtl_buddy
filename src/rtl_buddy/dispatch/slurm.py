@@ -1084,7 +1084,7 @@ class SlurmDispatchBackend(DispatchBackend):
             )
         return results
 
-    def _reap_never_satisfied(self, lines, *, cwd, clusters=None) -> list[dict]:
+    def _reap_never_satisfied(self, lines, *, cwd, cluster=None) -> list[dict]:
         """Split queued jobs into those still coming and those already dead.
 
         A job whose ``afterok`` build failed is reported PENDING with reason
@@ -1122,17 +1122,14 @@ class SlurmDispatchBackend(DispatchBackend):
                 "dispatch.dependency_never_satisfied",
                 backend=self.name,
                 jobs=doomed,
+                cluster=cluster,
             )
             # Cancel by base id: one scancel clears a whole pending array.
-            # Grouped by cluster, because squeue reports ids without saying
-            # which cluster they belong to and an unqualified scancel would
-            # aim at the local one (#509 review); `clusters` carries what
-            # the submissions recorded.
+            # These ids came from a squeue asked about ONE cluster, so that
+            # is the cluster to cancel them on — an unqualified scancel
+            # would aim at the local one (#509 review).
             base_ids = list(dict.fromkeys(j.split("_")[0] for j in doomed))
-            by_cluster: dict[str | None, list[str]] = {}
-            for base in base_ids:
-                by_cluster.setdefault((clusters or {}).get(base), []).append(base)
-            for cluster, ids, proc in self._scancel(by_cluster, cwd=cwd):
+            for cluster, ids, proc in self._scancel({cluster: base_ids}, cwd=cwd):
                 if proc.returncode == 0:
                     continue
                 # These jobs are already out of `remaining`, so the run will
@@ -1150,8 +1147,8 @@ class SlurmDispatchBackend(DispatchBackend):
                 )
         return remaining
 
-    def _outstanding(self, records, handle_ids):
-        """Queue records → ({outstanding handle id: state}, longest running).
+    def _outstanding(self, records, handles, *, cluster=None):
+        """Queue records → ({outstanding handle key: state}, longest running).
 
         The queue speaks in lines and the run is counted in jobs, so every
         record is expanded to the handle ids it covers (an array pending as
@@ -1159,19 +1156,31 @@ class SlurmDispatchBackend(DispatchBackend):
         no known handle still counts as itself: dropping it would let the
         wait end while that job is queued, and being conservative here
         costs at most an over-count for one poll.
+
+        Keyed by :func:`telemetry_key`, and matched only against the
+        handles of the cluster this poll asked: a job id repeats across
+        clusters, so an unqualified key would let one cluster's job stand
+        in for another's and take the twin out of the outstanding set with
+        it (#509 review). ``records`` therefore has to come from a squeue
+        that named ``cluster``.
         """
-        known = set(handle_ids)
+        keys = {
+            h.job_id: telemetry_key(h)
+            for h in handles
+            if h is not None and getattr(h, "cluster", None) == cluster
+        }
+        handle_ids = list(keys)
         outstanding: dict[str, str] = {}
         longest = None
         for record in records:
             running = record["state"] == _SQUEUE_RUNNING_STATE
             expanded = [
-                job_id
+                keys[job_id]
                 for job_id in _expand_squeue_id(record["id"], handle_ids)
-                if job_id in known
-            ] or [record["id"]]
-            for job_id in expanded:
-                outstanding[job_id] = "running" if running else "pending"
+                if job_id in keys
+            ] or [f"{cluster}:{record['id']}" if cluster else record["id"]]
+            for key in expanded:
+                outstanding[key] = "running" if running else "pending"
             if running:
                 # %M is the same [DD-]HH:MM:SS shape sacct's TotalCPU uses.
                 elapsed = _parse_cpu_time_to_seconds(record["time"])
@@ -1182,16 +1191,13 @@ class SlurmDispatchBackend(DispatchBackend):
     def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
         if not handles:
             return
-        ids = ",".join(self._base_ids(handles))
         cwd = self._cwd_of(handles)
-        handle_ids = [h.job_id for h in handles if h is not None]
-        # base id -> the cluster that accepted it, so a reaping scancel can
-        # be aimed where the job actually is.
-        clusters = {
-            base: cluster
-            for cluster, ids in self._base_ids_by_cluster(handles).items()
-            for base in ids
-        }
+        # One poll per cluster the fleet was accepted on. `squeue` answers
+        # for the LOCAL cluster unless `-M` says otherwise, so a single
+        # unqualified poll reports a remote slice as absent — which reads
+        # as drained, and collection would run while it is still queued
+        # (#509 review). Grouped the way cancellation and telemetry are.
+        by_cluster = self._base_ids_by_cluster(handles)
         progress = DispatchProgress(
             handles,
             backend=self.name,
@@ -1207,29 +1213,40 @@ class SlurmDispatchBackend(DispatchBackend):
             clock=time.monotonic,
         )
         while True:
-            proc = subprocess.run(
-                [
-                    "squeue",
-                    "--noheader",
-                    f"--format={_SQUEUE_FORMAT}",
-                    f"--states={_ACTIVE_STATES}",
-                    "--jobs",
-                    ids,
-                ],
-                capture_output=True,
-                text=True,
-                cwd=cwd,
-            )
-            # squeue errors ("Invalid job id specified") once every job
-            # has aged out of the queue — that is completion, not failure.
-            records = (
-                self._reap_never_satisfied(
-                    proc.stdout.splitlines(), cwd=cwd, clusters=clusters
+            states: dict[str, str] = {}
+            longest = None
+            for cluster, base_ids in by_cluster.items():
+                proc = subprocess.run(
+                    [
+                        "squeue",
+                        "--noheader",
+                        f"--format={_SQUEUE_FORMAT}",
+                        f"--states={_ACTIVE_STATES}",
+                        *(["-M", cluster] if cluster else []),
+                        "--jobs",
+                        ",".join(base_ids),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=cwd,
                 )
-                if proc.returncode == 0
-                else []
-            )
-            if not records:
+                # squeue errors ("Invalid job id specified") once every job
+                # has aged out of the queue — that is completion, not
+                # failure, and it is per cluster: the others are still asked.
+                if proc.returncode != 0:
+                    continue
+                records = self._reap_never_satisfied(
+                    proc.stdout.splitlines(), cwd=cwd, cluster=cluster
+                )
+                cluster_states, cluster_longest = self._outstanding(
+                    records, handles, cluster=cluster
+                )
+                states.update(cluster_states)
+                if cluster_longest is not None and (
+                    longest is None or cluster_longest[1] > longest[1]
+                ):
+                    longest = cluster_longest
+            if not states:
                 progress.finish()
                 log_event(
                     logger,
@@ -1239,7 +1256,6 @@ class SlurmDispatchBackend(DispatchBackend):
                     jobs=len(handles),
                 )
                 return
-            states, longest = self._outstanding(records, handle_ids)
             progress.observe(states.keys(), states=states, longest=longest)
             time.sleep(self.poll_interval)
 
