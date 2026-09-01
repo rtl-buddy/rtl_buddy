@@ -554,7 +554,18 @@ def _parse_subroutine_header(
 
 
 def _is_class_method(stack: list[_Scope]) -> bool:
-    """Whether the innermost enclosing object scope is a class."""
+    """Whether the innermost enclosing object scope is a class.
+
+    A `function`/`task` scope between the declaration and the class does not
+    stop the walk, and deliberately so: SystemVerilog has no nested
+    subroutines to distinguish. A subroutine body admits `tf_item_declaration`
+    -- data, type, parameter and `let` declarations -- and not a `function` or
+    `task` declaration (LRM 1800-2017 A.2.7/A.2.8), so a subroutine can only
+    be declared directly in a class, module, interface, program, package or
+    generate block. slang agrees, rejecting every nested form with
+    "expected statement". Restricting the walk to a direct class scope would
+    therefore only change the verdict on input that does not compile.
+    """
     for scope in reversed(stack):
         if scope.keyword == "class":
             return True

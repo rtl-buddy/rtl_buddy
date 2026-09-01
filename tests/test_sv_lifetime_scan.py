@@ -344,6 +344,10 @@ def test_void_function_declared_without_a_port_list():
 
 
 def test_nested_function_inside_an_automatic_function_is_exempt():
+    """Pins behaviour on input SystemVerilog does not actually allow — a
+    subroutine body admits no `function`/`task` declaration (LRM A.2.7/A.2.8)
+    and slang rejects this with "expected statement". Kept so the scan's
+    handling of it stays stable, not because the shape is supported."""
     src = dedent("""\
         module m;
           function automatic int outer(input int a);
@@ -1598,3 +1602,119 @@ def test_an_explicit_static_lifetime_outside_a_class_is_still_reported():
         endmodule
     """)
     assert [f.name for f in scan_text(src, "m.sv")] == ["f", "run"]
+
+
+# ---------------------------------------------------------------------------
+# Nested subroutines do not exist in SystemVerilog (review round 15)
+# ---------------------------------------------------------------------------
+
+# A subroutine body admits `tf_item_declaration` — data, type, parameter and
+# `let` declarations — and NOT a `function`/`task` declaration (LRM 1800-2017
+# A.2.7/A.2.8). Subroutines are declared directly in a module, interface,
+# program, package, class or generate block. slang rejects every nested form
+# below with "expected statement", verified for: an in-class method with a
+# nested `function static` and with a nested plain `function`, an out-of-block
+# `C::outer` with a nested `function static`, a module-scope `outer` with a
+# nested `function static` and with a nested plain `function`, and an in-class
+# `task` with a nested `task static`.
+#
+# So there is no legal nested subroutine whose explicit `static` lifetime the
+# class-method exemption could swallow, and `_is_class_method` walking past an
+# enclosing subroutine scope cannot hide a real hazard. These tests pin the
+# scan's behaviour on the uncompilable input rather than assert a verdict on
+# it — the point is that it stays stable and does not crash.
+
+_NESTED_IN_CLASS = dedent("""\
+    class C;
+      function int outer(input int a);
+        function static int inner(input int b); return b; endfunction
+        return inner(a);
+      endfunction
+    endclass
+""")
+
+_NESTED_OUT_OF_BLOCK = dedent("""\
+    module m;
+      function int C::outer(input int a);
+        function static int inner(input int b); return b; endfunction
+        return inner(a);
+      endfunction
+    endmodule
+""")
+
+_NESTED_IN_MODULE = dedent("""\
+    module m;
+      function automatic int outer(input int a);
+        function static int inner(input int b); return b; endfunction
+        return inner(a);
+      endfunction
+    endmodule
+""")
+
+_NESTED_TASK_IN_CLASS = dedent("""\
+    class C;
+      task outer();
+        task static inner(); endtask
+      endtask
+    endclass
+""")
+
+
+@pytest.mark.parametrize(
+    "src, expected",
+    [
+        # Inside a real class scope the exemption applies to both.
+        (_NESTED_IN_CLASS, []),
+        (_NESTED_TASK_IN_CLASS, []),
+        # An out-of-block definition pushes a subroutine scope, not a class
+        # one, so the nested declaration is judged on its own explicit
+        # lifetime. Neither answer is "right" for input that cannot compile.
+        (_NESTED_OUT_OF_BLOCK, ["inner"]),
+        (_NESTED_IN_MODULE, ["inner"]),
+    ],
+)
+def test_nested_subroutine_shapes_are_stable(src, expected):
+    assert [f.name for f in scan_text(src, "m.sv")] == expected
+
+
+def test_a_class_method_with_a_legal_body_declaration_is_still_exempt():
+    """What a subroutine body may actually contain — data, parameter, type and
+    `let` declarations — none of which is a subroutine."""
+    src = dedent("""\
+        class C;
+          function int outer(input int a);
+            int scratch;
+            localparam int P = 4;
+            typedef bit [3:0] nib_t;
+            let double(v) = v * 2;
+            return double(a) + P + scratch;
+          endfunction
+        endclass
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_a_module_function_with_a_legal_body_declaration_is_still_reported():
+    src = dedent("""\
+        module m;
+          function int outer(input int a);
+            int scratch;
+            localparam int P = 4;
+            return a + P + scratch;
+          endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "outer")]
+
+
+def test_a_class_method_does_not_leak_its_exemption_to_a_later_module():
+    """The exemption follows the scope stack, so it ends with the class."""
+    src = dedent("""\
+        class C;
+          function int inside(input int a); return a; endfunction
+        endclass
+        module m;
+          function int outside(input int a); return a; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["outside"]
