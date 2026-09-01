@@ -355,7 +355,7 @@ Testbench fields:
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
 | `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`; inherited by tests |
-| `toplevel` | Required for cocotb | DUT top passed as `COCOTB_TOPLEVEL` |
+| `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Passed to the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Not defaulted to `name` |
 | `cocotb.module` | Required for cocotb | Python module name or list passed as `COCOTB_TEST_MODULES` |
 
 Test fields:
@@ -386,6 +386,14 @@ Test fields:
 Builder precedence is CLI `--builder`, test `builder`, suite `builder`, then the active platform default. A `reglvl` map resolves against the effective builder.
 
 Coverage processing uses the platform-selected builder unless `--builder` is supplied. If a suite or test overrides the builder, use `--builder` for coverage runs to keep simulation and coverage family selection consistent.
+
+<a id="pinning-the-elaboration-top"></a>
+
+A testbench `toplevel:` roots the compile at that module: it is passed as Verilator `--top-module`, VCS `-top`, or Icarus `-s`. Without one, the simulator elects a top from filelist order: Verilator takes the first ordinary (non-`-v`) entry, so recomposing a model filelist renames the model and every emitted C++ file, and an ordinary input carrying a module nothing instantiates fails the build with `MULTITOP`. Declaring `toplevel:` fixes both, and a testbench missing from the composed filelist then fails at compile instead of silently producing a differently-named model. It is not defaulted to the testbench `name`, which is a config label rather than a module.
+
+For a plain SystemVerilog testbench, `toplevel:` names the **testbench**, not the DUT it instantiates. A `toplevel:` left over from when the field was only graph metadata and points at the DUT will compile and run, and report `NA`; see [Known Issues](../known-issues.md).
+
+A top pinned in the builder's `compile-time` opts wins over `toplevel:`, in any spelling the family accepts — Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus accepts the module glued to the flag (`-stb`). A disagreement between the two logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb testbenches follow the same rule: those backends emit their own top flag only when the builder pins none. Families other than Verilator, VCS, and Icarus get no top flag. The flag is part of the compile fingerprint, so two testbenches over one model with different `toplevel:` no longer share a build.
 
 Cocotb supports Verilator, Icarus, and VCS. `cocotb` must be installed and `cocotb-config` available; unsupported families or a missing `toplevel` are fatal. rtl_buddy reads `cocotb_results.xml`; cocotb tests do not need PASS/FAIL console markers.
 

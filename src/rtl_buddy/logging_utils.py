@@ -792,6 +792,24 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('reason') or fields.get('simulator')}); "
                 "it compiles per test"
             )
+        case "compile.toplevel_conflict":
+            # WARNING, so it reaches a default console: a builder opt that
+            # names a different top than the testbench does is how a suite
+            # silently elaborates a design its config does not name.
+            # `configured` is absent when the configured flag is bare (a
+            # trailing `--top`, or one followed by another option) — say so
+            # rather than rendering the missing value as "None".
+            configured = fields.get("configured")
+            pin = (
+                f"{fields.get('flag')} {configured}"
+                if configured is not None
+                else f"{fields.get('flag')} with no value"
+            )
+            return (
+                f"{target or 'compile'}: builder opts pin {pin}, which "
+                f"overrides this testbench's toplevel: "
+                f"{fields.get('toplevel')} — the configured top is used"
+            )
         case "dispatch.compile_mem_unparseable":
             return (
                 f"cfg-dispatch compile mem {fields.get('mem')!r} is not a "
