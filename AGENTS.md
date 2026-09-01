@@ -97,3 +97,9 @@ CLI help changes, regenerate `docs/reference/cli.md` with
 - Keep comments and agent guidance concise; link to canonical documentation
   instead of copying it.
 - Do not merge, force-push, or change unrelated work without explicit approval.
+
+## Code Review Rules
+
+The authoritative review procedure and guideline routing live in
+[Code Reviews](docs/development/reviews.md). Be comprehensive in your review to
+avoid needing repeated reviews.
