@@ -1545,6 +1545,22 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "letters, digits or underscore ('$' is legal SV but "
                 "substitutes in the generated Tcl)"
             )
+        case "mut_config.top_override_unused":
+            return (
+                f"campaign {fields.get('name')!r} declares top "
+                f"{fields.get('top')!r} but configures no fpv oracle — only "
+                "the fpv oracle elaborates a top, so the sim oracle scores "
+                "mutants through the test suite's own testbenches and this "
+                "value has no effect"
+            )
+        case "mut_runner.fpv_top_override":
+            return (
+                f"campaign {fields.get('campaign')!r} elaborates the fpv "
+                f"oracle at top {fields.get('top')!r} instead of "
+                f"{fields.get('fpv_top')!r} declared by verification "
+                f"{fields.get('verification')!r} — the campaign top wins for "
+                "the baseline and every mutant"
+            )
         case "model_config.invalid_model_name":
             return (
                 f"{fields.get('path')}: model name {fields.get('name')!r} is "
