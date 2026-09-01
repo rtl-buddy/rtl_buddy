@@ -3197,6 +3197,36 @@ class RtlBuddy:
         suite_compile = suite_cfg.get_compile()
 
         # (2) Build job — unless nothing in this suite could use its output.
+        # `sbatch-args` is appended after the generated flags and therefore
+        # wins, and the `SBATCH_*` environment reaches sbatch through the
+        # inherited environment, so either can mean the reservation this
+        # suite resolved is NOT what its jobs are submitted with.
+        # Right-sizing must not take it for the request; recording nothing
+        # sends it back to the scheduler's own `ReqCPUS` (#505 review). NOT
+        # sanitized: a site that exports these means them.
+        #
+        # Read once, HERE, before this suite submits anything, and carried
+        # in the returned state to analysis. A regression submits every
+        # suite before collecting any, and a later suite's sweep hook is
+        # `exec()`d in this same process (see hooks.py) — so it can set or
+        # unset `SBATCH_*` between this submit and this suite's analysis.
+        # Re-reading the environment there would judge these jobs by a
+        # later suite's environment: the wrong cpu denominator, and an edit
+        # hint naming an override that was never active for them.
+        cpus_request_args = cpu_request_overrides(
+            getattr(dispatch_cfg, "sbatch_args", None)
+        )
+        if cpus_request_args:
+            # DEBUG, once per suite submit: the override is deliberate
+            # configuration, and the only thing worth saying is why the
+            # advice is derived from sacct rather than from the YAML.
+            log_event(
+                logger,
+                logging.DEBUG,
+                "rightsize.request_from_scheduler",
+                suite_dir=suite_dir,
+                overrides=cpus_request_args,
+            )
         # For a builder with no shared-build support the build pass compiles
         # on a compute node and produces no stamp any sim job can reuse, so
         # submitting it burns a compile and adds queue latency for nothing
@@ -3246,29 +3276,6 @@ class RtlBuddy:
         # share a reservation shape. Consumes the single expansion; no hook.
         groups = {}  # (cpus, mem, time) -> list[(row index, TestJobSpec)]
         compile_resources = resolve_compile_resources(dispatch_cfg, suite_compile)
-        # `sbatch-args` is appended after the generated flags and therefore
-        # wins, and the `SBATCH_*` environment reaches sbatch through the
-        # inherited environment, so either can mean the reservation resolved
-        # above is NOT what the jobs are submitted with. Right-sizing must
-        # not take it for the request; recording nothing sends it back to
-        # the scheduler's own `ReqCPUS` (#505 review). Read here, at submit
-        # time, because that is when the environment these jobs inherit is
-        # the environment being read — and NOT sanitized: a site that
-        # exports these means them.
-        cpus_request_args = cpu_request_overrides(
-            getattr(dispatch_cfg, "sbatch_args", None)
-        )
-        if cpus_request_args:
-            # DEBUG, once per suite submit: the override is deliberate
-            # configuration, and the only thing worth saying is why the
-            # advice is derived from sacct rather than from the YAML.
-            log_event(
-                logger,
-                logging.DEBUG,
-                "rightsize.request_from_scheduler",
-                suite_dir=suite_dir,
-                overrides=cpus_request_args,
-            )
         for entry in entries:
             cfg = entry["cfg"]
             resources = resolve_resources(dispatch_cfg, cfg)
@@ -3428,6 +3435,11 @@ class RtlBuddy:
             # reservation from the root config alone and has no suite_cfg
             # (#497) — same route as build_telemetry/build_compile_work.
             "suite_compile": suite_compile,
+            # What superseded this suite's resolved cpus, as it stood when
+            # these jobs were submitted. Snapshotted rather than recomputed
+            # at analysis, because the environment half of it can move under
+            # a later suite's in-process sweep hook (#505 review).
+            "cpus_override": cpus_request_args,
         }
 
     def _announce_dispatched_suite(self, state, *, backend, suite):
@@ -4226,9 +4238,17 @@ class RtlBuddy:
                     # request beats the generated flags, so neither the
                     # ratio nor the decomposition may be stated from it
                     # (#505 review).
-                    cpus_override=cpu_request_overrides(
-                        getattr(self.root_cfg.get_dispatch_cfg(), "sbatch_args", None)
-                    ),
+                    #
+                    # The submit-time snapshot, NOT a fresh read: a
+                    # regression submits every suite before collecting any,
+                    # and a later suite's sweep hook is `exec()`d in this
+                    # process, so `os.environ` here can be a different
+                    # environment from the one this build job inherited.
+                    # Recomputing would pick the wrong denominator and name
+                    # an override that was never active for it. This is also
+                    # what the per-test rows carry, so both halves of a
+                    # suite's advice describe one submission.
+                    cpus_override=(state or {}).get("cpus_override") or [],
                 )
             )
         for finding in findings:

@@ -876,6 +876,77 @@ def _build_telemetry_backend(monkeypatch, *, builds=None, build_telemetry=None):
     return backend
 
 
+def test_cpu_overrides_are_snapshotted_at_submit_not_reread_at_analysis(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The environment can move between a suite's submit and its analysis.
+
+    A dispatched regression submits every suite before collecting any, and
+    a suite's sweep hook is `exec()`d in this same process (hooks.py), so a
+    later suite's hook can set or unset `SBATCH_*` in the window between
+    this suite's jobs going out and its advice being computed. Re-reading
+    `os.environ` at analysis would judge these jobs by a different
+    environment: the wrong cpu denominator, and an `edit_hint` naming an
+    override that was never active for them (#505 review).
+
+    `wait_all` is that window — it runs after the last submit and before
+    the first collect — so mutating the environment there reproduces the
+    hook's effect exactly, without needing a second suite.
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    backend = _build_telemetry_backend(
+        monkeypatch,
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "req_cpus": 8,  # 4 tasks x the generated 2 cpus
+            "total_cpu_s": 200,  # 0.25 efficiency
+        },
+    )
+    backend.telemetry["fake-1"] = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 3600,
+        "alloc_cpus": 8,
+        "req_cpus": 8,
+        "total_cpu_s": 200.0,  # 0.25 efficiency
+    }
+
+    # Stand in for the later suite's sweep hook: same process, same window.
+    real_wait_all = backend.wait_all
+
+    def wait_all_then_change_the_environment(handles, **kwargs):
+        os.environ["SBATCH_NTASKS"] = "64"
+        return real_wait_all(handles, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_change_the_environment)
+
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert os.environ["SBATCH_NTASKS"] == "64", "the stand-in hook must have run"
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    cpus_rows = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus_rows, "both the test and the build job are over-reserved"
+    # Both halves of the suite's advice describe ONE submission: the
+    # environment as it stood when these jobs were sent.
+    assert {a["test"] for a in cpus_rows} == {"basic", "(build job)"}
+    for row in cpus_rows:
+        note = row["edit_hint"]["note"]
+        assert "`SBATCH_NTASKS=4`" in note, note
+        assert "64" not in note, note
+
+
 def test_collect_attaches_the_build_jobs_own_telemetry_to_its_envelope(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],

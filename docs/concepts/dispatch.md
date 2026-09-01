@@ -256,6 +256,8 @@ The same applies to the **environment**. `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NOD
 
 `SBATCH_CPUS_PER_TASK` is the one that looks like it should count and does not, for the same reason as `--cpus-per-gpu`: every submit path states `--cpus-per-task` on the command line, which beats the variable, so it can never take effect.
 
+The environment is read **once per suite, before that suite submits anything**, and the result is carried through to its analysis. A regression submits every suite before collecting any, and a sweep hook is `exec()`d in the head process, so a later suite's hook can set or unset `SBATCH_*` in between; re-reading it at analysis would judge an earlier suite's jobs by a later suite's environment. Both the per-test rows and the `(build job)` row use that one snapshot, so the two halves of a suite's advice always describe the same submission.
+
 All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: each distinct option is reported, because they combine rather than supersede one another.
 
 The set is deliberately narrow, because a false positive is not free — it discards a request rtl_buddy knows, retargets the edit hint away from the field that really governs, and disables the compile floor. Four near misses are excluded:
