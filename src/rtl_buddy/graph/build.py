@@ -405,7 +405,13 @@ class TestbenchTarget:
         the config tier puts in ``tb:<suite dir>#<name>``.
       suite_dir (str): Absolute suite directory. Anchors the testbench
         filelist's relative entries, exactly as the compile flow does.
-      tb_name (str): ``testbenches:`` entry name.
+      tb_names (list[str]): Every ``testbenches:`` entry collapsed into
+        this export. The de-duplication key is what the viewer is handed
+        — model, filelist, top — and deliberately excludes the entry
+        *name*, so one suite declaring the same elaboration twice under
+        two names elaborates it once. Both names are kept: each is a
+        real ``tb:`` node the config tier emitted, owed its own stitch
+        and its own row in any per-item report.
       tb_top (str): Module the export is rooted at — the testbench's
         ``toplevel:`` when declared, else its name (the project
         convention ``rb hier --view tb`` already relies on).
@@ -418,10 +424,15 @@ class TestbenchTarget:
 
     suite_rel: str
     suite_dir: str
-    tb_name: str
+    tb_names: list[str]
     tb_top: str
     model: ModelConfig
     test: TestConfig
+
+    @property
+    def tb_name(self) -> str:
+        """The first testbench claiming this export — its short name."""
+        return self.tb_names[0]
 
     @property
     def node_id(self) -> str:
@@ -435,13 +446,13 @@ class TestbenchTarget:
 
     @property
     def node_ids(self) -> list[str]:
-        """Every config-tier node this export stitches — one for a TB."""
-        return [self.node_id]
+        """One ``tb:`` node per collapsed testbench — each gets a stitch."""
+        return [testbench_id(self.suite_rel, name) for name in self.tb_names]
 
     @property
     def labels(self) -> list[str]:
-        """Every testbench this export stands for — one for a TB."""
-        return [self.label]
+        """One label per collapsed testbench, as ``node_ids`` is one id."""
+        return [f"{self.suite_rel}#{name}" for name in self.tb_names]
 
     @property
     def stitch_type(self) -> str:
@@ -467,7 +478,10 @@ def testbenches_from_suites(
     ``(model, suite dir, testbench filelist, tb top)``: that tuple is
     the entire input to the viewer, so a second invocation could only
     reproduce the first one's bytes. Names differing is not a
-    difference.
+    difference to the *exporter* — but it is one to the report, so every
+    collapsed name is remembered in ``tb_names`` and re-expanded by
+    ``node_ids`` and ``labels``. Exactly the rule
+    :func:`flow_runs_from_regressions` applies to runs.
 
     A testbench whose top is the DUT top (the model's ``top:`` when it
     declares one, else its name) is dropped: ``--tb-top <that top>``
@@ -503,8 +517,7 @@ def testbenches_from_suites(
         return []
     allowed = {_model_key(m) for m in models} if models is not None else None
 
-    seen: set[tuple] = set()
-    targets: list[TestbenchTarget] = []
+    by_key: dict[tuple, TestbenchTarget] = {}
     for path in _walk_yaml_files(verif, "tests.yaml"):
         suite_dir = os.path.dirname(os.path.realpath(path))
         suite_rel = rel_path(project_root, suite_dir)
@@ -526,20 +539,23 @@ def testbenches_from_suites(
                 tuple(tb.get_filelist()),
                 tb_top,
             )
-            if key in seen:
+            existing = by_key.get(key)
+            if existing is not None:
+                # Same export, different `testbenches:` entry (or the
+                # same one reached through a second test). Remember the
+                # name; the export itself is already accounted for.
+                if tb.get_name() not in existing.tb_names:
+                    existing.tb_names.append(tb.get_name())
                 continue
-            seen.add(key)
-            targets.append(
-                TestbenchTarget(
-                    suite_rel=suite_rel,
-                    suite_dir=suite_dir,
-                    tb_name=tb.get_name(),
-                    tb_top=tb_top,
-                    model=model,
-                    test=test,
-                )
+            by_key[key] = TestbenchTarget(
+                suite_rel=suite_rel,
+                suite_dir=suite_dir,
+                tb_names=[tb.get_name()],
+                tb_top=tb_top,
+                model=model,
+                test=test,
             )
-    return sorted(targets, key=lambda t: (t.suite_rel, t.tb_name))
+    return sorted(by_key.values(), key=lambda t: (t.suite_rel, t.tb_name))
 
 
 # ---------------------------------------------------------------------------
@@ -905,12 +921,40 @@ def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
 
     Returns:
       bool: True when something was actually removed.
+
+    Raises:
+      FatalRtlBuddyError: when the directory is there and cannot be
+        removed. Swallowing that would be the worst of both worlds — the
+        merged graph and the sidecar would say the model was skipped
+        while its old hierarchy stayed on disk and readable, which is
+        exactly the state this retraction exists to prevent. An
+        unwritable output directory is already the kind of setup problem
+        ``build_graph`` propagates rather than degrades. ``rmtree`` is
+        also not atomic — it removes what it can before failing — so a
+        swallowed error can leave a partial tree that no build produced.
     """
     target = out_dir / DESIGN_SUBDIR / model.name
     if not target.is_dir():
         return False
-    shutil.rmtree(target, ignore_errors=True)
-    return not target.exists()
+    try:
+        shutil.rmtree(target)
+    except OSError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.stale_export_not_dropped",
+            model=model.name,
+            path=str(target),
+            error=str(exc),
+        )
+        raise FatalRtlBuddyError(
+            f"graph build: model {model.name!r} declares `graph: false`, but "
+            f"its previous design-tier export could not be removed: {target} "
+            f"({exc}). Leaving it would keep serving a hierarchy this build "
+            f"says the model does not have — fix the permissions on that "
+            f"directory, or delete it by hand, and re-run."
+        ) from exc
+    return True
 
 
 def _model_ident(project_root: Path, model: ModelConfig) -> str:

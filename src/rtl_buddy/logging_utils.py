@@ -1477,6 +1477,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"is missing from the graph and its `targets` edge is left "
                 f"dangling, the DUT's hierarchy is not; see {fields.get('log')}"
             )
+        case "graph_build.stale_export_not_dropped":
+            return (
+                f"graph build: model {fields.get('model')} declares "
+                "`graph: false`, but its previous design-tier export at "
+                f"{fields.get('path')} could not be removed "
+                f"({fields.get('error')}) — that stale hierarchy would keep "
+                "being served; fix the directory's permissions or delete it "
+                "by hand"
+            )
         case "graph_build.duplicate_design_model":
             return (
                 f"graph build: more than one selected model is named "

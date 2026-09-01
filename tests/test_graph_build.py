@@ -1956,6 +1956,173 @@ def test_graph_false_model_skips_its_testbench_and_run_exports(
     assert "module:blk_a_chk" not in _nodes(graph)
 
 
+def _twin_testbench_suite(project: Path) -> None:
+    """Two `testbenches:` entries in one suite that elaborate identically.
+
+    Same model, same filelist, same explicit ``toplevel:`` — so the
+    de-duplication key, which is exactly what the viewer is handed, is
+    the same for both and only one export runs. The *names* differ, and
+    each is a `tb:` node the config tier emitted.
+    """
+    (project / "verif" / "blk_a" / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        '  - name: "tb_alpha"\n'
+        '    filelist: ["tb_top.sv"]\n'
+        "    toplevel: tb_top\n"
+        '  - name: "tb_beta"\n'
+        '    filelist: ["tb_top.sv"]\n'
+        "    toplevel: tb_top\n"
+        "tests:\n"
+        '  - name: "t_alpha"\n'
+        '    desc: "alpha"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_a"\n'
+        '    model_path: "../../design/blk_a/models.yaml"\n'
+        '    testbench: "tb_alpha"\n'
+        '  - name: "t_beta"\n'
+        '    desc: "beta"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_a"\n'
+        '    model_path: "../../design/blk_a/models.yaml"\n'
+        '    testbench: "tb_beta"\n'
+    )
+
+
+def test_two_testbenches_collapsing_into_one_export_keep_both_names(
+    graph_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The dedup key excludes the entry name, so both names must survive.
+
+    One export, two `tb:` nodes — and each of them really does elaborate
+    that hierarchy, so each is owed the observed stitch. Keeping only the
+    first stranded the twin, exactly as it would strand a flow run's
+    collapsed twin (which is why ``FlowRunTarget`` has kept every name
+    since #385).
+
+    ``FAKE_VIEW_TB_TOP`` makes the viewer report a top the config tier's
+    ``toplevel:`` did NOT declare, so the observed stitch is
+    distinguishable from the declared one and the assertion is about the
+    export rather than about the YAML.
+    """
+    _twin_testbench_suite(graph_project)
+    targets = graph_build.testbenches_from_suites(
+        graph_project, graph_project / "verif"
+    )
+    assert [t.tb_names for t in targets] == [["tb_alpha", "tb_beta"]]
+    assert targets[0].labels == ["verif/blk_a#tb_alpha", "verif/blk_a#tb_beta"]
+    assert targets[0].node_ids == [
+        "tb:verif/blk_a#tb_alpha",
+        "tb:verif/blk_a#tb_beta",
+    ]
+    # ...and the first name still answers for the export itself.
+    assert targets[0].tb_name == "tb_alpha"
+    assert targets[0].label == "verif/blk_a#tb_alpha"
+
+    monkeypatch.setenv("FAKE_VIEW_TB_TOP", "real_tb_top")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    # One export, not two: the dedup is intact.
+    assert len(_tb_calls(record)) == 1
+    graph = json.loads(build.graph_path.read_text())
+    stitches = {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "elaborates_as" and link["source"].startswith("tb:")
+    }
+    assert ("tb:verif/blk_a#tb_alpha", "module:real_tb_top") in stitches
+    assert ("tb:verif/blk_a#tb_beta", "module:real_tb_top") in stitches
+    assert not dangling_targets(graph)
+
+
+def test_both_collapsed_testbenches_are_reported_when_their_model_opts_out(
+    graph_project: Path, tmp_path: Path
+):
+    """Every opted-out testbench gets a row, collapsed twin included."""
+    _twin_testbench_suite(graph_project)
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    reported = [r["testbench"] for r in design.skipped if "testbench" in r]
+    assert reported == ["verif/blk_a#tb_alpha", "verif/blk_a#tb_beta"]
+    # And the envelope carries the same rows the sidecar does.
+    meta = json.loads(build.meta_path.read_text())
+    assert meta["tiers"][DESIGN_TIER]["skipped"] == design.skipped
+    assert _tb_calls(record) == []
+
+
+def test_a_stale_export_that_cannot_be_removed_is_fatal(
+    graph_project: Path, tmp_path: Path
+):
+    """Failing to retract is worse than never having tried.
+
+    The build would otherwise report the model as skipped while its old
+    per-model hierarchy stayed on disk and readable — the exact state the
+    retraction exists to prevent, now blessed by a green exit. An
+    unwritable output directory is the kind of setup problem
+    ``build_graph`` propagates rather than degrades.
+    """
+    if os.geteuid() == 0:  # pragma: no cover - depends on the runner
+        pytest.skip("root ignores directory permissions")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    build_graph(graph_project, **common)
+    design_dir = graph_project / "artefacts" / "graph" / "design"
+    assert (design_dir / "blk_a" / "graph.json").is_file()
+
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    design_dir.chmod(0o555)  # removing a child needs write on the parent
+    try:
+        with pytest.raises(FatalRtlBuddyError) as excinfo:
+            build_graph(graph_project, **common)
+    finally:
+        design_dir.chmod(0o755)
+    message = str(excinfo.value)
+    assert "blk_a" in message
+    assert str(design_dir / "blk_a") in message
+    assert "graph: false" in message
+    # `rmtree` is not atomic: it removes what it can and then fails, so a
+    # refused retraction leaves a *partial* tree behind. That is a second
+    # reason it cannot be swallowed — the artefact directory is now in a
+    # state no build produced.
+    assert (design_dir / "blk_a").is_dir()
+    # With the permission restored the same build succeeds and retracts.
+    build_graph(graph_project, **common)
+    assert not (design_dir / "blk_a").exists()
+
+
+def test_the_unremovable_export_event_has_a_human_message_case():
+    """Guidelines → Logging: an ERROR event needs its own case, or the
+    log says less than the exception the user already saw."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.stale_export_not_dropped",
+        {
+            "model": "blk_a",
+            "path": "artefacts/graph/design/blk_a",
+            "error": "Permission denied",
+        },
+    )
+    assert msg != "graph build stale_export_not_dropped"
+    assert "blk_a" in msg
+    assert "artefacts/graph/design/blk_a" in msg
+    assert "Permission denied" in msg
+
+
 def test_opting_out_retracts_a_models_previously_written_export(
     graph_project: Path, tmp_path: Path
 ):
