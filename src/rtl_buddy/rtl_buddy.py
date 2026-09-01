@@ -138,7 +138,7 @@ from .tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileRun,
 )
 from .tools.coverage import CoverageReporter
-from .tools.artifact_paths import test_artifact_dir
+from .tools.artifact_paths import RESULT_JSON_NAME, test_artifact_dir
 from .tools.hier_rtl_buddy_view import (
     VIEW_BLOCK_DIAGRAM_MIN_VERSION,
     RtlBuddyView,
@@ -2768,7 +2768,7 @@ class RtlBuddy:
         for run_id, res in zip(run_ids, results):
             path = (
                 Path(test_artifact_dir(suite_dir, test_cfg.get_name(), run_id=run_id))
-                / "result.json"
+                / RESULT_JSON_NAME
             )
             try:
                 write_result_json(

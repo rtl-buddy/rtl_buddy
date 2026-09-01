@@ -62,7 +62,8 @@ of the global reservation.
 ## Shared-build gotchas
 
 Any tracked compile input change invalidates a shared build; stamps compare
-content, so a byte-for-byte regeneration does not. Runtime-only plusargs, seeds,
+content, so a byte-for-byte regeneration does not. Stamps list each
+`+incdir+`/`-y` directory's contents, so a header edit rebuilds on every builder. Runtime-only plusargs, seeds,
 and simulation timeout do not either. Batch compile-input changes before
 launching a large build; use independent cheap suites while it compiles.
 

@@ -38,5 +38,5 @@ def test_bundled_skills_keep_critical_operational_guidance():
     tests = _bundled_skill_text("rtl-buddy-test")
     assert "result.json" in tests
     assert "multi-select when available" in tests
-    assert "VCS/Icarus may not report header dependencies" in tests
+    assert "VCS/Icarus report no header dependencies" in tests
     assert "configured extra compile" in tests

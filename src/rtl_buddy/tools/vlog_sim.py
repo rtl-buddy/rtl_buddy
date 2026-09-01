@@ -9,6 +9,7 @@ vlog_sim module handles verilog simulations for rtl-buddy
 """
 
 import contextlib
+import fnmatch
 import hashlib
 import json
 import os
@@ -33,7 +34,16 @@ from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
 from .vlog_cov import VlogCov
-from .artifact_paths import shared_build_dir, test_artifact_dir, test_build_dir_name
+from .artifact_paths import (
+    ARTIFACT_DIRNAME,
+    BUILD_DIR_PREFIX,
+    DISPATCH_OUTPUT_PATTERNS,
+    RESULT_JSON_NAME,
+    SHARED_BUILDS_DIRNAME,
+    shared_build_dir,
+    test_artifact_dir,
+    test_build_dir_name,
+)
 
 import time
 import pprint
@@ -101,6 +111,19 @@ _CARRIED_TRANSCRIPT_HEADER = (
 # one-line lint error became three rounds of "raise compile memory" (#498).
 COMPILE_TRANSCRIPT_NAME = "compile.log"
 COMPILE_RETRY_TRANSCRIPT_NAME = "compile.retry.log"
+
+# The rest of what a test writes into its artefact directory, named rather
+# than spelled inline at the one `_get_*_path` that builds each: the
+# shared-build stamp has to recognise rtl_buddy's own outputs to keep them
+# out of a directory listing (#478), and a list of names guessed
+# separately from the code that writes them is a list that goes stale.
+FILELIST_NAME = "run.f"
+TEST_LOG_NAME = "test.log"
+TEST_ERR_NAME = "test.err"
+TEST_RANDSEED_NAME = "test.randseed"
+COVERAGE_DAT_NAME = "coverage.dat"
+SIMV_NAME = "simv"
+ICARUS_SNAPSHOT_NAME = "simv.vvp"
 
 # Simulator families whose compile output rtl_buddy can redirect wholesale
 # into a shared build dir, and whose simv still runs from there once other
@@ -357,8 +380,89 @@ def pinned_simv_path(builder_cfg):
 # Matches the option prefixes VlogFilelist emits into run.f (see
 # VlogFilelist._extract): `+incdir+`, `+libext+`, `+define+`, `-v `, `-y `,
 # `-F `. A `+define+` entry never resolves to a file, so it stamps as a raw
-# line — enough for the fingerprint to notice when the defines change.
-_FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*)$")
+# line — enough for the fingerprint to notice when the defines change. The
+# option is captured as well as the path: `+incdir+` and `-y ` are the two
+# that name a *directory*, and they are stamped by listing it (#478).
+_FILELIST_OPTION_RE = re.compile(r"^(\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*)$")
+
+_INCDIR_OPTION = "+incdir+"
+_LIBRARY_DIR_OPTION = "-y"
+
+# Directory names an `+incdir+` walk must not descend into (#478 review).
+#
+# rtl_buddy's own artefact trees are the load-bearing half: a `+incdir+.`
+# declared in a tests.yaml, or a `+incdir+..` from a design directory that
+# contains verif suites, makes the walk reach `artefacts/` — and the files
+# under it (run.f, compile.log, the obj_dir, the stamp itself) are written
+# AFTER the fingerprint that lists them. Every later process would then see
+# a different listing and recompile, which under `--dispatch` is every
+# gated simulation job. Derived from the constants the writers use, so
+# renaming a managed directory cannot leave this behind.
+#
+# Dot-directories are the other half: `.git`, `.svn`, `.hg` and friends
+# hold no compile input and can be enormous.
+_PRUNED_WALK_DIRNAMES = frozenset({ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME})
+_PRUNED_WALK_DIR_PREFIXES = (BUILD_DIR_PREFIX,)
+
+# Files that are metadata rather than compile input, as fnmatch patterns.
+#
+# A *name-based* denylist, not "everything starting with a dot": a dot-file
+# can be perfectly ordinary input — `` `include ".config.svh" `` resolves
+# and compiles — so skipping every dot name would reopen the gap this
+# stamp exists to close. What is listed here is editor and VCS bookkeeping
+# no simulator ever reads, and `.DS_Store` in particular, which browsing an
+# include directory in Finder writes and which used to force a full
+# recompile.
+_BOOKKEEPING_FILE_PATTERNS = (
+    ".DS_Store",
+    ".gitignore",
+    ".gitattributes",
+    ".gitkeep",
+    "*.swp",  # vim swap
+    "*.swo",
+    "*~",  # emacs/gedit backup
+    ".#*",  # emacs lock
+    "#*#",  # emacs autosave
+)
+
+# rtl_buddy's OWN outputs, by name (#478 review).
+#
+# Pruning the `artefacts` directory is not enough on its own, because an
+# include root can *be* one: a `preproc` hook is documented to generate
+# headers into its `artifact_dir`, and the filelist then carries
+# `+incdir+artefacts/<test>` or a subdirectory of it. The walk starts
+# inside the managed tree, so no `artefacts` component is ever seen — and
+# every one of these files is written AFTER the fingerprint that would list
+# it, so the generated header the project actually wanted tracked came with
+# run.f, compile.log, test.log, the result envelope and the stamp itself
+# attached, and no run ever validated the stamp again.
+#
+# Generated inputs under `artefacts/` MUST stay tracked, so the tree is
+# walked and the outputs are removed by name instead. Every entry is taken
+# from the constant the writer uses, not restated here.
+_MANAGED_OUTPUT_FILE_PATTERNS = (
+    FILELIST_NAME,
+    COMPILE_TRANSCRIPT_NAME,
+    COMPILE_RETRY_TRANSCRIPT_NAME,
+    TEST_LOG_NAME,
+    TEST_ERR_NAME,
+    TEST_RANDSEED_NAME,
+    COVERAGE_DAT_NAME,
+    SIMV_NAME,
+    ICARUS_SNAPSHOT_NAME,
+    SHARED_BUILD_STAMP_NAME,
+    RESULT_JSON_NAME,
+) + DISPATCH_OUTPUT_PATTERNS
+
+_NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PATTERNS
+
+# A directory-valued source entry is `[line, None, None, None, listing]`:
+# four elements of the ordinary `[path, size, mtime_ns, sha]` shape, all
+# empty because a directory has no content of its own, plus the listing of
+# the regular files inside it. The extra element is deliberate — a stamp
+# written before #478 has four, so it cannot compare equal and fails closed
+# into exactly one rebuild (the #494 precedent).
+_DIRECTORY_ENTRY_LEN = 5
 
 # Verilator writes a make-style dependency file naming every input the
 # verilation consumed — sources, headers reached through `+incdir+`/`-y`,
@@ -702,6 +806,53 @@ def _hashed_stat_entry(
     ]
 
 
+def _is_pruned_walk_dir(name: str) -> bool:
+    """Should an ``+incdir+`` walk refuse to descend into ``name``?
+
+    See :data:`_PRUNED_WALK_DIRNAMES`: rtl_buddy's own artefact trees,
+    whose contents are written *after* the fingerprint that would list
+    them, and dot-directories, which hold no compile input.
+    """
+    return (
+        name.startswith(".")
+        or name in _PRUNED_WALK_DIRNAMES
+        or name.startswith(_PRUNED_WALK_DIR_PREFIXES)
+    )
+
+
+def _is_non_input_file(name: str) -> bool:
+    """Is ``name`` bookkeeping or rtl_buddy's own output, not a compile input?
+
+    Matched against :data:`_NON_INPUT_FILE_PATTERNS` by name only, and
+    everywhere in a listing rather than only under ``artefacts/``: an
+    include root can *be* an artefact directory (a ``preproc`` hook
+    generating headers into its ``artifact_dir``), and then no path
+    component says so. Every other file is listed, dot-prefixed ones
+    included — ``.config.svh`` is a legal include and dropping it would be
+    exactly the silent gap #478 is about.
+    """
+    return any(
+        fnmatch.fnmatchcase(name, pattern) for pattern in _NON_INPUT_FILE_PATTERNS
+    )
+
+
+def _is_directory_entry(entry) -> bool:
+    """Is ``entry`` a ``+incdir+``/``-y`` entry carrying a directory listing?
+
+    The listing is the last element and is itself a list of ordinary
+    tracked-input entries, keyed by the file's path *relative to the
+    directory*. The directory's own path is already fixed by ``entry[0]``,
+    the ``run.f`` line the compile key hashes, so every test sharing a build
+    carries the same one and repeating it per file would only bloat the
+    stamp.
+    """
+    return (
+        isinstance(entry, list)
+        and len(entry) == _DIRECTORY_ENTRY_LEN
+        and isinstance(entry[-1], list)
+    )
+
+
 def _entry_matches(stored, current: list) -> bool:
     """Does a stored stamp entry still describe what ``current`` describes?
 
@@ -718,9 +869,17 @@ def _entry_matches(stored, current: list) -> bool:
     equality, which is fail-closed in both directions: a stamp that recorded
     a hash for a file we can no longer hash counts as changed.
 
+    **A directory entry compares by its listing.** An entry for a
+    ``+incdir+`` or ``-y`` directory (see :func:`_is_directory_entry`)
+    carries the files inside it instead of stats of its own, and matches
+    only when that whole listing does — so a file added to, removed from, or
+    edited inside such a directory is a change for every builder, whether or
+    not it emits a dependency file (#478).
+
     Anything that is not an entry of this version's shape — a 3-element
-    entry from a stamp written before #494, say — is "we do not know", and
-    the only honest reading of that is one rebuild.
+    entry from a stamp written before #494, or a 4-element one where #478
+    now records a listing — is "we do not know", and the only honest reading
+    of that is one rebuild.
     """
     if not isinstance(stored, list) or len(stored) != len(current):
         return False
@@ -731,6 +890,16 @@ def _entry_matches(stored, current: list) -> bool:
         return False
     if stored[0] != current[0]:
         return False
+    if len(stored) == _DIRECTORY_ENTRY_LEN:
+        # A directory entry's last element is a listing, not a hash, so the
+        # generic tail comparison below would compare it by equality and
+        # re-introduce exactly the mtime sensitivity #494 removed. Recurse
+        # instead: the same content-decides rule, one level down. A
+        # five-element entry that is not a listing is a shape this version
+        # did not write, and fails closed.
+        if not (_is_directory_entry(stored) and _is_directory_entry(current)):
+            return False
+        return _entry_lists_match(stored[-1], current[-1])
     stored_sha, current_sha = stored[-1], current[-1]
     if stored_sha is not None and current_sha is not None:
         # A size mismatch under equal content hashes cannot happen for a
@@ -756,6 +925,42 @@ def _entry_lists_match(stored, current) -> bool:
     )
 
 
+def _first_listing_mismatch(stored, current):
+    """What made two directory listings disagree, for a diagnostic.
+
+    Diffed **by name**, not position: an added or removed file shifts every
+    entry after it, and answering that with "(entry count 3 -> 4)" names the
+    directory but not the file, which is the whole point of the line. So a
+    name only one side carries is reported as ``+added.svh`` /
+    ``-removed.svh``, and a name both carry that no longer matches is
+    reported as itself. Diagnostic only — the decision stays with
+    :func:`_entry_lists_match`.
+    """
+    if not isinstance(stored, list) or not isinstance(current, list):
+        return "(listing is not a list)"
+
+    def _by_name(entries):
+        return {
+            entry[0]: entry
+            for entry in entries
+            if isinstance(entry, list) and entry and isinstance(entry[0], str)
+        }
+
+    stored_by_name, current_by_name = _by_name(stored), _by_name(current)
+    added = sorted(set(current_by_name) - set(stored_by_name))
+    removed = sorted(set(stored_by_name) - set(current_by_name))
+    if added:
+        return f"+{added[0]}"
+    if removed:
+        return f"-{removed[0]}"
+    for name in sorted(set(stored_by_name) & set(current_by_name)):
+        if not _entry_matches(stored_by_name[name], current_by_name[name]):
+            return name
+    # Nothing named differs, so the disagreement is in a shape the mapping
+    # above dropped, or in the order the two lists carry.
+    return _first_entry_mismatch(stored, current)
+
+
 def _first_entry_mismatch(stored, current):
     """What made :func:`_entry_lists_match` say no, for a diagnostic.
 
@@ -769,6 +974,12 @@ def _first_entry_mismatch(stored, current):
         return f"(entry count {len(stored)} -> {len(current)})"
     for stored_entry, current_entry in zip(stored, current):
         if not _entry_matches(stored_entry, current_entry):
+            if _is_directory_entry(stored_entry) and _is_directory_entry(current_entry):
+                # "+incdir+/p/inc" alone does not answer "why did this
+                # recompile" when the directory is what is stamped, so the
+                # line names the file inside it as well (#478).
+                inner = _first_listing_mismatch(stored_entry[-1], current_entry[-1])
+                return f"{current_entry[0]} :: {inner}"
             if isinstance(current_entry, list) and current_entry:
                 return current_entry[0]
             if isinstance(stored_entry, list) and stored_entry:
@@ -797,6 +1008,10 @@ def _entry_identity(entry):
     Anything that is not an entry of this version's shape is passed through
     untouched: an unrecognised shape is "we do not know" on both sides.
     """
+    if _is_directory_entry(entry):
+        # Same reduction one level down, so a `touch` inside an include
+        # directory does not move the sha either.
+        return [entry[0], [_entry_identity(inner) for inner in entry[-1]]]
     if isinstance(entry, list) and len(entry) == 4 and entry[-1] is not None:
         return [entry[0], entry[-1]]
     return entry
@@ -1071,14 +1286,14 @@ class VlogSim:
         what `_shared_build_is_valid` validates against the stamp.
         """
         if self._shared_build_dir is not None:
-            return str(Path(self._shared_build_dir) / "simv")
+            return str(Path(self._shared_build_dir) / SIMV_NAME)
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
             return str(
-                Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
+                Path(self._get_compile_work_dir()) / self._get_build_dir() / SIMV_NAME
             )
         if self._get_simulator_family() == "icarus":
-            return str(Path(self._get_compile_work_dir()) / "simv")
+            return str(Path(self._get_compile_work_dir()) / SIMV_NAME)
         simv_path = self.rtl_builder_cfg.get_simv()
         if os.path.isabs(simv_path):
             return simv_path
@@ -1087,9 +1302,11 @@ class VlogSim:
     def _get_icarus_snapshot_path(self):
         """Path to the .vvp snapshot produced by iverilog."""
         if self._shared_build_dir is not None:
-            return str(Path(self._shared_build_dir) / "simv.vvp")
+            return str(Path(self._shared_build_dir) / ICARUS_SNAPSHOT_NAME)
         return str(
-            Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv.vvp"
+            Path(self._get_compile_work_dir())
+            / self._get_build_dir()
+            / ICARUS_SNAPSHOT_NAME
         )
 
     def _icarus_vvp_extra_args(self) -> list:
@@ -1175,16 +1392,16 @@ class VlogSim:
         return str(Path(self._get_compile_work_dir()) / COMPILE_TRANSCRIPT_NAME)
 
     def _get_filelist_path(self):
-        return str(Path(self._get_compile_work_dir()) / "run.f")
+        return str(Path(self._get_compile_work_dir()) / FILELIST_NAME)
 
     def _get_log_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.log")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_LOG_NAME)
 
     def _get_err_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.err")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_ERR_NAME)
 
     def _get_randseed_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.randseed")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_RANDSEED_NAME)
 
     def _coverage_enabled(self):
         compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
@@ -1391,7 +1608,7 @@ class VlogSim:
         return {}
 
     def _get_cov_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "coverage.dat")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / COVERAGE_DAT_NAME)
 
     def _get_cov_abspath(self, run_id=None):
         return str(Path(self._get_cov_path(run_id=run_id)).resolve())
@@ -1529,6 +1746,134 @@ class VlogSim:
             toolchain_prefix=self._get_toolchain_prefix(),
         )
 
+    def _directory_listing(self, dir_path, *, recursive):
+        """A listing of the regular files under ``dir_path``, or ``None``.
+
+        Each file is stamped with the same ``[name, size, mtime_ns, sha]``
+        shape :meth:`_tracked_entry` gives a source, so the whole listing
+        goes through :func:`_entry_matches` and is decided by content where
+        the hashing policy allows it — the point of #494 applies inside an
+        include directory too, and on the NFS mounts that motivated it a
+        listing compared by mtime would be no more trustworthy than the
+        stats it replaced.
+
+        ``recursive`` follows the search the option performs. An
+        ``+incdir+`` is walked, because `` `include "nested/deep.svh" ``
+        resolves *beneath* the include directory and a flat listing would
+        leave an edit to that header invisible on any builder with no
+        dependency file (#478 review). A ``-y`` library directory is not:
+        library resolution maps a module name to a file in the directory
+        itself, so a subdirectory holds nothing the search can reach. The
+        walk does not follow symlinked subdirectories — ``os.walk``'s
+        default — which bounds it against a link loop; a symlinked *file*
+        is listed like any other.
+
+        **Unfiltered.** Nothing is selected by suffix. For ``+incdir+`` any
+        name at all can be `` `include ``d; for ``-y`` the suffixes come
+        from ``+libext+``, which can be set on the builder command line
+        (``builder-opts.compile-time``) and never appear in ``run.f`` at
+        all — a filter derived from ``run.f`` alone silently missed those
+        and reused a stale build when a matching library file appeared,
+        which is the very failure this stamp exists to stop. Listing
+        everything costs a fraction of a second even for a few thousand
+        files, and over-approximating is the safe direction.
+
+        Names are relative to ``dir_path``, with ``/`` separators on every
+        platform so the stamp does not change spelling between them. The
+        directory's own path is already fixed by ``entry[0]`` — the
+        ``run.f`` line, which the compile key hashes, so every test sharing
+        a build has exactly the same one — and repeating it per file would
+        only bloat the stamp.
+
+        Two kinds of name are skipped, and only two. **Directories** that
+        are dot-prefixed (``.git``, ``.svn``) or are one of rtl_buddy's own
+        managed artefact trees are never descended into — see
+        :func:`_is_pruned_walk_dir`. **Files** are skipped when they match
+        :data:`_NON_INPUT_FILE_PATTERNS`, which is editor and VCS
+        bookkeeping plus rtl_buddy's own per-test outputs. A dot-*file* is
+        otherwise listed like any other: `` `include ".config.svh" `` is
+        legal and resolves, so a blanket dot-name skip would reopen the gap
+        this stamp closes.
+
+        Both halves exist for one failure. Everything rtl_buddy writes into
+        an artefact directory — ``run.f``, the compile transcript, the
+        logs, the result envelope, the build output, the stamp itself — is
+        written *after* the fingerprint that would list it, so a listing
+        that contained any of them could never validate again: every later
+        process saw a different one and recompiled, which under
+        ``--dispatch`` is every gated simulation job. The directory prune
+        covers an ``+incdir+`` that is an *ancestor* of ``artefacts/``
+        (``+incdir+.`` in a tests.yaml). The file-name exclusion covers an
+        include root that *is* one — a ``preproc`` hook is documented to
+        generate headers into its ``artifact_dir``, and then the filelist
+        names ``+incdir+artefacts/<test>`` and no path component ever says
+        "managed". Those generated headers must stay tracked, so the tree
+        is walked and only the outputs are removed.
+
+        ``None`` comes back when the directory cannot be read. That degrades
+        to the pre-#478 untracked entry rather than to an empty listing,
+        which would claim the directory *is* empty and validate a reuse on
+        the strength of it.
+        """
+
+        def _reraise(error):
+            # os.walk swallows a directory it cannot open by DEFAULT, which
+            # here would produce an *empty* listing — the one answer this
+            # method must never give, since "the directory is empty"
+            # validates a reuse. Re-raise into the handler below instead.
+            raise error
+
+        entries = []
+        try:
+            if recursive:
+                for walk_root, dir_names, file_names in os.walk(
+                    dir_path, onerror=_reraise
+                ):
+                    # In-place, because os.walk reads this list back to
+                    # decide where to descend: a pruned name is never
+                    # walked at all, so a `.git` or an `artefacts/` inside
+                    # an include dir costs nothing rather than being walked
+                    # and dropped.
+                    dir_names[:] = sorted(
+                        name for name in dir_names if not _is_pruned_walk_dir(name)
+                    )
+                    for name in sorted(file_names):
+                        if _is_non_input_file(name):
+                            continue
+                        path = os.path.join(walk_root, name)
+                        if not os.path.isfile(path):
+                            # A dangling symlink is not an input; a FIFO
+                            # must never reach the hasher's `open()`.
+                            continue
+                        entries.append((os.path.relpath(path, dir_path), path))
+            else:
+                with os.scandir(dir_path) as scan:
+                    # `is_file` follows symlinks (a symlinked-in library
+                    # file is a perfectly ordinary input) and answers from
+                    # the dirent where the platform supplies one, so this
+                    # costs at most the one `stat` per file
+                    # `_tracked_entry` needs anyway.
+                    names = sorted(
+                        item.name
+                        for item in scan
+                        if item.is_file() and not _is_non_input_file(item.name)
+                    )
+                entries = [(name, os.path.join(dir_path, name)) for name in names]
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.build_dir_unreadable",
+                test=self.test_name,
+                directory=str(dir_path),
+                error=str(e),
+            )
+            return None
+        return [
+            [name.replace(os.sep, "/")] + self._tracked_entry(path)[1:]
+            for name, path in sorted(entries)
+        ]
+
     def _fingerprint_filelist_sources(self, filelist_path):
         """Per-entry (line, size, mtime_ns, sha) stamps for the generated run.f.
 
@@ -1539,9 +1884,34 @@ class VlogSim:
         reads ``entry[0]`` only, so an edit still rebuilds in place instead
         of stranding a new obj_dir per edit.
 
-        Entries that don't resolve to a plain file (+incdir+/-y directories,
-        +libext+ suffixes) keep only their raw line; changes inside include
-        directories are not tracked.
+        An entry that resolves to a **directory** — ``+incdir+``, ``-y`` —
+        gains a fifth element holding a listing of the files inside it
+        (:meth:`_directory_listing`, recursive for ``+incdir+`` and flat for
+        ``-y``, following what each option's search can reach), so a header
+        edit reachable only through an include path invalidates the stamp
+        for *every* builder, with or without a dependency file, and a file
+        *appearing* in a library directory does too. The latter is the case
+        no depfile can report at all: ``-y`` resolves by module name on
+        demand, so a file that changes tomorrow's elaboration was opened by
+        nobody today (#478). Where a builder does emit a dependency file it
+        stays the more precise record of what was consumed, and both are
+        kept.
+
+        This requires the absolute ``+incdir+``/``-y`` spelling #474 gives
+        ``run.f``. With the old relative one, a ``tests.yaml`` ``+incdir+.``
+        resolved against the *artefact* directory, whose contents change on
+        every run — the listing would then never match and the stamp would
+        never validate.
+
+        The listing is deliberately an over-approximation: it invalidates on
+        an edit to a header nothing includes. The two error directions are
+        not symmetric — over-invalidating costs one recompile, while
+        under-invalidating reports a stale binary as green — and this is a
+        stamp used to gate merges.
+
+        Entries that resolve to neither a file nor a directory (``+define+``,
+        ``+libext+`` suffixes, a path that no longer exists) keep only their
+        raw line.
 
         Quoted entries (emitted for paths containing whitespace) are unquoted
         here with ``shlex`` before stat'ing. This unquoting is independent of
@@ -1552,32 +1922,46 @@ class VlogSim:
         stamp, matching what ``run.f`` actually contains.
         """
         base = os.path.dirname(os.path.abspath(filelist_path))
-        stamps = []
         with open(filelist_path) as filelist_fp:
-            for raw_line in filelist_fp:
-                line = raw_line.strip()
-                if not line or line.startswith("//"):
-                    continue
-                option_match = _FILELIST_OPTION_RE.match(line)
-                entry_path = option_match.group(1) if option_match else line
-                if entry_path.startswith('"') and entry_path.endswith('"'):
-                    try:
-                        parsed = shlex.split(entry_path)
-                    except ValueError:
-                        # An unbalanced quote must degrade to [line, None,
-                        # None, None] like every other malformed entry, not
-                        # abort the compile from the stamping path.
-                        parsed = []
-                    if len(parsed) == 1:
-                        entry_path = parsed[0]
-                resolved = os.path.normpath(os.path.join(base, entry_path))
-                if os.path.isfile(resolved):
-                    # The raw line, not the resolved path, stays entry[0]:
-                    # it is what run.f contains and what the compile key
-                    # hashes.
-                    stamps.append([line] + self._tracked_entry(resolved)[1:])
-                else:
-                    stamps.append([line, None, None, None])
+            lines = [
+                stripped
+                for stripped in (raw_line.strip() for raw_line in filelist_fp)
+                if stripped and not stripped.startswith("//")
+            ]
+        stamps = []
+        for line in lines:
+            option_match = _FILELIST_OPTION_RE.match(line)
+            option = (option_match.group(1) or "").strip() if option_match else ""
+            entry_path = option_match.group(2) if option_match else line
+            if entry_path.startswith('"') and entry_path.endswith('"'):
+                try:
+                    parsed = shlex.split(entry_path)
+                except ValueError:
+                    # An unbalanced quote must degrade to [line, None,
+                    # None, None] like every other malformed entry, not
+                    # abort the compile from the stamping path.
+                    parsed = []
+                if len(parsed) == 1:
+                    entry_path = parsed[0]
+            resolved = os.path.normpath(os.path.join(base, entry_path))
+            listing = None
+            if option in (_INCDIR_OPTION, _LIBRARY_DIR_OPTION) and os.path.isdir(
+                resolved
+            ):
+                listing = self._directory_listing(
+                    resolved, recursive=option == _INCDIR_OPTION
+                )
+            if listing is not None:
+                # The raw line stays entry[0] here too, so a listing that
+                # changes moves the stamp and never the compile key.
+                stamps.append([line, None, None, None, listing])
+            elif os.path.isfile(resolved):
+                # The raw line, not the resolved path, stays entry[0]:
+                # it is what run.f contains and what the compile key
+                # hashes.
+                stamps.append([line] + self._tracked_entry(resolved)[1:])
+            else:
+                stamps.append([line, None, None, None])
         return stamps
 
     def _fingerprint_toolchain(self, exe):
@@ -1963,8 +2347,12 @@ class VlogSim:
             return False
         deps = stored["deps"]
         if deps is None:
-            # The builder emitted no dependency file, so include-dir
-            # contents stay untracked for it (docs/known-issues.md).
+            # The builder emitted no dependency file. That used to mean the
+            # include directories were untracked for it, and reusing on "we
+            # do not know" is what #478 reported. It is sound now: `sources`
+            # above carries a listing of every `+incdir+`/`-y` directory,
+            # so the unknown this branch admits is bounded to what the
+            # filelist never named — see docs/known-issues.md.
             return True
         return self._deps_unchanged(test_name, deps, quiet=quiet)
 

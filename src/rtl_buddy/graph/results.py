@@ -60,7 +60,7 @@ from ..config.suite import SuiteConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..runner.result_io import load_result_json
-from ..tools.artifact_paths import sanitize_artifact_component
+from ..tools.artifact_paths import RESULT_JSON_NAME, sanitize_artifact_component
 from ..tools.spec_trace import _walk_yaml_files
 from ..tools.wave_trace import TRACE_CANDIDATES
 from .config_tier import (
@@ -100,7 +100,7 @@ _NON_TEST_DIRS = frozenset({"hier", "axi", "graph", "cov", "coverage"})
 #: Result-envelope file names inside one run scope. ``result.json`` is the
 #: in-process runner's; ``dispatch/result-<tag>.json`` is what ``rb
 #: _test-job`` writes for the head to collect (#351).
-_RESULT_JSON = "result.json"
+_RESULT_JSON = RESULT_JSON_NAME
 _DISPATCH_DIR = "dispatch"
 
 
