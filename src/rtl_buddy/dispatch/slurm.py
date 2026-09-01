@@ -332,6 +332,20 @@ def _expand_squeue_id(
     return [f"{base}_{index}" for index in expanded] or [job_id]
 
 
+def _parsable_submission(stdout: str) -> tuple[str, str | None]:
+    """``(job id, cluster)`` from ``sbatch --parsable`` output.
+
+    It prints ``jobid`` for a local submission and ``jobid;cluster`` for one
+    the multi-cluster path accepted elsewhere. The cluster half used to be
+    split off and dropped, which is fine for identifying the job and wrong
+    for acting on it: ids are unique per cluster, so a later ``scancel``
+    issued without it hits the LOCAL cluster's job of that number —
+    cancelling nothing, or something else entirely (#509 review).
+    """
+    job_id, _, cluster = stdout.strip().partition(";")
+    return job_id.strip(), (cluster.strip() or None)
+
+
 def _task_sampling_interval(value: str) -> float | None:
     """Seconds between task samples in an ``--acctg-freq`` value.
 
@@ -523,7 +537,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 f"sbatch failed for build job (rc={proc.returncode}): "
                 f"{proc.stderr.strip()}"
             )
-        job_id = proc.stdout.strip().split(";")[0]
+        job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
             raise FatalRtlBuddyError("sbatch returned no job id for build job")
         log_event(
@@ -539,8 +553,22 @@ class SlurmDispatchBackend(DispatchBackend):
             # The cpus above are already scaled by this (#495); logging both
             # is what makes a 16-CPU build job's reservation legible.
             parallel=spec.parallel,
+            cluster=cluster,
         )
-        return JobHandle(job_id=job_id, spec=spec)
+        return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+
+    def _accepted_on(self, stdout: str) -> tuple[str, str | None]:
+        """``(job id, cluster)`` for a submission this backend just made.
+
+        Falls back to the cluster this backend SELECTED when sbatch names
+        none: a Slurm that omits the ``;cluster`` half still put the job
+        where ``-M`` pointed, and cancelling it locally would be the same
+        miss. The selection is ``None`` for a multi-cluster one (``a,b``,
+        ``all``) — precisely the case where sbatch's own answer is the only
+        way to know where the job landed, which is why it is preferred.
+        """
+        job_id, cluster = _parsable_submission(stdout)
+        return job_id, cluster or self.cluster
 
     @staticmethod
     def _begin_argv(delay_sec: float) -> list[str]:
@@ -587,8 +615,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 f"sbatch failed for {spec.display_name()} "
                 f"(rc={proc.returncode}): {proc.stderr.strip()}"
             )
-        # --parsable prints "jobid" or "jobid;cluster".
-        job_id = proc.stdout.strip().split(";")[0]
+        job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
             raise FatalRtlBuddyError(
                 f"sbatch returned no job id for {spec.display_name()}"
@@ -606,8 +633,9 @@ class SlurmDispatchBackend(DispatchBackend):
             time=spec.resources.time,
             cpus=spec.resources.cpus,
             mem=spec.resources.mem,
+            cluster=cluster,
         )
-        return JobHandle(job_id=job_id, spec=spec)
+        return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
 
     def _cluster_selection(self) -> str | None:
         """Cluster selection as written, or ``None`` for the local cluster.
@@ -965,7 +993,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 f"rc={proc.returncode}): {proc.stderr.strip()}"
                 f"{self._array_limit_hint(proc.stderr)}"
             )
-        base_id = proc.stdout.strip().split(";")[0]
+        base_id, cluster = self._accepted_on(proc.stdout)
         if not base_id:
             raise FatalRtlBuddyError(
                 f"sbatch returned no job id for array submit{where}"
@@ -985,9 +1013,10 @@ class SlurmDispatchBackend(DispatchBackend):
             # (and the log) can always tell a split from a whole group.
             slice=slice_index,
             slices=slice_count,
+            cluster=cluster,
         )
         return [
-            JobHandle(job_id=f"{base_id}_{i}", spec=spec)
+            JobHandle(job_id=f"{base_id}_{i}", spec=spec, cluster=cluster)
             for i, spec in enumerate(specs, start=1)
         ]
 
@@ -1007,7 +1036,49 @@ class SlurmDispatchBackend(DispatchBackend):
             seen.setdefault(h.job_id.split("_")[0], None)
         return list(seen)
 
-    def _reap_never_satisfied(self, lines, *, cwd) -> list[dict]:
+    @staticmethod
+    def _base_ids_by_cluster(
+        handles: Sequence[JobHandle | None],
+    ) -> dict[str | None, list[str]]:
+        """Unique base ids grouped by the cluster that accepted them.
+
+        A run can span clusters even within one resource group: a
+        ``--clusters=a,b`` submission lets Slurm place each array wherever
+        it can start first, so the slices of ONE group may live on
+        different clusters. Cancelling them therefore cannot be one command
+        with one ``-M``; it is one command per cluster.
+        """
+        grouped: dict[str | None, dict[str, None]] = {}
+        for h in handles:
+            if h is None:
+                continue
+            base = h.job_id.split("_")[0]
+            grouped.setdefault(getattr(h, "cluster", None), {}).setdefault(base, None)
+        return {cluster: list(ids) for cluster, ids in grouped.items()}
+
+    def _scancel(
+        self, ids_by_cluster: dict[str | None, list[str]], *, cwd
+    ) -> list[tuple[str | None, list[str], subprocess.CompletedProcess]]:
+        """One ``scancel`` per cluster; the results, for the caller to report.
+
+        ``scancel`` acts on the local cluster unless ``-M`` says otherwise,
+        the same rule sbatch follows, so ids accepted elsewhere have to be
+        cancelled with the matching selection or the command reaches a
+        different cluster's job numbering (#509 review).
+        """
+        results = []
+        for cluster, ids in ids_by_cluster.items():
+            argv = ["scancel", *(["-M", cluster] if cluster else []), *ids]
+            results.append(
+                (
+                    cluster,
+                    ids,
+                    subprocess.run(argv, capture_output=True, text=True, cwd=cwd),
+                )
+            )
+        return results
+
+    def _reap_never_satisfied(self, lines, *, cwd, clusters=None) -> list[dict]:
         """Split queued jobs into those still coming and those already dead.
 
         A job whose ``afterok`` build failed is reported PENDING with reason
@@ -1047,11 +1118,17 @@ class SlurmDispatchBackend(DispatchBackend):
                 jobs=doomed,
             )
             # Cancel by base id: one scancel clears a whole pending array.
+            # Grouped by cluster, because squeue reports ids without saying
+            # which cluster they belong to and an unqualified scancel would
+            # aim at the local one (#509 review); `clusters` carries what
+            # the submissions recorded.
             base_ids = list(dict.fromkeys(j.split("_")[0] for j in doomed))
-            proc = subprocess.run(
-                ["scancel", *base_ids], capture_output=True, text=True, cwd=cwd
-            )
-            if proc.returncode != 0:
+            by_cluster: dict[str | None, list[str]] = {}
+            for base in base_ids:
+                by_cluster.setdefault((clusters or {}).get(base), []).append(base)
+            for cluster, ids, proc in self._scancel(by_cluster, cwd=cwd):
+                if proc.returncode == 0:
+                    continue
                 # These jobs are already out of `remaining`, so the run will
                 # finish and leave them queued. Say so — a transient
                 # slurmctld failure here is only recoverable by hand.
@@ -1060,7 +1137,8 @@ class SlurmDispatchBackend(DispatchBackend):
                     logging.WARNING,
                     "dispatch.cancel_failed",
                     backend=self.name,
-                    jobs=base_ids,
+                    jobs=ids,
+                    cluster=cluster,
                     returncode=proc.returncode,
                     error=proc.stderr.strip()[:200],
                 )
@@ -1101,6 +1179,13 @@ class SlurmDispatchBackend(DispatchBackend):
         ids = ",".join(self._base_ids(handles))
         cwd = self._cwd_of(handles)
         handle_ids = [h.job_id for h in handles if h is not None]
+        # base id -> the cluster that accepted it, so a reaping scancel can
+        # be aimed where the job actually is.
+        clusters = {
+            base: cluster
+            for cluster, ids in self._base_ids_by_cluster(handles).items()
+            for base in ids
+        }
         progress = DispatchProgress(
             handles,
             backend=self.name,
@@ -1132,7 +1217,9 @@ class SlurmDispatchBackend(DispatchBackend):
             # squeue errors ("Invalid job id specified") once every job
             # has aged out of the queue — that is completion, not failure.
             records = (
-                self._reap_never_satisfied(proc.stdout.splitlines(), cwd=cwd)
+                self._reap_never_satisfied(
+                    proc.stdout.splitlines(), cwd=cwd, clusters=clusters
+                )
                 if proc.returncode == 0
                 else []
             )
@@ -1153,23 +1240,36 @@ class SlurmDispatchBackend(DispatchBackend):
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         if not handles:
             return
-        # Base ids: cancelling an array id cancels every element.
-        subprocess.run(
-            ["scancel", *self._base_ids(handles)],
-            capture_output=True,
-            text=True,
-            cwd=self._cwd_of(handles),
-        )
+        # Base ids: cancelling an array id cancels every element. One
+        # command per cluster, since an id only means anything on the
+        # cluster that issued it.
+        by_cluster = self._base_ids_by_cluster(handles)
+        self._scancel(by_cluster, cwd=self._cwd_of(handles))
         log_event(
             logger,
             logging.WARNING,
             "dispatch.cancelled",
             backend=self.name,
             jobs=len(handles),
+            # Additive, and absent on a single-cluster site: which clusters
+            # the cancellation had to reach.
+            clusters=sorted(c for c in by_cluster if c) or None,
             # An interrupted or failed run must leave the ids on the console:
             # they are the only route to `squeue`/`sacct` afterwards (#435).
             job_ids=group_job_ids(h.job_id for h in handles if h is not None),
         )
+
+    @staticmethod
+    def _telemetry_cluster_argv(handles: Sequence[JobHandle | None]) -> list[str]:
+        """``-M`` for every cluster the fleet was accepted on, if any."""
+        clusters = sorted(
+            {
+                cluster
+                for cluster in (getattr(h, "cluster", None) for h in handles if h)
+                if cluster
+            }
+        )
+        return ["-M", ",".join(clusters)] if clusters else []
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
         """Reserved-vs-used per job from ``sacct``, keyed by handle job id.
@@ -1201,6 +1301,12 @@ class SlurmDispatchBackend(DispatchBackend):
                     "--parsable2",
                     "--noheader",
                     f"--format={_SACCT_FORMAT}",
+                    # Accounting is per cluster too, and a job id repeats
+                    # across clusters — an unqualified query would find
+                    # nothing for a remote fleet, or the wrong local job of
+                    # that number (#509 review). sacct takes the whole set
+                    # at once, so this stays one call.
+                    *self._telemetry_cluster_argv(handles),
                     "--jobs",
                     ",".join(self._base_ids(handles)),
                 ],

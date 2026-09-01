@@ -113,10 +113,20 @@ class TestJobSpec:
 
 @dataclass
 class JobHandle:
-    """An accepted submission: the backend's job id plus its spec."""
+    """An accepted submission: the backend's job id plus its spec.
+
+    ``cluster`` records WHERE the scheduler accepted it, for the backends
+    that can submit somewhere other than the local cluster (Slurm's
+    ``-M``/``--clusters``, #509). A job id is only unique within its
+    cluster, so every later command about this job — cancelling it above
+    all — has to be issued against the same one. ``None`` means "the local
+    cluster", which is every submission a single-cluster site makes and
+    every job the local-parallel pool runs.
+    """
 
     job_id: str
     spec: object
+    cluster: str | None = None
 
 
 class DispatchBackend(ABC):

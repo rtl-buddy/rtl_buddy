@@ -2099,3 +2099,136 @@ def test_the_config_source_event_carries_both_ceilings(monkeypatch, caplog):
     (fields,) = _events(caplog, "dispatch.max_array_size")
     assert "max_array_tasks" not in fields
     assert fields["max_elements"] == 1000
+
+
+# ---------------------------- cancelling where the jobs actually are (#509)
+
+
+def test_parsable_submission_splits_the_cluster_suffix():
+    parse = slurm_module._parsable_submission
+    assert parse("500\n") == ("500", None)
+    assert parse("500;remote\n") == ("500", "remote")
+    # A trailing separator with nothing after it is not a cluster name.
+    assert parse("500;\n") == ("500", None)
+
+
+def test_a_submission_records_the_cluster_that_accepted_it(monkeypatch, tmp_path):
+    """`sbatch --parsable` answers `jobid;cluster` for a remote submit."""
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=0, stdout="500;remote\n", stderr="")],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handle = backend.submit(_spec())
+    # The id stays the bare number — the cluster is not part of it...
+    assert handle.job_id == "500"
+    # ...but it is remembered, because an id only means anything there.
+    assert handle.cluster == "remote"
+
+
+def test_array_handles_carry_the_cluster_and_a_failed_slice_cancels_there(
+    monkeypatch, tmp_path
+):
+    """The slice-failure cleanup must reach the cluster it submitted to.
+
+    Without the `-M`, `scancel 100` is issued against the LOCAL cluster and
+    the earlier remote slices keep running (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100;remote\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="Invalid job array"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="sbatch array submit failed"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert calls[-1] == ["scancel", "-M", "remote", "100"]
+
+
+def test_a_selected_cluster_stands_in_when_sbatch_names_none(monkeypatch, tmp_path):
+    """A Slurm that omits the suffix still put the job where -M pointed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["-M", "remote"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.submit(_spec()).cluster == "remote"
+
+
+def test_cancel_all_issues_one_scancel_per_cluster(monkeypatch):
+    """One `--clusters=a,b` group can be spread over both, so one -M cannot
+    cover it; and a purely local fleet keeps today's bare command."""
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.cancel_all(
+        [
+            JobHandle("100_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("100_2", _spec(run_id=2), cluster="alpha"),
+            JobHandle("200_1", _spec(run_id=3), cluster="beta"),
+            JobHandle("7", _spec(run_id=4)),
+            None,
+        ]
+    )
+    assert calls == [
+        ["scancel", "-M", "alpha", "100"],
+        ["scancel", "-M", "beta", "200"],
+        ["scancel", "7"],
+    ]
+
+
+def test_reaping_a_doomed_job_cancels_it_on_its_own_cluster(monkeypatch):
+    """squeue answers with bare ids, so the reap needs the submissions' record."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="500_1|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # drained
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    # Raw config: a 0 poll interval is rejected by initialise(), and the
+    # other wait tests in this module construct it the same way.
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all([JobHandle("500_1", _spec(), cluster="remote")])
+    assert ["scancel", "-M", "remote", "500"] in calls
+
+
+def test_telemetry_is_queried_on_the_clusters_that_ran_the_jobs(monkeypatch):
+    """sacct is per cluster as well, and a job id repeats across them."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.collect_telemetry(
+        [
+            JobHandle("100_1", _spec(run_id=1), cluster="beta"),
+            JobHandle("200_1", _spec(run_id=2), cluster="alpha"),
+        ]
+    )
+    (argv,) = calls
+    assert argv[argv.index("-M") + 1] == "alpha,beta"
+
+
+def test_local_telemetry_stays_unqualified(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.collect_telemetry([JobHandle("100_1", _spec(run_id=1))])
+    (argv,) = calls
+    assert "-M" not in argv
