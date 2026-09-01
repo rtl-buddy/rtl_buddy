@@ -212,6 +212,19 @@ class DispatchBackend(ABC):
         build handle, #361) must not disarm it.
         """
 
+    # The scheduler arguments this backend actually appends to every
+    # submission, as it holds them. Empty for a backend that has none.
+    #
+    # Right-sizing reads its cpu-request overrides from HERE and not from
+    # the suite's `cfg-dispatch`, because the two can differ: the backend is
+    # instantiated once, from the orchestration config, before the suite
+    # loop, while `root_cfg` is rebuilt per suite whenever a suite walks up
+    # to a different root_config.yaml. Scanning the suite's config would
+    # then describe a command that was never submitted — missing an
+    # override the backend really passes, or inventing one it does not
+    # (#505 review).
+    effective_sbatch_args: tuple = ()
+
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
         """Per-job reserved-vs-used accounting, keyed by job id.
 

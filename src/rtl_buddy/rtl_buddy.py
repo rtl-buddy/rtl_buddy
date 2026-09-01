@@ -3213,9 +3213,16 @@ class RtlBuddy:
         # Re-reading the environment there would judge these jobs by a
         # later suite's environment: the wrong cpu denominator, and an edit
         # hint naming an override that was never active for them.
-        cpus_request_args = cpu_request_overrides(
-            getattr(dispatch_cfg, "sbatch_args", None)
-        )
+        #
+        # From the BACKEND's arguments, not this suite's `cfg-dispatch`.
+        # The backend is built once from the orchestration config before the
+        # suite loop, while `root_cfg` is rebuilt for any suite that walks
+        # up to a different root_config.yaml — so the two lists diverge in a
+        # multi-root regression, and only the backend's is what `sbatch`
+        # receives. The generated reservation flags stay suite-derived (they
+        # come from this suite's resolved `resources:`); it is the verbatim
+        # passthrough that belongs to the backend (#505 review).
+        cpus_request_args = cpu_request_overrides(backend.effective_sbatch_args)
         if cpus_request_args:
             # DEBUG, once per suite submit: the override is deliberate
             # configuration, and the only thing worth saying is why the
@@ -3793,7 +3800,9 @@ class RtlBuddy:
                 # not be paired with this attempt's reservation.
                 if suite_results is not None:
                     staged.append(
-                        self._stage_cpu_request_metadata(suite_results[idx], spec)
+                        self._stage_cpu_request_metadata(
+                            suite_results[idx], spec, backend=backend
+                        )
                     )
                 resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
             backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
@@ -3808,7 +3817,7 @@ class RtlBuddy:
             raise
         return resubmitted
 
-    def _stage_cpu_request_metadata(self, row, spec):
+    def _stage_cpu_request_metadata(self, row, spec, *, backend):
         """Read this resubmission's cpu overrides; do NOT write them yet.
 
         Returned staged, not applied, because a row's metadata must always
@@ -3818,13 +3827,10 @@ class RtlBuddy:
         would pair those with the reservation of an attempt that never ran
         (#505 review).
         """
-        return (
-            row,
-            spec,
-            cpu_request_overrides(
-                getattr(self.root_cfg.get_dispatch_cfg(), "sbatch_args", None)
-            ),
-        )
+        # The backend's own arguments, for the same reason the first
+        # submission uses them: it is the backend that appends them, and by
+        # now `root_cfg` may belong to a different suite entirely.
+        return (row, spec, cpu_request_overrides(backend.effective_sbatch_args))
 
     def _commit_cpu_request_metadata(self, staged, *, backend, attempt):
         """Apply a round's staged metadata, once that round has landed."""

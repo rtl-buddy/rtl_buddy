@@ -316,6 +316,17 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return _DEFAULT_ACCT_INTERVAL_S
 
+    @property
+    def effective_sbatch_args(self) -> list:
+        """What every submission of this backend really appends.
+
+        The list this backend was constructed with, plus the
+        ``--acctg-freq`` it prepends — i.e. the passthrough as submitted,
+        which is what right-sizing must judge a job's cpu request by
+        (#505 review).
+        """
+        return self.sbatch_args
+
     def accounting_interval_s(self) -> float | None:
         return self._acct_interval_s
 

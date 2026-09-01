@@ -1199,3 +1199,25 @@ def test_every_submit_path_states_cpus_per_task_on_the_command_line(
         assert not any(
             a.startswith(("--ntasks", "-n", "--nodes", "-N")) for a in argv
         ), argv
+
+
+def test_effective_sbatch_args_is_what_the_backend_will_append():
+    """Right-sizing reads its cpu overrides from here, so it must be real.
+
+    The backend is built once from the orchestration config, before the
+    suite loop, and keeps that list however `root_cfg` is later rebuilt —
+    which is exactly why the snapshot is taken from the backend and not
+    from whichever `cfg-dispatch` is current (#505 review).
+    """
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif", "--ntasks=4"]).initialise()
+    )
+    args = backend.effective_sbatch_args
+    assert "--partition=verif" in args and "--ntasks=4" in args
+    # ...including the accounting rate it prepends, since that is submitted too.
+    assert any(a.startswith("--acctg-freq") for a in args)
+    # It is the same list every submission appends, not a copy taken early.
+    assert args is backend.sbatch_args
+
+    bare = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    assert not [a for a in bare.effective_sbatch_args if not a.startswith("--acctg")]
