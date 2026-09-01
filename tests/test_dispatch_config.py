@@ -1066,3 +1066,29 @@ def test_root_config_parses_max_array_size(minimal_project: Path):
     )
     cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
     assert cfg.max_array_size == 1001
+
+
+def test_max_array_tasks_defaults_to_probing_the_cluster():
+    assert DispatchConfigFile().initialise().max_array_tasks is None
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_max_array_tasks_below_one_rejected(value):
+    # Unlike max-array-size it is a COUNT, not an exclusive index bound, so
+    # 1 is a legal (if degenerate) one-element array.
+    with pytest.raises(FatalRtlBuddyError, match="max-array-tasks must be >= 1"):
+        DispatchConfigFile(max_array_tasks=value).initialise()
+
+
+def test_max_array_tasks_of_one_is_accepted():
+    assert DispatchConfigFile(max_array_tasks=1).initialise().max_array_tasks == 1
+
+
+def test_root_config_parses_max_array_tasks(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text()
+        + "\ncfg-dispatch:\n  max-array-size: 1001\n  max-array-tasks: 1000\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert (cfg.max_array_size, cfg.max_array_tasks) == (1001, 1000)

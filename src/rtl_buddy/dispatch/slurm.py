@@ -137,6 +137,24 @@ _SCONTROL_TIMEOUT_S = 30
 # probe has to follow them: `scontrol show config` with no cluster reads
 # the LOCAL slurmctld, whose MaxArraySize says nothing about the cluster
 # the arrays are actually submitted to (#509 review).
+# sbatch resolves any UNAMBIGUOUS long-option prefix (GNU getopt_long), so
+# a selector may legitimately be written short. `--clusters` has no such
+# abbreviation: every proper prefix of it, `--cl` through `--cluster`, is
+# also a prefix of `--cluster-constraint` — sbatch's only other `--cl`
+# option — so getopt_long calls them ambiguous and sbatch exits rather than
+# submitting. (The rest of its `c` options diverge at `--c` already:
+# --chdir, --comment, --constraint, --container*, --contiguous, --core-spec,
+# --cores-per-socket, --cpu-freq, --cpus-per-*.) Matching a prefix here
+# would therefore read a selection out of a command line that cannot run,
+# and `--cluster-constraint=<list>` — a FEATURE list, not a cluster — is
+# exactly what a loose prefix match would swallow.
+#
+# `--cluster` singular is kept because the cost is asymmetric: several
+# Slurm clients register it explicitly as an alias of `--clusters`, and if
+# sbatch is not one of them it is one of those ambiguous prefixes, so the
+# submit fails at sbatch before this probe's answer could matter. Missing a
+# real selection, by contrast, silently sizes slices from the wrong
+# cluster's limit — the bug this probe exists to avoid.
 _CLUSTER_OPTS = ("-M", "--clusters", "--cluster")
 # Slurm documents this as the equivalent of `--clusters`, with the command
 # line winning — so `sbatch-args` is consulted first and this only fills in
@@ -164,11 +182,18 @@ def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
     """The cluster ``sbatch-args`` submits to, or ``None`` for the local one.
 
     All four spellings Slurm takes: ``-M name``, ``-Mname``,
-    ``--clusters=name`` and ``--clusters name`` (plus the ``--cluster``
-    singular, which sbatch accepts as an abbreviation). The LAST occurrence
-    wins, which is how sbatch itself resolves a repeated option — so a
-    project appending an override to a shared list gets the same answer
-    here as at submit.
+    ``--clusters=name`` and ``--clusters name``, plus the ``--cluster``
+    singular (see :data:`_CLUSTER_OPTS`). The LAST occurrence wins, which
+    is how sbatch itself resolves a repeated option — so a project
+    appending an override to a shared list gets the same answer here as at
+    submit.
+
+    Shorter abbreviations are NOT accepted, and that is not an omission:
+    ``--clusters`` has no unambiguous prefix, because ``--cluster-constraint``
+    shares every one of them. Reading ``--clus=x`` as a selection would be
+    reading it out of a command line sbatch refuses to run, and it is the
+    same match that would mistake a ``--cluster-constraint`` feature list
+    for a cluster name.
 
     The value is returned verbatim, comma-separated multi-cluster lists
     included: deciding what to do about those belongs to the caller, which
@@ -356,6 +381,12 @@ class SlurmDispatchBackend(DispatchBackend):
         # _max_elements_per_array — so constructing a backend never shells
         # out, and a run with no array never probes at all.
         self.max_array_size = getattr(dispatch_cfg, "max_array_size", None)
+        # The second ceiling, for a site that cannot run `scontrol` at all:
+        # `SchedulerParameters=max_array_tasks` caps the tasks in ONE array
+        # independently of MaxArraySize, so it needs its own field — pinning
+        # a smaller max-array-size instead would state the wrong ceiling and
+        # still be wrong the moment the real MaxArraySize matters (#509).
+        self.max_array_tasks = getattr(dispatch_cfg, "max_array_tasks", None)
         # ...cached per cluster selection: the answer is a property of the
         # cluster probed, not of this process. The selection itself is
         # resolved on demand (see `cluster`), not frozen here, because
@@ -643,32 +674,88 @@ class SlurmDispatchBackend(DispatchBackend):
         return self._elements_per_array_by_cluster[selection][0]
 
     def _probe_max_elements(self, *, cwd: str | None) -> tuple[int | None, str | None]:
+        """Effective elements-per-array, layering config over the probe.
+
+        TWO ceilings decide it and they are configured independently, so
+        they are layered independently: ``cfg-dispatch.max-array-size``
+        over the probed ``MaxArraySize``, ``cfg-dispatch.max-array-tasks``
+        over the probed ``max_array_tasks``, and the slice is the smaller
+        of what each layer yields. A pinned ``max-array-size`` therefore no
+        longer hides a cluster's task cap: it wins for its OWN ceiling and
+        the probe still supplies the other (#509 review). The probe is
+        skipped only when it can add nothing — both values pinned — or when
+        there is no single cluster to ask.
+
+        Returns ``(elements, source)`` where ``source`` names where the
+        GOVERNING value came from, so the submit-failure hint can say which
+        knob produced the slice it used.
+        """
         selection = self._cluster_selection()
-        if self.max_array_size is not None:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "dispatch.max_array_size",
-                backend=self.name,
-                max_array_size=self.max_array_size,
-                max_elements=self.max_array_size - 1,
-                source="config",
-                cluster=selection,
-            )
-            return self.max_array_size - 1, "config"
-        if selection is not None and _is_multi_cluster(selection):
-            # `--clusters=a,b` (and the reserved `all`) let Slurm pick
-            # whichever can run the job soonest, and the decision is made at
-            # submit. Probing one of them would pin a limit the others may
-            # not have — and `-M all` answers with several config blocks, so
-            # the regex would take whichever came first. The honest answer
-            # is "unknown", recovered by the pinned config value.
-            self._log_unknown(
-                f"the cluster selection ({selection}) names several clusters; "
-                "which one runs the array is decided at submit, so no single "
-                "MaxArraySize applies"
-            )
+        ambiguous = selection is not None and _is_multi_cluster(selection)
+        probed_size = probed_tasks = None
+        reason = None
+        if self.max_array_size is None or self.max_array_tasks is None:
+            if ambiguous:
+                # `--clusters=a,b` (and the reserved `all`) let Slurm pick
+                # whichever can run the job soonest, and the decision is
+                # made at submit. Probing one of them would pin a limit the
+                # others may not have — and `-M all` answers with several
+                # config blocks, so the regex would take whichever came
+                # first. The honest answer is "unknown", recovered by the
+                # pinned config values.
+                reason = (
+                    f"the cluster selection ({selection}) names several "
+                    "clusters; which one runs the array is decided at "
+                    "submit, so no single MaxArraySize applies"
+                )
+            else:
+                probed_size, probed_tasks, reason = self._scontrol_ceilings(
+                    cwd=cwd, selection=selection
+                )
+
+        size = self.max_array_size if self.max_array_size is not None else probed_size
+        tasks = (
+            self.max_array_tasks if self.max_array_tasks is not None else probed_tasks
+        )
+        if size is None:
+            self._log_unknown(reason or "no MaxArraySize available")
             return None, None
+
+        # MaxArraySize bounds the INDEX exclusively; max_array_tasks counts
+        # the tasks, inclusively. The smaller of the two is what an array
+        # may actually hold.
+        limit = size - 1
+        source = "config" if self.max_array_size is not None else "scontrol"
+        if tasks is not None and 1 <= tasks < limit:
+            limit = tasks
+            source = "config" if self.max_array_tasks is not None else "scontrol"
+        log_event(
+            logger,
+            logging.DEBUG,
+            "dispatch.max_array_size",
+            backend=self.name,
+            max_array_size=size,
+            # Emitted on every source path, so a reader never has to guess
+            # whether a task cap was consulted. Absent only when no cap is
+            # known — neither configured nor probed — since `log_event`
+            # drops `None` fields for every event in this package.
+            max_array_tasks=tasks,
+            max_elements=limit,
+            source=source,
+            cluster=selection,
+        )
+        return limit, source
+
+    def _scontrol_ceilings(
+        self, *, cwd: str | None, selection: str | None
+    ) -> tuple[int | None, int | None, str | None]:
+        """``(MaxArraySize, max_array_tasks, why not)`` from one scontrol call.
+
+        Best effort by construction: every failure mode returns ``None``
+        ceilings and a reason string rather than raising, because a limit
+        that cannot be read must cost the run nothing more than the
+        chunking it disables.
+        """
         cluster_argv = [] if selection is None else ["-M", selection]
         try:
             proc = subprocess.run(
@@ -679,42 +766,32 @@ class SlurmDispatchBackend(DispatchBackend):
                 timeout=_SCONTROL_TIMEOUT_S,
             )
         except (OSError, subprocess.SubprocessError) as e:
-            reason = str(e)[:200]
-        else:
-            match = (
-                _MAX_ARRAY_SIZE_RE.search(proc.stdout) if proc.returncode == 0 else None
+            return None, None, str(e)[:200]
+        if proc.returncode != 0:
+            return (
+                None,
+                None,
+                (
+                    proc.stderr.strip()
+                    or f"`scontrol show config` failed (rc={proc.returncode})"
+                )[:200],
             )
-            value = int(match.group(1)) if match is not None else 0
-            if value >= 2:
-                # MaxArraySize bounds the INDEX exclusively; max_array_tasks
-                # counts the tasks, inclusively. The smaller of the two is
-                # what an array may actually hold.
-                tasks = _max_array_tasks(proc.stdout)
-                limit = value - 1
-                if tasks is not None and 1 <= tasks < limit:
-                    limit = tasks
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "dispatch.max_array_size",
-                    backend=self.name,
-                    max_array_size=value,
-                    max_array_tasks=tasks,
-                    max_elements=limit,
-                    source="scontrol",
-                    cluster=selection,
-                )
-                return limit, "scontrol"
+        match = _MAX_ARRAY_SIZE_RE.search(proc.stdout)
+        value = int(match.group(1)) if match is not None else 0
+        tasks = _max_array_tasks(proc.stdout)
+        if value < 2:
             # A cluster reporting MaxArraySize < 2 has arrays disabled; no
-            # slice size would submit, so treat that as unknown too and let
+            # slice size would submit, so treat that as unknown and let
             # sbatch give the authoritative refusal.
-            reason = (
-                proc.stderr.strip()
-                or "no usable MaxArraySize in `scontrol show config` "
-                f"(rc={proc.returncode})"
-            )[:200]
-        self._log_unknown(reason)
-        return None, None
+            return (
+                None,
+                tasks,
+                (
+                    proc.stderr.strip()
+                    or "no usable MaxArraySize in `scontrol show config` (rc=0)"
+                )[:200],
+            )
+        return value, tasks, None
 
     def _log_unknown(self, reason: str) -> None:
         log_event(

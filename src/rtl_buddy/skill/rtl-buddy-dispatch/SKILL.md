@@ -28,8 +28,10 @@ Slurm refuses an array larger than the cluster's `MaxArraySize` (`Invalid job
 array specification`). rtl_buddy reads that limit from `scontrol show config`
 and splits an oversized resource group across several arrays, each with its own
 manifest and logs under `slice-N/`. Where the submit host cannot run `scontrol`,
-set `cfg-dispatch.max-array-size` to the cluster's value; `max-jobs-per-array`
-then throttles each slice, so peak concurrency is that cap times the slice count.
+set `cfg-dispatch.max-array-size` to the cluster's value (and
+`max-array-tasks` where `SchedulerParameters=max_array_tasks` caps tasks-per-array
+below it); `max-jobs-per-array` then throttles each slice, so peak concurrency is
+that cap times the slice count.
 Dispatched `test`, `randtest`, and `regression` preserve their normal aggregate
 exit codes: 0 with no real failure, 1 when a job fails or its result envelope is
 missing, stale, or invalid, and 2 for a fatal orchestration/configuration error.

@@ -1466,7 +1466,35 @@ def test_the_configured_limit_wins_over_scontrol(monkeypatch, tmp_path):
     )
 
     assert _array_ranges(calls) == ["1-2", "1-2"]
+    # The probe still runs — it is the only source of the SECOND ceiling,
+    # `max_array_tasks` (#509 review) — but its MaxArraySize does not win.
+    assert probed == [["scontrol", "show", "config"]]
+
+
+def test_both_ceilings_pinned_need_no_probe_at_all(monkeypatch, tmp_path):
+    """A site with no scontrol states both, and nothing is shelled out."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=2).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
     assert probed == []
+    assert _array_ranges(calls) == ["1-2", "1-2"]
 
 
 def test_an_unusable_scontrol_answer_disables_chunking_loudly(
@@ -1641,6 +1669,28 @@ def test_selected_cluster_reads_every_spelling_and_takes_the_last():
     assert parse(["-M", "first", "--clusters=second"]) == "second"
     # A dangling option selects nothing rather than eating the next flag.
     assert parse(["--partition=verif", "-M"]) is None
+
+
+def test_selected_cluster_ignores_prefixes_sbatch_itself_refuses():
+    """`--clusters` has no unambiguous abbreviation, so none is accepted.
+
+    sbatch resolves unambiguous long-option prefixes, but every prefix of
+    `--clusters` is also a prefix of `--cluster-constraint`, so getopt_long
+    rejects them and the command line never runs. Matching them here would
+    read a selection out of a submit that cannot happen — and the same
+    loose match would take a `--cluster-constraint` FEATURE list for a
+    cluster name, which is the failure that matters.
+    """
+    parse = slurm_module._selected_cluster
+    for ambiguous in ("--cl", "--clus", "--clust", "--cluste"):
+        assert parse([f"{ambiguous}=remote"]) is None, ambiguous
+        assert parse([ambiguous, "remote"]) is None, ambiguous
+    # The colliding option is a feature list, and must never be read as one.
+    assert parse(["--cluster-constraint=haswell"]) is None
+    assert parse(["--cluster-constraint", "haswell"]) is None
+    # ...while a real selection alongside it is still found.
+    assert parse(["--cluster-constraint=haswell", "-M", "remote"]) == "remote"
+    assert parse(["--clusters=remote", "--cluster-constraint=haswell"]) == "remote"
 
 
 def test_the_probe_asks_the_cluster_the_jobs_are_submitted_to(monkeypatch, tmp_path):
@@ -1965,3 +2015,87 @@ def test_max_array_tasks_is_read_from_the_scheduler_parameters_line():
     assert parse("SchedulerParameters = other_max_array_tasks=64\n") is None
     # ...and a mention outside the SchedulerParameters line is not the setting.
     assert parse("SomeOtherKey = max_array_tasks=64\n") is None
+
+
+def test_a_pinned_max_array_size_still_honours_the_probed_task_cap(
+    monkeypatch, tmp_path
+):
+    """The recommended override must not hide the cluster's OTHER ceiling.
+
+    `cfg-dispatch.max-array-size` is what every diagnostic tells a site to
+    set, so if it also suppressed the `max_array_tasks` probe the advice
+    would hand back the same oversized slices it was meant to fix (#509
+    review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=9999, max_array_tasks=4),
+    )
+    # Config wins for MaxArraySize (1001 -> 1000 elements); the probe still
+    # supplies max_array_tasks, and 4 is smaller, so 4 governs.
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=1001).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_a_pinned_task_cap_needs_no_scontrol(monkeypatch, tmp_path, caplog):
+    """A site without scontrol can state the second ceiling on its own."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    # scontrol fails: the pinned pair is the only source of either ceiling.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=4).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    # The governing value came from config, and the event says which.
+    assert fields["source"] == "config"
+
+
+def test_the_config_source_event_carries_both_ceilings(monkeypatch, caplog):
+    """`max_array_tasks` is reported on the config path too (#509 review).
+
+    `log_event` drops `None` fields for every event in the package, so the
+    field is present whenever a cap is known — configured or probed — and
+    absent only when none is.
+    """
+    calls, results = [], []
+    # No scontrol at all, so nothing but the config can supply a ceiling.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+
+    with caplog.at_level("DEBUG"):
+        SlurmDispatchBackend(
+            DispatchConfigFile(max_array_size=1001, max_array_tasks=250).initialise()
+        )._max_elements_per_array(cwd="/proj/verif/blk")
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert fields["max_array_size"] == 1001
+    assert fields["max_array_tasks"] == 250
+    assert fields["max_elements"] == 250
+    assert fields["source"] == "config"
+
+    # ...and with no cap known anywhere, the key is simply absent.
+    caplog.clear()
+    with caplog.at_level("DEBUG"):
+        SlurmDispatchBackend(
+            DispatchConfigFile(max_array_size=1001).initialise()
+        )._max_elements_per_array(cwd="/proj/verif/blk")
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert "max_array_tasks" not in fields
+    assert fields["max_elements"] == 1000
