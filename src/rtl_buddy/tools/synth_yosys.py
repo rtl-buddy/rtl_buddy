@@ -9,12 +9,15 @@ logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
+from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
     SynthConfig,
     SynthToolConfig,
     SynthToolOpts,
     SynthEffortConfig,
     default_effort_config,
+    resolve_conflicting_drivers_mode,
+    resolve_static_functions_mode,
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
@@ -28,6 +31,251 @@ _ABC_SCRIPT_NO_TIMING = (
 )
 # Same but with stime -p appended to report critical-path delay
 _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
+
+# A machine-log line carries at most this many findings; the full count and the
+# number dropped travel alongside, so nothing is silently lost.
+MAX_EVENT_FINDINGS = 25
+
+
+# Yosys `check` (run inside `synth`) reports a shared net taking incompatible
+# drivers as `Warning: multiple conflicting drivers for <mod>.<sig> [n]:`, from
+# log_warning(), so the "Warning: " prefix is always present and always starts
+# the line. Anchoring on it keeps the `check -h` help text ("two or more
+# conflicting drivers for one wire") and any echo of the phrase in a script or
+# command line from being counted.
+#
+# The sibling `Drivers conflicting with a constant <s> driver:` message from
+# the same pass is deliberately NOT matched: it fires when something drives a
+# constant bit, which is a different condition from the shared-formal
+# corruption this gate exists for, and neither repro shape in #472 produces it.
+_CONFLICTING_DRIVERS_RE = re.compile(
+    r"^(?:\S+:\d+:\s*)?Warning:\s*multiple conflicting drivers\b"
+)
+
+# Indented driver lines follow each warning, one per driver, in the three forms
+# check.cc emits: `port <P>[n] of cell <name> (<type>)`, `module input <w>[n]`,
+# and `action <lhs> <= <rhs> (... rule) in process <p>`.
+_TRISTATE_DRIVER_RE = re.compile(
+    r"^\s+port \S+ of cell \S+ \((?:\$tribuf|\$_TBUF_)\)\s*$"
+)
+_PORT_DRIVER_RE = re.compile(r"^\s+module (?:input|output|inout) \S+\s*$")
+
+
+def _is_tristate_bus(driver_lines: list[str]) -> bool:
+    """Whether a warning's drivers are a legitimate tristate bus.
+
+    Two `assign bus = en ? d : 8'bz;` on an `inout wire` elaborate to a pair of
+    `$tribuf` cells plus the module port, and yosys `check` reports every bit
+    of the bus as conflicting. That is a working multi-driver design, not the
+    silent corruption this gate is for, so a warning whose drivers are all
+    tristate buffers and module ports is skipped. One driver of any other kind
+    (a `$dff`, a process action) means the warning is counted.
+    """
+    if not driver_lines:
+        return False
+    saw_tristate = False
+    for line in driver_lines:
+        if _TRISTATE_DRIVER_RE.match(line):
+            saw_tristate = True
+        elif not _PORT_DRIVER_RE.match(line):
+            return False
+    return saw_tristate
+
+
+def find_conflicting_driver_warnings(log_text: str) -> list[str]:
+    """Yosys "multiple conflicting drivers" warnings that are real conflicts.
+
+    Returns the header line of each warning, with legitimate tristate buses
+    filtered out; see :func:`_is_tristate_bus`.
+    """
+    lines = log_text.splitlines()
+    hits: list[str] = []
+    i = 0
+    while i < len(lines):
+        if not _CONFLICTING_DRIVERS_RE.match(lines[i]):
+            i += 1
+            continue
+        header = lines[i]
+        i += 1
+        drivers: list[str] = []
+        while i < len(lines) and lines[i][:1].isspace() and lines[i].strip():
+            drivers.append(lines[i])
+            i += 1
+        if not _is_tristate_bus(drivers):
+            hits.append(header)
+    return hits
+
+
+def filelist_scan_context(
+    fl_path: str,
+) -> tuple[list[str], dict[str, str | None]]:
+    """`+incdir+` directories and `+define+` macros from a synthesis filelist.
+
+    `_source_files_from_filelist` drops both because Yosys is handed sources
+    only. The incdirs are what the lifetime scan resolves `` `include ``
+    through. The defines are returned for *reporting* only — see
+    :func:`lifetime_scan_inputs` — because the synth flow does not pass them
+    to Yosys either. Paths resolve relative to the filelist, matching the
+    source entries.
+
+    A macro's value is ``None`` when the entry carried no ``=``: a bare
+    ``+define+X`` and ``+define+X=`` are different things, and which one it
+    was decides whether the entry matches a run ``defines:`` value -- see
+    :func:`normalise_define_value`.
+    """
+    fl_dir = os.path.dirname(os.path.abspath(fl_path))
+    incdirs: list[str] = []
+    defines: dict[str, str | None] = {}
+    try:
+        with open(fl_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return incdirs, defines
+    for line in lines:
+        line = line.strip()
+        if line.startswith("+incdir+"):
+            for entry in line[len("+incdir+") :].split("+"):
+                if entry:
+                    incdirs.append(os.path.normpath(os.path.join(fl_dir, entry)))
+        elif line.startswith("+define+"):
+            for entry in line[len("+define+") :].split("+"):
+                if not entry:
+                    continue
+                name, sep, value = entry.partition("=")
+                if name:
+                    defines[name] = value if sep else None
+    return incdirs, defines
+
+
+# Macros each frontend defines for itself, so every synthesis elaboration sees
+# them whether or not the project asks for them. The scan has to agree, or a
+# guarded region the compiler never reads -- `\`ifndef SYNTHESIS` around a
+# simulation-only helper is a very common idiom -- becomes a finding.
+#
+# Verified by source and then confirmed with a deliberate syntax error inside
+# the guarded region, per frontend:
+#
+#   read_verilog  SYNTHESIS=1 (verilog_frontend.cc:494, unless -formal, which
+#                 rtl_buddy never passes) and YOSYS=1, added by the
+#                 define_map_t constructor in preproc.cc:335.
+#   read_slang    SYNTHESIS=1, pushed by yosys-slang (slang_frontend.cc:3299)
+#                 unless --no-synthesis-define, which rtl_buddy never passes,
+#                 plus slang's own built-ins. YOSYS is NOT defined here.
+_VERILOG_IMPLICIT_DEFINES: dict[str, str] = {"SYNTHESIS": "1", "YOSYS": "1"}
+
+_SLANG_IMPLICIT_DEFINES: dict[str, str] = {
+    "SYNTHESIS": "1",
+    # slang built-ins, re-added by Preprocessor::undefineAll().
+    "__slang__": "1",
+    "__slang_major__": "1",
+    "__slang_minor__": "1",
+    "__FILE__": "",
+    "__LINE__": "",
+    # LRM coverage constants slang predefines; guarding on one is unusual but
+    # legal, and a spurious finding is worse than a redundant entry.
+    "SV_COV_START": "0",
+    "SV_COV_STOP": "1",
+    "SV_COV_RESET": "2",
+    "SV_COV_CHECK": "3",
+    "SV_COV_MODULE": "10",
+    "SV_COV_HIER": "11",
+    "SV_COV_ASSERTION": "20",
+    "SV_COV_FSM_STATE": "21",
+    "SV_COV_STATEMENT": "22",
+    "SV_COV_TOGGLE": "23",
+    "SV_COV_OVERFLOW": "-2",
+    "SV_COV_ERROR": "-1",
+    "SV_COV_NOCOV": "0",
+    "SV_COV_OK": "1",
+    "SV_COV_PARTIAL": "2",
+}
+
+
+def implicit_defines(frontend: str) -> dict[str, str]:
+    """Macros `frontend` defines for itself, before any `-D` is applied."""
+    if frontend == "slang":
+        return dict(_SLANG_IMPLICIT_DEFINES)
+    return dict(_VERILOG_IMPLICIT_DEFINES)
+
+
+# What a *bare* `+define+X` (no `=`) gives the macro, measured by expanding it
+# in an expression rather than only testing `\`ifdef`, with `-E` output as the
+# witness:
+#
+#   Verilator  +define+X  -> empty   `assign y = 8'd0 + \`X;` becomes `+ ;`
+#   Icarus     -DX        -> 1       ...becomes `+ 1;`
+#   read_verilog -DX      -> empty   (verilog_frontend.cc leaves value "")
+#   read_slang   -DX      -> 1       (slang appends " 1" to a valueless predefine)
+#
+# The consumers disagree with each other, and rtl_buddy's simulation flow hands
+# the filelist to whichever builder the suite selects. So a bare entry has no
+# single meaning to compare against, and it is reported rather than resolved.
+BARE_DEFINE_MEANINGS = (
+    "empty under Verilator and read_verilog, 1 under Icarus and slang"
+)
+
+
+def lifetime_scan_inputs(
+    fl_path: str, synth_name: str, run_defines: dict | None, frontend: str
+) -> tuple[list[str], dict[str, str]]:
+    """Include dirs and macros for the lifetime scan, matching what Yosys sees.
+
+    The scan must model the *elaboration the flow actually performs*, not an
+    idealised one. `_write_script()` passes only the run's ``defines:`` to
+    ``read_verilog -D`` / ``read_slang -D``; a ``+define+`` in the generated
+    filelist is dropped. Seeding the scan from those filelist macros would
+    therefore make it evaluate `` `ifdef `` regions differently from Yosys and
+    silently skip a static-lifetime declaration that really is elaborated.
+
+    So the macro table comes from the run's ``defines:`` plus whatever the
+    selected frontend defines for itself (:func:`implicit_defines`). The
+    filelist macros the synth flow ignores are reported once per run instead:
+    that
+    divergence from the simulation flow (which does apply them) predates this
+    gate and is a separate fix — quietly starting to forward them here would
+    change existing synthesis results.
+    """
+    incdirs, filelist_defines = filelist_scan_context(fl_path)
+    defines = implicit_defines(frontend)
+    defines.update({str(k): str(v) for k, v in (run_defines or {}).items()})
+
+    # A filelist macro only diverges when applying it would have changed the
+    # elaboration. Matching on the NAME alone silently swallowed the case the
+    # warning exists for: `+define+WIDTH=8` in the filelist with
+    # `defines: {WIDTH: 16}` on the run means simulation builds an 8-bit
+    # design and synthesis a 16-bit one.
+    #
+    # Only an entry carrying an explicit `=value` can be *compared*, because
+    # that value means the same thing to every tool. A bare entry cannot: see
+    # BARE_DEFINE_MEANINGS. Resolving it against the synth frontend was
+    # modelling the wrong consumer entirely -- the filelist is read by the
+    # simulator, which never hands it to synthesis -- and quietly suppressed
+    # the `+define+X` / `defines: {X: 1}` pair under slang even though
+    # Verilator gives that macro an empty body. Bare entries are reported.
+    ignored: list[str] = []
+    conflicts: list[str] = []
+    ambiguous: list[str] = []
+    for name in sorted(filelist_defines):
+        value = filelist_defines[name]
+        if name not in defines:
+            ignored.append(name)
+        elif value is None:
+            ambiguous.append(f"{name} (bare, synth={defines[name]!r})")
+        elif defines[name] != value:
+            conflicts.append(f"{name} (filelist={value!r}, synth={defines[name]!r})")
+    if ignored or conflicts or ambiguous:
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.filelist_defines_ignored",
+            synth=synth_name,
+            defines=ignored,
+            conflicts=conflicts,
+            ambiguous=ambiguous,
+            count=len(ignored) + len(conflicts) + len(ambiguous),
+            filelist=fl_path,
+        )
+    return incdirs, defines
 
 
 # Machine-level fallback for the yosys-slang plugin location, so toolchain
@@ -62,6 +310,35 @@ def resolve_plugin_path(plugin_path: str | None, root_cfg) -> str | None:
     if root_cfg is None:
         return str(p.resolve())
     return str((Path(root_cfg.get_project_rootdir()) / p).resolve())
+
+
+def validate_frontend(opts: SynthToolOpts, root_cfg) -> str | None:
+    """Check the frontend selection, returning the resolved plugin path.
+
+    Raises :class:`FatalRtlBuddyError` for an unknown ``frontend`` and for
+    ``frontend: slang`` with no plugin to load. These are configuration
+    errors, so they must exit 2 rather than become a per-run ``FAIL`` -- and
+    the correctness gates return before ``_write_script()`` ever calls
+    :func:`emit_frontend_read_cmds`, so ``run()`` calls this up front instead
+    of relying on elaboration to reach the same checks.
+
+    Returns the absolute plugin path for slang, and None for the verilog
+    frontend, which needs no plugin.
+    """
+    if opts.frontend == "verilog":
+        return None
+    if opts.frontend == "slang":
+        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
+        if not plugin_abs:
+            raise FatalRtlBuddyError(
+                "frontend: slang requires opts.plugin-path to be set "
+                "(path to yosys-slang's slang.so), or the "
+                f"{SLANG_PLUGIN_ENV} environment variable to point at it"
+            )
+        return plugin_abs
+    raise FatalRtlBuddyError(
+        f"unknown synth frontend {opts.frontend!r}; expected 'verilog' or 'slang'"
+    )
 
 
 def emit_frontend_read_cmds(
@@ -118,13 +395,7 @@ def emit_frontend_read_cmds(
         return cmds
 
     if opts.frontend == "slang":
-        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
-        if not plugin_abs:
-            raise FatalRtlBuddyError(
-                "frontend: slang requires opts.plugin-path to be set "
-                "(path to yosys-slang's slang.so), or the "
-                f"{SLANG_PLUGIN_ENV} environment variable to point at it"
-            )
+        plugin_abs = validate_frontend(opts, root_cfg)
         cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
         flags: list[str] = []
         if defines:
@@ -140,9 +411,8 @@ def emit_frontend_read_cmds(
         )
         return cmds
 
-    raise FatalRtlBuddyError(
-        f"unknown synth frontend {opts.frontend!r}; expected 'verilog' or 'slang'"
-    )
+    validate_frontend(opts, root_cfg)
+    raise AssertionError("unreachable: validate_frontend rejects other frontends")
 
 
 def slang_handles_params(opts: SynthToolOpts) -> bool:
@@ -171,6 +441,7 @@ class YosysSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._period_ps: int | None = None
+        self._opts: SynthToolOpts | None = None
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -267,12 +538,18 @@ class YosysSynth:
         m = re.search(r"Delay\s*=\s*([\d.]+)\s*ps", log_text)
         return float(m.group(1)) if m else None
 
-    def _write_script(self, fl_path: str) -> str:
-        top = self.synth_cfg.get_top()
+    def _resolve_opts(self) -> SynthToolOpts:
+        """Tool options with per-synthesis overrides and the effort applied.
+
+        Effort-level knobs take precedence over tool-level defaults but are
+        outranked by per-synthesis ``tool_overrides``. Memoised because
+        resolving the overrides emits validation warnings, and both the gates
+        and the script writer need the same answer.
+        """
+        if self._opts is not None:
+            return self._opts
         overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         opts = self.tool_cfg.get_opts(overrides)
-        # Effort-level knobs take precedence over tool-level defaults but are
-        # outranked by per-synthesis tool_overrides (already applied above).
         if not overrides or "synth_args" not in overrides:
             eff_synth = self.effort_cfg.get_yosys_synth_args()
             if eff_synth:
@@ -281,6 +558,47 @@ class YosysSynth:
             eff_abc = self.effort_cfg.get_yosys_abc_args()
             if eff_abc:
                 opts.abc_args = eff_abc
+        self._opts = opts
+        return opts
+
+    def _scan_static_lifetimes(
+        self, fl_path: str, opts: SynthToolOpts
+    ) -> list[LifetimeFinding]:
+        """Findings for the filelist's sources, or [] when the gate is off.
+
+        The bare and ``-v`` entries of ``synth.f`` are the scan roots; headers
+        they `` `include `` are followed through the filelist's ``+incdir+``
+        entries. A ``-y`` library directory contributes files the filelist
+        never names, so its contents stay outside the scan. Macros come from
+        the run's ``defines:`` alone, matching the Yosys invocation exactly —
+        see :func:`lifetime_scan_inputs`.
+        """
+        # Resolved before the mode check so the filelist-defines warning is
+        # reported even when the gate itself is switched off.
+        incdirs, defines = lifetime_scan_inputs(
+            fl_path,
+            self.synth_cfg.get_name(),
+            self.synth_cfg.get_defines(),
+            opts.frontend,
+        )
+        if resolve_static_functions_mode(opts) == "allow":
+            return []
+        return scan_files(
+            self._source_files_from_filelist(fl_path),
+            incdirs=incdirs,
+            defines=defines,
+            # Only slang honours --single-unit; with the verilog frontend the
+            # flag is ignored (with a warning), so each file is its own
+            # compilation unit either way.
+            single_unit=opts.single_unit and opts.frontend == "slang",
+            # slang's `undefineall` re-applies the -D macros; Yosys's own
+            # read_verilog drops them along with everything else.
+            undefineall_keeps_predefines=opts.frontend == "slang",
+        )
+
+    def _write_script(self, fl_path: str) -> str:
+        top = self.synth_cfg.get_top()
+        opts = self._resolve_opts()
         params = self.synth_cfg.get_params()
         lib_paths = self._resolve_lib_paths()
         mapped = bool(lib_paths)
@@ -371,20 +689,21 @@ class YosysSynth:
         return script_path
 
     def _clear_stale_netlists(self) -> None:
-        """Drop the previous run's netlists. The FIRST thing `run` does.
+        """Remove the previous run's netlists, before anything can return.
 
         `synth_netlist.v` / `synth.rtlil` are this flow's real product and the
-        fixed-path *inputs* `rb pnr` (`_resolve_netlist_path`) and `rb power`
-        (`_resolve_inputs`) resolve, guarded by `isfile` alone. Any exit from
-        `run` that leaves the last successful run's netlist behind — a
-        filelist error, a missing tool, a gate that returns before yosys — has
-        those commands place, route and power-analyse a design the RTL no
-        longer describes (#469). Nothing before this point may return, so the
-        clear runs ahead of every validation rather than after it.
+        fixed-path *inputs* of `rb pnr` and `rb power`, which guard them with
+        `isfile` only. A failed rerun would otherwise leave the last
+        successful run's netlist in place, byte-identical, and the downstream
+        commands would place, route and power-analyse it as though it were
+        current (#469). Both spellings are cleared because which one the
+        script writes depends on whether a Liberty resolved, and that can
+        change between runs.
 
-        Both spellings go: which one the script writes depends on whether a
-        Liberty resolved, and that can change between runs. The log is
-        truncated by the `open(..., "w")` that captures the run.
+        This is the first action of `run()` so that *every* early return --
+        a filelist error, and the static-lifetime and conflicting-driver
+        gates, which fail before or without reading the netlist -- leaves no
+        stale product behind.
         """
         stale = clear_stale_artefacts(
             [self._netlist_path(mapped=True), self._netlist_path()],
@@ -415,6 +734,7 @@ class YosysSynth:
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
+        self._clear_stale_netlists()
         log_event(
             logger,
             logging.INFO,
@@ -424,7 +744,17 @@ class YosysSynth:
             top=self.synth_cfg.get_top(),
         )
 
-        self._clear_stale_netlists()
+        # Both gate modes are resolved up front, ahead of the filelist write,
+        # so a misspelled value is the fatal config error it is on every run --
+        # not something a FilelistError can mask into an ordinary FAIL. Matches
+        # OpenRoadSynth.run().
+        opts = self._resolve_opts()
+        static_mode = resolve_static_functions_mode(opts)
+        conflicting_mode = resolve_conflicting_drivers_mode(opts)
+        # Same reason: an unknown frontend or a missing slang plugin is a
+        # config error, and the gates below return before `_write_script()`
+        # would have reached the same check inside emit_frontend_read_cmds().
+        validate_frontend(opts, self.root_cfg)
 
         try:
             fl_path = self._write_filelist()
@@ -439,6 +769,40 @@ class YosysSynth:
             return SynthFailResults(
                 name=self.name + "/results", desc=f"Filelist error: {e}"
             )
+
+        findings = self._scan_static_lifetimes(fl_path, opts)
+        if findings:
+            detail = describe_findings(findings)
+            if static_mode == "error":
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth.static_functions",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    count=len(findings),
+                    findings=[f.describe() for f in findings[:MAX_EVENT_FINDINGS]],
+                    truncated=max(0, len(findings) - MAX_EVENT_FINDINGS),
+                )
+                return SynthFailResults(
+                    name=self.name + "/results",
+                    desc=(
+                        f"{len(findings)} subroutine(s) declared without an "
+                        f"explicit automatic lifetime: {detail}"
+                    ),
+                )
+            for finding in findings:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.static_function",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    path=finding.path,
+                    line=finding.line,
+                    kind=finding.kind,
+                    subroutine=finding.name,
+                )
 
         script_path = self._write_script(fl_path)
         log_path = self._log_path()
@@ -492,6 +856,30 @@ class YosysSynth:
                 f"{len(error_lines)} ERROR(s) in synthesis log"
             )
 
+        conflicting = find_conflicting_driver_warnings(log_text)
+        if conflicting and conflicting_mode == "error":
+            log_event(
+                logger,
+                logging.ERROR,
+                "synth.conflicting_drivers",
+                synth=self.synth_cfg.get_name(),
+                count=len(conflicting),
+                log=log_path,
+            )
+            # Yosys already ran write_verilog/write_rtlil, so the netlist at
+            # the fixed path is this failed run's own product — the
+            # start-of-run cleanup only removed the previous one. Drop it, or
+            # `rb pnr` / `rb power` would consume a netlist whose shared net
+            # folded to x.
+            self._clear_stale_netlists()
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"{len(conflicting)} 'multiple conflicting drivers' "
+                    f"warning(s) in {log_path}"
+                ),
+            )
+
         area_um2 = self._parse_area_um2(log_text)
         gate_count = self._parse_gate_count(log_text)
         crit_path_ps = self._parse_critical_path_ps(log_text)
@@ -516,4 +904,5 @@ class YosysSynth:
             area_um2=area_um2,
             gate_count=gate_count,
             wns_ps=wns_ps,
+            static_function_findings=len(findings) or None,
         )

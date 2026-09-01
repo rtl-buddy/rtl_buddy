@@ -24,6 +24,27 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `SKIP`, `XFAIL`, and non-strict `XPASS` count as successful. XPLR verbs exit 0
   on success and 2 on fatal errors.
 
+## Synthesis correctness gates
+
+`rb synth` (both backends) fails on two silent-corruption shapes before
+reporting PPA. A `function`/`task` without an explicit `automatic` lifetime
+shares one storage location per formal across call sites; the gate names each
+`file:line: function <name>`, following `` `include ``s and honouring
+`` `ifdef ``. Fix the RTL by adding `automatic` — do not reach for
+`static-functions: allow`. This gate is new and defaults to `error` under
+`frontend: slang`, so a previously passing run can now fail; `warn` stages the
+migration. Yosys `multiple conflicting drivers` warnings fail the run under
+`conflicting-drivers: error` (a tristate bus is exempt); they mean a net folded
+to `x` and may have taken registers with it, so never report the area or gate
+count from such a run. `static_function_findings` in a passing result means the
+gate ran in `warn` mode and the netlist may still be wrong. A failed gate also
+deletes the netlist, so `rb pnr` / `rb power` cannot read it.
+
+A `synth.filelist_defines_ignored` warning means the model filelist carries
+`+define+` macros that `rb synth` does not pass to Yosys — only the synth.yaml
+entry's `defines:` reaches it. Move the macro there if synthesis needs it; the
+elaborated RTL otherwise differs from the simulation flow's.
+
 ## FPGA timing closure
 
 `timing_met: false` is a completed result, not necessarily a tool crash. Start

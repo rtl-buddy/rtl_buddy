@@ -1172,6 +1172,74 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'single_unit: true has no effect with frontend "{fields.get("frontend")}" '
                 "— it only applies to the slang frontend; set frontend: slang to use it"
             )
+        case "synth.static_functions":
+            findings = fields.get("findings") or []
+            listed = "; ".join(str(f) for f in findings)
+            truncated = fields.get("truncated") or 0
+            if truncated:
+                listed += f"; and {truncated} more"
+            # Only slang miscompiles these. The legacy verilog frontend inlines
+            # per call site, so a user who opted into `error` there is being
+            # told about portability, not corruption.
+            if fields.get("frontend") == "slang":
+                why = (
+                    "the slang frontend shares one storage location per formal "
+                    "across every call site, which silently merges registers"
+                )
+            else:
+                why = (
+                    f'the "{fields.get("frontend")}" frontend inlines each call '
+                    "site, so this design is correct here but not portable — "
+                    "the slang frontend silently merges registers"
+                )
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                "function/task declaration(s) without an explicit automatic "
+                f"lifetime — {listed}; {why}. Add `automatic`, or set synth "
+                "option static-functions: warn|allow to proceed"
+            )
+        case "synth.static_function":
+            return (
+                f"{fields.get('path')}:{fields.get('line')}: "
+                f"{fields.get('kind')} {fields.get('subroutine')} has static "
+                "lifetime (no explicit `automatic`); its formals are shared "
+                "storage and are not portable across synthesis frontends"
+            )
+        case "synth.filelist_defines_ignored":
+            names = fields.get("defines") or []
+            conflicts = fields.get("conflicts") or []
+            parts = []
+            if names:
+                parts.append(
+                    "not passed to Yosys at all: " + ", ".join(str(n) for n in names)
+                )
+            if conflicts:
+                parts.append(
+                    "passed with a different value: "
+                    + ", ".join(str(c) for c in conflicts)
+                )
+            if fields.get("ambiguous"):
+                parts.append(
+                    "bare, so no single value to compare (empty under Verilator "
+                    "and read_verilog, 1 under Icarus and slang): "
+                    + ", ".join(str(a) for a in fields["ambiguous"])
+                )
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                "+define+ entr(ies) in the generated filelist do not reach "
+                f"Yosys as written — {'; '.join(parts)}. The synthesis flow "
+                "only applies the synth.yaml entry's `defines:`; move them "
+                "there if the design needs them, or the elaborated RTL will "
+                "differ from the simulation flow's"
+            )
+        case "synth.conflicting_drivers":
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                '"multiple conflicting drivers" warning(s) in '
+                f"{fields.get('log')} — a net with incompatible drivers folds "
+                "to x and takes its downstream logic with it. Fix the design, "
+                "or set synth option conflicting-drivers: allow to proceed"
+            )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.openroad.no_lef":

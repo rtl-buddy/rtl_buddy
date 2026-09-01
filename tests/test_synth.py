@@ -2736,3 +2736,2086 @@ def test_openroad_yosys_stage_writes_then_fails_removes_the_netlist(
     assert isinstance(result, SynthFailResults)
     assert "Yosys stage failed" in result.results["desc"]
     assert not netlist.exists()
+
+
+# ---------------------------------------------------------------------------
+# Static-lifetime gate and conflicting-driver gate (#472)
+# ---------------------------------------------------------------------------
+
+# The issue's repro, trimmed to the two declarations that matter. `inc` is on
+# line 3 and `same` on line 4.
+_STATIC_FN_SRC = dedent("""\
+    module my_module;
+      typedef logic [4:0] ptr_t;
+      function ptr_t inc(input ptr_t p);     return p + 1; endfunction
+      function bit   same(input ptr_t a, b); return (a == b); endfunction
+    endmodule
+""")
+
+_AUTOMATIC_FN_SRC = _STATIC_FN_SRC.replace(
+    "function ptr_t", "function automatic ptr_t"
+).replace("function bit   same", "function automatic bit same")
+
+
+def _setup_run_with_source(tmp_path, text):
+    """A one-source model whose RTL is `text`."""
+    sv = tmp_path / "top.sv"
+    sv.write_text(text)
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(
+        dedent(f"""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "my_module"
+            filelist: ["-v {sv}"]
+        """)
+    )
+    from rtl_buddy.config.model import ModelConfig
+
+    return ModelConfig(
+        name="my_module", filelist=[f"-v {sv}"], path=str(models_yaml)
+    ), sv
+
+
+def _gate_yosys(
+    tmp_path, text, *, opts_overrides=None, tool_overrides=None, defines=None
+):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    tmp_path = Path(tmp_path)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    model, sv = _setup_run_with_source(tmp_path, text)
+    opts = SynthToolOptsFile(**(opts_overrides or {}))
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(name="yosys", tool="yosys", opts=opts)
+    )
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=defines,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=tool_overrides,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+    )
+    return ys, sv
+
+
+def _patch_yosys(monkeypatch, *, returncode=0, write_log=None, calls=None):
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module,
+        "run_managed_process",
+        _fake_managed_process(returncode=returncode, write_log=write_log, calls=calls),
+    )
+
+
+def test_static_functions_error_fails_before_yosys(tmp_path, monkeypatch):
+    calls = []
+    ys, sv = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch, calls=calls)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    desc = result.results["desc"]
+    assert f"{sv}:3: function inc" in desc
+    assert f"{sv}:4: function same" in desc
+    # The gate is a *pre*-synthesis check: yosys must not have been started.
+    assert calls == []
+
+
+def test_static_functions_error_logs_an_error_event(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.DEBUG):
+        ys.run()
+    # caplog renders the human message, not the dotted event name.
+    assert "without an explicit automatic lifetime" in caplog.text
+
+
+def test_static_functions_warn_passes_and_warns_per_finding(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "warn"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert caplog.text.count("has static lifetime") == 2
+    # The finding survives into the machine-readable envelope.
+    assert result.results["static_function_findings"] == 2
+
+
+def test_static_functions_allow_is_silent(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert "static lifetime" not in caplog.text
+    assert "static_function_findings" not in result.results
+
+
+def test_static_functions_default_verilog_frontend_warns(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(tmp_path, _STATIC_FN_SRC)
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert "has static lifetime" in caplog.text
+
+
+def test_static_functions_gate_is_quiet_on_automatic_sources(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert "static lifetime" not in caplog.text
+
+
+def test_static_functions_mode_settable_per_run_via_tool_overrides(
+    tmp_path, monkeypatch
+):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        tool_overrides={"yosys": {"static_functions": "error"}},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthFailResults)
+
+
+def test_static_functions_invalid_mode_is_fatal(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "loud"}
+    )
+    _patch_yosys(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="static-functions"):
+        ys.run()
+
+
+def test_static_functions_default_is_error_for_slang_and_warn_for_verilog():
+    from rtl_buddy.config.synth import SynthToolOpts, resolve_static_functions_mode
+
+    assert resolve_static_functions_mode(SynthToolOpts(frontend="slang")) == "error"
+    assert resolve_static_functions_mode(SynthToolOpts(frontend="verilog")) == "warn"
+    # An explicit setting always wins over the frontend-derived default.
+    assert (
+        resolve_static_functions_mode(
+            SynthToolOpts(frontend="slang", static_functions="warn")
+        )
+        == "warn"
+    )
+
+
+def test_conflicting_drivers_default_error_fails_the_run(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_yosys(
+        monkeypatch,
+        write_log=(
+            "Warning: multiple conflicting drivers for bad.\\inc.p [4]:\n"
+            "    port A[4] of cell $add\n"
+            "Warning: multiple conflicting drivers for bad.\\inc.p [3]:\n"
+        ),
+    )
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "2 'multiple conflicting drivers'" in result.results["desc"]
+    assert "synth.log" in result.results["desc"]
+
+
+def test_conflicting_drivers_allow_keeps_the_run_passing(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"static_functions": "allow", "conflicting_drivers": "allow"},
+    )
+    _patch_yosys(
+        monkeypatch,
+        write_log="Warning: multiple conflicting drivers for bad.\\inc.p [4]:\n",
+    )
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_conflicting_drivers_invalid_mode_is_fatal(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"static_functions": "allow", "conflicting_drivers": "warn"},
+    )
+    _patch_yosys(monkeypatch, write_log="")
+    with pytest.raises(FatalRtlBuddyError, match="conflicting-drivers"):
+        ys.run()
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        # The real yosys `check` warning, verbatim.
+        ("Warning: multiple conflicting drivers for bad.\\inc.p [4]:", True),
+        # Same message reported against a source location.
+        ("bad.sv:9: Warning: multiple conflicting drivers for bad.\\p:", True),
+        # `check -h` help text, echoed into the log by a `help check`.
+        ("  - two or more conflicting drivers for one wire", False),
+        # A command echo or a comment that merely names the phrase.
+        ("yosys> echo multiple conflicting drivers", False),
+        ("# multiple conflicting drivers", False),
+    ],
+)
+def test_conflicting_driver_regex_is_anchored_on_the_warning(line, expected):
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    assert bool(find_conflicting_driver_warnings(line + "\n")) is expected
+
+
+@pytest.mark.parametrize(
+    "event, fields, expected_substrings",
+    [
+        (
+            "synth.static_functions",
+            {
+                "synth": "block",
+                "frontend": "slang",
+                "count": 2,
+                "findings": ["bad.sv:9: function inc", "bad.sv:10: function same"],
+            },
+            [
+                "block",
+                "bad.sv:9: function inc",
+                "bad.sv:10: function same",
+                "slang",
+                "static-functions",
+            ],
+        ),
+        (
+            "synth.static_function",
+            {
+                "synth": "block",
+                "frontend": "verilog",
+                "path": "bad.sv",
+                "line": 9,
+                "kind": "function",
+                "subroutine": "inc",
+            },
+            ["bad.sv:9", "function inc", "static lifetime"],
+        ),
+        (
+            "synth.conflicting_drivers",
+            {"synth": "block", "count": 5, "log": "artefacts/block/synth.log"},
+            ["block", "5", "artefacts/block/synth.log", "conflicting-drivers"],
+        ),
+    ],
+)
+def test_gate_human_messages_are_specific(event, fields, expected_substrings):
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(event, fields)
+    assert msg != event.replace(".", " ")
+    for sub in expected_substrings:
+        assert sub in msg, f"{event}: {sub!r} not in {msg!r}"
+
+
+# ---------------------------------------------------------------------------
+# Tristate buses are not conflicting drivers (review item 1)
+# ---------------------------------------------------------------------------
+
+# Verbatim shape of the yosys `check` output for two `assign bus = en ? d : 'z;`
+# on an `inout wire [7:0] bus`. Yosys renders an inout port as "module input".
+_TRISTATE_WARNING = (
+    "Warning: multiple conflicting drivers for tri_top.\\bus [7]:\n"
+    "    port Y[7] of cell $2 ($tribuf)\n"
+    "    port Y[7] of cell $0 ($tribuf)\n"
+    "    module input bus[7]\n"
+)
+
+# The #472 corruption shape: one shared formal driven by two flops.
+_SHARED_FORMAL_WARNING = (
+    "Warning: multiple conflicting drivers for bad.\\inc.p [4]:\n"
+    "    port Q[4] of cell $driver$inc.p ($dff)\n"
+    "    port Q[4] of cell $driver$rptr ($dff)\n"
+)
+
+
+def test_tristate_only_warnings_are_not_counted():
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    assert find_conflicting_driver_warnings(_TRISTATE_WARNING * 3) == []
+
+
+def test_shared_formal_warnings_are_counted():
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    assert len(find_conflicting_driver_warnings(_SHARED_FORMAL_WARNING * 2)) == 2
+
+
+def test_a_mixed_log_counts_only_the_real_conflicts():
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    log = (
+        "Executing CHECK pass.\n"
+        + _TRISTATE_WARNING
+        + _SHARED_FORMAL_WARNING
+        + _TRISTATE_WARNING
+        + "Warnings: 3 unique messages, 3 total\n"
+    )
+    hits = find_conflicting_driver_warnings(log)
+    assert len(hits) == 1
+    assert "inc.p" in hits[0]
+
+
+def test_a_tribuf_mixed_with_a_flop_driver_is_still_counted():
+    """One non-tristate driver means the bus is not a clean tristate bus."""
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    log = (
+        "Warning: multiple conflicting drivers for m.\\w [0]:\n"
+        "    port Y[0] of cell $1 ($tribuf)\n"
+        "    port Q[0] of cell $2 ($dff)\n"
+    )
+    assert len(find_conflicting_driver_warnings(log)) == 1
+
+
+def test_lower_case_tbuf_cell_type_is_recognised():
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    log = (
+        "Warning: multiple conflicting drivers for m.\\w [0]:\n"
+        "    port Y[0] of cell $1 ($_TBUF_)\n"
+        "    port Y[0] of cell $2 ($_TBUF_)\n"
+        "    module inout w[0]\n"
+    )
+    assert find_conflicting_driver_warnings(log) == []
+
+
+def test_a_warning_with_no_driver_lines_is_counted():
+    """Conservative: an unparsed warning is a real one until proven benign."""
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    log = "Warning: multiple conflicting drivers for m.\\w [0]:\nEnd of script.\n"
+    assert len(find_conflicting_driver_warnings(log)) == 1
+
+
+def test_process_action_drivers_are_counted():
+    from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
+
+    log = (
+        "Warning: multiple conflicting drivers for m.\\w [0]:\n"
+        "    action \\w <= \\a (case rule) in process $proc$m.sv:3$1\n"
+        "    action \\w <= \\b (sync rule) in process $proc$m.sv:9$2\n"
+    )
+    assert len(find_conflicting_driver_warnings(log)) == 1
+
+
+def test_tristate_run_passes_end_to_end(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_yosys(monkeypatch, write_log=_TRISTATE_WARNING * 16)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+# ---------------------------------------------------------------------------
+# Filelist incdirs and defines reach the scan (review items 2 and 3)
+# ---------------------------------------------------------------------------
+
+
+def test_filelist_scan_context_collects_incdirs_and_defines(tmp_path):
+    from rtl_buddy.tools.synth_yosys import filelist_scan_context
+
+    fl = tmp_path / "synth.f"
+    fl.write_text(
+        dedent("""\
+            // rtl-buddy generated model filelist
+            +incdir+inc
+            +incdir+a+b
+            +define+SYNTHESIS=1
+            +define+DEBUG
+            -v top.sv
+        """)
+    )
+    incdirs, defines = filelist_scan_context(str(fl))
+    assert incdirs == [
+        str(tmp_path / "inc"),
+        str(tmp_path / "a"),
+        str(tmp_path / "b"),
+    ]
+    # A bare `+define+DEBUG` is None, not "": which one it was decides
+    # whether it matches a run `defines:` value, and that depends on the
+    # frontend (slang normalises bare to 1, read_verilog to empty).
+    assert defines == {"SYNTHESIS": "1", "DEBUG": None}
+
+
+def test_filelist_scan_context_on_a_missing_file_is_empty(tmp_path):
+    from rtl_buddy.tools.synth_yosys import filelist_scan_context
+
+    assert filelist_scan_context(str(tmp_path / "nope.f")) == ([], {})
+
+
+def test_included_header_is_scanned_by_the_synth_gate(tmp_path, monkeypatch):
+    """The reviewer's repro: the declarations moved into an `include`d header
+    used to pass with a corrupted netlist."""
+    (tmp_path / "fns.svh").write_text(
+        "function ptr_t inc(input ptr_t p);     return p + 1; endfunction\n"
+    )
+    src = dedent("""\
+        module my_module;
+          typedef logic [4:0] ptr_t;
+        `include "fns.svh"
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "fns.svh:1: function inc" in result.results["desc"]
+
+
+_IFNDEF_SRC = dedent("""\
+    module my_module;
+    `ifndef {macro}
+      function bit dbg(input bit x); return x; endfunction
+    `endif
+    endmodule
+""")
+
+
+def test_run_defines_suppress_an_excluded_ifdef_region(tmp_path, monkeypatch):
+    """`defines:` on the synth.yaml entry seeds the scan's preprocessor."""
+    src = _IFNDEF_SRC.format(macro="FAST_SIM_ONLY")
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={"static_functions": "error"},
+        defines={"FAST_SIM_ONLY": 1},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+    ys_no_define, _ = _gate_yosys(
+        tmp_path / "nodef", src, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys_no_define.run(), SynthFailResults)
+
+
+# ---------------------------------------------------------------------------
+# Machine output (review item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_static_function_findings_reaches_the_machine_payload():
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    results = SynthPassResults(
+        name="s/results", gate_count=46, static_function_findings=2
+    )
+    row = RtlBuddy._synth_result_row(
+        object(), {"synth_name": "block", "results": results}
+    )
+    assert row["static_function_findings"] == 2
+    assert row["gate_count"] == 46
+
+
+def test_machine_payload_omits_the_field_when_the_gate_found_nothing():
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    results = SynthPassResults(name="s/results", gate_count=46)
+    row = RtlBuddy._synth_result_row(
+        object(), {"synth_name": "block", "results": results}
+    )
+    assert "static_function_findings" not in row
+
+
+# ---------------------------------------------------------------------------
+# Gate-mode validation happens before yosys runs (review item 5)
+# ---------------------------------------------------------------------------
+
+
+def test_conflicting_drivers_invalid_mode_is_fatal_before_yosys(tmp_path, monkeypatch):
+    """The mode is resolved at the top of run(), so a misspelling is fatal even
+    on a run whose log would never have tripped the gate."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    calls = []
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"conflicting_drivers": "warn"},
+    )
+    _patch_yosys(monkeypatch, write_log="", calls=calls)
+    with pytest.raises(FatalRtlBuddyError, match="conflicting-drivers"):
+        ys.run()
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Frontend-aware error message (review item 11)
+# ---------------------------------------------------------------------------
+
+
+def test_static_functions_message_explains_corruption_for_slang():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "synth.static_functions",
+        {
+            "synth": "block",
+            "frontend": "slang",
+            "count": 1,
+            "findings": ["bad.sv:9: function inc"],
+        },
+    )
+    assert "silently merges registers" in msg
+    assert "not portable" not in msg
+
+
+def test_static_functions_message_explains_portability_for_verilog():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "synth.static_functions",
+        {
+            "synth": "block",
+            "frontend": "verilog",
+            "count": 1,
+            "findings": ["bad.sv:9: function inc"],
+        },
+    )
+    assert "inlines each call site" in msg
+    assert "not portable" in msg
+
+
+def test_static_functions_message_reports_the_truncated_remainder():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "synth.static_functions",
+        {
+            "synth": "block",
+            "frontend": "slang",
+            "count": 30,
+            "findings": ["bad.sv:1: function f1"],
+            "truncated": 29,
+        },
+    )
+    assert "and 29 more" in msg
+
+
+def test_static_functions_event_caps_the_findings_list(tmp_path, monkeypatch, caplog):
+    """A machine log line must not carry an unbounded list; the count and the
+    dropped total travel with it."""
+    import logging
+
+    from rtl_buddy.tools.synth_yosys import MAX_EVENT_FINDINGS
+
+    body = "\n".join(
+        f"  function int f{i}; return 1; endfunction"
+        for i in range(MAX_EVENT_FINDINGS + 5)
+    )
+    ys, _ = _gate_yosys(
+        tmp_path,
+        f"module my_module;\n{body}\nendmodule\n",
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.ERROR):
+        ys.run()
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", "") == "synth.static_functions"
+    ]
+    assert len(events) == 1
+    assert len(events[0].rtl_fields["findings"]) == MAX_EVENT_FINDINGS
+    assert events[0].rtl_fields["count"] == MAX_EVENT_FINDINGS + 5
+    assert events[0].rtl_fields["truncated"] == 5
+
+
+# ---------------------------------------------------------------------------
+# The OpenROAD backend gets the same gates (review item 8)
+# ---------------------------------------------------------------------------
+
+
+def _gate_openroad(tmp_path, text, *, opts_overrides=None):
+    """An OpenROAD backend with Liberty and LEF, over a one-source model.
+
+    `_FakeRootCfgOR.get_synth_tool_cfg` raises, so stage 1 falls back to this
+    backend's own opts — which is where the gate settings go.
+    """
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+
+    tmp_path = Path(tmp_path)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    model, sv = _setup_run_with_source(tmp_path, text)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "tech.lef"
+    lef.write_text("")
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad",
+            tool="openroad",
+            opts=SynthToolOptsFile(**(opts_overrides or {})),
+        )
+    )
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="openroad",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform="mylib",
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    or_synth = OpenRoadSynth(
+        name="t",
+        synth_cfg=synth_cfg,
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+        yosys_executable="yosys",
+    )
+    fl = Path(or_synth._filelist_path())
+    fl.parent.mkdir(parents=True, exist_ok=True)
+    fl.write_text(f"-v {sv}\n")
+    return or_synth, str(fl), sv
+
+
+def _patch_openroad_yosys(monkeypatch, *, returncode=0, write_log="", calls=None):
+    from rtl_buddy.tools import synth_openroad as or_module
+
+    calls = calls if calls is not None else []
+
+    class _Result:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    def _run(cmd, stdout=None, stderr=None, **kwargs):
+        calls.append(cmd)
+        if stdout is not None and write_log:
+            stdout.write(write_log)
+        return _Result(returncode)
+
+    monkeypatch.setattr(or_module, "task_status", lambda *a, **kw: nullcontext())
+    monkeypatch.setattr(or_module.subprocess, "run", _run)
+    return calls
+
+
+def test_openroad_stage1_fails_on_static_lifetime_functions(tmp_path, monkeypatch):
+    or_synth, fl, sv = _gate_openroad(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    calls = _patch_openroad_yosys(monkeypatch)
+    gate_count, ok, desc = or_synth._run_yosys_stage(fl)
+    assert (gate_count, ok) == (None, False)
+    assert f"{sv}:3: function inc" in desc
+    # The gate runs before elaboration, so yosys was never started.
+    assert calls == []
+
+
+def test_openroad_run_surfaces_the_gate_description(tmp_path, monkeypatch):
+    """`run()` must report the finding, not the generic stage-failure text."""
+    or_synth, _, sv = _gate_openroad(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_openroad_yosys(monkeypatch)
+    result = or_synth.run()
+    assert isinstance(result, SynthFailResults)
+    assert "explicit automatic lifetime" in result.results["desc"]
+    assert f"{sv}:3: function inc" in result.results["desc"]
+
+
+def test_openroad_stage1_warn_mode_records_the_findings(tmp_path, monkeypatch, caplog):
+    import logging
+
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "warn"}
+    )
+    _patch_openroad_yosys(monkeypatch, write_log="Chip area for module: 1.0\n")
+    with caplog.at_level(logging.WARNING):
+        _, ok, desc = or_synth._run_yosys_stage(fl)
+    assert (ok, desc) == (True, None)
+    assert caplog.text.count("has static lifetime") == 2
+    assert or_synth.static_function_findings == 2
+
+
+def test_openroad_stage1_allow_mode_is_quiet(tmp_path, monkeypatch, caplog):
+    import logging
+
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_openroad_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        _, ok, _desc = or_synth._run_yosys_stage(fl)
+    assert ok is True
+    assert "static lifetime" not in caplog.text
+
+
+def test_openroad_stage1_fails_on_conflicting_drivers(tmp_path, monkeypatch):
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_openroad_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING * 3)
+    gate_count, ok, desc = or_synth._run_yosys_stage(fl)
+    assert (gate_count, ok) == (None, False)
+    assert "3 'multiple conflicting drivers'" in desc
+    assert "synth_yosys.log" in desc
+
+
+def test_openroad_stage1_ignores_a_tristate_bus(tmp_path, monkeypatch):
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_openroad_yosys(monkeypatch, write_log=_TRISTATE_WARNING * 8)
+    _, ok, desc = or_synth._run_yosys_stage(fl)
+    assert (ok, desc) == (True, None)
+
+
+def test_openroad_stage1_conflicting_drivers_allow(tmp_path, monkeypatch):
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={
+            "static_functions": "allow",
+            "conflicting_drivers": "allow",
+        },
+    )
+    _patch_openroad_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING)
+    _, ok, desc = or_synth._run_yosys_stage(fl)
+    assert (ok, desc) == (True, None)
+
+
+# ---------------------------------------------------------------------------
+# The gates must not outrun the stale-netlist cleanup (review round 3, item 1)
+# ---------------------------------------------------------------------------
+
+
+def test_yosys_gate_failure_on_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
+    """A rerun that fails the static-functions gate returns before yosys runs.
+
+    The cleanup is the first action of `run()` precisely so that early return
+    still clears the previous run's product: `rb pnr` / `rb power` resolve
+    `synth_netlist.v` by `isfile` alone and would otherwise consume a netlist
+    from a run whose RTL no longer exists (#469 + #472).
+    """
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(ys.artefact_dir) / "synth.rtlil"
+
+    def _yosys_writes_a_netlist(cmd, stdout, stderr, **kwargs):
+        mapped.write_text("module my_module(); endmodule\n")
+        rtlil.write_text("# rtlil\n")
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _yosys_writes_a_netlist
+    )
+    assert isinstance(ys.run(), SynthPassResults)
+    assert mapped.exists() and rtlil.exists()
+
+    # Rerun the same synthesis after the RTL grew a static-lifetime function.
+    rerun, _ = _gate_yosys(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    assert rerun.artefact_dir == ys.artefact_dir
+    calls = []
+    _patch_yosys(monkeypatch, calls=calls)
+    result = rerun.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "explicit automatic lifetime" in result.results["desc"]
+    assert calls == []
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_yosys_conflicting_drivers_failure_leaves_no_stale_netlist(
+    tmp_path, monkeypatch
+):
+    """The conflicting-driver gate returns after yosys wrote a netlist from a
+    design whose shared net folded to `x`. That netlist must not survive."""
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+    mapped.write_text("module stale(); endmodule\n")
+
+    _patch_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING * 4)
+    result = ys.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "multiple conflicting drivers" in result.results["desc"]
+    assert not mapped.exists()
+
+
+def test_openroad_gate_failure_on_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
+    """Same ordering requirement for the OpenROAD backend's stage-1 gates."""
+    from rtl_buddy.tools import synth_openroad as or_module
+
+    or_synth, _, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    mapped = Path(or_synth.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(or_synth.artefact_dir) / "synth.rtlil"
+
+    class _Ok:
+        returncode = 0
+
+    def _tools_succeed(cmd, stdout=None, stderr=None, **kwargs):
+        if "yosys" in cmd[0]:
+            mapped.write_text("module my_module(); endmodule\n")
+            rtlil.write_text("# rtlil\n")
+        return _Ok()
+
+    monkeypatch.setattr(or_module, "task_status", lambda *a, **kw: nullcontext())
+    monkeypatch.setattr(or_module.subprocess, "run", _tools_succeed)
+    assert isinstance(or_synth.run(), SynthPassResults)
+    assert mapped.exists() and rtlil.exists()
+
+    rerun, _, _ = _gate_openroad(
+        tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    assert rerun.artefact_dir == or_synth.artefact_dir
+    calls = _patch_openroad_yosys(monkeypatch)
+    result = rerun.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "explicit automatic lifetime" in result.results["desc"]
+    assert calls == []
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_openroad_conflicting_drivers_failure_leaves_no_stale_netlist(
+    tmp_path, monkeypatch
+):
+    or_synth, _, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    mapped = Path(or_synth.artefact_dir) / "synth_netlist.v"
+    mapped.write_text("module stale(); endmodule\n")
+
+    _patch_openroad_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING * 2)
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "multiple conflicting drivers" in result.results["desc"]
+    assert not mapped.exists()
+
+
+# ---------------------------------------------------------------------------
+# The scan follows the frontend's compilation-unit boundary (round 3, item 2)
+# ---------------------------------------------------------------------------
+
+
+def _two_source_ifndef_model(tmp_path):
+    """Two sources: the first defines a macro the second guards on."""
+    a = tmp_path / "a.sv"
+    b = tmp_path / "b.sv"
+    a.write_text("`define SHARED 1\nmodule a; endmodule\n")
+    b.write_text(
+        "module my_module;\n`ifndef SHARED\n"
+        "  function bit dbg(input bit x); return x; endfunction\n"
+        "`endif\nendmodule\n"
+    )
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(
+        dedent(f"""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "my_module"
+            filelist: ["-v {a}", "-v {b}"]
+        """)
+    )
+    from rtl_buddy.config.model import ModelConfig
+
+    return ModelConfig(
+        name="my_module", filelist=[f"-v {a}", f"-v {b}"], path=str(models_yaml)
+    )
+
+
+def _yosys_for_model(tmp_path, model, opts_overrides):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys", tool="yosys", opts=SynthToolOptsFile(**opts_overrides)
+        )
+    )
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    return YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+    )
+
+
+def test_gate_does_not_carry_a_define_between_sources_without_single_unit(
+    tmp_path, monkeypatch
+):
+    """slang compiles each file separately by default, so `SHARED` is not
+    defined while b.sv is read and the guarded function IS compiled."""
+    model = _two_source_ifndef_model(tmp_path)
+    ys = _yosys_for_model(
+        tmp_path,
+        model,
+        {
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_gate_carries_a_define_between_sources_under_single_unit(tmp_path, monkeypatch):
+    model = _two_source_ifndef_model(tmp_path)
+    ys = _yosys_for_model(
+        tmp_path,
+        model,
+        {
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "single_unit": True,
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_verilog_frontend_ignores_single_unit_for_the_scan_too(tmp_path, monkeypatch):
+    """`single-unit` is slang-only; with the verilog frontend it is ignored
+    (with a warning), so the scan must not honour it either."""
+    model = _two_source_ifndef_model(tmp_path)
+    ys = _yosys_for_model(
+        tmp_path,
+        model,
+        {"frontend": "verilog", "single_unit": True, "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# The scan models the Yosys invocation exactly (review round 4, item 1)
+# ---------------------------------------------------------------------------
+
+
+def _gate_yosys_with_filelist_define(tmp_path, src, macro, *, opts_overrides=None):
+    """A model whose filelist carries `+define+<macro>` — which the synth flow
+    drops, so Yosys never sees it."""
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    tmp_path = Path(tmp_path)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    sv = tmp_path / "top.sv"
+    sv.write_text(src)
+    models_yaml = tmp_path / "models.yaml"
+    entries = [f"+define+{macro}=1", f"-v {sv}"]
+    models_yaml.write_text(
+        dedent(f"""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "my_module"
+            filelist: {entries!r}
+        """)
+    )
+    model = ModelConfig(name="my_module", filelist=entries, path=str(models_yaml))
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(**(opts_overrides or {})),
+        )
+    )
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    return YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+    )
+
+
+def test_filelist_define_does_not_suppress_a_finding(tmp_path, monkeypatch):
+    """`_write_script()` passes only the run's `defines:` to Yosys, so a
+    filelist `+define+` must not make the scan skip a region Yosys elaborates.
+    """
+    ys = _gate_yosys_with_filelist_define(
+        tmp_path,
+        _IFNDEF_SRC.format(macro="FAST_SIM_ONLY"),
+        "FAST_SIM_ONLY",
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_filelist_defines_the_flow_drops_are_warned_about(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    ys = _gate_yosys_with_filelist_define(
+        tmp_path,
+        "module my_module; endmodule\n",
+        "FAST_SIM_ONLY",
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        ys.run()
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+    ]
+    assert len(events) == 1
+    assert events[0].rtl_fields["defines"] == ["FAST_SIM_ONLY"]
+    assert events[0].levelno == logging.WARNING
+
+
+def test_filelist_defines_warning_fires_even_when_the_gate_is_off(
+    tmp_path, monkeypatch, caplog
+):
+    """The divergence exists whatever the gate is set to."""
+    import logging
+
+    ys = _gate_yosys_with_filelist_define(
+        tmp_path,
+        "module my_module; endmodule\n",
+        "FAST_SIM_ONLY",
+        opts_overrides={"static_functions": "allow"},
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        ys.run()
+    assert any(
+        getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        for r in caplog.records
+    )
+
+
+def test_a_filelist_define_the_run_also_sets_is_not_warned_about(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    ys = _gate_yosys_with_filelist_define(
+        tmp_path,
+        "module my_module; endmodule\n",
+        "FAST_SIM_ONLY",
+        opts_overrides={"static_functions": "error"},
+    )
+    ys.synth_cfg.defines = {"FAST_SIM_ONLY": 1}
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        ys.run()
+    assert not any(
+        getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        for r in caplog.records
+    )
+
+
+def test_a_filelist_with_no_defines_is_quiet(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+    _patch_yosys(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        ys.run()
+    assert not any(
+        getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        for r in caplog.records
+    )
+
+
+def test_synthesis_macro_is_implicitly_defined(tmp_path, monkeypatch):
+    """Both Yosys frontends define `SYNTHESIS` themselves — `read_verilog` in
+    verilog_frontend.cc and yosys-slang unless `--no-synthesis-define`, which
+    rtl_buddy never passes. A `` `ifndef SYNTHESIS `` helper is therefore never
+    compiled by synthesis and must not be reported."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _IFNDEF_SRC.format(macro="SYNTHESIS"),
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_ifdef_synthesis_region_is_still_scanned(tmp_path, monkeypatch):
+    """The other side of the implicit define: an `` `ifdef SYNTHESIS `` region
+    IS compiled, so a static-lifetime declaration inside it is a finding."""
+    src = dedent("""\
+        module my_module;
+        `ifdef SYNTHESIS
+          function bit synth_only(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function synth_only" in result.results["desc"]
+
+
+def test_lifetime_scan_inputs_seeds_the_implicit_defines(tmp_path):
+    from rtl_buddy.tools.synth_yosys import implicit_defines, lifetime_scan_inputs
+
+    fl = tmp_path / "synth.f"
+    fl.write_text("+incdir+inc\n+define+FROM_FILELIST=1\n-v top.sv\n")
+    incdirs, defines = lifetime_scan_inputs(str(fl), "s", {"FROM_RUN": 2}, "verilog")
+    assert incdirs == [str(tmp_path / "inc")]
+    # Filelist macros are reported, never applied.
+    assert "FROM_FILELIST" not in defines
+    assert defines["FROM_RUN"] == "2"
+    assert defines["SYNTHESIS"] == implicit_defines("verilog")["SYNTHESIS"]
+
+
+# ---------------------------------------------------------------------------
+# The conflicting-driver gate deletes the netlist it just made (round 4, item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_conflicting_drivers_failure_removes_the_new_netlist(tmp_path, monkeypatch):
+    """Yosys already ran `write_verilog`/`write_rtlil` by the time the gate
+    fires, so the netlist at the fixed path is THIS run's product. The
+    start-of-run cleanup cannot have removed it."""
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(ys.artefact_dir) / "synth.rtlil"
+
+    def _yosys_writes_then_warns(cmd, stdout, stderr, **kwargs):
+        # The netlist is created by this run, after the start-of-run cleanup.
+        mapped.write_text("module corrupted(); endmodule\n")
+        rtlil.write_text("# corrupted rtlil\n")
+        stdout.write(_SHARED_FORMAL_WARNING * 5)
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _yosys_writes_then_warns
+    )
+    result = ys.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "multiple conflicting drivers" in result.results["desc"]
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+def test_conflicting_drivers_allow_keeps_the_new_netlist(tmp_path, monkeypatch):
+    """`allow` means the warnings are accepted, so the netlist must survive."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={
+            "static_functions": "allow",
+            "conflicting_drivers": "allow",
+        },
+    )
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+
+    def _yosys_writes_then_warns(cmd, stdout, stderr, **kwargs):
+        mapped.write_text("module accepted(); endmodule\n")
+        stdout.write(_SHARED_FORMAL_WARNING)
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _yosys_writes_then_warns
+    )
+    assert isinstance(ys.run(), SynthPassResults)
+    assert mapped.exists()
+
+
+def test_openroad_conflicting_drivers_removes_the_new_netlist(tmp_path, monkeypatch):
+    from rtl_buddy.tools import synth_openroad as or_module
+
+    or_synth, _, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    mapped = Path(or_synth.artefact_dir) / "synth_netlist.v"
+    rtlil = Path(or_synth.artefact_dir) / "synth.rtlil"
+
+    class _Ok:
+        returncode = 0
+
+    def _yosys_writes_then_warns(cmd, stdout=None, stderr=None, **kwargs):
+        mapped.write_text("module corrupted(); endmodule\n")
+        rtlil.write_text("# corrupted rtlil\n")
+        if stdout is not None:
+            stdout.write(_SHARED_FORMAL_WARNING * 3)
+        return _Ok()
+
+    monkeypatch.setattr(or_module, "task_status", lambda *a, **kw: nullcontext())
+    monkeypatch.setattr(or_module.subprocess, "run", _yosys_writes_then_warns)
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "multiple conflicting drivers" in result.results["desc"]
+    assert not mapped.exists()
+    assert not rtlil.exists()
+
+
+# ---------------------------------------------------------------------------
+# OpenROAD resolves the gate modes before anything else (round 4, item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_openroad_invalid_gate_mode_is_fatal_before_the_liberty_check(tmp_path):
+    """Resolved at the top of run(), so a misspelled mode is fatal even on a
+    run that would have returned early for a missing Liberty."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad",
+            tool="openroad",
+            opts=SynthToolOptsFile(conflicting_drivers="warn"),
+        )
+    )
+    or_synth = OpenRoadSynth(
+        name="t",
+        synth_cfg=_make_synth_cfg(platform=None),
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,
+        yosys_executable="yosys",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="conflicting-drivers"):
+        or_synth.run()
+
+
+def test_openroad_invalid_static_functions_mode_is_fatal_before_lef(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad",
+            tool="openroad",
+            opts=SynthToolOptsFile(static_functions="loud"),
+        )
+    )
+    or_synth = OpenRoadSynth(
+        name="t",
+        synth_cfg=_make_synth_cfg(platform="mylib"),
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}, lef_map={}),
+        yosys_executable="yosys",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="static-functions"):
+        or_synth.run()
+
+
+def test_filelist_defines_ignored_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "synth.filelist_defines_ignored",
+        {"synth": "block", "defines": ["A", "B"], "count": 2, "filelist": "synth.f"},
+    )
+    assert msg != "synth filelist_defines_ignored"
+    for sub in ("block", "A, B", "defines:"):
+        assert sub in msg
+
+
+# ---------------------------------------------------------------------------
+# `undefineall follows the frontend in use (review round 6, item 1)
+# ---------------------------------------------------------------------------
+
+_UNDEFINEALL_FLOW_SRC = dedent("""\
+    module my_module;
+    `define GUARD 1
+    `undefineall
+    `ifndef GUARD
+      function bit dbg(input bit x); return x; endfunction
+    `endif
+    endmodule
+""")
+
+
+def test_undefineall_no_longer_suppresses_a_finding(tmp_path, monkeypatch):
+    """The reviewer's repro: `` `define GUARD ``, `` `undefineall ``, then a
+    static function under `` `ifndef GUARD ``. Yosys compiles it — verified in
+    the elaborated design, which grows `$not` cells only when the guard is
+    cleared — so the gate must report it."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _UNDEFINEALL_FLOW_SRC,
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_undefineall_keeps_the_run_defines_under_slang(tmp_path, monkeypatch):
+    """slang's undefineAll() re-applies options.predefines, so a `defines:`
+    macro survives `` `undefineall `` and its guarded region stays uncompiled.
+    """
+    src = dedent("""\
+        module my_module;
+        `undefineall
+        `ifndef FAST_SIM_ONLY
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+        defines={"FAST_SIM_ONLY": 1},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_undefineall_drops_the_run_defines_under_the_verilog_frontend(
+    tmp_path, monkeypatch
+):
+    """Yosys's own read_verilog clears global_defines_cache too, so the same
+    source DOES compile the guarded region there."""
+    src = dedent("""\
+        module my_module;
+        `undefineall
+        `ifndef FAST_SIM_ONLY
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={"frontend": "verilog", "static_functions": "error"},
+        defines={"FAST_SIM_ONLY": 1},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_openroad_undefineall_follows_the_elaboration_frontend(tmp_path, monkeypatch):
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path,
+        _UNDEFINEALL_FLOW_SRC,
+        opts_overrides={"static_functions": "error"},
+    )
+    _patch_openroad_yosys(monkeypatch)
+    _gate_count, ok, desc = or_synth._run_yosys_stage(fl)
+    assert ok is False
+    assert "function dbg" in desc
+
+
+# ---------------------------------------------------------------------------
+# Gate modes resolve before the filelist write (review round 6, item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_gate_mode_is_fatal_even_when_the_filelist_fails(tmp_path, monkeypatch):
+    """A misspelled mode is a config error. A FilelistError must not turn it
+    into an ordinary FAIL — the modes are resolved before the filelist write,
+    as on the OpenROAD path."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"conflicting_drivers": "warn"},
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    with pytest.raises(FatalRtlBuddyError, match="conflicting-drivers"):
+        ys.run()
+
+
+def test_invalid_static_functions_mode_is_fatal_even_when_the_filelist_fails(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"static_functions": "loud"},
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    with pytest.raises(FatalRtlBuddyError, match="static-functions"):
+        ys.run()
+
+
+def test_a_failing_filelist_with_valid_modes_is_still_an_ordinary_failure(
+    tmp_path, monkeypatch
+):
+    """The reordering must not turn a real filelist error into something else."""
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "Filelist error" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Implicit defines are frontend-specific (review round 7, item 1)
+# ---------------------------------------------------------------------------
+
+
+def test_implicit_defines_differ_by_frontend():
+    """`read_verilog` predefines YOSYS (preproc.cc define_map_t ctor) as well
+    as SYNTHESIS; slang predefines SYNTHESIS plus its own built-ins, and no
+    YOSYS. Both confirmed with a syntax error inside the guarded region."""
+    from rtl_buddy.tools.synth_yosys import implicit_defines
+
+    verilog = implicit_defines("verilog")
+    slang = implicit_defines("slang")
+    assert verilog["YOSYS"] == "1"
+    assert verilog["SYNTHESIS"] == "1"
+    assert "YOSYS" not in slang
+    assert slang["SYNTHESIS"] == "1"
+    assert "__slang__" in slang
+    assert "__slang__" not in verilog
+    # Callers mutate the result, so it must be a fresh dict each time.
+    verilog["SCRATCH"] = "1"
+    assert "SCRATCH" not in implicit_defines("verilog")
+
+
+_IFNDEF_YOSYS_SRC = dedent("""\
+    module my_module;
+    `ifndef YOSYS
+      function bit dbg(input bit x); return x; endfunction
+    `endif
+    endmodule
+""")
+
+
+def test_ifndef_yosys_is_not_reported_under_the_verilog_frontend(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _IFNDEF_YOSYS_SRC,
+        opts_overrides={"frontend": "verilog", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_ifndef_yosys_is_reported_under_the_slang_frontend(tmp_path, monkeypatch):
+    """slang does not define YOSYS, so the guarded helper really is compiled."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _IFNDEF_YOSYS_SRC,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_ifndef_slang_builtin_is_not_reported_under_slang(tmp_path, monkeypatch):
+    src = dedent("""\
+        module my_module;
+        `ifndef __slang__
+          function bit dbg(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_ifdef_yosys_region_is_scanned_under_the_verilog_frontend(
+    tmp_path, monkeypatch
+):
+    """The other side: an `` `ifdef YOSYS `` region IS compiled there."""
+    src = dedent("""\
+        module my_module;
+        `ifdef YOSYS
+          function bit yosys_only(input bit x); return x; endfunction
+        `endif
+        endmodule
+    """)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        src,
+        opts_overrides={"frontend": "verilog", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function yosys_only" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Frontend config errors stay fatal (review round 7, item 3)
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_frontend_is_fatal_even_with_a_static_function(tmp_path, monkeypatch):
+    """The gate's early return precedes `_write_script()`, so the frontend
+    check has to happen in `run()` or a config error becomes a plain FAIL."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        opts_overrides={"frontend": "slangg", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        ys.run()
+
+
+def test_slang_without_a_plugin_is_fatal_even_with_a_static_function(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        opts_overrides={"frontend": "slang", "static_functions": "error"},
+    )
+    _patch_yosys(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="requires opts.plugin-path"):
+        ys.run()
+
+
+def test_unknown_frontend_is_fatal_before_the_filelist_too(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"frontend": "vlog"}
+    )
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(YosysSynth, "_write_filelist", _boom)
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        ys.run()
+
+
+def test_openroad_unknown_frontend_is_fatal_before_the_liberty_check(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad",
+            tool="openroad",
+            opts=SynthToolOptsFile(frontend="slangg"),
+        )
+    )
+    or_synth = OpenRoadSynth(
+        name="t",
+        synth_cfg=_make_synth_cfg(platform=None),
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,
+        yosys_executable="yosys",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        or_synth.run()
+
+
+def test_openroad_slang_without_a_plugin_is_fatal_before_stage_one(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad", tool="openroad", opts=SynthToolOptsFile(frontend="slang")
+        )
+    )
+    or_synth = OpenRoadSynth(
+        name="t",
+        synth_cfg=_make_synth_cfg(platform=None),
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,
+        yosys_executable="yosys",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="requires opts.plugin-path"):
+        or_synth.run()
+
+
+def test_validate_frontend_returns_the_resolved_plugin_path(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOpts
+    from rtl_buddy.tools.synth_yosys import validate_frontend
+
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+    assert validate_frontend(SynthToolOpts(frontend="verilog"), None) is None
+    assert validate_frontend(
+        SynthToolOpts(frontend="slang", plugin_path=str(plugin)), None
+    ) == str(plugin)
+
+
+def test_a_valid_frontend_still_reaches_the_gate(tmp_path, monkeypatch):
+    """The new check must not swallow the finding it precedes."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _STATIC_FN_SRC,
+        opts_overrides={
+            "frontend": "slang",
+            "plugin_path": "/x/slang.so",
+            "static_functions": "error",
+        },
+    )
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function inc" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Attributes do not exempt a declaration (review round 9)
+# ---------------------------------------------------------------------------
+
+
+def test_an_attributed_static_function_still_fails_the_gate(tmp_path, monkeypatch):
+    """`(* \\extern = 1 *)` is an attribute carrying a user identifier, not an
+    `extern` prototype. It used to exempt the declaration it decorated."""
+    src = dedent("""\
+        module my_module;
+          (* \\extern = 1 *) function bit dbg(input bit x); return x; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function dbg" in result.results["desc"]
+
+
+def test_a_keep_attribute_does_not_change_the_gate_verdict(tmp_path, monkeypatch):
+    src = dedent("""\
+        module my_module;
+          (* keep *) function automatic bit ok(input bit x); return x; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+# ---------------------------------------------------------------------------
+# The filelist-define warning compares values, not just names (round 10)
+# ---------------------------------------------------------------------------
+
+
+def _scan_inputs(tmp_path, filelist_body, run_defines, frontend):
+    from rtl_buddy.tools.synth_yosys import lifetime_scan_inputs
+
+    fl = tmp_path / "synth.f"
+    fl.write_text(filelist_body)
+    return lifetime_scan_inputs(str(fl), "block", run_defines, frontend)
+
+
+def _defines_event(caplog):
+    return [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+    ]
+
+
+def test_an_explicit_filelist_value_is_compared_literally(tmp_path, caplog):
+    """A value written with `=` means the same thing to every tool, so it can
+    be compared. A bare entry cannot — see the ambiguity tests below."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+W=8\n", {"W": 8}, "slang")
+        _scan_inputs(tmp_path, "+define+E=\n", {"E": ""}, "verilog")
+    assert _defines_event(caplog) == []
+
+
+def test_a_matching_filelist_value_is_quiet(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+WIDTH=8\n", {"WIDTH": 8}, "verilog")
+    assert _defines_event(caplog) == []
+
+
+def test_a_conflicting_filelist_value_is_warned_with_both_values(tmp_path, caplog):
+    """The case the name-only filter swallowed: simulation builds an 8-bit
+    design and synthesis a 16-bit one, and nothing said so."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+WIDTH=8\n", {"WIDTH": 16}, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["defines"] == []
+    assert fields["conflicts"] == ["WIDTH (filelist='8', synth='16')"]
+    assert fields["count"] == 1
+
+
+def test_a_conflict_with_an_implicit_macro_is_warned(tmp_path, caplog):
+    """`+define+SYNTHESIS=0` disagrees with the value the frontend forces."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+SYNTHESIS=0\n", None, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["conflicts"] == ["SYNTHESIS (filelist='0', synth='1')"]
+
+
+def test_a_matching_implicit_macro_is_quiet(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+SYNTHESIS=1\n", None, "verilog")
+    assert _defines_event(caplog) == []
+
+
+@pytest.mark.parametrize("frontend", ["slang", "verilog"])
+def test_a_bare_filelist_define_is_always_reported(tmp_path, caplog, frontend):
+    """A bare `+define+X` has no single meaning to compare against.
+
+    Measured by expanding the macro in an expression (`-E` output as the
+    witness), the consumers disagree with each other: Verilator and Yosys's
+    `read_verilog` give it an EMPTY body, while Icarus and slang give it 1.
+    The filelist is read by whichever simulator the suite selects, so
+    resolving the entry against the *synthesis* frontend modelled the wrong
+    consumer — and under slang it silently suppressed this very pair even
+    though Verilator would build the design with an empty `DEBUG`.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, frontend)
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["ambiguous"] == ["DEBUG (bare, synth='1')"]
+    assert fields["conflicts"] == []
+    assert fields["defines"] == []
+    assert fields["count"] == 1
+
+
+def test_a_bare_filelist_define_matching_an_implicit_macro_is_reported(
+    tmp_path, caplog
+):
+    """Same reasoning when the synth value came from the frontend itself."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+SYNTHESIS\n", None, "slang")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["ambiguous"] == ["SYNTHESIS (bare, synth='1')"]
+
+
+def test_a_bare_filelist_define_for_an_unset_name_is_just_not_passed(tmp_path, caplog):
+    """With no synth value there is nothing to be ambiguous against — it is
+    simply a macro synthesis never sees."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+ONLY_SIM\n", None, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["defines"] == ["ONLY_SIM"]
+    assert events[0].rtl_fields["ambiguous"] == []
+
+
+def test_all_three_kinds_are_reported_in_one_event(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(
+            tmp_path,
+            "+define+W=8\n+define+MISSING=1\n+define+BARE\n",
+            {"W": 16, "BARE": 1},
+            "verilog",
+        )
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["defines"] == ["MISSING"]
+    assert fields["conflicts"] == ["W (filelist='8', synth='16')"]
+    assert fields["ambiguous"] == ["BARE (bare, synth='1')"]
+    assert fields["count"] == 3
+
+
+def test_an_absent_name_is_still_reported_as_not_passed(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(tmp_path, "+define+ONLY_IN_FILELIST=1\n", None, "verilog")
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["defines"] == ["ONLY_IN_FILELIST"]
+    assert events[0].rtl_fields["conflicts"] == []
+
+
+def test_both_kinds_are_reported_in_one_event(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(
+            tmp_path,
+            "+define+WIDTH=8\n+define+MISSING=1\n",
+            {"WIDTH": 16},
+            "verilog",
+        )
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["defines"] == ["MISSING"]
+    assert fields["conflicts"] == ["WIDTH (filelist='8', synth='16')"]
+    assert fields["count"] == 2
+
+
+def test_the_defines_message_names_both_kinds():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "synth.filelist_defines_ignored",
+        {
+            "synth": "block",
+            "defines": ["MISSING"],
+            "conflicts": ["WIDTH (filelist='8', synth='16')"],
+            "count": 2,
+            "filelist": "synth.f",
+        },
+    )
+    assert "not passed to Yosys at all: MISSING" in msg
+    assert "passed with a different value: WIDTH (filelist='8', synth='16')" in msg
+
+    with_bare = _human_message(
+        "synth.filelist_defines_ignored",
+        {
+            "synth": "block",
+            "defines": [],
+            "conflicts": [],
+            "ambiguous": ["BARE (bare, synth='1')"],
+            "count": 1,
+            "filelist": "synth.f",
+        },
+    )
+    assert "no single value to compare" in with_bare
+    assert "Verilator" in with_bare and "Icarus" in with_bare
+    assert "BARE (bare, synth='1')" in with_bare
+
+
+def test_a_conflicting_filelist_define_does_not_change_the_scan(tmp_path, caplog):
+    """The warning reports the divergence; the macro table still models the
+    Yosys invocation, so the run's value is the one the scan uses."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _incdirs, defines = _scan_inputs(
+            tmp_path, "+define+WIDTH=8\n", {"WIDTH": 16}, "verilog"
+        )
+    assert defines["WIDTH"] == "16"
+
+
+# ---------------------------------------------------------------------------
+# Anonymous struct return types (review round 12)
+# ---------------------------------------------------------------------------
+
+
+def test_an_out_of_block_method_returning_an_anonymous_struct_passes_the_gate(
+    tmp_path, monkeypatch
+):
+    """The `;` inside the struct body used to stop the header scan, losing the
+    `C::` and reporting an automatic class method as a static free function —
+    a false failure under the default slang gate."""
+    src = dedent("""\
+        module my_module;
+          function struct packed { logic a; } C::f(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_a_module_scope_struct_returning_function_still_fails_the_gate(
+    tmp_path, monkeypatch
+):
+    src = dedent("""\
+        module my_module;
+          function struct packed { logic a; } free_fn(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function free_fn" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Type-reference return types (review round 13, item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_an_out_of_block_method_returning_a_type_reference_passes_the_gate(
+    tmp_path, monkeypatch
+):
+    """`type(int)`'s `(` used to be taken for the argument list, so the scan
+    never saw the `C::` and failed an automatic class method under the default
+    slang gate."""
+    src = dedent("""\
+        module my_module;
+          function type(int) C::f(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_a_module_scope_type_reference_function_fails_with_its_own_name(
+    tmp_path, monkeypatch
+):
+    src = dedent("""\
+        module my_module;
+          function type(x) free_fn(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function free_fn" in result.results["desc"]

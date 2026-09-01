@@ -8,12 +8,23 @@ logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
-from .synth_yosys import emit_frontend_read_cmds, slang_handles_params
+from .synth_yosys import (
+    MAX_EVENT_FINDINGS,
+    emit_frontend_read_cmds,
+    find_conflicting_driver_warnings,
+    lifetime_scan_inputs,
+    slang_handles_params,
+    validate_frontend,
+)
+from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
     SynthConfig,
     SynthToolConfig,
+    SynthToolOpts,
     SynthEffortConfig,
     default_effort_config,
+    resolve_conflicting_drivers_mode,
+    resolve_static_functions_mode,
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
@@ -55,6 +66,8 @@ class OpenRoadSynth:
         artefact_root = Path(suite_dir) / "artefacts" / synth_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
+        self._yosys_opts: SynthToolOpts | None = None
+        self.static_function_findings = 0
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -118,16 +131,18 @@ class OpenRoadSynth:
     # Stage 1: Yosys — RTL to technology-mapped gate-level netlist
     # ------------------------------------------------------------------
 
-    def _write_yosys_script(self, fl_path: str) -> str:
-        top = self.synth_cfg.get_top()
-        lib_paths = self._resolve_lib_paths()
-        params = self.synth_cfg.get_params()
-        defines = self.synth_cfg.get_defines()
-        # The elaboration stage uses Yosys regardless of `tool:`, so its opts
-        # (frontend, plugin_path, etc.) come from the yosys tool config plus
-        # any `tool_overrides.yosys` block — not from this backend's openroad
-        # tool config. Fall back to the openroad opts only when no yosys tool
-        # config exists.
+    def _resolve_yosys_opts(self) -> SynthToolOpts:
+        """Options for the Yosys elaboration stage.
+
+        The elaboration stage uses Yosys regardless of `tool:`, so its opts
+        (frontend, plugin_path, the correctness gates) come from the yosys tool
+        config plus any `tool_overrides.yosys` block — not from this backend's
+        openroad tool config. Fall back to the openroad opts only when no yosys
+        tool config exists. Memoised because resolving the overrides emits
+        validation warnings.
+        """
+        if self._yosys_opts is not None:
+            return self._yosys_opts
         opts = self.tool_cfg.get_opts(
             self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )
@@ -146,6 +161,40 @@ class OpenRoadSynth:
                 opts = yosys_tool_cfg.get_opts(
                     self.synth_cfg.get_tool_overrides_for("yosys")
                 )
+        self._yosys_opts = opts
+        return opts
+
+    def _scan_static_lifetimes(
+        self, fl_path: str, opts: SynthToolOpts
+    ) -> list[LifetimeFinding]:
+        """Same pre-elaboration gate as the Yosys backend; see YosysSynth."""
+        incdirs, defines = lifetime_scan_inputs(
+            fl_path,
+            self.synth_cfg.get_name(),
+            self.synth_cfg.get_defines(),
+            opts.frontend,
+        )
+        if resolve_static_functions_mode(opts) == "allow":
+            return []
+        return scan_files(
+            self._source_files_from_filelist(fl_path),
+            incdirs=incdirs,
+            defines=defines,
+            # Only slang honours --single-unit; with the verilog frontend the
+            # flag is ignored (with a warning), so each file is its own
+            # compilation unit either way.
+            single_unit=opts.single_unit and opts.frontend == "slang",
+            # slang's `undefineall` re-applies the -D macros; Yosys's own
+            # read_verilog drops them along with everything else.
+            undefineall_keeps_predefines=opts.frontend == "slang",
+        )
+
+    def _write_yosys_script(self, fl_path: str) -> str:
+        top = self.synth_cfg.get_top()
+        lib_paths = self._resolve_lib_paths()
+        params = self.synth_cfg.get_params()
+        defines = self.synth_cfg.get_defines()
+        opts = self._resolve_yosys_opts()
 
         lines = []
         for lib in lib_paths:
@@ -207,8 +256,14 @@ class OpenRoadSynth:
         )
         return int(matches[-1]) if matches else None
 
-    def _run_yosys_stage(self, fl_path: str) -> tuple[int | None, bool]:
-        """Run Yosys stage. Returns (gate_count, success)."""
+    def _run_yosys_stage(self, fl_path: str) -> tuple[int | None, bool, str | None]:
+        """Run Yosys stage. Returns (gate_count, success, failure description).
+
+        The description is None when the failure has no detail beyond the log;
+        the correctness gates supply one, since their finding is not in the
+        Yosys log at all (the lifetime scan) or is a warning the log buries
+        (the conflicting-driver gate).
+        """
         lib_paths = self._resolve_lib_paths()
         if not lib_paths:
             log_event(
@@ -217,7 +272,47 @@ class OpenRoadSynth:
                 "synth.openroad.no_library",
                 synth=self.synth_cfg.get_name(),
             )
-            return None, False
+            return None, False, None
+
+        # Same two gates as the Yosys backend: stage 1 elaborates with the same
+        # frontend, so it carries the same hazard.
+        opts = self._resolve_yosys_opts()
+        static_mode = resolve_static_functions_mode(opts)
+        conflicting_mode = resolve_conflicting_drivers_mode(opts)
+        findings = self._scan_static_lifetimes(fl_path, opts)
+        self.static_function_findings = len(findings)
+        if findings:
+            if static_mode == "error":
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth.static_functions",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    count=len(findings),
+                    findings=[f.describe() for f in findings[:MAX_EVENT_FINDINGS]],
+                    truncated=max(0, len(findings) - MAX_EVENT_FINDINGS),
+                )
+                return (
+                    None,
+                    False,
+                    (
+                        f"{len(findings)} subroutine(s) declared without an "
+                        f"explicit automatic lifetime: {describe_findings(findings)}"
+                    ),
+                )
+            for finding in findings:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.static_function",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    path=finding.path,
+                    line=finding.line,
+                    kind=finding.kind,
+                    subroutine=finding.name,
+                )
 
         script_path = self._write_yosys_script(fl_path)
         log_path = self._yosys_log_path()
@@ -241,19 +336,42 @@ class OpenRoadSynth:
                 )
 
         if result.returncode != 0:
-            return None, False
+            return None, False, None
 
         try:
             with open(log_path) as f:
                 log_text = f.read()
         except OSError:
-            return None, False
+            return None, False, None
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("ERROR:")]
         if error_lines:
-            return None, False
+            return None, False, None
 
-        return self._parse_gate_count(log_text), True
+        conflicting = find_conflicting_driver_warnings(log_text)
+        if conflicting and conflicting_mode == "error":
+            log_event(
+                logger,
+                logging.ERROR,
+                "synth.conflicting_drivers",
+                synth=self.synth_cfg.get_name(),
+                count=len(conflicting),
+                log=log_path,
+            )
+            # Stage 1 already wrote its netlist; the start-of-run cleanup only
+            # removed the previous run's. Drop this one too, so stage 2 and
+            # `rb pnr` / `rb power` cannot read a design that folded to x.
+            self._clear_stale_netlists()
+            return (
+                None,
+                False,
+                (
+                    f"{len(conflicting)} 'multiple conflicting drivers' "
+                    f"warning(s) in {log_path}"
+                ),
+            )
+
+        return self._parse_gate_count(log_text), True, None
 
     # ------------------------------------------------------------------
     # Stage 2: OpenROAD — timing analysis with native multi-clock SDC
@@ -556,6 +674,7 @@ class OpenRoadSynth:
             gate_count=gate_count,
             wns_ps=wns_ps,
             tns_ps=tns_ps,
+            static_function_findings=self.static_function_findings or None,
         )
 
     # ------------------------------------------------------------------
@@ -563,16 +682,17 @@ class OpenRoadSynth:
     # ------------------------------------------------------------------
 
     def _clear_stale_netlists(self) -> None:
-        """Drop the previous run's netlists. The FIRST thing `run` does.
+        """Remove the previous run's stage-1 netlists, before anything returns.
 
-        Stage 2 reads stage 1's netlist back off a fixed path having judged
-        stage 1 by exit code and ERROR lines alone, and the same file is the
-        input `rb pnr` (`_resolve_netlist_path`) and `rb power`
-        (`_resolve_inputs`) resolve, guarded by `isfile`. Every exit from
-        `run` therefore has to leave it absent — including the Liberty / LEF
-        gates and the filelist error, which return before yosys is reached
-        (#469). Both spellings go: which one stage 1 writes depends on
-        whether a Liberty resolved, and that can change between runs.
+        Stage 2 reads stage 1's netlist back off a fixed path, having judged
+        stage 1 by exit code and ERROR lines alone — and the same netlist is
+        the input `rb pnr` / `rb power` resolve. A failed rerun would leave the
+        previous successful run's netlist for all three to consume (#469).
+
+        This is the first action of `run()` so that every early return — a
+        missing Liberty or LEF, a filelist error, and the static-lifetime and
+        conflicting-driver gates, which fail before or without reading the
+        netlist — leaves no stale product behind.
         """
         stale = clear_stale_artefacts(
             [
@@ -605,6 +725,7 @@ class OpenRoadSynth:
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
+        self._clear_stale_netlists()
         log_event(
             logger,
             logging.INFO,
@@ -614,7 +735,16 @@ class OpenRoadSynth:
             top=self.synth_cfg.get_top(),
         )
 
-        self._clear_stale_netlists()
+        # Both gate modes are resolved up front, ahead of the Liberty, LEF and
+        # filelist returns, so a misspelled value is fatal on every run rather
+        # than only on the runs that reach stage 1. Matches YosysSynth.run().
+        opts = self._resolve_yosys_opts()
+        resolve_static_functions_mode(opts)
+        resolve_conflicting_drivers_mode(opts)
+        # An unknown frontend or a missing slang plugin is a config error too,
+        # and stage 1's gates return before _write_yosys_script() would have
+        # reached the same check inside emit_frontend_read_cmds().
+        validate_frontend(opts, self.root_cfg)
 
         lib_paths = self._resolve_lib_paths()
         lef_paths = self._resolve_lef_paths()
@@ -667,7 +797,7 @@ class OpenRoadSynth:
                 name=self.name + "/results", desc=f"Filelist error: {e}"
             )
 
-        gate_count, yosys_ok = self._run_yosys_stage(fl_path)
+        gate_count, yosys_ok, yosys_desc = self._run_yosys_stage(fl_path)
         if not yosys_ok:
             log_event(
                 logger,
@@ -679,7 +809,9 @@ class OpenRoadSynth:
             )
             # Stage 1 writes the netlist before its trailing `stat`, so a
             # crash or an ERROR line here can still leave one behind.
-            return self._fail_after_yosys("Yosys stage failed; see synth_yosys.log")
+            return self._fail_after_yosys(
+                yosys_desc or "Yosys stage failed; see synth_yosys.log"
+            )
 
         result = self._run_or_stage(gate_count, lef_paths, lib_paths)
         if isinstance(result, SynthFailResults):

@@ -67,6 +67,14 @@ class SynthToolOpts:
     # Forwarded to yosys-slang as ``read_slang --single-unit``; the
     # legacy verilog frontend has no equivalent.
     single_unit: bool = False
+    # Pre-synthesis gate on `function`/`task` declarations that lack an
+    # explicit `automatic` lifetime: "error", "warn", or "allow". Empty
+    # selects the frontend-dependent default -- see
+    # :func:`resolve_static_functions_mode`.
+    static_functions: str = ""
+    # Post-synthesis gate on Yosys "multiple conflicting drivers" warnings:
+    # "error" (the default) or "allow".
+    conflicting_drivers: str = ""
 
 
 @serde
@@ -77,6 +85,48 @@ class SynthToolOptsFile:
     frontend: str = field(default="verilog")
     plugin_path: str = field(rename="plugin-path", default="")
     single_unit: bool = field(rename="single-unit", default=False)
+    static_functions: str = field(rename="static-functions", default="")
+    conflicting_drivers: str = field(rename="conflicting-drivers", default="")
+
+
+# Accepted values for the two correctness gates, and the default each takes
+# when the option is left empty.
+STATIC_FUNCTIONS_MODES: tuple[str, ...] = ("error", "warn", "allow")
+CONFLICTING_DRIVERS_MODES: tuple[str, ...] = ("error", "allow")
+
+
+def resolve_static_functions_mode(opts: SynthToolOpts) -> str:
+    """Effective ``static-functions`` mode for these tool options.
+
+    The default depends on the frontend because the hazard does. yosys-slang
+    lowers a static-lifetime subroutine literally and shares one net per
+    formal across every call site, so the netlist is silently wrong: default
+    ``error``. The legacy ``verilog`` frontend inlines per call site, so the
+    design is correct there but not portable, and the default is ``warn``.
+    An explicit setting always wins.
+    """
+    mode = (opts.static_functions or "").strip()
+    if not mode:
+        return "error" if opts.frontend == "slang" else "warn"
+    if mode not in STATIC_FUNCTIONS_MODES:
+        raise FatalRtlBuddyError(
+            f"synth option static-functions must be one of "
+            f"{', '.join(STATIC_FUNCTIONS_MODES)}, got {mode!r}"
+        )
+    return mode
+
+
+def resolve_conflicting_drivers_mode(opts: SynthToolOpts) -> str:
+    """Effective ``conflicting-drivers`` mode; defaults to ``error``."""
+    mode = (opts.conflicting_drivers or "").strip()
+    if not mode:
+        return "error"
+    if mode not in CONFLICTING_DRIVERS_MODES:
+        raise FatalRtlBuddyError(
+            f"synth option conflicting-drivers must be one of "
+            f"{', '.join(CONFLICTING_DRIVERS_MODES)}, got {mode!r}"
+        )
+    return mode
 
 
 # Accepted keys of a `synth.yaml` ``tool_overrides.<tool>`` block. These are
@@ -91,6 +141,8 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "frontend",
     "plugin_path",
     "single_unit",
+    "static_functions",
+    "conflicting_drivers",
 )
 
 # Overrides whose value type is checked, as key -> (type, label, hint).
@@ -101,6 +153,16 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
 # values under `cfg-synth-tools.opts.single-unit`.
 _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
     "single_unit": (bool, "bool", "write an unquoted YAML true/false"),
+    "static_functions": (
+        str,
+        "string",
+        f"write one of {', '.join(STATIC_FUNCTIONS_MODES)}",
+    ),
+    "conflicting_drivers": (
+        str,
+        "string",
+        f"write one of {', '.join(CONFLICTING_DRIVERS_MODES)}",
+    ),
 }
 
 
@@ -242,6 +304,8 @@ class SynthToolConfig:
         frontend = self._cfg.opts.frontend
         plugin_path = self._cfg.opts.plugin_path
         single_unit = self._cfg.opts.single_unit
+        static_functions = self._cfg.opts.static_functions
+        conflicting_drivers = self._cfg.opts.conflicting_drivers
         if overrides:
             if not isinstance(overrides, dict):
                 # Previously this reached `overrides.get(...)` and died with a
@@ -265,6 +329,10 @@ class SynthToolConfig:
             frontend = overrides.get("frontend", frontend)
             plugin_path = overrides.get("plugin_path", plugin_path)
             single_unit = overrides.get("single_unit", single_unit)
+            static_functions = overrides.get("static_functions", static_functions)
+            conflicting_drivers = overrides.get(
+                "conflicting_drivers", conflicting_drivers
+            )
         return SynthToolOpts(
             synth_args=synth_args,
             abc_args=abc_args,
@@ -272,6 +340,8 @@ class SynthToolConfig:
             frontend=frontend,
             plugin_path=plugin_path,
             single_unit=single_unit,
+            static_functions=static_functions,
+            conflicting_drivers=conflicting_drivers,
         )
 
 
