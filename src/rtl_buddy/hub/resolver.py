@@ -157,6 +157,14 @@ class ViewModel:
 
     @classmethod
     def from_dict(cls, raw: dict, *, source_path: Path | None = None) -> "ViewModel":
+        # Shape before dereference: a `view.json` whose top level is a list
+        # parses as valid JSON and then raises `AttributeError` on `.get`,
+        # which is not the `ResolverError` the caller handles — so a hub
+        # request would die on it instead of degrading to "invalid" (#469).
+        if not isinstance(raw, dict):
+            raise ResolverError(
+                f"view.json top level is {type(raw).__name__}, not an object"
+            )
         schema = raw.get("schema_version", "")
         try:
             major = int(str(schema).split(".", 1)[0])

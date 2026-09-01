@@ -485,6 +485,7 @@ class OpenRoadPnr:
             _MANAGED_OUTPUT_SUFFIXES,
             owner=self.pnr_cfg.get_name(),
             own=own,
+            own_flow="pnr-openroad",
         )
         if stale:
             log_event(

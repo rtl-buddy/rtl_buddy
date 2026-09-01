@@ -1149,14 +1149,20 @@ def test_owned_ledger_round_trips(tmp_path):
         write_owned_ledger,
     )
 
-    assert read_owned_ledger(tmp_path) == set()
+    assert read_owned_ledger(tmp_path, "demo-flow") == set()
 
-    write_owned_ledger(tmp_path, ["b.json", "a.bit"])
-    assert read_owned_ledger(tmp_path) == {"a.bit", "b.json"}
+    write_owned_ledger(tmp_path, "demo-flow", ["b.json", "a.bit"])
+    assert read_owned_ledger(tmp_path, "demo-flow") == {"a.bit", "b.json"}
+    # Claims are per flow: another flow sees nothing of this one's.
+    assert read_owned_ledger(tmp_path, "other-flow") == set()
+
+    # Writing another flow's claim preserves the first.
+    write_owned_ledger(tmp_path, "other-flow", ["c.bit"])
+    assert read_owned_ledger(tmp_path, "demo-flow") == {"a.bit", "b.json"}
+    assert read_owned_ledger(tmp_path, "other-flow") == {"c.bit"}
+
     # A dotfile with none of the managed suffixes, so no suffix clear can
     # ever match it.
-    text = (tmp_path / OWNED_LEDGER_NAME).read_text()
-    assert text.startswith("#")
     assert OWNED_LEDGER_NAME.startswith(".")
 
 
@@ -1165,11 +1171,11 @@ def test_owned_ledger_missing_or_unreadable_is_an_empty_claim(tmp_path):
     ledger, behaves exactly as before it existed (#469)."""
     from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, read_owned_ledger
 
-    assert read_owned_ledger(tmp_path / "never-made") == set()
+    assert read_owned_ledger(tmp_path / "never-made", "demo-flow") == set()
 
     # A directory where the file should be is unreadable, not fatal.
     (tmp_path / OWNED_LEDGER_NAME).mkdir()
-    assert read_owned_ledger(tmp_path) == set()
+    assert read_owned_ledger(tmp_path, "demo-flow") == set()
 
 
 def test_clear_managed_outputs_clears_a_renamed_tops_protected_output(tmp_path):
@@ -1183,13 +1189,21 @@ def test_clear_managed_outputs_clears_a_renamed_tops_protected_output(tmp_path):
 
     # Run 1: top is `graph`, a protected basename.
     clear_managed_outputs(
-        tmp_path, suffixes, owner="demo", own=["graph.json", "graph.bit"]
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["graph.json", "graph.bit"],
+        own_flow="demo-flow",
     )
     (tmp_path / "graph.json").write_text("run 1 netlist")
 
     # Run 2: the top is renamed. The old netlist must still go.
     clear_managed_outputs(
-        tmp_path, suffixes, owner="demo", own=["other.json", "other.bit"]
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["other.json", "other.bit"],
+        own_flow="demo-flow",
     )
 
     assert not (tmp_path / "graph.json").exists()
@@ -1214,6 +1228,63 @@ def test_clear_managed_outputs_without_own_does_not_claim_the_directory(tmp_path
     so it must not write a claim (#469)."""
     from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, clear_managed_outputs
 
-    clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+    clear_managed_outputs(tmp_path, (".bit",), owner="demo", own_flow="demo-flow")
 
     assert not (tmp_path / OWNED_LEDGER_NAME).exists()
+
+
+def test_owned_ledger_claims_do_not_leak_between_flows(tmp_path):
+    """An artefact directory is keyed on a run's *name*, so a P&R run and an
+    FPGA run called the same thing share one ledger. A claim is always-clear
+    and bypasses the caller's suffix filter, so inheriting another flow's
+    claim would delete its outputs outright — P&R's `<design>.routed.odb` is
+    none of the FPGA suffixes, yet a flat ledger handed it straight to the
+    FPGA cleanup (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    pnr_suffixes = (".def", ".routed.odb")
+    fpga_suffixes = (".json", ".bit")
+
+    clear_managed_outputs(
+        tmp_path,
+        pnr_suffixes,
+        owner="shared_name",
+        own=[f"top{s}" for s in pnr_suffixes],
+        own_flow="pnr-openroad",
+    )
+    odb = tmp_path / "top.routed.odb"
+    odb.write_bytes(b"the P&R run's routed database")
+
+    # The FPGA flow clears next, in the same directory.
+    clear_managed_outputs(
+        tmp_path,
+        fpga_suffixes,
+        owner="shared_name",
+        own=[f"top{s}" for s in fpga_suffixes],
+        own_flow="fpga-openxc7",
+    )
+    assert odb.exists(), "the FPGA cleanup inherited P&R's claim"
+
+    # And the reverse: the FPGA bitstream survives a P&R clear.
+    bit = tmp_path / "top.bit"
+    bit.write_bytes(b"the FPGA run's bitstream")
+    clear_managed_outputs(
+        tmp_path,
+        pnr_suffixes,
+        owner="shared_name",
+        own=[f"top{s}" for s in pnr_suffixes],
+        own_flow="pnr-openroad",
+    )
+    assert bit.exists(), "the P&R cleanup inherited the FPGA claim"
+
+
+def test_owned_ledger_ignores_the_pre_namespace_flat_format(tmp_path):
+    """The flat list this ledger briefly used was never released. It is
+    ignored rather than migrated: guessing which flow those names belonged to
+    is exactly the mistake being fixed (#469)."""
+    from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, read_owned_ledger
+
+    (tmp_path / OWNED_LEDGER_NAME).write_text("# old format\ngraph.json\ngraph.bit\n")
+
+    assert read_owned_ledger(tmp_path, "fpga-openxc7") == set()
+    assert read_owned_ledger(tmp_path, "pnr-openroad") == set()

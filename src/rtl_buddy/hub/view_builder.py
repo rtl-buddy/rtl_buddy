@@ -50,6 +50,17 @@ def _assert_view_schema_supported(out_path: Path, label: str) -> None:
             f"{label}: rtl-buddy-view produced an unreadable view.json "
             f"at {out_path} ({exc})."
         ) from exc
+    # Validate the shape before dereferencing it. `json.loads` succeeding
+    # only says the bytes were valid JSON: a top-level `[]` parses fine and
+    # then raises `AttributeError` on `.get` below — which is not the
+    # `FatalRtlBuddyError` the caller's cleanup catches, so the rejected file
+    # stayed at the active cache path and `_serve_active_view_json` served it
+    # with a 200 (#469).
+    if not isinstance(raw, dict):
+        raise FatalRtlBuddyError(
+            f"{label}: rtl-buddy-view produced a view.json whose top level is "
+            f"{type(raw).__name__}, not an object, at {out_path}."
+        )
     schema = raw.get("schema_version", "")
     try:
         major = int(str(schema).split(".", 1)[0])
@@ -226,9 +237,14 @@ def build_view_json(
 
     try:
         _assert_view_schema_supported(out_path, label)
-    except FatalRtlBuddyError:
+    except Exception:
         # Same reasoning: a view.json we have just rejected as unreadable or
         # schema-incompatible must not stay on disk to be served anyway.
+        # Every exception, not just `FatalRtlBuddyError`: the validator
+        # dereferences the parsed JSON, so a shape it does not anticipate
+        # would otherwise leave the file at the active cache path for
+        # `_serve_active_view_json` to hand out with a 200. Re-raised at
+        # once, so nothing is masked.
         clear_stale_artefacts([out_path], owner=label)
         raise
     return out_path

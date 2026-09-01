@@ -1,3 +1,4 @@
+import json
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Iterable
@@ -143,46 +144,74 @@ PROTECTED_OUTPUT_PATTERNS = (
 OWNED_LEDGER_NAME = ".rb-owned"
 
 
-def read_owned_ledger(artefact_dir: str | Path) -> set[str]:
-    """Return the output names a flow has previously claimed here.
+def read_owned_ledger(artefact_dir: str | Path, flow: str) -> set[str]:
+    """Return the output names ``flow`` has previously claimed here.
 
     Ownership has to be *durable*, not re-derived from the current config.
     A flow names its outputs after the design's top, so deriving the
     always-clear set from today's ``get_top()`` covers only today's names:
     change a run's top from ``graph`` to something else and the old
     ``graph.json`` matches a sibling's protected name again, surviving every
-    clear from then on (#469). The ledger remembers what this directory's
-    flow wrote, so a renamed top's leftovers stay clearable.
+    clear from then on (#469). The ledger remembers what was written, so a
+    renamed top's leftovers stay clearable.
 
-    A missing or unreadable ledger is simply an empty claim — a first run,
-    or a directory written by an rtl_buddy that predates this.
+    It is keyed by *flow*, because an artefact directory is keyed on a run's
+    name and names are not unique across commands: a P&R run and an FPGA run
+    called the same thing share one directory and therefore one ledger. A
+    flat list would let the FPGA cleanup inherit P&R's claim on
+    ``<design>.routed.odb`` and delete it outright — an always-clear entry
+    bypasses the caller's suffix filter, so it would go even though
+    ``.routed.odb`` is none of the FPGA suffixes, and the reverse invocation
+    would do the same to the FPGA outputs. A flow only ever sees its own
+    claim.
+
+    A missing, unreadable or unrecognised ledger is simply an empty claim —
+    a first run, a directory written by an rtl_buddy that predates this, or
+    the flat-list format this ledger briefly used before it was namespaced
+    (never released, so it is ignored rather than migrated: guessing which
+    flow those names belonged to is exactly the mistake being fixed).
     """
+    mapping = _read_owned_ledger_mapping(artefact_dir)
+    return set(mapping.get(flow, ()))
+
+
+def _read_owned_ledger_mapping(artefact_dir: str | Path) -> dict[str, list[str]]:
+    """Return the whole ``{flow: [names]}`` ledger, or ``{}``."""
     path = Path(artefact_dir) / OWNED_LEDGER_NAME
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return set()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
     return {
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.startswith("#")
+        flow: [n for n in names if isinstance(n, str)]
+        for flow, names in raw.items()
+        if isinstance(flow, str) and isinstance(names, list)
     }
 
 
-def write_owned_ledger(artefact_dir: str | Path, names: Iterable[str]) -> None:
-    """Record ``names`` as owned by this directory's flow.
+def write_owned_ledger(
+    artefact_dir: str | Path, flow: str, names: Iterable[str]
+) -> None:
+    """Record ``names`` as owned by ``flow`` in this directory.
+
+    Only ``flow``'s entry is replaced; every other flow's claim on the same
+    directory is preserved, so two commands sharing a name do not overwrite
+    each other's ownership.
 
     Best-effort: a directory we cannot write is not worth failing a run over,
     since the only cost is that a future rename leaves a file behind — the
     same behaviour as before the ledger existed.
     """
     path = Path(artefact_dir) / OWNED_LEDGER_NAME
-    body = "\n".join(
-        ["# Output names rtl_buddy owns in this directory (#469). Generated."]
-        + sorted(names)
-    )
+    mapping = _read_owned_ledger_mapping(artefact_dir)
+    mapping[flow] = sorted(set(names))
     try:
-        path.write_text(body + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps({k: mapping[k] for k in sorted(mapping)}, indent=2) + "\n",
+            encoding="utf-8",
+        )
     except OSError:
         pass
 
@@ -309,6 +338,7 @@ def clear_managed_outputs(
     *,
     owner: str,
     own: Iterable[str] = (),
+    own_flow: str | None = None,
     keep: Iterable[str] = (),
 ) -> list[str]:
     """Clear a run's outputs by *suffix* rather than by exact name.
@@ -337,10 +367,15 @@ def clear_managed_outputs(
       own: exact filenames this flow is about to write, or has just
         written. These are cleared unconditionally, ahead of the protected
         patterns — a flow always owns its own outputs no matter what they
-        are called. Unioned with the names this directory's flow claimed on
+        are called. Unioned with the names ``own_flow`` claimed here on
         previous runs (:func:`read_owned_ledger`) and persisted back, so
         renaming a run's top does not strand the previous top's outputs
-        behind a sibling's protected name. Without it a design whose top module is `graph`,
+        behind a sibling's protected name.
+      own_flow: identity of the producing flow, e.g. ``"fpga-openxc7"``.
+        Required to use the ledger — claims are namespaced by flow because
+        a P&R run and an FPGA run sharing a name share one artefact
+        directory, and neither may inherit the other's claim. Without it
+        ``own`` applies to this call only and no claim is recorded. Without it a design whose top module is `graph`,
         `manifest` or `record` produced a `<top>.json` netlist matching a
         *sibling's* protected name, so the flow could not clear its own
         output: a failed rerun left the previous netlist published, and a
@@ -368,9 +403,11 @@ def clear_managed_outputs(
     directory = Path(artefact_dir)
     suffixes = tuple(suffixes)
     declared = set(own)
-    # Everything this directory's flow has ever claimed, not just what the
-    # current config names — see `read_owned_ledger`.
-    own = declared | read_owned_ledger(directory)
+    # Everything *this flow* has claimed here, not just what the current
+    # config names — and never another flow's claim on the same directory.
+    own = declared | (
+        read_owned_ledger(directory, own_flow) if own_flow is not None else set()
+    )
     keep = set(keep) - own
     try:
         entries = sorted(directory.iterdir())
@@ -391,10 +428,10 @@ def clear_managed_outputs(
     removed = clear_stale_artefacts(
         [entry for entry in entries if _doomed(entry.name)], owner=owner
     )
-    if declared:
+    if declared and own_flow is not None:
         # Only a caller that actually declares ownership updates the claim;
         # one that passes no `own` is not speaking for this directory.
-        write_owned_ledger(directory, own)
+        write_owned_ledger(directory, own_flow, own)
     return removed
 
 

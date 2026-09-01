@@ -263,6 +263,7 @@ class OpenXc7Fpga(BaseFpga):
             _MANAGED_OUTPUT_SUFFIXES,
             owner=self.fpga_cfg.get_name(),
             own=[f"{top}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES],
+            own_flow="fpga-openxc7",
         )
         if stale:
             log_event(

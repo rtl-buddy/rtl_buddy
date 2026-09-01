@@ -895,3 +895,33 @@ def test_openxc7_clears_a_renamed_tops_protected_netlist(tmp_path, monkeypatch):
     assert not (artefacts / "graph.json").exists()
     assert not (artefacts / "graph.fasm").exists()
     assert (artefacts / "other_top.json").exists()
+
+
+def test_openxc7_does_not_inherit_a_co_named_pnr_runs_claim(tmp_path, monkeypatch):
+    """A P&R run and an FPGA run sharing a name share `artefacts/<name>/` and
+    therefore one ledger. A claim bypasses the suffix filter, so inheriting
+    P&R's would delete its routed database outright even though
+    `.routed.odb` is none of the FPGA suffixes (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    # The co-named P&R run claims and writes its outputs here first.
+    clear_managed_outputs(
+        artefacts,
+        (".def", ".routed.odb"),
+        owner="demo_fpga",
+        own=["demo_top.def", "demo_top.routed.odb"],
+        own_flow="pnr-openroad",
+    )
+    odb = artefacts / "demo_top.routed.odb"
+    odb.write_bytes(b"the P&R run's routed database")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert odb.exists(), "the FPGA run inherited the P&R run's claim"

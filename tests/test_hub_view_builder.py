@@ -483,3 +483,61 @@ def test_build_view_json_removes_an_unreadable_view(tmp_path, monkeypatch):
         view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
 
     assert not out_path.exists()
+
+
+def test_build_view_json_removes_a_view_whose_top_level_is_not_an_object(
+    tmp_path, monkeypatch
+):
+    """An exit-0 renderer can write valid JSON whose top level is a list. The
+    validator dereferenced it with `.get`, raising `AttributeError` rather
+    than `FatalRtlBuddyError`, so the old handler did not clear it and
+    `_serve_active_view_json` served the rejected file with a 200 (#469)."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    out_path = view_builder.view_json_path(tmp_path, "demo")
+
+    class WritesAList:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out_path.write_text("[]")
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", WritesAList)
+
+    with pytest.raises(FatalRtlBuddyError, match="not an object"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+    assert not out_path.exists()
+
+
+def test_build_view_json_removes_the_view_on_any_validator_exception(
+    tmp_path, monkeypatch
+):
+    """The cleanup catches every exception, not just `FatalRtlBuddyError`: the
+    validator dereferences the parsed JSON, so a shape it does not anticipate
+    must not leave the file at the active cache path (#469)."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    out_path = view_builder.view_json_path(tmp_path, "demo")
+
+    class WritesFine:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out_path.write_text('{"schema_version": "1.0"}')
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", WritesFine)
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("a shape the validator did not anticipate")
+
+    monkeypatch.setattr(view_builder, "_assert_view_schema_supported", _boom)
+
+    with pytest.raises(RuntimeError):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+    assert not out_path.exists()

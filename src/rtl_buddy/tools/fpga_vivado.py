@@ -164,6 +164,7 @@ class VivadoFpga(BaseFpga):
             (".bit",),
             owner=self.fpga_cfg.get_name(),
             own=[os.path.basename(self._bitstream_path())],
+            own_flow="fpga-vivado",
         )
         if stale:
             log_event(
