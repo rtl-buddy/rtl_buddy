@@ -59,28 +59,38 @@ _CDC_YAML_MULTI = dedent("""\
 """)
 
 
-def _seed_project(tmp_path: Path, *, cdc_field: str = "cdc.yaml") -> ModelConfig:
+def _seed_project(
+    tmp_path: Path, *, cdc_field: str = "cdc.yaml", top: str | None = None
+) -> ModelConfig:
     """Create a project skeleton with models.yaml + cdc.yaml + SDC +
     one source file, and return a ModelConfig pointing at it (with
-    ``.path`` set so the cdc back-pointer can resolve)."""
+    ``.path`` set so the cdc back-pointer can resolve).
+
+    ``top`` writes a models.yaml ``top:`` override (#479), which the
+    analysis inherits when the suite re-loads the model."""
     (tmp_path / "src").mkdir(parents=True, exist_ok=True)
     (tmp_path / "src" / "a.sv").write_text("module a; endmodule\n")
     (tmp_path / "demo.sdc").write_text(
         "create_clock -name clk -period 10 [get_ports clk]\n"
     )
     models_path = tmp_path / "models.yaml"
-    body = dedent(f"""\
+    top_line = f"    top: {top}\n" if top else ""
+    body = (
+        dedent(f"""\
         rtl-buddy-filetype: model_config
         models:
           - name: demo
             filelist: ["-v src/a.sv"]
             cdc: {cdc_field}
     """)
+        + top_line
+    )
     models_path.write_text(body)
     return ModelConfig(
         name="demo",
         filelist=["-v src/a.sv"],
         cdc=cdc_field,
+        top=top,
         path=str(models_path),
     )
 
@@ -144,6 +154,38 @@ def test_build_domain_map_resolves_via_model_match(tmp_path, monkeypatch):
     # SDC should be the absolute path resolved against cdc.yaml.
     sdc_idx = cmd.index("--sdc")
     assert Path(cmd[sdc_idx + 1]) == tmp_path / "demo.sdc"
+
+
+def test_build_domain_map_resolves_a_model_with_a_top_override(tmp_path, monkeypatch):
+    """A models.yaml ``top:`` must not break back-pointer resolution.
+
+    Analyses are selected by the model they name, not by the module they
+    root at — since #479 the two differ whenever a model declares
+    ``top:``, and matching on ``get_top()`` made ``rb hub`` refuse to
+    start with "no analysis there has model: 'demo'". The lint call still
+    roots at the override.
+    """
+    model = _seed_project(tmp_path, top="axi_xbar")
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+
+    captured = {}
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        captured["cmd"] = cmd
+        out = cmd[cmd.index("--emit-domain-map") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text('{"schema_version": "1.0", "clocks": []}')
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    result = cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+    assert result == cdc_builder.domain_map_path(tmp_path, "demo")
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--top") + 1] == "axi_xbar"
 
 
 def test_build_domain_map_honours_fragment(tmp_path, monkeypatch):

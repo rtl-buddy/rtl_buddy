@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -1913,3 +1914,405 @@ def test_unknown_platform_pin_has_a_dedicated_human_message():
     assert "verilator" in msg
     assert "osxx" in msg
     assert "linux, macos" in msg
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — graph opt-out + top override (#479)
+# ---------------------------------------------------------------------------
+
+
+def test_model_config_graph_and_top_default_to_graphable_self_topped():
+    """Every existing models.yaml keeps its current meaning.
+
+    ``graph:`` defaults to True and ``top:`` to None, so ``get_top()``
+    reproduces the project convention the whole codebase assumed before
+    the knobs existed: the model's root module is named after the model.
+    """
+    model = ModelConfig(name="soc", filelist=["src/soc.sv"])
+    assert model.graph is True
+    assert model.top is None
+    assert model.get_top() == "soc"
+
+
+def test_model_config_graph_false_and_top_override_round_trip(tmp_path):
+    """The two #479 knobs parse out of models.yaml and reach ``get_top()``."""
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "apb_intf"\n'
+        '    desc: "interface library"\n'
+        '    filelist: ["-v apb_intf.sv"]\n'
+        "    graph: false\n"
+        '  - name: "pp_axi"\n'
+        '    desc: "vendored collection"\n'
+        '    filelist: ["-F pp_axi.f"]\n'
+        '    top: "axi_xbar"\n'
+    )
+    loader = ModelConfigLoader(str(models_yaml))
+    intf = loader.get_model("apb_intf")
+    assert intf.graph is False
+    assert intf.get_top() == "apb_intf"
+
+    coll = loader.get_model("pp_axi")
+    assert coll.graph is True
+    assert coll.top == "axi_xbar"
+    assert coll.get_top() == "axi_xbar"
+
+
+def test_model_top_override_reaches_the_non_simulation_flows(tmp_path):
+    """``top:`` is the model's root module, not a graph-only fact.
+
+    ``cdc.yaml`` / ``synth.yaml`` / ``lint.yaml`` / ``fpga.yaml`` runs all
+    default their top to the model, so the override has to reach them —
+    otherwise a project needs the same escape hatch four more times.
+    """
+    from types import SimpleNamespace
+
+    from rtl_buddy.config.cdc import CdcConfig
+    from rtl_buddy.config.fpga import FpgaConfig
+    from rtl_buddy.config.lint import LintConfig
+    from rtl_buddy.config.synth import SynthConfig
+
+    model = ModelConfig(
+        name="pp_axi",
+        filelist=["-F pp_axi.f"],
+        top="axi_xbar",
+        path=str(tmp_path / "models.yaml"),
+    )
+    # `get_top` reads nothing but `self.model`, and each of these entry
+    # classes needs a dozen unrelated required fields to instantiate —
+    # so call the accessor against the one attribute it uses.
+    entry = SimpleNamespace(model=model)
+    for cls in (CdcConfig, SynthConfig, LintConfig, FpgaConfig):
+        assert cls.get_top(entry) == "axi_xbar", cls.__name__
+
+    plain = SimpleNamespace(model=ModelConfig(name="pp_axi", filelist=[]))
+    for cls in (CdcConfig, SynthConfig, LintConfig, FpgaConfig):
+        assert cls.get_top(plain) == "pp_axi", cls.__name__
+
+
+def _top_override_project(tmp_path, *, model_top: str | None) -> tuple:
+    """A one-model project whose fpv.yaml + mut.yaml run against it.
+
+    Returns ``(fpv.yaml path, mut.yaml path)``. ``model_top`` writes the
+    models.yaml ``top:`` override (#479); neither run declares its own
+    ``top:``, so both inherit the model's root module.
+    """
+    design_dir = tmp_path / "design" / "leaf"
+    design_dir.mkdir(parents=True)
+    (design_dir / "leaf.sv").write_text("module leaf_core; endmodule\n")
+    top_line = f'    top: "{model_top}"\n' if model_top else ""
+    (design_dir / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "leaf"\n'
+        '    filelist: ["-v leaf.sv"]\n' + top_line
+    )
+    fpv_dir = tmp_path / "fpv" / "leaf"
+    fpv_dir.mkdir(parents=True)
+    fpv_path = fpv_dir / "fpv.yaml"
+    fpv_path.write_text(
+        "rtl-buddy-filetype: fpv_config\n"
+        "verifications:\n"
+        '  - name: "leaf_safety"\n'
+        '    desc: "safety"\n'
+        '    tool: "sby"\n'
+        '    model: "leaf"\n'
+        '    model_path: "../../design/leaf/models.yaml"\n'
+        "    properties: []\n"
+        '    mode: "bmc"\n'
+    )
+    mut_path = fpv_dir / "mut.yaml"
+    mut_path.write_text(
+        "rtl-buddy-filetype: mut_config\n"
+        'model: "leaf"\n'
+        'model_path: "../../design/leaf/models.yaml"\n'
+        'design_file: "../../design/leaf/leaf.sv"\n'
+        "operators: [arith_flip]\n"
+        "verify:\n"
+        '  fpv_config: "fpv.yaml"\n'
+        '  verification: "leaf_safety"\n'
+    )
+    return fpv_path, mut_path
+
+
+def test_fpv_and_mut_runs_inherit_the_models_yaml_top(tmp_path):
+    """A run with no ``top:`` of its own roots at the model's root module.
+
+    Both files default their top to the model; before #479 that default
+    was the model *name*, which is exactly the assumption `top:` exists
+    to escape.
+    """
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top="leaf_core")
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf_core"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_core"
+
+
+def test_fpv_and_mut_runs_default_to_the_model_name_without_an_override(tmp_path):
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top=None)
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf"
+
+
+def test_an_explicit_run_top_still_beats_the_models_yaml_override(tmp_path):
+    """``top:`` in fpv.yaml / mut.yaml is the narrower statement and wins.
+
+    A formal checker top lives in the run's own ``properties:``, so the
+    model-level default must never overwrite it.
+    """
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top="leaf_core")
+    fpv_path.write_text(
+        fpv_path.read_text().replace(
+            "    properties: []\n", '    top: "leaf_chk"\n    properties: []\n'
+        )
+    )
+    mut_path.write_text(mut_path.read_text() + 'top: "leaf_mut"\n')
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf_chk"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_mut"
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — the name is a path segment (#479)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["..", ".", "../../..", "a/../..", "/etc", "a/b", "a\\b", ".hidden", ""],
+)
+def test_model_config_loader_refuses_a_name_that_is_not_a_path_segment(tmp_path, name):
+    """A model name becomes ``artefacts/<flow>/<name>/`` everywhere.
+
+    Nothing downstream re-checks it, and ``rb graph build`` *deletes*
+    ``artefacts/graph/design/<name>/`` when a model opts out — so a name
+    that normalises upwards or is absolute would reach `rmtree` pointed
+    at the caller's own tree. It is refused at the config boundary, for
+    every model rather than only the opted-out ones, because the export
+    path is keyed on the same string.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        f'  - name: "{name}"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "not usable" in message
+    assert str(path) in message
+
+
+@pytest.mark.parametrize("name", ["pp_axi", "my-model", "blk.a", "_x", "9lives"])
+def test_model_config_loader_accepts_ordinary_names(tmp_path, name):
+    """The rule is "safe path segment", not "SystemVerilog identifier".
+
+    A hyphen or an inner dot is harmless as a directory name and
+    plausible in a project that already exists, so the check must not
+    fail one.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        f'  - name: "{name}"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    assert ModelConfigLoader(str(path)).get_model(name).name == name
+
+
+def test_the_invalid_model_name_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "model_config.invalid_model_name",
+        {"path": "design/x/models.yaml", "name": ".."},
+    )
+    assert msg != "model config invalid_model_name"
+    assert "design/x/models.yaml" in msg
+    assert ".." in msg
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — the top is an HDL identifier AND a script token (#479)
+# ---------------------------------------------------------------------------
+
+
+def _models_yaml_with_top(tmp_path, top: str):
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    filelist: ["a.sv"]\n'
+        f"    top: {json.dumps(top)}\n"
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    "top",
+    [
+        "..",
+        "a/b",
+        "/abs/top",
+        "a\nb",
+        "axi_xbar\n",
+        "top; rm -rf /",
+        "$display",
+        "a b",
+        "9x",
+        "",
+        "\\escaped.id",
+        # Legal SystemVerilog, refused anyway: `$` substitutes in the Tcl
+        # these tops are written into unquoted.
+        "a$b",
+        "foo$bar",
+    ],
+)
+def test_model_config_loader_refuses_a_top_that_is_not_an_identifier(tmp_path, top):
+    """`top:` does not stay in HDL.
+
+    The FPGA flows join it into an artefact path (``<top>.bit``) and the
+    Yosys, Vivado and OpenROAD generators interpolate it into Tcl
+    (``set top <top>``), none of them quoting it. A separator, a newline
+    or a shell/Tcl metacharacter would write outside the artefact
+    directory or append commands to a generated script, so the value is
+    constrained once, at load, instead of escaped differently per tool.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, top)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "not a simple SystemVerilog identifier" in message
+    assert "blk_a" in message
+
+
+def test_an_escaped_identifier_top_says_why_it_is_refused(tmp_path):
+    """SystemVerilog escaped identifiers are legal HDL and refused anyway.
+
+    ``\\a/b;c `` is a valid module name, and there is no safe way to name
+    an artefact file or a Tcl token after it. Refusing it outright beats
+    per-tool escaping, so the message has to say that rather than claim
+    the name is malformed.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, "\\a/b;c")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    assert "escaped identifiers are refused" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("top", ["top", "axi_xbar", "_t1", "_", "T9"])
+def test_model_config_loader_accepts_simple_identifier_tops(tmp_path, top):
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, top)
+    assert ModelConfigLoader(str(path)).get_model("blk_a").get_top() == top
+
+
+def test_a_dollar_in_a_top_is_refused_with_the_tcl_reason(tmp_path):
+    """`foo$bar` is a legal SV identifier and still cannot be used.
+
+    The generators write it into Tcl unquoted — `synth_design -top
+    foo$bar` in the Vivado flow, `synth -top foo$bar` in Yosys and
+    OpenROAD — where `$bar` substitutes, so the tool elaborates a
+    different name than the YAML declares, or fails. Having chosen to
+    make the value safe at the boundary rather than escape it in six
+    generators, the rule is the intersection of "legal SV" and "inert in
+    Tcl", so the message has to explain the narrowing rather than call a
+    legal identifier malformed.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, "foo$bar")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "substitution character" in message
+    assert "Rename the module" in message
+
+
+def test_a_model_name_is_inert_in_tcl_even_though_it_is_wider(tmp_path):
+    """The name rule reaches the same Tcl through the `get_top()` fallback.
+
+    It admits `-` and `.`, which are not Tcl metacharacters, and its
+    first character may not be `-`, so a name can never be read as an
+    option flag either. Nothing here needs narrowing — but it does need
+    pinning, because the fallback makes a name a script token.
+    """
+    from rtl_buddy.config.model import MODEL_NAME_RE
+
+    for hostile in ["a$b", "a[b]", "a{b}", 'a"b', "a\\b", "a;b", "a b", "-a"]:
+        assert not MODEL_NAME_RE.match(hostile), hostile
+    for benign in ["my-model", "blk.a", "blk_a"]:
+        assert MODEL_NAME_RE.match(benign), benign
+
+
+def test_a_model_without_a_top_is_not_top_checked(tmp_path):
+    """`top:` is optional; the fallback is the already-validated name.
+
+    ``MODEL_NAME_RE`` is wider than the identifier rule — it admits ``-``
+    and ``.`` — but it admits no separator, whitespace or metacharacter
+    either, so the safety invariant holds on both paths.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "my-model"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    assert ModelConfigLoader(str(path)).get_model("my-model").get_top() == "my-model"
+
+
+@pytest.mark.parametrize("value", ["blk_a\n", "axi_xbar\n"])
+def test_a_trailing_newline_passes_neither_rule(value):
+    """Python's ``$`` also matches before a trailing newline.
+
+    Both rules exist to guarantee the value carries no newline, so both
+    anchor with ``\\Z``; ``$`` would have let ``"axi_xbar\\n"`` through the
+    very check meant to stop it.
+    """
+    from rtl_buddy.config.model import MODEL_NAME_RE, MODEL_TOP_RE
+
+    assert not MODEL_NAME_RE.match(value)
+    assert not MODEL_TOP_RE.match(value)
+
+
+def test_the_invalid_model_top_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "model_config.invalid_model_top",
+        {"path": "design/x/models.yaml", "name": "blk_a", "top": "a/b"},
+    )
+    assert msg != "model config invalid_model_top"
+    assert "design/x/models.yaml" in msg
+    assert "blk_a" in msg
+    assert "a/b" in msg

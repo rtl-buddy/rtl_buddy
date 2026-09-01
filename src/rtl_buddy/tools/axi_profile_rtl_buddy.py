@@ -141,7 +141,7 @@ class RtlBuddyAxiProfileDiscover:
             "--filelist",
             fl_path,
             "--top",
-            self.model_cfg.name,
+            self.model_cfg.get_top(),
             "--output",
             out_path,
         ]
@@ -434,7 +434,7 @@ class RtlBuddyAxiProfileRun:
             "--filelist",
             fl_path,
             "--top",
-            self.model_cfg.name,
+            self.model_cfg.get_top(),
             "--input",
             trace,
             "--manifest",

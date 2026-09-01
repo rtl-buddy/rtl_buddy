@@ -367,7 +367,13 @@ class SynthConfig:
         return self.model
 
     def get_top(self) -> str:
-        return self.model.name
+        """The module this run elaborates — the model's root module.
+
+        Delegates to :meth:`ModelConfig.get_top` so a models.yaml
+        ``top:`` override (#479) reaches this flow too; without the
+        override it is still the model name.
+        """
+        return self.model.get_top()
 
     def get_constraints(self) -> str | None:
         return self.constraints

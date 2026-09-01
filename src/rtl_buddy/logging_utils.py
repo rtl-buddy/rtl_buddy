@@ -1454,6 +1454,23 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('first_type')} and {fields.get('second_type')} — "
                 "keeping the first; rename one so the id is unique"
             )
+        case "model_config.invalid_model_top":
+            return (
+                f"{fields.get('path')}: model {fields.get('name')!r} declares "
+                f"top {fields.get('top')!r}, which is not a simple "
+                "SystemVerilog identifier — the top is elaborated by every "
+                "backend and also lands in artefact names and generated Tcl, "
+                "so it must start with a letter or underscore and contain "
+                "only letters, digits or underscore ('$' is legal SV but "
+                "substitutes in the generated Tcl)"
+            )
+        case "model_config.invalid_model_name":
+            return (
+                f"{fields.get('path')}: model name {fields.get('name')!r} is "
+                "not usable as a directory name — it must start with a "
+                "letter, digit or underscore and contain only letters, "
+                "digits, underscore, dot or hyphen"
+            )
         case "graph_build.design_export_failed":
             return (
                 f"graph build: rtl-buddy-view graph exited "
@@ -1476,6 +1493,43 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"(--tb-top {fields.get('top')}) — that run's checker hierarchy "
                 f"is missing from the graph and its `targets` edge is left "
                 f"dangling, the DUT's hierarchy is not; see {fields.get('log')}"
+            )
+        case "graph_build.stale_export_escapes":
+            return (
+                f"graph build: refusing to retract the export of model "
+                f"{fields.get('model')} — {fields.get('path')} resolves to "
+                f"{fields.get('resolved')}, outside "
+                f"{fields.get('design_root')}; a model name is a directory "
+                "name, so fix it in models.yaml or remove the symlink "
+                "standing in for that directory"
+            )
+        case "graph_build.stale_export_not_dropped":
+            return (
+                f"graph build: model {fields.get('model')} declares "
+                "`graph: false`, but its previous design-tier export at "
+                f"{fields.get('path')} could not be removed "
+                f"({fields.get('error')}) — that stale hierarchy would keep "
+                "being served; fix the directory's permissions or delete it "
+                "by hand"
+            )
+        case "graph_build.duplicate_design_model":
+            return (
+                f"graph build: more than one selected model is named "
+                f"{fields.get('model')} ({fields.get('paths')}) — every "
+                "per-model artefact path, and every selector that names a "
+                "model, is keyed on that name, so their exports would "
+                "overwrite each other and a lookup by name would silently "
+                "pick one; rename one of them (`graph: false` does not "
+                "resolve a name collision)"
+            )
+        case "graph_build.duplicate_design_top":
+            return (
+                f"graph build: models {fields.get('models')} "
+                f"({fields.get('paths')}) are all rooted at top "
+                f"{fields.get('top')} — `module:<top>` is a global id, so "
+                "their exports would merge into one hybrid hierarchy; give "
+                "them distinct `top:` roots in models.yaml, or set "
+                "`graph: false` on the one that is not the design of record"
             )
         case "graph_build.tb_id_collision":
             return (

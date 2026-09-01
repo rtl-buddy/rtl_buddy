@@ -290,7 +290,7 @@ class FpvConfigFile:
             desc=self.desc,
             model=model,
             tool=self.tool,
-            top=self.top or self.model,
+            top=self.top or model.get_top(),
             properties=properties,
             constraints=constraints,
             mode=self.mode,

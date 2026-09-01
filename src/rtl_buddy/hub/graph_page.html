@@ -1339,21 +1339,49 @@
   // The model → root mapping is read off the served payload rather than
   // assumed: a `model:` node is stitched to the module it names by a
   // `maps_to` link (`config_tier.MAPS_TO`), so the targets of the ACTIVE
-  // model's own `maps_to` links are its roots. The model name seeds the
-  // set as well, because that stitch exists only once a config tier has
-  // been built and a design-tier-only graph still roots its instances at
-  // the model's top module. A suite qualifier (`@<suite>`,
-  // `graph.build.QUALIFIER_SEP`) is appended to an id two files claimed;
-  // it is not part of the module name, so it comes off.
+  // model's own `maps_to` links are its roots.
+  //
+  // The model NAME is a FALLBACK for one payload shape only: a
+  // design-tier-only graph, where no config tier has been built and so
+  // there is no `model:` node for the active model to read a stitch
+  // off. There the naming convention is all there is.
+  //
+  // Two things had to be ruled out to get here. Seeding the name
+  // unconditionally was wrong once `top:` existed: an active model
+  // `foo` topped at `bar` would own both names, so an instance rooted
+  // at a *different* selected model named `foo` scored as the active
+  // model's own. Falling back whenever the STITCH is missing was wrong
+  // too, because a `graph: false` model has a `model:` node and no
+  // stitch by design (#479) — and its name is a legal `top:` for some
+  // other model, since opted-out models are excluded from the build's
+  // top-collision check. Both mistakes end the same way:
+  // `shallowestInstancePath` prefers another model's instance, landing
+  // the selection in a model that is not on screen, which is the exact
+  // bug the active-model preference exists to prevent.
+  //
+  // So the question is not "did we find a stitch" but "does this
+  // payload know this model at all". A `model:` node with no stitch is
+  // an answer — no roots — not an absence of one. A suite qualifier
+  // (`@<suite>`, `graph.build.QUALIFIER_SEP`) is appended to an id two
+  // files claimed; it is not part of the module name, so it comes off.
   //
   // An unknown model — no `state_snapshot` yet, or a hub with no active
   // model at all — returns an EMPTY set, and an empty set is what makes
   // `shallowestInstancePath` behave exactly as it did before: no state
-  // from the hub, no new preference.
-  function activeModelRoots(links, model) {
+  // from the hub, no new preference. A model the graph simply does not
+  // cover (a build narrowed with `--model`) is indistinguishable from
+  // the design-tier-only shape from here, and takes the same fallback:
+  // a root nothing matches costs nothing.
+  function activeModelRoots(links, model, nodes) {
     var roots = Object.create(null);
     if (typeof model !== 'string' || !model) { return roots; }
-    roots[model] = true;
+    var known = false;
+    (nodes || []).forEach(function (n) {
+      if (known || !n || n.type !== 'model') { return; }
+      var id = String(n.id == null ? '' : n.id);
+      var hash = id.indexOf('#');
+      if (hash >= 0 && id.slice(hash + 1) === model) { known = true; }
+    });
     (links || []).forEach(function (l) {
       if (!l || l.type !== 'maps_to') { return; }
       var source = String(l.source == null ? '' : l.source);
@@ -1364,6 +1392,7 @@
       var name = target.slice('module:'.length).split('@')[0];
       if (name) { roots[name] = true; }
     });
+    if (!known) { roots[model] = true; }
     return roots;
   }
 
@@ -1412,17 +1441,19 @@
   }
   // <<< active-model
 
-  // `activeModelRoots` over the payload on screen, memoised on the two
+  // `activeModelRoots` over the payload on screen, memoised on the
   // things that can change it: the hub's active model and the ingested
-  // graph (`ingest` replaces `state.links` wholesale, so identity is a
-  // sound cache key).
+  // graph (`ingest` replaces `state.nodes` and `state.links` wholesale,
+  // so their identities are sound cache keys). Both halves of the graph
+  // are keys because the answer now reads nodes as well as links.
   var modelRootsCache = null;
   function currentModelRoots() {
     if (!modelRootsCache || modelRootsCache.model !== activeModel ||
-        modelRootsCache.links !== state.links) {
+        modelRootsCache.links !== state.links ||
+        modelRootsCache.nodes !== state.nodes) {
       modelRootsCache = {
-        model: activeModel, links: state.links,
-        roots: activeModelRoots(state.links, activeModel)
+        model: activeModel, links: state.links, nodes: state.nodes,
+        roots: activeModelRoots(state.links, activeModel, state.nodes)
       };
     }
     return modelRootsCache.roots;
@@ -1479,12 +1510,39 @@
   // from the source, and so is the schematic's hierarchy — so there
   // is no suffix to remove here, and stripping one would corrupt a
   // real module whose name happens to end in `__<alnum>`.
-  function moduleNameFor(n) {
+  //
+  // A `model:` node is resolved through its OUTGOING `maps_to` stitch
+  // (`out`, the page's `state.out[id]`), never through the `#<name>`
+  // fragment in its id. The fragment is the model's NAME, and since
+  // rtl_buddy 6.44 a models.yaml `top:` decouples that from the module
+  // it roots at — a model named `pp_axi` topped at `axi_xbar` would
+  // otherwise focus `module:pp_axi`, which no graph has, and a
+  // graph_focus miss is silent. The stitch is the same one
+  // `activeModelRoots` reads and the same one `config_tier` writes, so
+  // there is exactly one answer to "which module is this model".
+  //
+  // No stitch means no coordinate. That is not a defensive default: a
+  // model that declared `graph: false` is deliberately absent from the
+  // design tier and has no `maps_to`, so inventing `module:<name>` for
+  // it would send the schematic and the cov pane after a node the graph
+  // does not contain. `sendTo` says so out loud instead.
+  //
+  // The suite qualifier (`@<suite>`, `graph.build.QUALIFIER_SEP`) comes
+  // off, exactly as `activeModelRoots` strips it: it disambiguates an
+  // id, it is not part of the module's name.
+  function moduleNameFor(n, out) {
     if (!n) { return null; }
     var id = String(n.id == null ? '' : n.id);
     if (n.type === 'model') {
-      var hash = id.indexOf('#');
-      return hash < 0 ? null : (id.slice(hash + 1) || null);
+      var name = null;
+      (Array.isArray(out) ? out : []).forEach(function (l) {
+        if (name || !l || l.type !== 'maps_to') { return; }
+        if (String(l.source == null ? '' : l.source) !== id) { return; }
+        var target = String(l.target == null ? '' : l.target);
+        if (target.indexOf('module:') !== 0) { return; }
+        name = target.slice('module:'.length).split('@')[0] || null;
+      });
+      return name;
     }
     if (n.type === 'module') {
       return id.indexOf('module:') === 0 ? (id.slice(7) || null) : null;
@@ -1520,14 +1578,22 @@
   //
   // Order matters: a `module:` node has a `file` too, and the module is
   // the better answer.
-  function covTargetFor(n) {
+  function covTargetFor(n, out) {
     if (!n) { return null; }
     var id = String(n.id == null ? '' : n.id);
     if (n.type === 'test') {
       return id.indexOf('test:') === 0 && id.length > 5 ? { target: id } : null;
     }
-    var mod = moduleNameFor(n);
+    var mod = moduleNameFor(n, out);
     if (mod) { return { target: 'module:' + mod }; }
+    // A `model:` node that resolved to no module opted out of the design
+    // tier (#479), and it stops here rather than falling through to the
+    // file branch below. Its `file` is the models.yaml that declares it,
+    // and a YAML file is not a coverage coordinate — the cov pane would
+    // focus a file with no coverage, so the button reads as live and the
+    // click does nothing useful. `sendTo` says the node is not a
+    // coverage coordinate instead.
+    if (n.type === 'model') { return null; }
     if (n.type === 'coverage_item') {
       var block = n.block == null ? '' : String(n.block);
       var item = n.label == null ? '' : String(n.label);
@@ -1536,10 +1602,13 @@
     }
     var file = n.file == null ? '' : String(n.file);
     if (!file) { return null; }
-    var out = { target: 'file:' + file };
+    // Named apart from the `out` parameter: same-named `var` and
+    // parameter share one binding, so reusing the name would read as if
+    // the links were being overwritten mid-function.
+    var focus = { target: 'file:' + file };
     var line = Number(n.line);
-    if (line >= 1) { out.line = Math.floor(line); }
-    return out;
+    if (line >= 1) { focus.line = Math.floor(line); }
+    return focus;
   }
   // <<< cov-target
 
@@ -1629,7 +1698,7 @@
   // same decision: the click path below (gated on the `sync schematic`
   // checkbox) and the inspector's explicit `send → sch` button
   // (which is not).
-  function viewTargetFor(n) {
+  function viewTargetFor(n, out) {
     var ip = instancePathFor(n);
     if (ip) {
       return {
@@ -1637,7 +1706,7 @@
         ip: ip, coord: ip, note: 'select ' + ip
       };
     }
-    var mod = moduleNameFor(n);
+    var mod = moduleNameFor(n, out);
     if (mod) {
       return {
         type: 'graph_focus', payload: { node: 'module:' + mod },
@@ -1656,7 +1725,7 @@
     if (!opts.emit) { return; }
     var did = [];
     if (els.optSelect.checked) {
-      var view = viewTargetFor(n);
+      var view = viewTargetFor(n, state.out[n.id]);
       var sent = !!view && emit(view.type, view.payload);
       if (sent) { did.push(view.note); }
       // The cross-model warning is about a selected INSTANCE. Anything
@@ -1747,7 +1816,9 @@
   ];
 
   function sendTo(app, n) {
-    var t = app.targetFor(n);
+    // Both `targetFor`s resolve a `model:` node through its `maps_to`
+    // stitch, so both need the node's outgoing links.
+    var t = app.targetFor(n, state.out[n.id]);
     if (!t) { note(app.why, 'warn'); return false; }
     if (!app.send(t)) { note('hub not connected', 'error'); return false; }
     note('sent to ' + originLabel(app.origin) + ': ' + app.label(t));
@@ -1771,7 +1842,7 @@
     var box = document.createElement('div');
     box.className = 'actions';
     APPS.forEach(function (app) {
-      var t = app.targetFor(n);
+      var t = app.targetFor(n, state.out[n.id]);
       var live = hasPeer(app.origin);
       box.appendChild(actionButton(
         'send → ' + originLabel(app.origin),

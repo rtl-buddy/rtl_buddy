@@ -5210,9 +5210,9 @@ class RtlBuddy:
             return None
 
         available = graph_build_mod.models_from_design_tree(design_dir)
-        by_name: dict[str, ModelConfig] = {}
+        by_name: dict[str, list[ModelConfig]] = {}
         for cfg in available:
-            by_name.setdefault(cfg.name, cfg)
+            by_name.setdefault(cfg.name, []).append(cfg)
         missing = [name for name in model if name not in by_name]
         if missing:
             known = ", ".join(sorted(by_name)) or "(none)"
@@ -5220,12 +5220,18 @@ class RtlBuddy:
                 f"graph build: unknown model(s): {', '.join(missing)}; "
                 f"models found under {design_dir}: {known}"
             )
-        # Preserve the user's order but drop repeats.
+        # Preserve the user's order but drop repeats. Every entry
+        # claiming a requested name is returned, not the first: two
+        # models.yaml files may declare one name, and keeping whichever
+        # was discovered first would silently pick for the user — an
+        # opted-out entry shadowing the graphable one, invisibly, because
+        # the survivor then looks like the only one. `build_graph`
+        # refuses the collision, where the message can name both files.
         selected: list[ModelConfig] = []
         for name in model:
-            cfg = by_name[name]
-            if cfg not in selected:
-                selected.append(cfg)
+            for cfg in by_name[name]:
+                if cfg not in selected:
+                    selected.append(cfg)
         return selected
 
     def do_graph_build(

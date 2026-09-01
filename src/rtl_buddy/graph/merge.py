@@ -270,14 +270,25 @@ def fingerprint(
     schema_version: int,
     tools: dict[str, str | None],
     tier_inputs: dict[str, list[dict]],
+    selection: dict | None = None,
 ) -> str:
-    """One hash covering every input and every tool version.
+    """One hash covering every input, tool version and tier selection.
 
     This is what makes a re-run a no-op: if the fingerprint recorded in
     ``graph-meta.json`` still matches, nothing that could change
-    ``graph.json`` has moved. Tool versions are part of it on purpose —
-    upgrading rtl-buddy-view can change the design tier without any
-    source file changing.
+    ``graph.json`` **or the sidecar that describes it** has moved. Tool
+    versions are part of it on purpose — upgrading rtl-buddy-view can
+    change the design tier without any source file changing.
+
+    ``selection`` is what a tier chose to cover, as opposed to what it
+    read. The two are usually redundant — narrowing with ``--model``
+    drops that model's sources out of ``tier_inputs`` — but not always:
+    a tier whose every model opted out has no inputs at all, so the
+    selectors that narrowed it move nothing here and a rerun would hand
+    back a sidecar whose ``skipped`` list describes the previous
+    invocation (#479). Callers must build it from repo-relative
+    identities only, or the fingerprint stops reproducing across
+    checkouts.
     """
     payload = {
         "schema_version": schema_version,
@@ -286,6 +297,7 @@ def fingerprint(
             tier: [[e["path"], e["sha256"]] for e in tier_inputs[tier]]
             for tier in sorted(tier_inputs)
         },
+        "selection": selection or {},
     }
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=True).encode()
     return hashlib.sha256(blob).hexdigest()

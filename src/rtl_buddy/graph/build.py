@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from dataclasses import dataclass, field as dc_field
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
@@ -100,6 +101,11 @@ BUILT = "built"
 CACHED = "cached"
 SKIPPED = "skipped"
 FAILED = "failed"
+
+#: Why a design-tier item is in ``skipped`` rather than ``failures``
+#: (#479). The reason string is part of ``graph-meta.json``, so it names
+#: the knob a reader has to change to get the export back.
+GRAPH_OPT_OUT = "models.yaml `graph: false`"
 
 #: First ``rtl-buddy-view`` release carrying the ``graph`` subcommand
 #: (rtl-buddy-view#126). Mirrors the ``0.3.0`` floor that ``rb
@@ -195,6 +201,11 @@ class TierReport:
       links (int): Links contributed (before the union).
       generator (dict | None): The tier's own ``graph.generator`` block.
       failures (list): Per-item failures that did not sink the tier.
+      skipped (list): Per-item opt-outs (#479) — a model marked
+        ``graph: false`` in models.yaml, and the testbench / flow-run
+        exports that would have re-elaborated it. Deliberately kept apart
+        from ``failures``: nothing went wrong, so it must not colour the
+        exit code under ``--strict`` or read as noise the project caused.
       extra (dict): Tier-specific fields for the meta sidecar.
     """
 
@@ -206,6 +217,7 @@ class TierReport:
     links: int = 0
     generator: dict | None = None
     failures: list = dc_field(default_factory=list)
+    skipped: list = dc_field(default_factory=list)
     extra: dict = dc_field(default_factory=dict)
 
     def as_meta(self) -> dict:
@@ -220,6 +232,8 @@ class TierReport:
         block["inputs"] = self.inputs
         if self.failures:
             block["failures"] = self.failures
+        if self.skipped:
+            block["skipped"] = self.skipped
         return block
 
     def as_payload(self) -> dict:
@@ -233,6 +247,8 @@ class TierReport:
             block["detail"] = self.detail
         if self.failures:
             block["failures"] = self.failures
+        if self.skipped:
+            block["skipped"] = self.skipped
         models = self.extra.get("models")
         if models is not None:
             block["models"] = models
@@ -273,6 +289,8 @@ class TierReport:
             parts.append(f"{len(collisions)} id(s) suite-qualified")
         if self.failures:
             parts.append(f"{len(self.failures)} failed")
+        if self.skipped:
+            parts.append(f"{len(self.skipped)} skipped")
         return ", ".join(parts) or "-"
 
 
@@ -387,7 +405,13 @@ class TestbenchTarget:
         the config tier puts in ``tb:<suite dir>#<name>``.
       suite_dir (str): Absolute suite directory. Anchors the testbench
         filelist's relative entries, exactly as the compile flow does.
-      tb_name (str): ``testbenches:`` entry name.
+      tb_names (list[str]): Every ``testbenches:`` entry collapsed into
+        this export. The de-duplication key is what the viewer is handed
+        — model, filelist, top — and deliberately excludes the entry
+        *name*, so one suite declaring the same elaboration twice under
+        two names elaborates it once. Both names are kept: each is a
+        real ``tb:`` node the config tier emitted, owed its own stitch
+        and its own row in any per-item report.
       tb_top (str): Module the export is rooted at — the testbench's
         ``toplevel:`` when declared, else its name (the project
         convention ``rb hier --view tb`` already relies on).
@@ -400,10 +424,15 @@ class TestbenchTarget:
 
     suite_rel: str
     suite_dir: str
-    tb_name: str
+    tb_names: list[str]
     tb_top: str
     model: ModelConfig
     test: TestConfig
+
+    @property
+    def tb_name(self) -> str:
+        """The first testbench claiming this export — its short name."""
+        return self.tb_names[0]
 
     @property
     def node_id(self) -> str:
@@ -417,8 +446,13 @@ class TestbenchTarget:
 
     @property
     def node_ids(self) -> list[str]:
-        """Every config-tier node this export stitches — one for a TB."""
-        return [self.node_id]
+        """One ``tb:`` node per collapsed testbench — each gets a stitch."""
+        return [testbench_id(self.suite_rel, name) for name in self.tb_names]
+
+    @property
+    def labels(self) -> list[str]:
+        """One label per collapsed testbench, as ``node_ids`` is one id."""
+        return [f"{self.suite_rel}#{name}" for name in self.tb_names]
 
     @property
     def stitch_type(self) -> str:
@@ -444,13 +478,25 @@ def testbenches_from_suites(
     ``(model, suite dir, testbench filelist, tb top)``: that tuple is
     the entire input to the viewer, so a second invocation could only
     reproduce the first one's bytes. Names differing is not a
-    difference.
+    difference to the *exporter* — but it is one to the report, so every
+    collapsed name is remembered in ``tb_names`` and re-expanded by
+    ``node_ids`` and ``labels``. Exactly the rule
+    :func:`flow_runs_from_regressions` applies to runs.
 
-    A testbench whose top is the DUT top is dropped: ``--tb-top
-    <model.name>`` would re-elaborate exactly what the DUT export
-    already covered. That is the cocotb/SystemC case, where
-    ``toplevel:`` is required *and* names the DUT — there is no SV
-    testbench above it to add.
+    A testbench whose top is the DUT top (the model's ``top:`` when it
+    declares one, else its name) is dropped: ``--tb-top <that top>``
+    would re-elaborate exactly what the DUT export already covered. That
+    is the cocotb/SystemC case, where ``toplevel:`` is required *and*
+    names the DUT — there is no SV testbench above it to add.
+
+    That drop is conditional on the model being graphable. There is no
+    DUT export to defer to when the model opted out (#479), and the
+    contract is that *everything* rooted at an opted-out model is listed
+    under the design tier's ``skipped``. So a same-root testbench of an
+    opted-out model is returned here and refused one step later by
+    :func:`_split_opted_out`, which is what turns it into a skip record.
+    It is never exported either way — the two paths differ only in
+    whether the user is told.
 
     Args:
       project_root: Root that ``suite_rel`` is relative to.
@@ -471,8 +517,7 @@ def testbenches_from_suites(
         return []
     allowed = {_model_key(m) for m in models} if models is not None else None
 
-    seen: set[tuple] = set()
-    targets: list[TestbenchTarget] = []
+    by_key: dict[tuple, TestbenchTarget] = {}
     for path in _walk_yaml_files(verif, "tests.yaml"):
         suite_dir = os.path.dirname(os.path.realpath(path))
         suite_rel = rel_path(project_root, suite_dir)
@@ -486,7 +531,7 @@ def testbenches_from_suites(
             if allowed is not None and _model_key(model) not in allowed:
                 continue
             tb_top = tb.toplevel or tb.get_name()
-            if tb_top == model.name:
+            if tb_top == model.get_top() and model.graph:
                 continue
             key = (
                 suite_dir,
@@ -494,20 +539,23 @@ def testbenches_from_suites(
                 tuple(tb.get_filelist()),
                 tb_top,
             )
-            if key in seen:
+            existing = by_key.get(key)
+            if existing is not None:
+                # Same export, different `testbenches:` entry (or the
+                # same one reached through a second test). Remember the
+                # name; the export itself is already accounted for.
+                if tb.get_name() not in existing.tb_names:
+                    existing.tb_names.append(tb.get_name())
                 continue
-            seen.add(key)
-            targets.append(
-                TestbenchTarget(
-                    suite_rel=suite_rel,
-                    suite_dir=suite_dir,
-                    tb_name=tb.get_name(),
-                    tb_top=tb_top,
-                    model=model,
-                    test=test,
-                )
+            by_key[key] = TestbenchTarget(
+                suite_rel=suite_rel,
+                suite_dir=suite_dir,
+                tb_names=[tb.get_name()],
+                tb_top=tb_top,
+                model=model,
+                test=test,
             )
-    return sorted(targets, key=lambda t: (t.suite_rel, t.tb_name))
+    return sorted(by_key.values(), key=lambda t: (t.suite_rel, t.tb_name))
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +627,18 @@ class FlowRunTarget:
         return f"{self.suite_rel}#{self.run_name}"
 
     @property
+    def labels(self) -> list[str]:
+        """One label per collapsed run, the way ``node_ids`` is one id.
+
+        De-duplication keeps a single export for runs that would produce
+        identical bytes, but each of them is a run the user wrote down.
+        A per-run record — a skip, here — has to name every one of them,
+        or a run silently disappears from the report because a twin
+        happened to sort first.
+        """
+        return [f"{self.suite_rel}#{name}" for name in self.run_names]
+
+    @property
     def tb_top(self) -> str:
         """The top the viewer is asked to elaborate from.
 
@@ -624,11 +684,16 @@ def flow_runs_from_regressions(
     exported here are exactly the ones that got ``test:`` nodes and
     ``targets`` stitches.
 
-    A run whose ``top:`` is the model's own name is dropped: the DUT
-    export already covers that hierarchy, and today that is every synth
-    / cdc / fpga run (their ``get_top()`` is the model name by
+    A run whose ``top:`` is the model's own root module is dropped: the
+    DUT export already covers that hierarchy, and today that is every
+    synth / cdc / fpga run (their ``get_top()`` is the model's by
     construction). What remains is the formal case — a checker top
     defined in the flow's own filelist.
+
+    As with :func:`testbenches_from_suites`, that drop applies only to a
+    graphable model: an opted-out one has no DUT export to defer to, and
+    its runs are owed a skip record (#479). They are returned here and
+    refused by :func:`_split_opted_out`, never exported.
 
     Two runs are the same export when they resolve to the same
     ``(suite dir, model, flow sources, top)``: that tuple is the entire
@@ -657,7 +722,9 @@ def flow_runs_from_regressions(
         for entry in getattr(suite_cfg, entries_attr)():
             model = entry.get_model()
             top = entry.get_top()
-            if not top or top == model.name:
+            if not top:
+                continue
+            if top == model.get_top() and model.graph:
                 continue
             if allowed is not None and _model_key(model) not in allowed:
                 continue
@@ -788,6 +855,290 @@ def _flow_exporters(
         )
         exporters.append((target, exporter))
     return exporters
+
+
+def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
+    """Partition TB / flow-run targets by their DUT's ``graph:`` flag (#479).
+
+    A ``graph: false`` model has no elaborable root, and both export
+    shapes still hand the viewer ``--top <model top>`` alongside their
+    own ``--tb-top`` — so a testbench or flow run over such a model
+    would fail for exactly the reason the model opted out. Skipping it
+    with a record of its own keeps the reason visible instead of
+    silently shrinking the tier.
+
+    One record per *declared* item, not per export: a flow-run target
+    collapses runs that would produce identical bytes, and the stitch
+    path already re-expands them (``node_ids``). The skip list does the
+    same through ``labels``, so an fpv suite proving one checker under
+    ``bmc`` and ``prove`` reports both as skipped rather than losing the
+    twin that did not happen to sort first.
+
+    Args:
+      targets: :class:`TestbenchTarget` / :class:`FlowRunTarget` list.
+      kind: ``"testbench"`` or ``"run"`` — the key the skip record uses,
+        matching the one its failure rows already use.
+
+    Returns:
+      tuple: (targets to export, skip records for the rest).
+    """
+    keep, skipped = [], []
+    for target in targets:
+        if target.model.graph:
+            keep.append(target)
+        else:
+            skipped.extend(
+                {
+                    kind: label,
+                    "model": target.model.name,
+                    "reason": GRAPH_OPT_OUT,
+                }
+                for label in target.labels
+            )
+    return keep, skipped
+
+
+def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
+    """Remove a model's design-tier exports when it opts out (#479).
+
+    The per-model export is a *durable* artefact: ``graph.json`` and the
+    viewer's ``graph-meta.json`` sidecar under
+    ``artefacts/graph/design/<name>/``, plus the TB- and run-rooted
+    exports nested beneath it. Nothing rewrites them but a later export
+    of the same model, so a model that was exported yesterday and
+    declares ``graph: false`` today would leave that hierarchy on disk,
+    fully readable, while the tier report and the merged graph both say
+    the model has none. The extractor's cross-check reads those files
+    directly, and so does anyone debugging a merge — a stale one is a
+    confident wrong answer.
+
+    The whole ``design/<name>/`` subtree is the model's own: the DUT
+    export sits at its root and the ``tb/`` and ``run/`` exports nest
+    inside it, so removing the subtree removes exactly this model's
+    exports and nothing else. Model names are unique across the
+    selection (:func:`_reject_colliding_models`), so the directory
+    cannot be shared.
+
+    The path is re-checked before the delete, not merely composed. The
+    model name is validated where models.yaml is loaded
+    (:func:`~rtl_buddy.config.model.validate_model_name`), but this is
+    the one place in the graph build that *destroys* data, and a caller
+    who hands ``build_graph`` a hand-built :class:`ModelConfig` bypasses
+    that loader entirely. So the resolved target must still be a direct
+    child of ``design/``: that rules out a name that normalises upwards,
+    an absolute one, and a ``design/<name>`` that is a symlink pointing
+    somewhere else — none of which ``rmtree`` would think twice about.
+
+    Returns:
+      bool: True when something was actually removed.
+
+    Raises:
+      FatalRtlBuddyError: when the target is not a direct child of the
+        design-export directory, or when the directory is there and cannot be
+        removed. Swallowing that would be the worst of both worlds — the
+        merged graph and the sidecar would say the model was skipped
+        while its old hierarchy stayed on disk and readable, which is
+        exactly the state this retraction exists to prevent. An
+        unwritable output directory is already the kind of setup problem
+        ``build_graph`` propagates rather than degrades. ``rmtree`` is
+        also not atomic — it removes what it can before failing — so a
+        swallowed error can leave a partial tree that no build produced.
+    """
+    design_root = out_dir / DESIGN_SUBDIR
+    target = design_root / model.name
+    if target.resolve().parent != design_root.resolve():
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.stale_export_escapes",
+            model=model.name,
+            path=str(target),
+            resolved=str(target.resolve()),
+            design_root=str(design_root.resolve()),
+        )
+        raise FatalRtlBuddyError(
+            f"graph build: refusing to retract the export of model "
+            f"{model.name!r} — {target} resolves to {target.resolve()}, "
+            f"which is not inside {design_root.resolve()}. A model name is "
+            f"a directory name; fix it in models.yaml, or remove the symlink "
+            f"standing in for that directory."
+        )
+    if not target.is_dir():
+        return False
+    try:
+        shutil.rmtree(target)
+    except OSError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.stale_export_not_dropped",
+            model=model.name,
+            path=str(target),
+            error=str(exc),
+        )
+        raise FatalRtlBuddyError(
+            f"graph build: model {model.name!r} declares `graph: false`, but "
+            f"its previous design-tier export could not be removed: {target} "
+            f"({exc}). Leaving it would keep serving a hierarchy this build "
+            f"says the model does not have — fix the permissions on that "
+            f"directory, or delete it by hand, and re-run."
+        ) from exc
+    return True
+
+
+def _model_ident(project_root: Path, model: ModelConfig) -> str:
+    """A model's whole design-tier identity, for the build fingerprint.
+
+    ``<models.yaml>#<name> top=<root module> graph=<bool>``. The
+    fingerprint's counterpart to :func:`_model_key`, which keys on an
+    absolute realpath and so cannot go into a hash that has to reproduce
+    across checkouts and machines.
+
+    The *declaration* is part of the identity, not just where it lives.
+    A models.yaml under ``--design-dir`` is hashed by the config tier, so
+    editing it moves the fingerprint anyway — but one reached only
+    through a test's ``model_path:`` (a ``--regression`` selection can
+    name a model anywhere) is hashed by nothing. The design tier hashes
+    the model's *sources*, and neither ``top:`` nor ``graph:`` changes
+    those. Without them here, re-rooting such a model left the
+    fingerprint untouched and ``graph build`` served a cached graph
+    rooted at the module the model used to name (#479).
+    """
+    rel = rel_path(project_root, model.path) if model.path else "?"
+    return f"{rel}#{model.name} top={model.get_top()} graph={bool(model.graph)}"
+
+
+def _claimants(project_root: Path, models: list[ModelConfig]) -> str:
+    """``name (models.yaml), name (models.yaml)`` — who is in a collision.
+
+    The path is what makes the message actionable: the two entries are
+    in different files by construction (a collision *within* one
+    ``models.yaml`` never reaches here — the loader is already fatal on
+    a duplicate ``name:``), so the name alone would not say where to go.
+    """
+    return ", ".join(
+        f"{m.name} ({rel_path(project_root, m.path) if m.path else '?'})"
+        for m in models
+    )
+
+
+def _grouped(models: list[ModelConfig], key) -> dict[str, list[ModelConfig]]:
+    """Models bucketed by ``key``, keeping only the buckets with a clash."""
+    buckets: dict[str, list[ModelConfig]] = {}
+    for model in models:
+        buckets.setdefault(key(model), []).append(model)
+    return {k: ms for k, ms in sorted(buckets.items()) if len(ms) > 1}
+
+
+def _reject_colliding_models(
+    project_root: Path, models: list[ModelConfig], graphable: list[ModelConfig]
+) -> None:
+    """Refuse a design tier two models would land in the same slot (#479).
+
+    Two collisions, both of which produce a graph that reads as correct
+    and is not, and neither of which anything downstream can detect —
+    which is why both are refused here rather than reported afterwards.
+
+    **Same ``name:``, checked across every model in scope, opted out or
+    not.** Every per-model artefact path is keyed on the model name: the
+    export lands in ``artefacts/graph/design/<name>/`` and its generated
+    filelist in ``artefacts/hier/<name>/``. Two models of one name in two
+    ``models.yaml`` files are distinct entries everywhere else
+    (``_model_key`` is realpath-qualified, and so are their ``model:``
+    node ids), so both are planned, both run, and the second silently
+    overwrites the first — while the tier reports both as built and the
+    merge takes whichever bytes survived. A duplicate *within* one file
+    is already fatal in
+    :class:`~rtl_buddy.config.model.ModelConfigLoader`; this is the
+    across-files half of that rule.
+
+    ``graph: false`` is not a way out of *this* half. A model name is how
+    every selector spells a model — ``rb graph build --model NAME``, a
+    test's ``model:``, a back-pointer — and none of them can say which of
+    two entries is meant. An opted-out duplicate is therefore still a
+    name two files are fighting over: it would shadow the graphable one
+    in a name-keyed lookup, silently, and the shadowing is invisible
+    afterwards because the surviving entry looks like the only one.
+
+    **Same top.** A design-tier export's ids are **global** by contract —
+    ``module:<top>``, ``inst:<top>/…`` — and DUT ids are deliberately the
+    one thing suite qualification never touches: they are the weld a TB
+    or run export merges onto (see the id-collision section below). So
+    two models exporting the same top do not produce two hierarchies.
+    :func:`~rtl_buddy.graph.merge.merge_graphs` keeps the first node's
+    attributes and unions both link sets, and what lands in
+    ``graph.json`` is one module node wearing one model's file and line
+    while instantiating both designs' children. ``top:`` is what makes
+    this reachable on purpose, but two same-named models have always
+    collided this way too.
+
+    Names are checked first: it is the more basic identity problem, and
+    when both hold, "rename one model" is the instruction that fixes
+    both.
+
+    The top half is graphable-only: a ``graph: false`` model is never
+    handed to the viewer, so it claims no graph id. Both halves see only
+    the *selected* models, so ``--model`` / ``-c`` narrow the check
+    exactly as they narrow the tier.
+
+    Args:
+      models: every model in scope, including the opted-out ones.
+      graphable: the subset that will actually be exported.
+
+    Raises:
+      FatalRtlBuddyError: naming every model in the collision, the
+        ``models.yaml`` each comes from, and the ways out.
+    """
+    for name, claimants in _grouped(models, lambda m: m.name).items():
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.duplicate_design_model",
+            model=name,
+            paths=", ".join(
+                rel_path(project_root, m.path) for m in claimants if m.path
+            ),
+        )
+        raise FatalRtlBuddyError(
+            f"graph build: {len(claimants)} models are named {name!r}, and "
+            f"every per-model artefact path — and every selector that "
+            f"names a model — is keyed on that name; their exports would "
+            f"overwrite each other in artefacts/graph/design/{name}/ and "
+            f"artefacts/hier/{name}/:\n"
+            f"  name {name!r} is claimed by: "
+            f"{_claimants(project_root, claimants)}\n"
+            f"Rename one of them. `graph: false` does not resolve a name "
+            f"collision — the opted-out entry would still shadow the other "
+            f"in any lookup by name."
+        )
+
+    clashes = _grouped(graphable, lambda m: m.get_top())
+    if not clashes:
+        return
+    lines = []
+    for top, claimants in clashes.items():
+        lines.append(
+            f"  top {top!r} is claimed by: {_claimants(project_root, claimants)}"
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.duplicate_design_top",
+            top=top,
+            models=", ".join(m.name for m in claimants),
+            paths=", ".join(
+                rel_path(project_root, m.path) for m in claimants if m.path
+            ),
+        )
+    raise FatalRtlBuddyError(
+        "graph build: two or more models would be exported with the same "
+        "top module, which the design tier cannot keep apart — "
+        "`module:<top>` is a global id, so the exports would merge into "
+        "one hybrid hierarchy:\n"
+        + "\n".join(lines)
+        + "\nGive them distinct roots with `top:` in models.yaml, or set "
+        "`graph: false` on the one that is not the design of record."
+    )
 
 
 def _stitch_link(node_id: str, module_node_id: str, link_type: str) -> dict:
@@ -1264,7 +1615,8 @@ def build_graph(
     Never raises for a tier that could not be built — inspect
     ``failed_tiers()`` / ``has_failures()``. Only a genuinely
     unrecoverable setup problem (unreadable regression config, unwritable
-    output directory) propagates.
+    output directory, two graphable models rooted at the same module)
+    propagates.
     """
     root = Path(os.path.realpath(str(project_root)))
     search_spec = Path(spec_dir) if spec_dir is not None else root / "spec"
@@ -1286,6 +1638,11 @@ def build_graph(
     exporters: list[tuple[ModelConfig, RtlBuddyViewGraph]] = []
     tb_exporters: list[tuple[TestbenchTarget, RtlBuddyViewGraph]] = []
     flow_exporters: list[tuple[FlowRunTarget, RtlBuddyViewGraph]] = []
+    # What the design tier selected, kept outside the branches below so
+    # the fingerprint can see it whichever way the tier resolved.
+    graphable: list[ModelConfig] = []
+    tb_targets: list[TestbenchTarget] = []
+    run_targets: list[FlowRunTarget] = []
     design_report = TierReport(tier=DESIGN_TIER)
     if not design:
         design_report.status = SKIPPED
@@ -1294,8 +1651,67 @@ def build_graph(
         design_report.status = SKIPPED
         design_report.detail = f"no models found under {rel_path(root, search_design)}"
     else:
+        # #479: a model that declares `graph: false` has no elaborable
+        # root — an SV `interface` published as a library entry, a
+        # filelist of vendored IP with no module named after the model.
+        # It is recorded as skipped and never handed to the viewer, so
+        # the project stops carrying a permanent failure row it cannot
+        # silence. The config tier still emits its `model:` node.
+        #
+        # The whole partition happens *before* the viewer version gate:
+        # what is left after it is the answer to "does this tier need the
+        # viewer at all", and an outdated viewer must not fail a tier that
+        # was never going to invoke it. Target discovery is config reading
+        # only — the config tier reads the same files a few lines below.
+        graphable = [model for model in models if model.graph]
+        # First, before anything is planned, exported *or deleted*: no two
+        # models in scope may share a name (their artefact paths and every
+        # name-keyed lookup collide, opt-out or not), and no two graphable
+        # ones may share a top (their graph ids collide).
+        #
+        # The ordering is load-bearing, not tidiness. `design/<name>/` is
+        # keyed on the name, so a colliding pair *shares* that directory —
+        # and the retraction below would delete it on the opted-out
+        # model's behalf before the collision was reported. The command
+        # would fail as intended and destroy the graphable model's export
+        # on the way out, for a configuration it never accepted.
+        _reject_colliding_models(root, models, graphable)
+        for model in models:
+            if model.graph:
+                continue
+            design_report.skipped.append({"model": model.name, "reason": GRAPH_OPT_OUT})
+            # The export is durable, so opting out has to retract it —
+            # otherwise `design/<name>/graph.json` keeps serving the
+            # hierarchy this build just declared the model does not have.
+            if _drop_stale_export(out, model):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "graph_build.stale_export_dropped",
+                    model=model.name,
+                    path=str(out / DESIGN_SUBDIR / model.name),
+                )
+        if tb:
+            tb_targets, opted_out = _split_opted_out(
+                testbenches_from_suites(root, search_verif, models), "testbench"
+            )
+            design_report.skipped.extend(opted_out)
+        if flow_tops:
+            run_targets, opted_out = _split_opted_out(
+                flow_runs_from_regressions(root, models), "run"
+            )
+            design_report.skipped.extend(opted_out)
+
         gate = check_view_supports_graph(view_version)
-        if gate is not None:
+        if not (graphable or tb_targets or run_targets):
+            # Everything in scope opted out. Nothing broke, so the tier is
+            # skipped rather than failed — a project whose design dir holds
+            # only library models must still exit 0, whatever viewer it has.
+            design_report.status = SKIPPED
+            design_report.detail = (
+                f"every model in scope opted out ({len(design_report.skipped)} skipped)"
+            )
+        elif gate is not None:
             design_report.status = FAILED
             design_report.detail = gate
         else:
@@ -1303,7 +1719,7 @@ def build_graph(
             sources: list[str] = []
             for model, exporter in _design_exporters(
                 root,
-                models,
+                graphable,
                 out,
                 view_executable=view_executable,
                 frontend=frontend,
@@ -1321,10 +1737,10 @@ def build_graph(
             # same filelist machinery, one extra `--tb-top`. Their
             # sources join the tier's input hashes, which is what keeps
             # the no-op check honest when only a testbench changed.
-            if tb:
+            if tb_targets:
                 for target, exporter in _tb_exporters(
                     root,
-                    testbenches_from_suites(root, search_verif, models),
+                    tb_targets,
                     out,
                     view_executable=view_executable,
                     frontend=frontend,
@@ -1343,10 +1759,10 @@ def build_graph(
             # model filelist + the flow's own sources. Those sources
             # join the tier's input hashes too, so editing a properties
             # file invalidates the cached graph.
-            if flow_tops:
+            if run_targets:
                 for target, exporter in _flow_exporters(
                     root,
-                    flow_runs_from_regressions(root, models),
+                    run_targets,
                     out,
                     view_executable=view_executable,
                     frontend=frontend,
@@ -1362,6 +1778,9 @@ def build_graph(
                     flow_exporters.append((target, exporter))
             design_report.inputs = hash_inputs(root, sources)
             if not exporters and not tb_exporters and not flow_exporters:
+                # Reachable only when something in scope *was* graphable
+                # and none of it produced a filelist — the all-opted-out
+                # case short-circuited to SKIPPED before the gate above.
                 design_report.status = FAILED
                 design_report.detail = "no model produced a filelist"
     reports[DESIGN_TIER] = design_report
@@ -1372,6 +1791,15 @@ def build_graph(
         spec_dir=str(search_spec),
         verif_dir=str(search_verif),
         design_dir=str(search_design),
+        # Only the models this build exports get a config->design stitch
+        # (#479). The config tier walks the whole `--design-dir`, so
+        # `--model` / `-c` leave it holding models the design tier will
+        # not cover — and `module:<top>` is a global id, so an unselected
+        # model sharing a selected one's `top:` would have its `maps_to`
+        # resolve against the *other* model's hierarchy after the merge.
+        # `--no-design` passes None: nothing is exported, so nothing can
+        # be falsely resolved to, and the stitches dangle as documented.
+        exported_models=graphable if design else None,
     )
     config_meta = (config.meta.get("tiers") or {}).get(CONFIG_TIER, {})
     config_report = TierReport(
@@ -1416,8 +1844,42 @@ def build_graph(
 
     # --- no-op check ----------------------------------------------------
     tier_inputs = {name: report.inputs for name, report in reports.items()}
+    # What this invocation *chose* to cover, alongside what it read.
+    # Inputs alone are not enough to decide a re-run is a no-op: a design
+    # tier whose models all declared `graph: false` hashes nothing, so
+    # narrowing it with `--model` — or dropping `--tb` / `--flow-tops` —
+    # moves nothing in `tier_inputs`, the fingerprint matches, and the
+    # build hands back a `graph-meta.json` whose `skipped` list describes
+    # the *previous* invocation (#479). The selectors and the opt-out
+    # records are part of what the sidecar reports, so they are part of
+    # what makes it stale. Identities are repo-relative, so the
+    # fingerprint still reproduces across checkouts.
+    #
+    # `models` covers every *selected* model, opted out or not, and each
+    # entry carries its `top:` and `graph:`. Membership alone would in
+    # fact catch an opt-out — the model leaves the exported set and gains
+    # a skip record, and both are here — but that leans on two derived
+    # lists agreeing, where the declaration itself is the thing that
+    # changed. `top:` has no such indirect route at all.
+    selection = {
+        DESIGN_TIER: {
+            "enabled": design,
+            "tb": tb,
+            "flow_tops": flow_tops,
+            "models": sorted(_model_ident(root, m) for m in models),
+            "testbenches": sorted(t.label for t in tb_targets),
+            "flow_runs": sorted(t.label for t in run_targets),
+            "skipped": sorted(
+                json.dumps(record, sort_keys=True) for record in design_report.skipped
+            ),
+        },
+        BINDING_TIER: {"bind": bind, "extract": extract_enabled},
+    }
     fp = fingerprint(
-        schema_version=SCHEMA_VERSION, tools=tools, tier_inputs=tier_inputs
+        schema_version=SCHEMA_VERSION,
+        tools=tools,
+        tier_inputs=tier_inputs,
+        selection=selection,
     )
     stored_meta = _read_json(meta_path) or {}
     if not force and graph_path.is_file() and stored_meta.get("fingerprint") == fp:
@@ -1699,6 +2161,8 @@ def _hydrate_from_meta(reports: dict[str, TierReport], stored_meta: dict) -> Non
             report.links = int(stored.get("links") or 0)
         if not report.failures:
             report.failures = stored.get("failures") or []
+        if not report.skipped:
+            report.skipped = stored.get("skipped") or []
         for key in ("models", "testbenches", "flow_runs"):
             if key in stored and key not in report.extra:
                 report.extra[key] = stored[key]

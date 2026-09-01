@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 import pprint
@@ -10,6 +11,139 @@ from typing import Literal
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+
+#: A model ``name:`` has to be safe as a **single path segment**, because
+#: that is what it becomes: ``artefacts/hier/<name>/``,
+#: ``artefacts/graph/design/<name>/``, and the per-model directories every
+#: flow writes. Nothing downstream re-checks it, and ``rb graph build``
+#: *deletes* ``design/<name>/`` when a model opts out — so a name like
+#: ``..`` or ``/tmp`` would escape the artefact tree with the caller's
+#: permissions. It is also the model's default top module, so an
+#: identifier-shaped name is what every project already writes.
+#:
+#: Deliberately a little wider than a SystemVerilog identifier: ``-`` and
+#: ``.`` inside the name are harmless as a path segment and plausible in
+#: an existing project. The leading character may not be ``.``, which is
+#: what rules out ``.`` and ``..``; ``/`` and ``\\`` are absent from the
+#: class entirely, which rules out every separator and absolute path.
+#: Anchored with ``\\Z``, not ``$``: Python's ``$`` also matches before a
+#: trailing newline, so ``"blk_a\\n"`` would otherwise pass a rule whose
+#: whole purpose is that the value carries no newline.
+MODEL_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
+
+
+def validate_model_name(name: str, path: str) -> None:
+    """Raise unless ``name`` is safe as an artefact directory name.
+
+    Args:
+      name: the ``name:`` field as written.
+      path: the models.yaml it came from, for the message.
+
+    Raises:
+      FatalRtlBuddyError: naming the file, the value and the rule.
+    """
+    if isinstance(name, str) and MODEL_NAME_RE.match(name):
+        return
+    log_event(
+        logger,
+        logging.ERROR,
+        "model_config.invalid_model_name",
+        path=path,
+        name=name,
+    )
+    raise FatalRtlBuddyError(
+        f"{path}: model name {name!r} is not usable — a model name becomes "
+        f"a directory under artefacts/ (and its default top module), so it "
+        f"must start with a letter, digit or underscore and contain only "
+        f"letters, digits, underscore, dot or hyphen. Path separators, "
+        f"absolute paths, '.' and '..' are refused."
+    )
+
+
+#: A model ``top:`` must be a **simple** SystemVerilog identifier. It is
+#: the module name every backend elaborates from, and it does not stay in
+#: HDL: the FPGA flows join it into artefact paths (``<top>.bit``), and
+#: the Yosys, Vivado and OpenROAD generators interpolate it into Tcl
+#: (``set top <top>``, ``synth_design -top <top>``). None of those quote
+#: it, so a value carrying a path separator, a newline or a shell/Tcl
+#: metacharacter would write outside the artefact directory or append
+#: commands to a generated script. This rule is what makes the
+#: downstream interpolation safe, and it is enforced once, here, rather
+#: than escaped differently in each flow.
+#:
+#: ``$`` is legal in a SystemVerilog identifier and is **excluded here
+#: anyway**, because it is a substitution character in exactly the Tcl
+#: this value is interpolated into unquoted: ``synth_design -top foo$bar``
+#: makes Vivado substitute an empty (or wrong) ``$bar`` and elaborate a
+#: different module than the YAML names, or fail outright. Having chosen
+#: to make the value safe at the boundary rather than escape it in six
+#: generators, the rule has to be the intersection of "legal SV" and
+#: "inert in Tcl and in a filename" — not the union. A design whose top
+#: really is named with a ``$`` has to be renamed or wrapped.
+#:
+#: SystemVerilog also has *escaped* identifiers — a backslash, then
+#: printable characters, then whitespace — which legally admit ``/`` and
+#: ``;``. Those are refused outright for the same reason: no flow can
+#: name a file or a Tcl token after one safely, and a design that needs
+#: one cannot be driven through these flows anyway.
+#:
+#: ``get_top()`` falls back to the model ``name`` when ``top:`` is unset,
+#: so :data:`MODEL_NAME_RE` reaches the same Tcl. It is wider — it allows
+#: ``-`` and ``.`` — but neither is a Tcl metacharacter, and its first
+#: character may not be ``-``, so a name can never be read as an option
+#: flag either. The safety invariant holds on both paths.
+#:
+#: Anchored with ``\\Z`` for the reason :data:`MODEL_NAME_RE` states.
+MODEL_TOP_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def validate_model_top(top: str, name: str, path: str) -> None:
+    """Raise unless ``top`` is a simple SystemVerilog identifier.
+
+    Args:
+      top: the ``top:`` field as written.
+      name: the model declaring it, for the message.
+      path: the models.yaml it came from, for the message.
+
+    Raises:
+      FatalRtlBuddyError: naming the file, the model, the value and the rule.
+    """
+    if isinstance(top, str) and MODEL_TOP_RE.match(top):
+        return
+    escaped = isinstance(top, str) and top.startswith("\\")
+    dollar = isinstance(top, str) and "$" in top and not escaped
+    log_event(
+        logger,
+        logging.ERROR,
+        "model_config.invalid_model_top",
+        path=path,
+        name=name,
+        top=top,
+    )
+    if escaped:
+        detail = (
+            "SystemVerilog escaped identifiers are refused here: no flow can "
+            "name an artefact file or a Tcl token after one safely."
+        )
+    elif dollar:
+        detail = (
+            "'$' is legal in SystemVerilog but is a substitution character "
+            "in the Vivado and OpenROAD Tcl this value is written into "
+            "unquoted, so `synth_design -top` would elaborate a different "
+            "name than the one declared here. Rename the module, or wrap it "
+            "in one whose name has no '$'."
+        )
+    else:
+        detail = (
+            "It must start with a letter or underscore and contain only "
+            "letters, digits or underscore."
+        )
+    raise FatalRtlBuddyError(
+        f"{path}: model {name!r} declares top {top!r}, which is not a simple "
+        f"SystemVerilog identifier. {detail} The top is elaborated by every "
+        f"backend and also lands in artefact names and generated Tcl, so a "
+        f"path separator, newline or shell/Tcl metacharacter is refused."
+    )
 
 
 def split_back_pointer(value: str) -> tuple[str, str | None]:
@@ -84,6 +218,19 @@ class ModelConfig:
       tests (str|None): Relative path from models.yaml to the tests.yaml that
         owns this model's testbench/test suite. Same ``#test_name`` fragment
         semantics. Not consumed by any tool yet.
+      graph (bool): Whether this model takes part in ``rb graph build``'s
+        design tier. ``false`` opts it out for the models that have no
+        elaborable root at all — an SV ``interface`` published as a library
+        entry, or a filelist of vendored IP with no module named after the
+        model. The config tier still emits the model node (so spec and
+        test cross-references resolve); the design tier records the model
+        as *skipped* rather than attempting an export that can only fail.
+      top (str|None): Root module of this model's filelist, when it is not
+        named after the model. Defaults to ``name``, which is the project
+        convention every flow assumed before this field existed. Feeds
+        ``get_top()``, so it is also the default top of a ``cdc.yaml`` /
+        ``synth.yaml`` / ``lint.yaml`` / ``fpga.yaml`` run against this
+        model — the same escape hatch ``fpv.yaml`` already spells per-run.
       path (str|None): Path to the model config file. Will usually be set by the loader.
     """
 
@@ -96,6 +243,8 @@ class ModelConfig:
     cdc: str | None = None
     synth: str | None = None
     tests: str | None = None
+    graph: bool = True
+    top: str | None = None
     path: str | None = None
 
     def _resolve_relative(self, rel: str) -> str:
@@ -128,6 +277,17 @@ class ModelConfig:
         if self.axi_monitor_out is None:
             return None
         return self._resolve_relative(self.axi_monitor_out)
+
+    def get_top(self) -> str:
+        """The module this model's filelist is rooted at.
+
+        ``top:`` when declared, else the model name — the convention
+        ``rb hier``, ``rb graph build`` and the non-simulation flows all
+        relied on implicitly before the override existed. Returned even
+        for a ``graph: false`` model: the opt-out says the model is not
+        worth elaborating, not that this fallback changed.
+        """
+        return self.top or self.name
 
     def get_model_name(self):
         """
@@ -204,6 +364,11 @@ class ModelConfigLoader:
         # rb hub) sees a single source of truth.
         seen: dict[str, int] = {}
         for idx, model in enumerate(self.models):
+            # Before anything else: the name is a path segment everywhere
+            # downstream, and one consumer deletes the directory it names.
+            validate_model_name(model.name, path)
+            if model.top is not None:
+                validate_model_top(model.top, model.name, path)
             if model.name in seen:
                 log_event(
                     logger,

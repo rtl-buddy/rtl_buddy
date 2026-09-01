@@ -51,6 +51,7 @@ from rtl_buddy.graph import (
     merge_graphs,
     stitch_points,
 )
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.graph.merge import fingerprint, hash_inputs
 from rtl_buddy.rtl_buddy import RtlBuddy
 
@@ -591,6 +592,13 @@ def test_fingerprint_changes_with_inputs_and_with_tool_versions(tmp_path: Path):
 
     upgraded = dict(base, tools={"rtl-buddy-view": "0.5.0"})
     assert fingerprint(**upgraded) != first
+
+    # A tier can hash the same inputs and still owe a different sidecar:
+    # what it *selected* is part of what `graph-meta.json` reports.
+    narrowed = dict(base, selection={"design": {"models": ["design/a#a"]}})
+    assert fingerprint(**narrowed) != first
+    assert fingerprint(**narrowed) == fingerprint(**narrowed)
+    assert fingerprint(**dict(base, selection={})) == first
 
 
 def test_hash_inputs_records_a_missing_file_instead_of_raising(tmp_path: Path):
@@ -1812,6 +1820,1356 @@ def test_cli_second_run_reports_unchanged(graph_project: Path, tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# models.yaml `graph:` / `top:` (#479)
+#
+# Two legitimate model shapes have no module named after the model: an SV
+# `interface` published as a library entry, and a filelist of vendored IP.
+# Before the knobs, both produced a permanent design-tier failure row and a
+# dangling `model --maps_to--> module:<name>` in every merged graph.
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_model(project: Path, name: str, extra: str) -> None:
+    """Append ``extra`` YAML lines to one model entry in its models.yaml."""
+    path = project / "design" / name / "models.yaml"
+    path.write_text(path.read_text().rstrip("\n") + "\n" + extra)
+
+
+def test_graph_false_model_is_skipped_not_failed(graph_project: Path, tmp_path: Path):
+    _rewrite_model(graph_project, "blk_b", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "built"
+    # Skipped, never failed — an opt-out is not a degradation, so
+    # `--strict` must stay silent about it.
+    assert design.failures == []
+    assert design.skipped == [{"model": "blk_b", "reason": graph_build.GRAPH_OPT_OUT}]
+    assert not build.has_failures()
+
+    # The viewer was never asked about blk_b.
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    # The config tier still carries the model — spec/test cross-references
+    # resolve — but there is no module node and no stitch inventing one.
+    assert "model:design/blk_b/models.yaml#blk_b" in nodes
+    assert nodes["model:design/blk_b/models.yaml#blk_b"]["graph"] is False
+    assert "module:blk_b" not in nodes
+    assert dangling_targets(graph) == []
+
+    meta = json.loads(build.meta_path.read_text())
+    assert meta["tiers"][DESIGN_TIER]["skipped"] == design.skipped
+    assert "failures" not in meta["tiers"][DESIGN_TIER]
+    assert design.row_detail().endswith("1 skipped")
+
+
+def test_graph_false_model_skips_its_testbench_and_run_exports(
+    graph_project: Path, tmp_path: Path
+):
+    """A TB or flow run over an opted-out model is skipped the same way.
+
+    Both export shapes still pass ``--top <the model's root>`` next to
+    their own ``--tb-top``, so they would fail for the exact reason the
+    model opted out.
+    """
+    _flow_suite(graph_project)
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.failures == []
+    # Everything rooted at the opted-out model, in one place: the model,
+    # both of its testbenches, and every non-simulation run over it. The
+    # DUT-rooted ones (`tb_cocotb`, whose `toplevel:` IS the model root,
+    # and the synth/cdc/fpv runs that default their top to it) are
+    # normally dropped as redundant with the DUT export — but there is no
+    # DUT export here, so dropping them silently would understate what
+    # the opt-out cost.
+    assert design.skipped == [
+        {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
+        {
+            "testbench": "verif/blk_a#tb_cocotb",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a#blk_a_safety",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a_chk#chk_bmc",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a_chk#chk_prove",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_generic",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_lint",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+    ]
+    assert _tb_calls(record) == [] and _run_calls(record) == []
+    # blk_b is untouched by its neighbour's opt-out.
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_b"]
+
+    graph = json.loads(build.graph_path.read_text())
+    # The run's `targets` stitch goes with its export: an fpv checker top
+    # lives in the flow's own filelist, so nothing else is ever going to
+    # define `module:blk_a_chk`. Opting a model out must not *add* a
+    # dangling target. The one survivor is the documented cocotb
+    # `binds_to` hop from the binding tier (docs/known-issues.md).
+    assert dangling_targets(graph) == ["module:blk_a"]
+    assert all(
+        link["type"] == "binds_to"
+        for link in graph["links"]
+        if link["target"] == "module:blk_a"
+    )
+    assert "module:blk_a_chk" not in _nodes(graph)
+
+
+def _twin_testbench_suite(project: Path) -> None:
+    """Two `testbenches:` entries in one suite that elaborate identically.
+
+    Same model, same filelist, same explicit ``toplevel:`` — so the
+    de-duplication key, which is exactly what the viewer is handed, is
+    the same for both and only one export runs. The *names* differ, and
+    each is a `tb:` node the config tier emitted.
+    """
+    (project / "verif" / "blk_a" / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        '  - name: "tb_alpha"\n'
+        '    filelist: ["tb_top.sv"]\n'
+        "    toplevel: tb_top\n"
+        '  - name: "tb_beta"\n'
+        '    filelist: ["tb_top.sv"]\n'
+        "    toplevel: tb_top\n"
+        "tests:\n"
+        '  - name: "t_alpha"\n'
+        '    desc: "alpha"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_a"\n'
+        '    model_path: "../../design/blk_a/models.yaml"\n'
+        '    testbench: "tb_alpha"\n'
+        '  - name: "t_beta"\n'
+        '    desc: "beta"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_a"\n'
+        '    model_path: "../../design/blk_a/models.yaml"\n'
+        '    testbench: "tb_beta"\n'
+    )
+
+
+def test_two_testbenches_collapsing_into_one_export_keep_both_names(
+    graph_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The dedup key excludes the entry name, so both names must survive.
+
+    One export, two `tb:` nodes — and each of them really does elaborate
+    that hierarchy, so each is owed the observed stitch. Keeping only the
+    first stranded the twin, exactly as it would strand a flow run's
+    collapsed twin (which is why ``FlowRunTarget`` has kept every name
+    since #385).
+
+    ``FAKE_VIEW_TB_TOP`` makes the viewer report a top the config tier's
+    ``toplevel:`` did NOT declare, so the observed stitch is
+    distinguishable from the declared one and the assertion is about the
+    export rather than about the YAML.
+    """
+    _twin_testbench_suite(graph_project)
+    targets = graph_build.testbenches_from_suites(
+        graph_project, graph_project / "verif"
+    )
+    assert [t.tb_names for t in targets] == [["tb_alpha", "tb_beta"]]
+    assert targets[0].labels == ["verif/blk_a#tb_alpha", "verif/blk_a#tb_beta"]
+    assert targets[0].node_ids == [
+        "tb:verif/blk_a#tb_alpha",
+        "tb:verif/blk_a#tb_beta",
+    ]
+    # ...and the first name still answers for the export itself.
+    assert targets[0].tb_name == "tb_alpha"
+    assert targets[0].label == "verif/blk_a#tb_alpha"
+
+    monkeypatch.setenv("FAKE_VIEW_TB_TOP", "real_tb_top")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    # One export, not two: the dedup is intact.
+    assert len(_tb_calls(record)) == 1
+    graph = json.loads(build.graph_path.read_text())
+    stitches = {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "elaborates_as" and link["source"].startswith("tb:")
+    }
+    assert ("tb:verif/blk_a#tb_alpha", "module:real_tb_top") in stitches
+    assert ("tb:verif/blk_a#tb_beta", "module:real_tb_top") in stitches
+    assert not dangling_targets(graph)
+
+
+def test_both_collapsed_testbenches_are_reported_when_their_model_opts_out(
+    graph_project: Path, tmp_path: Path
+):
+    """Every opted-out testbench gets a row, collapsed twin included."""
+    _twin_testbench_suite(graph_project)
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    reported = [r["testbench"] for r in design.skipped if "testbench" in r]
+    assert reported == ["verif/blk_a#tb_alpha", "verif/blk_a#tb_beta"]
+    # And the envelope carries the same rows the sidecar does.
+    meta = json.loads(build.meta_path.read_text())
+    assert meta["tiers"][DESIGN_TIER]["skipped"] == design.skipped
+    assert _tb_calls(record) == []
+
+
+@pytest.mark.parametrize("name", ["..", "../../..", "a/../..", "/tmp/escape"])
+def test_the_retraction_refuses_a_target_outside_the_design_directory(
+    graph_project: Path, tmp_path: Path, name: str
+):
+    """The second belt, at the one place in the build that destroys data.
+
+    Model names are validated where models.yaml is loaded, but a caller
+    who hands ``build_graph`` a hand-built ``ModelConfig`` bypasses that
+    loader entirely — and `rmtree` would not think twice about a name
+    that normalises out of the artefact tree. The resolved target has to
+    be a direct child of ``design/``, or nothing is deleted.
+    """
+    from rtl_buddy.config.model import ModelConfig
+
+    out = graph_project / "artefacts" / "graph"
+    victim = graph_project / "precious"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("do not delete me")
+
+    model = ModelConfig(
+        name=name,
+        filelist=[],
+        graph=False,
+        path=str(graph_project / "design" / "blk_a" / "models.yaml"),
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        graph_build._drop_stale_export(out, model)
+    assert "refusing to retract" in str(excinfo.value)
+    assert (victim / "keep.txt").is_file()
+    assert graph_project.is_dir()
+
+
+def test_the_retraction_refuses_a_symlinked_model_directory(
+    graph_project: Path, tmp_path: Path
+):
+    """`design/<name>` standing in for a directory somewhere else.
+
+    The name is a perfectly ordinary identifier here — it is the
+    directory entry that lies. Resolving before comparing is what
+    catches it; composing the path would not.
+    """
+    from rtl_buddy.config.model import ModelConfig
+
+    out = graph_project / "artefacts" / "graph"
+    design_root = out / graph_build.DESIGN_SUBDIR
+    design_root.mkdir(parents=True)
+    elsewhere = graph_project / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("do not delete me")
+    (design_root / "blk_a").symlink_to(elsewhere, target_is_directory=True)
+
+    model = ModelConfig(
+        name="blk_a",
+        filelist=[],
+        graph=False,
+        path=str(graph_project / "design" / "blk_a" / "models.yaml"),
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        graph_build._drop_stale_export(out, model)
+    assert "symlink" in str(excinfo.value)
+    assert (elsewhere / "keep.txt").is_file()
+
+
+def test_the_escaping_export_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.stale_export_escapes",
+        {
+            "model": "..",
+            "path": "artefacts/graph/design/..",
+            "resolved": "/tmp/project/artefacts/graph",
+            "design_root": "/tmp/project/artefacts/graph/design",
+        },
+    )
+    assert msg != "graph build stale_export_escapes"
+    assert "artefacts/graph/design" in msg
+    assert "symlink" in msg
+
+
+def test_a_name_collision_is_refused_before_any_export_is_retracted(
+    graph_project: Path, tmp_path: Path
+):
+    """The collision check runs before the opt-out cleanup, not after.
+
+    `design/<name>/` is keyed on the model name, so a colliding pair
+    *shares* that directory. Retracting first meant the opted-out
+    newcomer's cleanup deleted the graphable model's export on its way
+    to an error the build was going to raise anyway — destroying a valid
+    artefact for a configuration the command never accepted.
+    """
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    build_graph(graph_project, **common)
+    export = graph_project / "artefacts" / "graph" / "design" / "blk_a" / "graph.json"
+    assert export.is_file()
+
+    # A second models.yaml reusing the name, opted out.
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+        "    graph: false\n"
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(graph_project, force=True, **common)
+    assert "Rename one of them" in str(excinfo.value)
+    # The valid model's export survived the refusal.
+    assert export.is_file()
+
+
+def test_a_stale_export_that_cannot_be_removed_is_fatal(
+    graph_project: Path, tmp_path: Path
+):
+    """Failing to retract is worse than never having tried.
+
+    The build would otherwise report the model as skipped while its old
+    per-model hierarchy stayed on disk and readable — the exact state the
+    retraction exists to prevent, now blessed by a green exit. An
+    unwritable output directory is the kind of setup problem
+    ``build_graph`` propagates rather than degrades.
+    """
+    if os.geteuid() == 0:  # pragma: no cover - depends on the runner
+        pytest.skip("root ignores directory permissions")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    build_graph(graph_project, **common)
+    design_dir = graph_project / "artefacts" / "graph" / "design"
+    assert (design_dir / "blk_a" / "graph.json").is_file()
+
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    design_dir.chmod(0o555)  # removing a child needs write on the parent
+    try:
+        with pytest.raises(FatalRtlBuddyError) as excinfo:
+            build_graph(graph_project, **common)
+    finally:
+        design_dir.chmod(0o755)
+    message = str(excinfo.value)
+    assert "blk_a" in message
+    assert str(design_dir / "blk_a") in message
+    assert "graph: false" in message
+    # `rmtree` is not atomic: it removes what it can and then fails, so a
+    # refused retraction leaves a *partial* tree behind. That is a second
+    # reason it cannot be swallowed — the artefact directory is now in a
+    # state no build produced.
+    assert (design_dir / "blk_a").is_dir()
+    # With the permission restored the same build succeeds and retracts.
+    build_graph(graph_project, **common)
+    assert not (design_dir / "blk_a").exists()
+
+
+def test_the_unremovable_export_event_has_a_human_message_case():
+    """Guidelines → Logging: an ERROR event needs its own case, or the
+    log says less than the exception the user already saw."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.stale_export_not_dropped",
+        {
+            "model": "blk_a",
+            "path": "artefacts/graph/design/blk_a",
+            "error": "Permission denied",
+        },
+    )
+    assert msg != "graph build stale_export_not_dropped"
+    assert "blk_a" in msg
+    assert "artefacts/graph/design/blk_a" in msg
+    assert "Permission denied" in msg
+
+
+def test_opting_out_retracts_a_models_previously_written_export(
+    graph_project: Path, tmp_path: Path
+):
+    """A design-tier export is durable, so an opt-out has to retract it.
+
+    Nothing rewrites ``artefacts/graph/design/<model>/`` but a later
+    export of that same model. So a model exported yesterday and marked
+    ``graph: false`` today would leave a complete, readable hierarchy on
+    disk while `graph-meta.json` and the merged graph both say it has
+    none — and the extractor's cross-check reads those files directly.
+    A stale export is a confident wrong answer, not a missing one.
+    """
+    _flow_suite(graph_project)
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    build_graph(graph_project, **common)
+
+    design_dir = graph_project / "artefacts" / "graph" / "design"
+    dut = design_dir / "blk_a" / "graph.json"
+    assert dut.is_file()
+    # The viewer's own provenance sidecar, and the TB- and run-rooted
+    # exports that nest under the same model directory.
+    sidecar = design_dir / "blk_a" / "graph-meta.json"
+    sidecar.write_text('{"generator": {"tool": "rtl-buddy-view"}}')
+    tb_export = design_dir / "blk_a" / "tb" / "tb_hdl" / "graph.json"
+    run_export = design_dir / "blk_a" / "run" / "blk_a_chk" / "graph.json"
+    assert tb_export.is_file() and run_export.is_file()
+
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    build = build_graph(graph_project, **common)
+
+    assert not (design_dir / "blk_a").exists()
+    for path in (dut, sidecar, tb_export, run_export):
+        assert not path.exists(), path
+    # The neighbour is untouched — only the opted-out model's subtree goes.
+    assert (design_dir / "blk_b" / "graph.json").is_file()
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "built"
+    assert {r["model"] for r in design.skipped} == {"blk_a"}
+    # Idempotent: a second build with the model still opted out is fine.
+    assert build_graph(graph_project, force=True, **common).graph_path.is_file()
+    assert not (design_dir / "blk_a").exists()
+
+
+def test_a_dut_rooted_tb_and_run_are_reported_when_their_model_opts_out(
+    graph_project: Path, tmp_path: Path
+):
+    """The dedup that hides a same-root testbench must not hide a skip.
+
+    A cocotb testbench whose ``toplevel:`` IS the model root, and a synth
+    or cdc run whose top defaults to it, are normally dropped before the
+    tier ever sees them: the DUT export already covers that hierarchy, so
+    re-elaborating it would only produce the same nodes twice. When the
+    model opts out there is no DUT export to defer to, and dropping them
+    silently would contradict the promise that everything rooted at an
+    opted-out model is listed under ``skipped`` — and would understate
+    the count in the tier's summary line.
+
+    The other half is the same fixture without the opt-out: the dedup is
+    unchanged there, so those items are neither exported nor skipped.
+    """
+    view, record = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+
+    graphable = build_graph(graph_project, **common)
+    design = next(t for t in graphable.tiers if t.tier == DESIGN_TIER)
+    # `tb_cocotb` tops at blk_a, and so do the fpv/synth/cdc runs: one
+    # DUT export covers all four, and none of them is a skip.
+    assert design.skipped == []
+    assert _tb_calls(record) == [
+        argv for argv in _tb_calls(record) if "tb_hdl" in " ".join(argv)
+    ]
+    assert len(_dut_calls(record)) == 2
+    assert _run_calls(record) == []
+
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    second = tmp_path / "second"
+    second.mkdir()
+    view2, record2 = _fake_view(second)
+    opted = build_graph(
+        graph_project, force=True, **{**common, "view_executable": str(view2)}
+    )
+    design = next(t for t in opted.tiers if t.tier == DESIGN_TIER)
+    reported = {
+        record.get("testbench") or record.get("run") or record["model"]
+        for record in design.skipped
+    }
+    # The DUT-rooted testbench and the model-topped runs, which the dedup
+    # would otherwise have swallowed before the tier could report them.
+    assert "verif/blk_a#tb_cocotb" in reported
+    assert "impl/blk_a#blk_a_generic" in reported
+    assert "impl/blk_a#blk_a_lint" in reported
+    assert "fpv/blk_a#blk_a_safety" in reported
+    # Reported, never exported: blk_b is the only thing the viewer saw.
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record2)] == ["blk_b"]
+    assert _tb_calls(record2) == [] and _run_calls(record2) == []
+    assert design.failures == []
+    assert design.row_detail().endswith(f"{len(design.skipped)} skipped")
+
+
+def test_every_model_opting_out_skips_the_tier_without_failing_it(
+    graph_project: Path, tmp_path: Path
+):
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "skipped"
+    assert "opted out" in (design.detail or "")
+    assert build.failed_tiers() == []
+    assert _graph_calls(record) == []
+    assert build.graph_path.is_file()
+
+    graph = json.loads(build.graph_path.read_text())
+    # No config->design stitch survives: `maps_to`, a run's `targets` at
+    # the model's own root, and a cocotb testbench's declared
+    # `elaborates_as` are all withdrawn, because the tier that would
+    # define their target is not going to run.
+    assert [
+        link
+        for link in graph["links"]
+        if link["type"] in ("maps_to", "targets", "elaborates_as")
+    ] == []
+    # What is left is the binding tier's cocotb `test -> module:<DUT>`
+    # hop, which is emitted from the merged graph and is dangling for the
+    # same reason `--no-design` leaves it dangling (docs/known-issues.md).
+    assert dangling_targets(graph) == ["module:blk_a"]
+    assert all(
+        link["type"] == "binds_to"
+        for link in graph["links"]
+        if link["target"] == "module:blk_a"
+    )
+
+
+def test_an_outdated_viewer_cannot_fail_a_fully_opted_out_design_tier(
+    graph_project: Path, tmp_path: Path
+):
+    """The version gate must not decide a tier that never needs the viewer.
+
+    A project whose design directory holds only library models has
+    nothing to export, so an old (or gated) ``rtl-buddy-view`` is
+    irrelevant to it and must not turn an opt-out into a failed tier and
+    a non-zero exit.
+    """
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.3.1",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "skipped"
+    assert VIEW_GRAPH_MIN_VERSION not in (design.detail or "")
+    assert build.failed_tiers() == []
+    assert _argv_lines(record) == []
+    # A graphable model still gets the upgrade hint, so the gate is not
+    # simply switched off.
+    _rewrite_model(graph_project, "blk_b", "    graph: true\n")
+    gated = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.3.1",
+        extract_enabled=False,
+        force=True,
+    )
+    gated_design = next(t for t in gated.tiers if t.tier == DESIGN_TIER)
+    assert gated_design.status == "failed"
+    assert VIEW_GRAPH_MIN_VERSION in gated_design.detail
+
+
+def test_a_shared_top_does_not_leak_one_models_opt_out_onto_another(
+    graph_project: Path, tmp_path: Path
+):
+    """Two models rooted at the same module, one opted out.
+
+    The opt-out is a fact about a model and its testbenches, not about a
+    module name: keying it on the top would silently strip the graphable
+    model's testbench of its declared ``elaborates_as`` edge.
+    """
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    # blk_b now roots at blk_a's top. Both models are tested from the
+    # *same* suite, each by a cocotb testbench declaring that shared
+    # `toplevel:` — a per-suite set of opted-out top names cannot tell
+    # the two testbenches apart.
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    (graph_project / "verif" / "blk_a" / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        '  - name: "tb_cocotb"\n'
+        "    filelist: []\n"
+        "    toplevel: blk_a\n"
+        "    cocotb:\n"
+        "      module: cocotb_blk_a\n"
+        '  - name: "tb_b_cocotb"\n'
+        "    filelist: []\n"
+        "    toplevel: blk_a\n"
+        "    cocotb:\n"
+        "      module: cocotb_blk_a\n"
+        "tests:\n"
+        '  - name: "t_cocotb"\n'
+        '    desc: "blk_a cocotb test"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_a"\n'
+        '    model_path: "../../design/blk_a/models.yaml"\n'
+        '    testbench: "tb_cocotb"\n'
+        '  - name: "t_b"\n'
+        '    desc: "blk_b cocotb test"\n'
+        "    reglvl: 0\n"
+        '    model: "blk_b"\n'
+        '    model_path: "../../design/blk_b/models.yaml"\n'
+        '    testbench: "tb_b_cocotb"\n'
+    )
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    graph = json.loads(build.graph_path.read_text())
+    stitches = {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "elaborates_as"
+    }
+    # blk_b's testbench keeps its edge — blk_b is graphable and exports
+    # `module:blk_a`; blk_a's own cocotb testbench loses its edge.
+    assert ("tb:verif/blk_a#tb_b_cocotb", "module:blk_a") in stitches
+    assert ("tb:verif/blk_a#tb_cocotb", "module:blk_a") not in stitches
+    assert dangling_targets(graph) == []
+
+
+def test_two_graphable_models_sharing_a_top_are_refused_before_any_export(
+    graph_project: Path, tmp_path: Path
+):
+    """`module:<top>` is a global id, so one top cannot mean two designs.
+
+    DUT ids are the one thing suite qualification never rewrites — they
+    are the weld a TB or run export merges onto — so two such exports do
+    not stay apart: the merge keeps the first node's attributes and
+    unions both link sets, and the graph ends up claiming one module
+    instantiates both designs. Nothing downstream can spot that, so the
+    build refuses the input instead of writing it.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    view, record = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    message = str(excinfo.value)
+    # Both models, both models.yaml paths, the shared top, and both ways out.
+    assert "blk_a" in message and "blk_b" in message
+    assert "design/blk_a/models.yaml" in message
+    assert "design/blk_b/models.yaml" in message
+    assert "graph: false" in message and "top:" in message
+    # Refused *before* any export: nothing was handed to the viewer and
+    # no half-written graph is left behind.
+    assert _argv_lines(record) == []
+    assert not (graph_project / "artefacts" / "graph" / "graph.json").is_file()
+
+
+def test_two_selected_models_sharing_a_name_are_refused_before_any_export(
+    graph_project: Path, tmp_path: Path
+):
+    """Every per-model artefact path is keyed on the model *name*.
+
+    Two ``models.yaml`` files may each declare a `blk_a`: the loader only
+    rejects duplicates within one file, and everything else keeps them
+    apart (``_model_key`` is realpath-qualified, and so are their
+    ``model:`` node ids). So both are planned, both run, and the second
+    export overwrites the first in ``artefacts/graph/design/blk_a/`` and
+    ``artefacts/hier/blk_a/`` — while the tier reports two models built.
+    Distinct ``top:`` values do not help: the paths still collide.
+    """
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+    )
+    view, record = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    message = str(excinfo.value)
+    assert "design/blk_a/models.yaml" in message
+    assert "design/blk_dupe/models.yaml" in message
+    # It names the paths that would have collided, and both ways out.
+    assert "artefacts/graph/design/blk_a/" in message
+    assert "artefacts/hier/blk_a/" in message
+    assert "Rename one of them" in message
+    assert _argv_lines(record) == []
+    assert not (graph_project / "artefacts" / "graph" / "graph.json").is_file()
+
+
+def test_graph_false_does_not_excuse_a_shared_name(graph_project: Path, tmp_path: Path):
+    """Opting out is not a way out of a name collision.
+
+    A model name is how every selector spells a model — ``--model NAME``,
+    a test's ``model:``, a back-pointer — and none of them can say which
+    of two entries is meant. An opted-out duplicate would shadow the
+    graphable one in a name-keyed lookup, silently, and afterwards the
+    survivor looks like the only one there ever was. So the name half of
+    the refusal covers every model in scope, opted out or not; only the
+    *top* half is graphable-only.
+    """
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+        "    graph: false\n"
+    )
+    view, record = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    message = str(excinfo.value)
+    assert "design/blk_a/models.yaml" in message
+    assert "design/blk_dupe/models.yaml" in message
+    # And it says so, rather than pointing at the knob that does not help.
+    assert "Rename one of them" in message
+    assert "`graph: false` does not resolve a name collision" in message
+    assert _argv_lines(record) == []
+
+
+def test_the_model_selector_does_not_silently_pick_between_two_of_a_name(
+    graph_project: Path, tmp_path: Path
+):
+    """``--model blk_a`` with two `blk_a` entries must not choose one.
+
+    The selector resolved names first-found-wins, so an opted-out entry
+    that happened to be discovered first shadowed the graphable one and
+    the build exported nothing while reporting a clean skip. It now
+    returns every match and lets the collision refusal speak.
+    """
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+        "    graph: false\n"
+    )
+    view, _ = _fake_view(tmp_path)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["graph", "build", "--tool", str(view), "--no-extract", "--model", "blk_a"],
+    )
+    assert result.exit_code != 0, result.output
+    combined = result.output + str(result.exception or "")
+    assert "design/blk_a/models.yaml" in combined
+    assert "design/blk_dupe/models.yaml" in combined
+
+
+def test_a_duplicate_name_is_reported_before_a_duplicate_top(
+    graph_project: Path, tmp_path: Path
+):
+    """When both collisions hold, "rename one model" fixes both."""
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "same name, same top"\n'
+        '    filelist: ["blk_a.sv"]\n'
+    )
+    view, _ = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    assert "Rename one" in str(excinfo.value)
+
+
+def test_an_unselected_model_is_not_stitched_to_another_models_hierarchy(
+    graph_project: Path, tmp_path: Path
+):
+    """`--model A` must not make B look like it maps to A's design.
+
+    The config tier walks the whole `--design-dir` whatever the design
+    tier was narrowed to, so it still emits B's node. `module:<top>` is a
+    global id, so if B's `top:` matches A's, B's `maps_to` would resolve
+    against A's exported hierarchy after the merge and the graph would
+    state that B maps to A's design — a false answer, not a missing one.
+    A model this build does not export gets a node and no stitch, the
+    same rule `graph: false` already follows.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    only_a = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_a"
+    ]
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        models=only_a,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    # B is still in the graph — spec and test cross-references point at it.
+    assert "model:design/blk_b/models.yaml#blk_b" in nodes
+    assert "module:blk_a" in nodes
+    # ...and it claims nothing about A's hierarchy.
+    assert {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    } == {("model:design/blk_a/models.yaml#blk_a", "module:blk_a")}
+    assert dangling_targets(graph) == []
+
+
+def test_selecting_both_of_two_models_sharing_a_top_is_still_fatal(
+    graph_project: Path, tmp_path: Path
+):
+    """Suppressing the stitch is for models that are NOT exported.
+
+    Two models that both export cannot share a top whatever the config
+    tier does — their design-tier ids collide — so narrowing the stitch
+    must not have quietly turned that refusal off.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    view, _ = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    assert "top 'blk_a' is claimed by" in str(excinfo.value)
+
+
+def test_an_unselected_models_runs_and_testbenches_are_not_stitched_either(
+    graph_project: Path, tmp_path: Path
+):
+    """The same rule for the other two config->design verbs.
+
+    A run's `targets` at its model's own root, and a cocotb testbench's
+    declared `elaborates_as`, name the same `module:<top>` a `maps_to`
+    would — so they carry the same risk of resolving against a different
+    model's export, and they are withheld on the same condition.
+    """
+    only_b = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_b"
+    ]
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        models=only_b,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    graph = json.loads(build.graph_path.read_text())
+    # blk_a is unselected: its synth/cdc/fpv runs and its cocotb
+    # testbench all point at `module:blk_a`, which this build does not
+    # export, so none of them is stitched.
+    assert not [
+        link
+        for link in graph["links"]
+        if link["type"] in ("maps_to", "targets", "elaborates_as")
+        and link["target"] == "module:blk_a"
+    ]
+    # blk_b, which this build does export, keeps its stitch.
+    assert ("model:design/blk_b/models.yaml#blk_b", "module:blk_b") in {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    }
+
+
+def test_no_design_still_stitches_every_graphable_model(
+    graph_project: Path, tmp_path: Path
+):
+    """`--no-design` has no selection to respect.
+
+    Nothing is exported, so no stitch can resolve against the wrong
+    model's hierarchy — and the documented config-only behaviour is that
+    these edges name modules a later design tier supplies. Narrowing
+    them here would delete information for no gain.
+    """
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        design=False,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    graph = json.loads(build.graph_path.read_text())
+    assert {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    } == {
+        ("model:design/blk_a/models.yaml#blk_a", "module:blk_a"),
+        ("model:design/blk_b/models.yaml#blk_b", "module:blk_b"),
+    }
+
+
+def test_a_shared_top_is_allowed_when_one_of_the_two_models_opts_out(
+    graph_project: Path, tmp_path: Path
+):
+    """A `graph: false` model is never exported, so it cannot collide.
+
+    This is the documented way out of the refusal above, so it has to
+    actually work — and the surviving model must still export normally.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    _rewrite_model(graph_project, "blk_b", "    graph: false\n")
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "built"
+    assert design.failures == []
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+    graph = json.loads(build.graph_path.read_text())
+    assert _nodes(graph)["module:blk_a"]["file"] == "design/blk_a/blk_a.sv"
+    assert dangling_targets(graph) == []
+
+
+def test_the_duplicate_top_refusal_ignores_models_out_of_scope(
+    graph_project: Path, tmp_path: Path
+):
+    """`--model` / `-c` narrow the tier, so they narrow the check too.
+
+    Only what would actually be exported can collide; refusing on a
+    model the user excluded would make the selector unusable.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    only_a = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_a"
+    ]
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        models=only_a,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+    assert next(t for t in build.tiers if t.tier == DESIGN_TIER).status == "built"
+
+
+def test_narrowing_an_all_opted_out_build_refreshes_the_skipped_list(
+    graph_project: Path, tmp_path: Path
+):
+    """A selector that only moves `skipped` must still invalidate the cache.
+
+    An all-opted-out design tier hashes nothing, so `--model` moves no
+    input and the fingerprint used to match — handing back a
+    `graph-meta.json` whose `skipped` list still described the wider,
+    previous invocation. The sidecar is part of what the build promises,
+    so what narrowed it is part of the fingerprint.
+    """
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+
+    wide = build_graph(graph_project, **common)
+    wide_skipped = json.loads(wide.meta_path.read_text())["tiers"][DESIGN_TIER][
+        "skipped"
+    ]
+    assert wide_skipped == [
+        {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
+        {"model": "blk_b", "reason": graph_build.GRAPH_OPT_OUT},
+        {
+            "testbench": "verif/blk_a#tb_cocotb",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a#blk_a_safety",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_generic",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_lint",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+    ]
+
+    only_a = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_a"
+    ]
+    narrow = build_graph(graph_project, models=only_a, **common)
+    assert narrow.unchanged is False
+    assert narrow.fingerprint != wide.fingerprint
+    # The sidecar on disk now describes *this* invocation: blk_b is gone
+    # from it, and only blk_a's own records remain.
+    narrow_skipped = json.loads(narrow.meta_path.read_text())["tiers"][DESIGN_TIER][
+        "skipped"
+    ]
+    assert narrow_skipped == [
+        {"model": "blk_a", "reason": graph_build.GRAPH_OPT_OUT},
+        {
+            "testbench": "verif/blk_a#tb_cocotb",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "testbench": "verif/blk_a#tb_hdl",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "fpv/blk_a#blk_a_safety",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_generic",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+        {
+            "run": "impl/blk_a#blk_a_lint",
+            "model": "blk_a",
+            "reason": graph_build.GRAPH_OPT_OUT,
+        },
+    ]
+    assert narrow_skipped != wide_skipped
+
+    # ...and re-running the narrowed build really is a no-op again.
+    assert build_graph(graph_project, models=only_a, **common).unchanged is True
+
+
+def _out_of_tree_model(project: Path, *, top: str) -> None:
+    """A models.yaml outside ``design/``, reached only via a suite.
+
+    The shape a `--regression` selection can produce: a test's
+    ``model_path:`` may point anywhere, and the config tier only walks
+    ``--design-dir`` for models.yaml — so this file is hashed by nothing.
+    """
+    vendor = project / "vendor" / "pp"
+    vendor.mkdir(parents=True, exist_ok=True)
+    (vendor / "pp.sv").write_text("module pp_top (input logic clk);\nendmodule\n")
+    (vendor / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "pp_axi"\n'
+        '    desc: "vendored collection"\n'
+        '    filelist: ["pp.sv"]\n'
+        f'    top: "{top}"\n'
+    )
+    suite = project / "verif" / "vendor"
+    suite.mkdir(parents=True, exist_ok=True)
+    (suite / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        '  - name: "tb_vendor"\n'
+        "    filelist: []\n"
+        "tests:\n"
+        '  - name: "t_vendor"\n'
+        '    desc: "vendor smoke"\n'
+        "    reglvl: 0\n"
+        '    model: "pp_axi"\n'
+        '    model_path: "../../vendor/pp/models.yaml"\n'
+        '    testbench: "tb_vendor"\n'
+    )
+    reg = project / "regression.yaml"
+    if "verif/vendor/tests.yaml" not in reg.read_text():
+        reg.write_text(reg.read_text() + "  - verif/vendor/tests.yaml\n")
+
+
+def test_editing_top_alone_reroots_a_model_no_tier_hashes(
+    graph_project: Path, tmp_path: Path
+):
+    """`top:` is part of a selected model's fingerprint identity.
+
+    A models.yaml under ``--design-dir`` is hashed by the config tier, so
+    editing it invalidates the cache whatever changed. One reached only
+    through a test's ``model_path:`` is hashed by nothing — the design
+    tier hashes the model's *sources*, and `top:` is not one of them. So
+    re-rooting such a model moved no input, the fingerprint matched, and
+    the build served a cached graph rooted at the old module.
+    """
+    _out_of_tree_model(graph_project, top="pp_top")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+        tb=False,
+        flow_tops=False,
+    )
+
+    def _build() -> "graph_build.GraphBuild":
+        models = graph_build.models_from_regression(graph_project / "regression.yaml")
+        return build_graph(graph_project, models=models, **common)
+
+    first = _build()
+    assert "module:pp_top" in _nodes(json.loads(first.graph_path.read_text()))
+    # The premise: nothing hashes that file, so only the selection can
+    # notice the edit.
+    hashed = {entry["path"] for report in first.tiers for entry in report.inputs}
+    assert "vendor/pp/models.yaml" not in hashed
+    # ...and an untouched re-run is still a no-op.
+    assert _build().unchanged is True
+
+    models_yaml = graph_project / "vendor" / "pp" / "models.yaml"
+    models_yaml.write_text(models_yaml.read_text().replace("pp_top", "pp_alt"))
+
+    second = _build()
+    assert second.unchanged is False
+    assert second.fingerprint != first.fingerprint
+    nodes = _nodes(json.loads(second.graph_path.read_text()))
+    assert "module:pp_alt" in nodes and "module:pp_top" not in nodes
+    assert _build().unchanged is True
+
+
+def test_opting_an_unhashed_model_out_also_moves_the_fingerprint(
+    graph_project: Path, tmp_path: Path
+):
+    """The `graph:` flag rides in the same identity.
+
+    Membership would in fact catch it — the model leaves the exported set
+    and gains a skip record — but the declaration is what changed, so it
+    is pinned on the declaration.
+    """
+    _out_of_tree_model(graph_project, top="pp_top")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+        tb=False,
+        flow_tops=False,
+    )
+
+    def _build() -> "graph_build.GraphBuild":
+        models = graph_build.models_from_regression(graph_project / "regression.yaml")
+        return build_graph(graph_project, models=models, **common)
+
+    first = _build()
+    models_yaml = graph_project / "vendor" / "pp" / "models.yaml"
+    models_yaml.write_text(models_yaml.read_text() + "    graph: false\n")
+
+    second = _build()
+    assert second.unchanged is False
+    assert second.fingerprint != first.fingerprint
+    design = next(t for t in second.tiers if t.tier == DESIGN_TIER)
+    assert design.skipped == [{"model": "pp_axi", "reason": graph_build.GRAPH_OPT_OUT}]
+    assert "module:pp_top" not in _nodes(json.loads(second.graph_path.read_text()))
+
+
+def test_tier_flags_are_part_of_the_fingerprint_even_with_nothing_to_hash(
+    graph_project: Path, tmp_path: Path
+):
+    """`--no-tb` / `--no-flow-tops` / `--no-design` change the sidecar too.
+
+    On a project with design-tier inputs the flags already move the input
+    hashes. On an all-opted-out one they move nothing, which is exactly
+    when the stale sidecar was reachable.
+    """
+    for name in ("blk_a", "blk_b"):
+        _rewrite_model(graph_project, name, "    graph: false\n")
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    base = build_graph(graph_project, **common).fingerprint
+    assert build_graph(graph_project, tb=False, **common).fingerprint != base
+    assert build_graph(graph_project, flow_tops=False, **common).fingerprint != base
+    assert build_graph(graph_project, design=False, **common).fingerprint != base
+    # `--no-design` and a fully opted-out tier produce the same graph but
+    # not the same report, so they must not share a fingerprint.
+    off = build_graph(graph_project, design=False, **common)
+    off_design = next(t for t in off.tiers if t.tier == DESIGN_TIER)
+    assert off_design.detail == "disabled (--no-design)"
+
+
+def test_model_top_override_roots_the_export_and_the_config_stitch(
+    graph_project: Path, tmp_path: Path
+):
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_b_core"\n')
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    assert sorted(argv[argv.index("--top") + 1] for argv in _dut_calls(record)) == [
+        "blk_a",
+        "blk_b_core",
+    ]
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    assert "module:blk_b_core" in nodes and "module:blk_b" not in nodes
+    # The config tier's stitch follows the override, so the merged graph
+    # resolves instead of dangling on a module that does not exist.
+    assert {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    } == {
+        ("model:design/blk_a/models.yaml#blk_a", "module:blk_a"),
+        ("model:design/blk_b/models.yaml#blk_b", "module:blk_b_core"),
+    }
+    assert dangling_targets(graph) == []
+
+
+def test_model_top_override_still_dedupes_a_model_topped_flow_run(
+    graph_project: Path,
+):
+    """The fixture's `blk_a_safety` run tops at its model.
+
+    Its `get_top()` follows the model override, so the DUT export still
+    covers it and it must not become a second, run-rooted export.
+    """
+    _rewrite_model(graph_project, "blk_a", '    top: "blk_a_core"\n')
+    assert graph_build.flow_runs_from_regressions(graph_project) == []
+
+
+def test_cli_envelope_and_summary_report_opted_out_models(
+    graph_project: Path, tmp_path: Path
+):
+    _rewrite_model(graph_project, "blk_b", "    graph: false\n")
+    view, _ = _fake_view(tmp_path)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "graph",
+            "build",
+            "--tool",
+            str(view),
+            "--no-extract",
+            "--strict",
+        ],
+    )
+    # `--strict` promotes real per-item failures; an opt-out is not one.
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.output.strip().splitlines()[-1])
+    design = next(t for t in envelope["payload"]["tiers"] if t["tier"] == DESIGN_TIER)
+    assert design["skipped"] == [
+        {"model": "blk_b", "reason": graph_build.GRAPH_OPT_OUT}
+    ]
+    assert "failures" not in design
+
+    human = runner.invoke(
+        rb.app, ["graph", "build", "--tool", str(view), "--no-extract", "--force"]
+    )
+    assert human.exit_code == 0, human.output
+    assert "1 skipped" in human.output
+
+
+# ---------------------------------------------------------------------------
 # End to end against the real viewer (skipped when it isn't installed)
 # ---------------------------------------------------------------------------
 
@@ -1842,6 +3200,45 @@ def test_end_to_end_with_the_installed_viewer(graph_project: Path):
     # The merged envelope is loadable by NetworkX readers.
     assert graph["graph"]["schema_version"] == SCHEMA_VERSION
     assert graph["directed"] is True and graph["multigraph"] is True
+
+
+def test_the_duplicate_design_top_event_has_a_human_message_case():
+    """Guidelines → Logging: an ERROR event needs its own case, or
+    `rtl_buddy.log` renders `graph build duplicate_design_top` with none
+    of the fields that say which models to go and edit."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.duplicate_design_top",
+        {
+            "top": "blk_a",
+            "models": "blk_a, blk_b",
+            "paths": "design/blk_a/models.yaml, design/blk_b/models.yaml",
+        },
+    )
+    assert msg != "graph build duplicate_design_top"
+    assert "blk_a, blk_b" in msg
+    assert "design/blk_b/models.yaml" in msg
+    assert "graph: false" in msg
+
+
+def test_the_duplicate_design_model_event_has_a_human_message_case():
+    """Guidelines → Logging: the ERROR event has to name the two files,
+    or `rtl_buddy.log` says less than the exception does."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.duplicate_design_model",
+        {
+            "model": "blk_a",
+            "paths": "design/blk_a/models.yaml, design/blk_dupe/models.yaml",
+        },
+    )
+    assert msg != "graph build duplicate_design_model"
+    assert "blk_a" in msg
+    assert "design/blk_dupe/models.yaml" in msg
+    assert "rename one of them" in msg
+    assert "does not resolve a name collision" in msg
 
 
 def test_the_new_warning_events_have_human_message_cases():
