@@ -1236,11 +1236,19 @@ def test_every_submit_path_states_cpus_per_task_on_the_command_line(
     from rtl_buddy.dispatch.base import BuildJobSpec
 
     def _argv_of(submit):
-        calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
-        monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+        # Only sbatch gets a job id; the build path's squeue dedup probe
+        # (#507) is answered with an empty queue and left out of the answer.
+        calls = []
+
+        def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+            calls.append(list(argv))
+            stdout = "7\n" if argv[0] == "sbatch" else ""
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(slurm_module.subprocess, "run", run)
         backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
         submit(backend)
-        (argv,) = calls
+        (argv,) = [a for a in calls if a[0] == "sbatch"]
         return argv
 
     sim = _argv_of(lambda b: b.submit(_spec()))
