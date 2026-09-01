@@ -36,6 +36,7 @@ import subprocess
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -338,6 +339,28 @@ def _expand_squeue_id(
     return [f"{base}_{index}" for index in expanded] or [job_id]
 
 
+# The two cfg-dispatch fields an array ceiling can come from. Which one
+# GOVERNED a slice decides which one a rejected slice must be lowered on:
+# telling a site to shrink `max-array-size` when its `max_array_tasks` is
+# the binding cap misstates the cluster's index ceiling, and is exactly
+# what the separate task-count field exists to avoid (#509 review).
+_FIELD_MAX_ARRAY_SIZE = "cfg-dispatch.max-array-size"
+_FIELD_MAX_ARRAY_TASKS = "cfg-dispatch.max-array-tasks"
+
+
+class _ArrayLimit(NamedTuple):
+    """The resolved slice size, and enough provenance to advise on it.
+
+    ``elements`` is ``None`` when no limit could be established at all;
+    ``source`` is where the governing value came from (``config`` or
+    ``scontrol``) and ``governed_by`` is WHICH ceiling it was.
+    """
+
+    elements: int | None
+    source: str | None = None
+    governed_by: str | None = None
+
+
 def _parsable_submission(stdout: str) -> tuple[str, str | None]:
     """``(job id, cluster)`` from ``sbatch --parsable`` output.
 
@@ -412,9 +435,7 @@ class SlurmDispatchBackend(DispatchBackend):
         # resolved on demand (see `cluster`), not frozen here, because
         # $SBATCH_CLUSTERS is part of it and is read when the probe runs.
         # {selection: (elements per array or None, where it came from)}.
-        self._elements_per_array_by_cluster: dict[
-            str | None, tuple[int | None, str | None]
-        ] = {}
+        self._elements_per_array_by_cluster: dict[str | None, _ArrayLimit] = {}
         self._acct_interval_s = self._resolve_accounting_frequency()
 
     def _resolve_accounting_frequency(self) -> float | None:
@@ -705,9 +726,9 @@ class SlurmDispatchBackend(DispatchBackend):
             self._elements_per_array_by_cluster[selection] = self._probe_max_elements(
                 cwd=cwd
             )
-        return self._elements_per_array_by_cluster[selection][0]
+        return self._elements_per_array_by_cluster[selection].elements
 
-    def _probe_max_elements(self, *, cwd: str | None) -> tuple[int | None, str | None]:
+    def _probe_max_elements(self, *, cwd: str | None) -> "_ArrayLimit":
         """Effective elements-per-array, layering config over the probe.
 
         TWO ceilings decide it and they are configured independently, so
@@ -720,9 +741,9 @@ class SlurmDispatchBackend(DispatchBackend):
         skipped only when it can add nothing — both values pinned — or when
         there is no single cluster to ask.
 
-        Returns ``(elements, source)`` where ``source`` names where the
-        GOVERNING value came from, so the submit-failure hint can say which
-        knob produced the slice it used.
+        Returns an :class:`_ArrayLimit`: the slice size plus where the
+        GOVERNING value came from and which ceiling it was, so a rejected
+        slice can be sent to the knob that actually produced it.
         """
         selection = self._cluster_selection()
         ambiguous = selection is not None and _is_multi_cluster(selection)
@@ -753,16 +774,18 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         if size is None:
             self._log_unknown(reason or "no MaxArraySize available")
-            return None, None
+            return _ArrayLimit(None)
 
         # MaxArraySize bounds the INDEX exclusively; max_array_tasks counts
         # the tasks, inclusively. The smaller of the two is what an array
         # may actually hold.
         limit = size - 1
         source = "config" if self.max_array_size is not None else "scontrol"
+        governed_by = _FIELD_MAX_ARRAY_SIZE
         if tasks is not None and 1 <= tasks < limit:
             limit = tasks
             source = "config" if self.max_array_tasks is not None else "scontrol"
+            governed_by = _FIELD_MAX_ARRAY_TASKS
         log_event(
             logger,
             logging.DEBUG,
@@ -776,9 +799,12 @@ class SlurmDispatchBackend(DispatchBackend):
             max_array_tasks=tasks,
             max_elements=limit,
             source=source,
+            # Which of the two ceilings produced `max_elements` — the field
+            # a rejected slice has to be lowered on.
+            governed_by=governed_by,
             cluster=selection,
         )
-        return limit, source
+        return _ArrayLimit(limit, source, governed_by)
 
     def _scontrol_ceilings(
         self, *, cwd: str | None, selection: str | None
@@ -870,19 +896,23 @@ class SlurmDispatchBackend(DispatchBackend):
         """
         if "job array" not in stderr.lower():
             return ""
-        limit, source = self._elements_per_array_by_cluster.get(
-            self._cluster_selection(), (None, None)
+        resolved = self._elements_per_array_by_cluster.get(
+            self._cluster_selection(), _ArrayLimit(None)
         )
-        if limit is None:
+        if resolved.elements is None:
             return (
                 "; the cluster's MaxArraySize could not be read, so this group "
                 "was submitted as one array — set cfg-dispatch.max-array-size to "
                 "let rb split a group larger than that limit"
             )
+        # Named for the ceiling that actually produced the slice: sending a
+        # site to `max-array-size` when its task cap was binding would have
+        # it state a MaxArraySize the cluster does not have (#509 review).
         return (
-            f"; rb sliced this group at {limit} element(s) per array, the limit "
-            f"it read from {source}, and the cluster refused it anyway — lower "
-            "cfg-dispatch.max-array-size to pin a smaller one"
+            f"; rb sliced this group at {resolved.elements} element(s) per "
+            f"array, the {resolved.governed_by} limit it read from "
+            f"{resolved.source}, and the cluster refused it anyway — lower "
+            f"{resolved.governed_by} to pin a smaller one"
         )
 
     def submit_array(

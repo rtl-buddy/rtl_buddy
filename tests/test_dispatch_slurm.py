@@ -2444,3 +2444,72 @@ def test_the_local_wait_argv_is_unchanged(monkeypatch):
         "--jobs",
         "500",
     ]
+
+
+def test_a_task_cap_rejection_points_at_max_array_tasks(monkeypatch, tmp_path):
+    """The knob that produced the slice is the knob to lower (#509 review).
+
+    A hidden cap below a configured `max-array-tasks: 500` used to be
+    answered with "lower max-array-size", which would have the site state a
+    MaxArraySize its cluster does not have — the exact confusion the
+    separate task-count field exists to remove.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=500).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    assert "500 element(s) per array" in message
+    assert "lower cfg-dispatch.max-array-tasks" in message
+    assert "max-array-size" not in message
+
+
+def test_a_size_governed_rejection_still_points_at_max_array_size(
+    monkeypatch, tmp_path
+):
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=101, max_array_tasks=1000),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    # 101 - 1 = 100 elements, below the 1000-task cap, so size governed.
+    assert "100 element(s) per array" in message
+    assert "read from scontrol" in message
+    assert "lower cfg-dispatch.max-array-size" in message
+    assert "max-array-tasks" not in message
+
+
+def test_handle_key_round_trips_through_its_split():
+    key = base_module.telemetry_key(JobHandle("77_1", _spec(), cluster="alpha"))
+    assert base_module.split_handle_key(key) == ("alpha", "77_1")
+    # A local id has no cluster half and comes back untouched.
+    assert base_module.split_handle_key("500_1") == (None, "500_1")

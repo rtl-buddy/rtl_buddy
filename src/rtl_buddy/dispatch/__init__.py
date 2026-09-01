@@ -16,6 +16,7 @@ from .base import (
     DispatchBackend,
     JobHandle,
     TestJobSpec,
+    split_handle_key,
     telemetry_key,
 )
 from .local_parallel import LocalProcessBackend
@@ -29,6 +30,7 @@ __all__ = [
     "LocalProcessBackend",
     "SlurmDispatchBackend",
     "create_dispatch_backend",
+    "split_handle_key",
     "telemetry_key",
     "validate_backend_name",
 ]

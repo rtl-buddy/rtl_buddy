@@ -150,6 +150,23 @@ def telemetry_key(handle: JobHandle) -> str:
     return f"{cluster}:{handle.job_id}" if cluster else handle.job_id
 
 
+def split_handle_key(key: str) -> tuple[str | None, str]:
+    """Inverse of :func:`telemetry_key`: ``(cluster, scheduler job id)``.
+
+    The qualified key is an INTERNAL identity — it keeps two clusters'
+    identically numbered jobs apart in the head's own mappings — and a
+    scheduler has never heard of it. Anything user-facing (a recovery
+    command, an id to paste into ``squeue``) has to take the two halves
+    apart again, because Slurm wants the bare id and ``-M <cluster>``
+    beside it, not ``alpha:77`` (#509 review).
+
+    Unambiguous by construction: a Slurm job id is digits, underscores and
+    brackets, and a cluster name is a bare word — neither contains a colon.
+    """
+    cluster, sep, job_id = key.partition(":")
+    return (cluster, job_id) if sep else (None, key)
+
+
 class DispatchBackend(ABC):
     """One remote-execution flavor (slurm today; LSF/SGE are future).
 
