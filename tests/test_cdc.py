@@ -933,3 +933,41 @@ def test_lint_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
 
     assert "could not parse JSON report" in res.results["desc"]
     assert not report.exists()
+
+
+def test_lint_filelist_error_clears_the_previous_reports(tmp_path, monkeypatch):
+    """`_write_filelist` raises `FilelistError`, a *sibling* of
+    `FatalRtlBuddyError` under `RtlBuddyError` rather than a subclass. A
+    rerun after a source file disappears must still publish nothing (#469)."""
+    import os
+
+    from rtl_buddy.errors import FatalRtlBuddyError, FilelistError, RtlBuddyError
+
+    # Guard the premise: catching FatalRtlBuddyError alone would miss this.
+    assert not issubclass(FilelistError, FatalRtlBuddyError)
+    assert issubclass(FilelistError, RtlBuddyError)
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+
+    # What a previously successful analysis left behind.
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+    report.write_text('{"summary": {"violations": 31, "crossings": 49}}')
+    text = Path(wrapper.artefact_dir) / "cdc.txt"
+    text.write_text("31 violations\n")
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+    domain_map.write_text('{"clocks": ["clk_a"]}')
+    reset_map = Path(wrapper.artefact_dir) / "reset_map.json"
+    reset_map.write_text('{"reset_synchronizers": []}')
+
+    # The source named by the model is gone.
+    os.unlink(tmp_path / "top.sv")
+
+    with pytest.raises(RtlBuddyError):
+        wrapper.run()
+
+    assert not report.exists()
+    assert not text.exists()
+    assert not domain_map.exists()
+    assert not reset_map.exists()
+    assert wrapper.read_report() == {}
+    assert wrapper.read_emitted_maps() == (None, None)

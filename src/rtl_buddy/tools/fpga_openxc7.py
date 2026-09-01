@@ -295,7 +295,12 @@ class OpenXc7Fpga(BaseFpga):
                     f"supports 7-series parts only (names starting with 'xc7'), "
                     f"got '{part}' — use tool: vivado for other device families"
                 )
-        except FatalRtlBuddyError:
+        except Exception:
+            # Every exception, not a list of the expected ones: enumerating
+            # them is how the CDC backend came to miss `FilelistError`, a
+            # sibling of `FatalRtlBuddyError` rather than a subclass (#469).
+            # A run that fails here publishes nothing; re-raised at once, so
+            # nothing is masked.
             self._clear_managed_outputs()
             raise
 

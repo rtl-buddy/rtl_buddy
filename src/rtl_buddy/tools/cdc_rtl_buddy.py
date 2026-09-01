@@ -243,7 +243,15 @@ class RtlBuddyCdc:
                 raise FatalRtlBuddyError(
                     f"{self.cdc_cfg.get_name()}: waivers file not found: {waivers_path}"
                 )
-        except FatalRtlBuddyError:
+        except Exception:
+            # Deliberately every exception, not a list of the ones we expect.
+            # This caught `FatalRtlBuddyError` alone, and `_write_filelist`
+            # raises `FilelistError` — a *sibling* under `RtlBuddyError`, not
+            # a subclass — so a rerun after a source file disappeared kept the
+            # previous run's reports (#469). Enumerating exception types is
+            # what went wrong; the rule is simply that a run which fails
+            # before the analyzer publishes nothing, whatever it failed on.
+            # Re-raised immediately, so this masks nothing.
             self._clear_stale_outputs()
             raise
 

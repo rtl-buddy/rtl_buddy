@@ -8,7 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.fpga import FpgaConfig
-from ..errors import FatalRtlBuddyError, FilelistError
+from ..errors import FilelistError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
 from ..runner.fpga_results import (
@@ -191,7 +191,12 @@ class VivadoFpga(BaseFpga):
         # failed run, not a skip (#469).
         try:
             target = resolve_target(self.fpga_cfg, self.root_cfg)
-        except FatalRtlBuddyError:
+        except Exception:
+            # Every exception, not a list of the expected ones: enumerating
+            # them is how the CDC backend came to miss `FilelistError`, a
+            # sibling of `FatalRtlBuddyError` rather than a subclass (#469).
+            # A run that fails here publishes nothing; re-raised at once, so
+            # nothing is masked.
             self._clear_managed_outputs()
             raise
 
