@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
+from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
 
 
@@ -247,6 +248,32 @@ class OpenRoadPower(BasePower):
     # Entry point
     # ------------------------------------------------------------------
 
+    def _clear_stale_report(self) -> None:
+        """Remove the previous run's `power.rpt`."""
+        stale = clear_stale_artefacts(
+            [self._report_path()], owner=self.power_cfg.get_name()
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "power.stale_artefacts_removed",
+                power=self.power_cfg.get_name(),
+                paths=stale,
+            )
+
+    def _fail_after_openroad(self, desc: str) -> PowerFailResults:
+        """Fail a run that has already invoked OpenROAD, publishing no report.
+
+        `report_power`'s output file is written before the script ends, so
+        OpenROAD can exit non-zero — or log an `[ERROR ...]`, or leave a
+        report this wrapper cannot read or parse — with `power.rpt` on disk
+        at the fixed path the next run would otherwise quote (#469). Every
+        post-OpenROAD failure return goes through here.
+        """
+        self._clear_stale_report()
+        return PowerFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> PowerResults:
         log_event(
             logger,
@@ -257,6 +284,28 @@ class OpenRoadPower(BasePower):
             mode=self.power_cfg.get_mode(),
             netlist_source=self.power_cfg.get_netlist_source(),
         )
+
+        # Ahead of the "openroad not found" return below: `_write_script`
+        # is where this flow validates its configuration — the SDC, the
+        # platform's tech-lef, the upstream netlist or routed ODB. An
+        # analysis pointing at a missing input is broken on every machine,
+        # and reporting it as "openroad not found" on a box that merely
+        # lacks the tool sends the user after the wrong problem. A config
+        # error is a failed run, so it clears on the way out (#469).
+        try:
+            script_path = self._write_script()
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "power.script_failed",
+                power=self.power_cfg.get_name(),
+                error=str(e),
+            )
+            self._clear_stale_report()
+            return PowerFailResults(
+                name=self.name + "/results", desc=f"script generation error: {e}"
+            )
 
         if not shutil.which(self.executable):
             log_event(
@@ -271,19 +320,13 @@ class OpenRoadPower(BasePower):
                 desc=f"{self.executable!r} not found",
             )
 
-        try:
-            script_path = self._write_script()
-        except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "power.script_failed",
-                power=self.power_cfg.get_name(),
-                error=str(e),
-            )
-            return PowerFailResults(
-                name=self.name + "/results", desc=f"script generation error: {e}"
-            )
+        # Everything past the "openroad not found" return above is a run of
+        # this entry, however it ends — including the script-generation
+        # failure just below. `report_power`'s output file is read back off a
+        # fixed path and OpenROAD exiting 0 with no [ERROR] does not prove it
+        # rewrote it, so clear here and the "power report not produced" path
+        # stays reachable instead of quoting a previous run's watts (#469).
+        self._clear_stale_report()
 
         log_path = self._log_path()
         env = os.environ.copy()
@@ -323,9 +366,8 @@ class OpenRoadPower(BasePower):
                 returncode=result.returncode,
                 log=log_path,
             )
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"OpenROAD exited with code {result.returncode}",
+            return self._fail_after_openroad(
+                f"OpenROAD exited with code {result.returncode}"
             )
 
         try:
@@ -335,31 +377,25 @@ class OpenRoadPower(BasePower):
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in OpenROAD log",
+            return self._fail_after_openroad(
+                f"{len(error_lines)} ERROR(s) in OpenROAD log"
             )
 
         report_path = self._report_path()
         if not os.path.isfile(report_path):
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"power report not produced at {report_path}",
+            return self._fail_after_openroad(
+                f"power report not produced at {report_path}"
             )
 
         try:
             report_text = Path(report_path).read_text()
         except OSError as e:
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc=f"failed to read power report: {e}",
-            )
+            return self._fail_after_openroad(f"failed to read power report: {e}")
 
         parsed = self._parse_report(report_text)
         if parsed is None:
-            return PowerFailResults(
-                name=self.name + "/results",
-                desc="could not parse Total line from report_power output",
+            return self._fail_after_openroad(
+                "could not parse Total line from report_power output"
             )
 
         activity_source = self.power_cfg.get_activity_source()

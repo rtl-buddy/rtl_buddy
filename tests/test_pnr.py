@@ -1,5 +1,7 @@
 """Tests for the P&R config schema, OpenRoadPnr backend, and rb pnr wiring."""
 
+import os
+from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
 from unittest.mock import MagicMock, patch
@@ -523,6 +525,47 @@ def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
     assert returned is None
 
 
+def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
+    """A failed streamout must not return the GDS an earlier run left behind
+    — it would then be rendered and reported as this run's layout (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        klayout_tech="pdk/klayout/tech.lyt",
+        cell_gds="pdk/gds/cells.gds",
+    )
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+
+    stale_gds = Path(backend.artefact_dir) / "demo_top.gds"
+    stale_gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
+
+    def _fake_run(cmd, **_kwargs):
+        # KLayout dies before writing anything.
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "fatal: unable to load tech file"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    assert backend._run_def2stream(platform, "demo_top") is None
+    assert not stale_gds.exists()
+
+
 _PNR_XFAIL_YAML = dedent("""\
     rtl-buddy-filetype: pnr_config
 
@@ -559,3 +602,414 @@ def test_pnr_suite_loads_xfail_flags(tmp_path):
     assert suite.get_runs("pnr_xfail_strict")[0].is_xfail() is True
     assert suite.get_runs("pnr_xfail_strict")[0].get_xfail_strict() is True
     assert suite.get_runs("pnr_normal")[0].is_xfail() is False
+
+
+# ---------------------------------------------------------------------------
+# Pre-run artefact clearing (#469)
+# ---------------------------------------------------------------------------
+
+
+def test_pnr_clear_list_covers_every_non_log_template_output():
+    """`run_output_paths` and `flow.tcl.template` must not drift apart: every
+    non-log file the template writes under `$OUT_DIR` has to be cleared before
+    the run, or a failed rerun leaves it behind at its fixed path (#469)."""
+    import re
+    from importlib.resources import files
+    from rtl_buddy.tools import pnr_openroad
+
+    template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
+    written = set(re.findall(r"\$OUT_DIR/(\S+)", template))
+    # Logs are deliberately exempt — each is the one artefact worth keeping
+    # when the tool dies early.
+    written = {name for name in written if not name.endswith(".log")}
+    assert written, "no $OUT_DIR write targets found; did the template move?"
+
+    fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES)
+    suffixes = pnr_openroad._MANAGED_OUTPUT_SUFFIXES
+    missed = {
+        name for name in written if name not in fixed and not name.endswith(suffixes)
+    }
+    assert not missed, f"not cleared before a run: {sorted(missed)}"
+
+    # `run_output_paths` documents the same set by name; keep it in step.
+    named = {
+        os.path.basename(p)
+        for p in pnr_openroad.run_output_paths("/artefacts", "${DESIGN}")
+    }
+    assert written <= named, f"undocumented output: {sorted(written - named)}"
+
+
+def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
+    """A run that reaches OpenROAD but writes nothing must score zero DRCs
+    rather than a previous run's violation count, and must not leave the
+    previous ODB for `rb power` to analyse (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    # `_make_pnr_cfg` points at `<tmp>/synth.yaml::demo_synth`; the run
+    # resolves it to name the design's artefacts.
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    artefacts = Path(backend.artefact_dir)
+    stale_drc = artefacts / "route.drc.rpt"
+    stale_drc.write_text("violation 1\nviolation 2\nviolation 3\n")
+    stale_odb = artefacts / "demo_top.routed.odb"
+    stale_odb.write_bytes(b"\x00stale odb\x00")
+    stale_gds = artefacts / "demo_top.gds"
+    stale_gds.write_bytes(b"\x00stale gds\x00")
+
+    def _fake_run(cmd, **_kwargs):
+        # OpenROAD exits 0 and writes only its log.
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    res = backend.run()
+
+    assert res.results["drc_count"] == 0
+    assert not stale_drc.exists()
+    assert not stale_odb.exists()
+    assert not stale_gds.exists()
+
+
+def test_pnr_missing_openroad_still_clears_the_odb(tmp_path, monkeypatch):
+    """pnr's DEF/ODB are the fixed-path inputs `rb power` resolves, so the
+    clear runs before even the tool-availability check: a box without
+    OpenROAD must not leave the previous ODB for a later `rb power` (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_odb = artefacts / "demo_top.routed.odb"
+    stale_odb.write_bytes(b"\x00stale odb\x00")
+    stale_drc = artefacts / "route.drc.rpt"
+    stale_drc.write_text("violation\n")
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
+
+    res = backend.run()
+
+    # The tool-missing message is unchanged...
+    assert "not found" in res.results["desc"]
+    # ...but nothing is left for `rb power` to pick up.
+    assert not stale_odb.exists()
+    assert not stale_drc.exists()
+
+
+def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
+    tmp_path, monkeypatch
+):
+    """Naming the design needs the synth back-reference, but a broken one must
+    not hijack the error the run would otherwise report (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),  # points at a synth.yaml that is absent
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_drc = artefacts / "route.drc.rpt"
+    stale_drc.write_text("violation\n")
+    # Design-named outputs cannot be named without the synth reference, but
+    # `rb power` accepts the ODB by existence alone, so they must go anyway.
+    design_named = {
+        name: artefacts / name
+        for name in (
+            "old_top.routed.odb",
+            "old_top.routed.v",
+            "old_top.routed.sdc",
+            "old_top.def",
+            "old_top.gds",
+            "old_top.png",
+        )
+    }
+    for path in design_named.values():
+        path.write_bytes(b"\x00stale\x00")
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
+
+    res = backend.run()
+
+    assert "not found" in res.results["desc"]
+    assert not stale_drc.exists()
+    for name, path in design_named.items():
+        assert not path.exists(), name
+
+
+def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
+    """The flow's `write_db` runs before the script ends, so OpenROAD can be
+    killed or exit non-zero with a complete or partial `<top>.routed.odb` on
+    disk. `rb power` accepts that ODB by existence, so a FAIL must not leave
+    it behind (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    artefacts = Path(backend.artefact_dir)
+    odb = artefacts / "demo_top.routed.odb"
+    routed_v = artefacts / "demo_top.routed.v"
+
+    def _writes_then_dies(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        odb.write_bytes(b"\x00partial odb\x00")
+        routed_v.write_text("module demo_top(); endmodule\n")
+        result = MagicMock()
+        result.returncode = 1
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_dies)
+
+    res = backend.run()
+
+    assert "exited with code 1" in res.results["desc"]
+    assert not odb.exists()
+    assert not routed_v.exists()
+
+
+def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
+    """Same for the other post-run gate: an `[ERROR ...]` line fails the run,
+    so the ODB written before it must go (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
+
+    def _writes_then_errors(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text(
+            "[ERROR GRT-0012] detailed route failed\n"
+        )
+        odb.write_bytes(b"\x00partial odb\x00")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_errors)
+
+    res = backend.run()
+
+    assert "ERROR(s) in OpenROAD log" in res.results["desc"]
+    assert not odb.exists()
+
+
+def test_def2stream_removes_a_zero_length_gds(tmp_path, monkeypatch):
+    """A zero-length GDS is what the size check rejects, and it is still a
+    file — leaving it means the next run's `isfile` sees a layout where none
+    was produced (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(
+        tmp_path, klayout_tech="pdk/klayout/tech.lyt", cell_gds="pdk/gds/cells.gds"
+    )
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+    out_gds = Path(backend.artefact_dir) / "demo_top.gds"
+
+    def _writes_empty(cmd, **_kwargs):
+        out_gds.write_bytes(b"")
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "fatal: streamout aborted"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_empty)
+
+    assert backend._run_def2stream(platform, "demo_top") is None
+    assert not out_gds.exists()
+
+
+def test_gds2png_removes_a_partial_png(tmp_path, monkeypatch):
+    """KLayout can render part of the image and then fail; a partial PNG left
+    here is reported as this run's layout by the next one (#469)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(tmp_path, klayout_props="pdk/klayout/props.lyp")
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+        emit_png=True,
+    )
+    out_png = Path(backend.artefact_dir) / "demo_top.png"
+    gds = Path(backend.artefact_dir) / "demo_top.gds"
+    gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
+
+    def _writes_partial(cmd, **_kwargs):
+        out_png.write_bytes(b"\x89PNG partial")
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "render aborted"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_partial)
+
+    assert backend._run_gds2png(platform, str(gds), "demo_top") is None
+    assert not out_png.exists()

@@ -57,7 +57,12 @@ from pathlib import Path
 MANIFEST_SCHEMA_VERSION = 1
 
 #: Filename inside ``cov_dir``.
-MANIFEST_FILENAME = "manifest.json"
+# Defined in `tools.artifact_paths` — the bottom of the import graph, and
+# where the artefact-clearing helpers protect it from a co-named run's
+# suffix clear (#469). Re-exported here, where consumers already look.
+from ..tools.artifact_paths import (  # noqa: E402
+    COV_MANIFEST_NAME as MANIFEST_FILENAME,
+)
 
 #: Name of the coverage artefact directory a run writes.
 COV_DIR_NAME = "cov_dir"

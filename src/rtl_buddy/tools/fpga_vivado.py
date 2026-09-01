@@ -17,6 +17,7 @@ from ..runner.fpga_results import (
     FpgaResults,
     FpgaSkipResults,
 )
+from .artifact_paths import clear_managed_outputs, clear_stale_artefacts
 from .fpga_base import BaseFpga, resolve_target
 from .fpga_vivado_flow import REPORT_FILES, render_flow_tcl
 from .fpga_vivado_reports import (
@@ -133,10 +134,78 @@ class VivadoFpga(BaseFpga):
     # Entry point
     # ------------------------------------------------------------------
 
+    def _clear_managed_outputs(self) -> None:
+        """Remove every output a run of this entry produces.
+
+        The five post-route reports and the bitstream are read back off fixed
+        paths, and Vivado exiting 0 with no ERROR line is not proof that it
+        rewrote them — so clearing them is what lets `_parse_reports` either
+        see this run's numbers or take its "not produced" path, instead of
+        quoting a previous run's utilization/WNS/power (#469). The bitstream
+        goes even without `--bitstream`: the artefact dir describes the latest
+        run, and a run reporting "no bitstream" beside a deployable
+        `<top>.bit` from an older run is the same trap — rerun with
+        `--bitstream` to regenerate it. It is matched by suffix, being the one
+        top-named output, so editing the run's model or top does not strand
+        the previous top's `.bit`; the reports have fixed names (`util.rpt`
+        and friends) and carry no `.bit` suffix.
+        """
+        stale = clear_stale_artefacts(
+            [
+                os.path.join(self.artefact_dir, filename)
+                for filename in REPORT_FILES.values()
+            ],
+            owner=self.fpga_cfg.get_name(),
+        )
+        # `own` so a design whose top collides with a sibling's protected
+        # name still has its own bitstream cleared (#469).
+        stale += clear_managed_outputs(
+            self.artefact_dir,
+            (".bit",),
+            owner=self.fpga_cfg.get_name(),
+            own=[os.path.basename(self._bitstream_path())],
+            own_flow="fpga-vivado",
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "fpga.stale_artefacts_removed",
+                fpga=self.fpga_cfg.get_name(),
+                paths=stale,
+            )
+
+    def _fail_after_vivado(self, desc: str) -> FpgaFailResults:
+        """Fail a run that has already invoked Vivado, publishing nothing.
+
+        The Tcl writes all five post-route reports before it reaches
+        `write_bitstream`, so a run that dies at the bitstream stage — or
+        exits non-zero, or logs an ERROR, or leaves a report this wrapper
+        cannot parse — has fresh reports and possibly a partial `<top>.bit`
+        on disk at the fixed paths the next run would otherwise read (#469).
+        Every post-Vivado failure return goes through here.
+        """
+        self._clear_managed_outputs()
+        return FpgaFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> FpgaResults:
-        # Resolve up front: an unknown `platform:` ref is a config error
-        # (FatalRtlBuddyError, exit 2), even when vivado is absent.
-        target = resolve_target(self.fpga_cfg, self.root_cfg)
+        # Resolved up front, and ahead of the tool skip below, because an
+        # unknown `platform:` ref is a config error (exit 2) whether or not
+        # Vivado is installed. Raising it over a previous run's reports and a
+        # deployable bitstream would leave exactly the stale artefacts this
+        # fix removes, so a config error clears them on its way out — it is a
+        # failed run, not a skip (#469).
+        try:
+            target = resolve_target(self.fpga_cfg, self.root_cfg)
+        except Exception:
+            # Every exception, not a list of the expected ones: enumerating
+            # them is how the CDC backend came to miss `FilelistError`, a
+            # sibling of `FatalRtlBuddyError` rather than a subclass (#469).
+            # A run that fails here publishes nothing; re-raised at once, so
+            # nothing is masked.
+            self._clear_managed_outputs()
+            raise
+
         log_event(
             logger,
             logging.INFO,
@@ -163,6 +232,12 @@ class VivadoFpga(BaseFpga):
                     "`rb tool-check --explain vivado` for install instructions"
                 ),
             )
+
+        # Everything past the skip is a run of this entry, however it ends —
+        # including the filelist error below. Deliberately *after* the skip:
+        # a box without Vivado never ran the tool, so it has no business
+        # deleting what a box with Vivado built.
+        self._clear_managed_outputs()
 
         try:
             fl_path = self._write_filelist()
@@ -231,9 +306,8 @@ class VivadoFpga(BaseFpga):
                 returncode=result.returncode,
                 log=log_path,
             )
-            return FpgaFailResults(
-                name=self.name + "/results",
-                desc=f"Vivado exited with code {result.returncode}",
+            return self._fail_after_vivado(
+                f"Vivado exited with code {result.returncode}"
             )
 
         try:
@@ -252,24 +326,18 @@ class VivadoFpga(BaseFpga):
                 first=error_lines[0],
                 log=log_path,
             )
-            return FpgaFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in Vivado log",
-            )
+            return self._fail_after_vivado(f"{len(error_lines)} ERROR(s) in Vivado log")
 
         try:
             reports = self._parse_reports()
         except RuntimeError as e:
-            return FpgaFailResults(name=self.name + "/results", desc=str(e))
+            return self._fail_after_vivado(str(e))
 
         bitstream: str | None = None
         if self.emit_bitstream:
             bit_path = self._bitstream_path()
             if not os.path.isfile(bit_path):
-                return FpgaFailResults(
-                    name=self.name + "/results",
-                    desc=f"bitstream not produced at {bit_path}",
-                )
+                return self._fail_after_vivado(f"bitstream not produced at {bit_path}")
             bitstream = bit_path
 
         util = reports["utilization"]

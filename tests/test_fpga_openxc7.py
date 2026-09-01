@@ -309,6 +309,149 @@ def test_openxc7_bitstream_runs_prjxray_stages(tmp_path, monkeypatch):
     assert (Path(backend.artefact_dir) / "demo_top.frames").read_bytes() != b""
 
 
+def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
+    """xc7frames2bit exiting 0 without writing must not promote the `.bit` an
+    earlier run left behind, and each stage must consume the handoff file this
+    run's predecessor wrote rather than a previous run's (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+
+    artefacts = Path(backend.artefact_dir)
+    (artefacts / "demo_top.bit").write_bytes(b"\x00stale bitstream\x00")
+    (artefacts / "demo_top.json").write_text('{"stale": true}')
+    (artefacts / "demo_top.fasm").write_text("# stale fasm\n")
+
+    # The stage handoffs are cleared too, so what nextpnr and fasm2frames
+    # consume is what this run's yosys / nextpnr actually wrote.
+    seen: dict[str, str] = {}
+
+    def _no_bitstream(cmd, **kwargs):
+        # Every stage "succeeds" but xc7frames2bit writes nothing.
+        exe = os.path.basename(cmd[0])
+        if exe == "nextpnr-xilinx":
+            seen["json"] = (artefacts / "demo_top.json").read_text()
+        if exe == "fasm2frames":
+            seen["fasm"] = (artefacts / "demo_top.fasm").read_text()
+        if exe == "xc7frames2bit":
+            return ManagedProcessResult(returncode=0)
+        return _fake_pipeline()(cmd, **kwargs)
+
+    _mock_toolchain(monkeypatch, _no_bitstream)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "bitstream not produced" in res.results["desc"]
+    assert not (artefacts / "demo_top.bit").exists()
+    # Neither downstream stage saw the previous run's handoff files.
+    assert seen["json"] == "{}"
+    assert seen["fasm"] == "# fasm\n"
+
+
+def test_openxc7_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypatch):
+    """Matches the Vivado backend: a run not asked for a bitstream still
+    removes a previous one, so the artefact dir describes the latest run
+    (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert res.results.get("bitstream") is None
+    assert not stale_bit.exists()
+
+
+def test_openxc7_clears_stale_frames_without_emit_bitstream(tmp_path, monkeypatch):
+    """`<top>.frames` is on the up-front clear list even though the stage that
+    writes it truncates it: a run without `--bitstream` never reaches that
+    stage, so nothing else would ever remove it (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_frames = artefacts / "demo_top.frames"
+    stale_frames.write_bytes(b"\x00stale frames\x00")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert not stale_frames.exists()
+
+
+def test_openxc7_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
+    """The clear sits above the filelist step, so a bitstream rerun that dies
+    before any stage runs leaves no frames or bitstream behind (#469)."""
+    from rtl_buddy.errors import FilelistError
+    from rtl_buddy.tools.fpga_openxc7 import OpenXc7Fpga
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+
+    artefacts = Path(backend.artefact_dir)
+    stale = {
+        name: artefacts / name
+        for name in ("demo_top.frames", "demo_top.bit", "demo_top.json")
+    }
+    for path in stale.values():
+        path.write_bytes(b"\x00stale\x00")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(OpenXc7Fpga, "_write_filelist", _boom)
+
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "Filelist error" in res.results["desc"]
+    for name, path in stale.items():
+        assert not path.exists(), name
+
+
+def test_openxc7_clears_a_previous_tops_artefacts(tmp_path, monkeypatch):
+    """The outputs are named after the design's top, so editing a run's model
+    or top would strand the previous top's files in the same artefact dir —
+    still at the paths an edit-back would resolve. They go by suffix (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    old_top = {
+        name: artefacts / name
+        for name in (
+            "old_top.bit",
+            "old_top.json",
+            "old_top.fasm",
+            "old_top.frames",
+        )
+    }
+    for path in old_top.values():
+        path.write_bytes(b"\x00previous top\x00")
+    # Fixed-name inputs the run owns must survive: they carry no managed suffix.
+    kept = artefacts / "synth.ys"
+    kept.write_text("# generated script\n")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name, path in old_top.items():
+        assert not path.exists(), name
+    assert kept.exists()
+
+
 def test_openxc7_failing_timing_still_passes_with_loop_fields(tmp_path, monkeypatch):
     backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
     _mock_toolchain(monkeypatch, _fake_pipeline(nextpnr_log="nextpnr_xilinx_fail.log"))
@@ -428,3 +571,357 @@ def test_cli_openxc7_non_7series_part_exits_2(
     assert exit_code == 2, captured
     payload = json.loads(captured.out)
     assert "7-series" in payload["payload"]["error"]
+
+
+def test_openxc7_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
+    """Target resolution now runs after the clear, so an unknown `platform:`
+    (or a non-7-series part) does not raise over a previous run's netlist,
+    FASM and deployable bitstream (#469)."""
+    model = ModelConfig(
+        name="demo_top", filelist=[], path=str(tmp_path / "models.yaml")
+    )
+    cfg = FpgaConfig(
+        name="demo_fpga",
+        desc="demo",
+        model=model,
+        tool="openxc7",
+        part="",
+        platform="no_such_platform",
+        xdc_files=[],
+        _reglvl=None,
+        tool_overrides=_CHIPDB_OVERRIDES,
+    )
+    backend = OpenXc7Fpga(
+        name="demo/openxc7",
+        fpga_cfg=cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,  # makes resolve_target raise
+        executable="openxc7",
+        emit_bitstream=True,
+    )
+    monkeypatch.setattr(
+        fpga_openxc7_module.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    stale = {
+        name: artefacts / name
+        for name in ("demo_top.bit", "demo_top.json", "demo_top.fasm")
+    }
+    for path in stale.values():
+        path.write_bytes(b"\x00stale\x00")
+
+    with pytest.raises(FatalRtlBuddyError, match="platform"):
+        backend.run()
+
+    for name, path in stale.items():
+        assert not path.exists(), name
+
+
+def test_openxc7_non_7series_part_still_clears_artefacts(tmp_path, monkeypatch):
+    """The 7-series gate is a config error raised after the clear too."""
+    backend = _make_backend(tmp_path, part="xczu7ev-ffvc1156-2-e", emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_openxc7_module.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
+
+    stale_bit = Path(backend.artefact_dir) / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    with pytest.raises(FatalRtlBuddyError, match="7-series"):
+        backend.run()
+
+    assert not stale_bit.exists()
+
+
+def test_openxc7_clear_spares_the_test_runners_result_json(tmp_path, monkeypatch):
+    """Artefact directories are keyed on a run's *name*, and names are not
+    required to be unique across commands — an `rb fpga` run and a simulation
+    test called the same thing share `artefacts/<name>/`. The `.json` suffix
+    clear must not eat the test runner's durable `result.json` (#469)."""
+    from rtl_buddy.tools.artifact_paths import RESULT_JSON_NAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    result_json = artefacts / RESULT_JSON_NAME
+    result_json.write_text('{"result": "PASS", "name": "demo_fpga"}')
+    dispatch_envelope = artefacts / "result-1234.json"
+    dispatch_envelope.write_text('{"result": "PASS"}')
+    # The backend's own output still goes.
+    stale_netlist = artefacts / "old_top.json"
+    stale_netlist.write_text('{"stale": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert result_json.read_text() == '{"result": "PASS", "name": "demo_fpga"}'
+    assert dispatch_envelope.exists()
+    assert not stale_netlist.exists()
+
+
+def test_openxc7_clear_spares_a_co_named_cdc_analysis(tmp_path, monkeypatch):
+    """Artefact directories are keyed on a run's name, so an FPGA run and a
+    CDC analysis called the same thing share `artefacts/<name>/`. The `.json`
+    suffix clear must not eat the analyzer's report or its domain maps (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    siblings = {
+        "cdc.json": '{"summary": {"violations": 3}}',
+        "cdc.txt": "3 violations\n",
+        "domain_map.json": '{"clocks": []}',
+        "reset_map.json": '{"reset_synchronizers": []}',
+    }
+    for name, body in siblings.items():
+        (artefacts / name).write_text(body)
+    stale_netlist = artefacts / "old_top.json"
+    stale_netlist.write_text('{"stale": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name, body in siblings.items():
+        assert (artefacts / name).read_text() == body, name
+    assert not stale_netlist.exists()
+
+
+def test_openxc7_stage_failure_removes_the_earlier_stages_outputs(
+    tmp_path, monkeypatch
+):
+    """Each stage writes its output before the next reads it, so a pipeline
+    that dies at `fasm2frames` leaves the netlist and FASM its predecessors
+    wrote. A run that reports FAIL publishes nothing (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+    artefacts = Path(backend.artefact_dir)
+
+    def _dies_at_fasm2frames(cmd, **kwargs):
+        if os.path.basename(cmd[0]) == "fasm2frames":
+            return ManagedProcessResult(returncode=1)
+        return _fake_pipeline()(cmd, **kwargs)
+
+    _mock_toolchain(monkeypatch, _dies_at_fasm2frames)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "fasm2frames exited with code 1" in res.results["desc"]
+    # yosys and nextpnr had already published these.
+    assert not (artefacts / "demo_top.json").exists()
+    assert not (artefacts / "demo_top.fasm").exists()
+    assert not (artefacts / "demo_top.bit").exists()
+
+
+def test_openxc7_clear_spares_a_co_named_tests_build_stamp(tmp_path, monkeypatch):
+    """An unshared simulator build writes `rb-compile-stamp.json` straight
+    into `artefacts/<test>/`, so a co-named FPGA run's `.json` clear would
+    silently invalidate the build cache and force a recompile (#469)."""
+    from rtl_buddy.tools.artifact_paths import SHARED_BUILD_STAMP_NAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    stamp = Path(backend.artefact_dir) / SHARED_BUILD_STAMP_NAME
+    stamp.write_text('{"compile_key": "abc123"}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert stamp.read_text() == '{"compile_key": "abc123"}'
+
+
+def test_openxc7_clear_spares_a_co_named_graph_build(tmp_path, monkeypatch):
+    """`rb graph` writes `graph.json`, `graph-meta.json` and the results
+    overlay directly into `artefacts/graph/`, so an FPGA run named `graph`
+    shares the directory and the `.json` suffix clear would take all three
+    (#469)."""
+    from rtl_buddy.graph.config_tier import GRAPH_JSON_NAME, GRAPH_META_NAME
+    from rtl_buddy.graph.results import RESULTS_OVERLAY_NAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    graph_outputs = {
+        GRAPH_JSON_NAME: '{"schema_version": 1, "nodes": []}',
+        GRAPH_META_NAME: '{"fingerprint": "abc123"}',
+        RESULTS_OVERLAY_NAME: '{"results": {}}',
+    }
+    for name, body in graph_outputs.items():
+        (artefacts / name).write_text(body)
+    stale_netlist = artefacts / "old_top.json"
+    stale_netlist.write_text('{"stale": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name, body in graph_outputs.items():
+        assert (artefacts / name).read_text() == body, name
+    assert not stale_netlist.exists()
+
+
+def test_openxc7_clear_spares_a_co_named_cov_and_xplr_output(tmp_path, monkeypatch):
+    """Same for `rb cov`'s manifest and model, which sit directly in a
+    user-named coverage directory (#469)."""
+    from rtl_buddy.cov.manifest import MANIFEST_FILENAME
+    from rtl_buddy.cov.model import MODEL_FILENAME
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+    for name in (MANIFEST_FILENAME, MODEL_FILENAME):
+        (artefacts / name).write_text('{"kept": true}')
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    for name in (MANIFEST_FILENAME, MODEL_FILENAME):
+        assert (artefacts / name).exists(), name
+
+
+def test_openxc7_clears_its_own_netlist_when_the_top_collides(tmp_path, monkeypatch):
+    """A design topped `graph` writes `graph.json`, which is `rb graph`'s
+    protected name. If the flow cannot clear its own netlist, a Yosys run
+    that exits 0 without writing hands the *previous* run's JSON to nextpnr
+    and the run reports success against a design it never synthesised
+    (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "graph")
+
+    artefacts = Path(backend.artefact_dir)
+    stale_netlist = artefacts / "graph.json"
+    stale_netlist.write_text('{"from": "a previous run"}')
+
+    seen: dict[str, bool] = {}
+
+    def _yosys_writes_nothing(cmd, **kwargs):
+        exe = os.path.basename(cmd[0])
+        if exe == "yosys":
+            # Exits 0 with a clean log, but produces no netlist.
+            kwargs["stdout"].write(_fixture("yosys_openxc7.log"))
+            return ManagedProcessResult(returncode=0)
+        if exe == "nextpnr-xilinx":
+            seen["netlist_present"] = (artefacts / "graph.json").exists()
+            kwargs["stdout"].write(_fixture("nextpnr_xilinx_pass.log"))
+            (artefacts / "graph.fasm").write_text("# fasm\n")
+        return ManagedProcessResult(returncode=0)
+
+    _mock_toolchain(monkeypatch, _yosys_writes_nothing)
+    backend.run()
+
+    # nextpnr must not have been handed the previous run's netlist.
+    assert seen["netlist_present"] is False
+
+
+def test_openxc7_stage_failure_clears_a_colliding_top_netlist(tmp_path, monkeypatch):
+    """And the failure path clears it too — a FAIL publishes nothing, even
+    when the netlist's name belongs to a sibling command (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "manifest")
+    monkeypatch.setenv("PRJXRAY_DB_DIR", "/opt/prjxray-db")
+    artefacts = Path(backend.artefact_dir)
+
+    def _dies_at_fasm2frames(cmd, **kwargs):
+        exe = os.path.basename(cmd[0])
+        if exe == "fasm2frames":
+            return ManagedProcessResult(returncode=1)
+        if exe == "yosys":
+            kwargs["stdout"].write(_fixture("yosys_openxc7.log"))
+            (artefacts / "manifest.json").write_text("{}")
+            return ManagedProcessResult(returncode=0)
+        if exe == "nextpnr-xilinx":
+            kwargs["stdout"].write(_fixture("nextpnr_xilinx_pass.log"))
+            (artefacts / "manifest.fasm").write_text("# fasm\n")
+        return ManagedProcessResult(returncode=0)
+
+    _mock_toolchain(monkeypatch, _dies_at_fasm2frames)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert not (artefacts / "manifest.json").exists()
+    assert not (artefacts / "manifest.fasm").exists()
+
+
+def test_openxc7_clears_a_renamed_tops_protected_netlist(tmp_path, monkeypatch):
+    """Ownership is durable. A run topped `graph` claims `graph.json`; after
+    the top is renamed, `own` names only the new top and `graph.json` matches
+    `rb graph`'s protected name again — without the ledger it would survive
+    every clear from then on (#469)."""
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    def _pipeline(top):
+        def _run(cmd, **kwargs):
+            exe = os.path.basename(cmd[0])
+            if exe == "yosys":
+                kwargs["stdout"].write(_fixture("yosys_openxc7.log"))
+                (artefacts / f"{top}.json").write_text("{}")
+                return ManagedProcessResult(returncode=0)
+            if exe == "nextpnr-xilinx":
+                kwargs["stdout"].write(_fixture("nextpnr_xilinx_pass.log"))
+                (artefacts / f"{top}.fasm").write_text("# fasm\n")
+            return ManagedProcessResult(returncode=0)
+
+        return _run
+
+    # Run 1: top is `graph`, which is also `rb graph`'s protected basename.
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "graph")
+    _mock_toolchain(monkeypatch, _pipeline("graph"))
+    assert isinstance(backend.run(), FpgaPassResults)
+    assert (artefacts / "graph.json").exists()
+
+    # Run 2: the top is renamed. The previous top's netlist is this flow's
+    # output, not a sibling's, and must go.
+    monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "other_top")
+    _mock_toolchain(monkeypatch, _pipeline("other_top"))
+    assert isinstance(backend.run(), FpgaPassResults)
+
+    assert not (artefacts / "graph.json").exists()
+    assert not (artefacts / "graph.fasm").exists()
+    assert (artefacts / "other_top.json").exists()
+
+
+def test_openxc7_does_not_inherit_a_co_named_pnr_runs_claim(tmp_path, monkeypatch):
+    """A P&R run and an FPGA run sharing a name share `artefacts/<name>/` and
+    therefore one ledger. A claim bypasses the suffix filter, so inheriting
+    P&R's would delete its routed database outright even though
+    `.routed.odb` is none of the FPGA suffixes (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    backend = _make_backend(
+        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    # The co-named P&R run claims and writes its outputs here first.
+    clear_managed_outputs(
+        artefacts,
+        (".def", ".routed.odb"),
+        owner="demo_fpga",
+        own=["demo_top.def", "demo_top.routed.odb"],
+        own_flow="pnr-openroad",
+    )
+    odb = artefacts / "demo_top.routed.odb"
+    odb.write_bytes(b"the P&R run's routed database")
+
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert odb.exists(), "the FPGA run inherited the P&R run's claim"

@@ -7,6 +7,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
 from ..config.synth import (
     SynthConfig,
@@ -369,6 +370,50 @@ class YosysSynth:
             f.write(script)
         return script_path
 
+    def _clear_stale_netlists(self) -> None:
+        """Drop the previous run's netlists. The FIRST thing `run` does.
+
+        `synth_netlist.v` / `synth.rtlil` are this flow's real product and the
+        fixed-path *inputs* `rb pnr` (`_resolve_netlist_path`) and `rb power`
+        (`_resolve_inputs`) resolve, guarded by `isfile` alone. Any exit from
+        `run` that leaves the last successful run's netlist behind — a
+        filelist error, a missing tool, a gate that returns before yosys — has
+        those commands place, route and power-analyse a design the RTL no
+        longer describes (#469). Nothing before this point may return, so the
+        clear runs ahead of every validation rather than after it.
+
+        Both spellings go: which one the script writes depends on whether a
+        Liberty resolved, and that can change between runs. The log is
+        truncated by the `open(..., "w")` that captures the run.
+        """
+        stale = clear_stale_artefacts(
+            [self._netlist_path(mapped=True), self._netlist_path()],
+            owner=self.synth_cfg.get_name(),
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.stale_artefacts_removed",
+                synth=self.synth_cfg.get_name(),
+                paths=stale,
+            )
+
+    def _fail_after_yosys(self, desc: str) -> SynthFailResults:
+        """Fail a run that has already invoked Yosys, publishing no netlist.
+
+        Yosys writes `synth_netlist.v` / `synth.rtlil` partway through its
+        script and only then runs the trailing `stat`, so it can crash — or
+        log an `ERROR:` line — with the netlist already on disk. Returning a
+        FAIL and leaving it there hands `rb pnr` and `rb power` a design at
+        exactly the fixed path they resolve, from a synthesis that failed
+        (#469). Every post-Yosys failure return goes through here so the two
+        halves cannot drift apart, and so a new failure gate added to this
+        method inherits the cleanup by using it.
+        """
+        self._clear_stale_netlists()
+        return SynthFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> SynthResults:
         log_event(
             logger,
@@ -378,6 +423,8 @@ class YosysSynth:
             tool=self.tool_cfg.get_executable(),
             top=self.synth_cfg.get_top(),
         )
+
+        self._clear_stale_netlists()
 
         try:
             fl_path = self._write_filelist()
@@ -423,10 +470,7 @@ class YosysSynth:
                 returncode=result.returncode,
                 log=log_path,
             )
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc=f"Tool exited with code {result.returncode}",
-            )
+            return self._fail_after_yosys(f"Tool exited with code {result.returncode}")
 
         try:
             with open(log_path, "r") as f:
@@ -444,9 +488,8 @@ class YosysSynth:
                 count=len(error_lines),
                 log=log_path,
             )
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in synthesis log",
+            return self._fail_after_yosys(
+                f"{len(error_lines)} ERROR(s) in synthesis log"
             )
 
         area_um2 = self._parse_area_um2(log_text)

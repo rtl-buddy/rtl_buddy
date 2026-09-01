@@ -617,3 +617,13 @@ def test_tb_rooted_aliases_still_win(tmp_path: Path):
     )
     assert resolver.view_to_wave("tb_top.u_dut") == "tb_top.legacy_dut"
     assert resolver.wave_to_view("tb_top.legacy_dut") == "tb_top.u_dut"
+
+
+def test_view_model_from_dict_rejects_a_non_object_top_level():
+    """A `view.json` whose top level is a list parses as valid JSON and then
+    raised `AttributeError` on `.get` — not the `ResolverError` the caller
+    handles, so a hub request died on it instead of degrading (#469)."""
+    from rtl_buddy.hub.resolver import ResolverError, ViewModel
+
+    with pytest.raises(ResolverError, match="not an object"):
+        ViewModel.from_dict([])

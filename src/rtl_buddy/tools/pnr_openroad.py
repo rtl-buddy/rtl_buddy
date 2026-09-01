@@ -11,10 +11,62 @@ logger = logging.getLogger(__name__)
 from ..config.pnr import PnrConfig
 from ..logging_utils import log_event, task_status
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
+from .artifact_paths import clear_managed_outputs, clear_stale_artefacts
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
+
+# Every non-log file `flow.tcl.template` writes under `$OUT_DIR`, as
+# `{design}`-templated basenames. Kept here rather than spelled out at the
+# call site so the clear list cannot drift away from the template — the
+# `.log` targets are deliberately absent (a log is the one artefact worth
+# keeping when the tool dies early), and `test_pnr.py` asserts this tuple
+# still covers every non-log write target the template contains.
+_FLOW_OUTPUT_NAMES = (
+    "route.drc.rpt",
+    "timing.rpt",
+    "{design}.def",
+    "{design}.routed.v",
+    "{design}.routed.sdc",
+    "{design}.routed.odb",
+)
+
+# KLayout's streamout / render outputs. Written after the OpenROAD run, but
+# cleared with it: a rerun that dies inside OpenROAD — or one on a host with
+# no KLayout — never reaches the helpers below, so an old layout would
+# otherwise survive a run that produced no layout at all.
+_KLAYOUT_OUTPUT_NAMES = ("{design}.gds", "{design}.png")
+
+# The same outputs as a suffix set. The design-named ones are cleared by
+# suffix rather than by name so the clear does not depend on resolving the
+# synth back-reference that supplies `{design}` — and so that editing a run's
+# design leaves nothing of the previous one behind. Safe because an artefact
+# directory belongs to exactly one pnr run; the KLayout helper scripts it also
+# holds are `.py`, and the logs are deliberately absent from this set.
+_MANAGED_OUTPUT_SUFFIXES = (
+    ".def",
+    ".routed.v",
+    ".routed.sdc",
+    ".routed.odb",
+    ".gds",
+    ".png",
+)
+
+# Outputs whose names carry no design, cleared by exact name.
+_FIXED_OUTPUT_NAMES = tuple(
+    name for name in _FLOW_OUTPUT_NAMES if "{design}" not in name
+)
+
+
+def run_output_paths(artefact_dir: str, design: str) -> list[str]:
+    """Absolute paths of every non-log artefact one pnr run produces."""
+    return [
+        os.path.join(artefact_dir, name.format(design=design))
+        for name in _FLOW_OUTPUT_NAMES + _KLAYOUT_OUTPUT_NAMES
+    ]
+
+
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
 
 # Minimum OpenROAD release we test against. Older builds may still work for
@@ -230,8 +282,11 @@ class OpenRoadPnr:
             return False
         return f"RB_HAS_CMD:{command}:yes" in (r.stdout or "")
 
+    def _drc_report_path(self) -> str:
+        return os.path.join(self.artefact_dir, "route.drc.rpt")
+
     def _count_drcs(self) -> int:
-        drc_path = os.path.join(self.artefact_dir, "route.drc.rpt")
+        drc_path = self._drc_report_path()
         if not os.path.isfile(drc_path):
             return 0
         try:
@@ -302,6 +357,10 @@ class OpenRoadPnr:
             script,
         ]
         log_path = os.path.join(self.artefact_dir, "klayout.def2stream.log")
+        # Streamout is judged purely by "did a non-empty GDS appear", so a
+        # previous run's GDS would mask a failure here and then be rendered
+        # and reported as this run's layout (#469).
+        clear_stale_artefacts([out_gds], owner=self.pnr_cfg.get_name())
         with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout gds]"):
             r = subprocess.run(cmd, capture_output=True, text=True, check=False)
         Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
@@ -321,6 +380,10 @@ class OpenRoadPnr:
                 returncode=r.returncode,
                 log=log_path,
             )
+            # A zero-length GDS is what the size check above rejects, and it
+            # is still a file: leaving it means the next run's `isfile` sees
+            # a layout where none was produced (#469).
+            clear_stale_artefacts([out_gds], owner=self.pnr_cfg.get_name())
             return None
         if r.returncode != 0:
             log_event(
@@ -358,6 +421,7 @@ class OpenRoadPnr:
             script,
         ]
         log_path = os.path.join(self.artefact_dir, "klayout.gds2png.log")
+        clear_stale_artefacts([out_png], owner=self.pnr_cfg.get_name())
         with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout png]"):
             r = subprocess.run(cmd, capture_output=True, text=True, check=False)
         Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
@@ -370,12 +434,82 @@ class OpenRoadPnr:
                 returncode=r.returncode,
                 log=log_path,
             )
+            # KLayout can render part of the image and then fail; a partial
+            # PNG left here is reported as this run's layout by the next one.
+            clear_stale_artefacts([out_png], owner=self.pnr_cfg.get_name())
             return None
         return out_png
 
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
+
+    def _clear_stale_outputs(self) -> None:
+        """Drop the previous run's outputs. The FIRST thing `run` does.
+
+        `_count_drcs` reads the routing DRC report off a fixed path and scores
+        a *missing* file as zero violations, the DEF and ODB are handed on to
+        KLayout streamout and to `rb power`, and the GDS / PNG are judged
+        purely by "did a file appear". Every one of those is consumed after
+        the fact, several of them by a *later command*, so every exit from
+        `run` has to leave them absent — including the "openroad not found"
+        and platform/template failures, which return before the tool is
+        reached (#469). The logs are left to OpenROAD's own `-log`, which
+        truncates them.
+
+        The design-named outputs go by *suffix*. Naming them needs the synth
+        back-reference, and resolving that here either preempts the error
+        messages the run would otherwise give (when it is broken) or leaves
+        `<top>.routed.odb` behind for `rb power` to accept by existence.
+        Matching on the suffix also means editing a run's design does not
+        strand the previous design's ODB in the same directory.
+        """
+        stale = clear_stale_artefacts(
+            [os.path.join(self.artefact_dir, name) for name in _FIXED_OUTPUT_NAMES],
+            owner=self.pnr_cfg.get_name(),
+        )
+        # This run's own design-named outputs, cleared whatever they are
+        # called — a design that collides with a sibling's protected name
+        # must not be able to stop the flow clearing its own files (#469).
+        # The design may be unresolvable here; `own` is simply empty then,
+        # and the suffix match still covers the ordinary case.
+        own: list[str] = []
+        try:
+            design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        except Exception:
+            pass
+        else:
+            own = [f"{design}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES]
+        stale += clear_managed_outputs(
+            self.artefact_dir,
+            _MANAGED_OUTPUT_SUFFIXES,
+            owner=self.pnr_cfg.get_name(),
+            own=own,
+            own_flow="pnr-openroad",
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "pnr.stale_artefacts_removed",
+                pnr=self.pnr_cfg.get_name(),
+                paths=stale,
+            )
+
+    def _fail_after_openroad(self, desc: str) -> PnrFailResults:
+        """Fail a run that has already invoked OpenROAD, publishing nothing.
+
+        The flow's `write_def` / `write_verilog` / `write_sdc` / `write_db`
+        all run before the script ends, so OpenROAD can be killed — or exit
+        non-zero, or log an `[ERROR ...]` line — with a complete or partial
+        `<top>.routed.odb` on disk. `rb power` resolves that ODB by path and
+        accepts it by existence, so returning a FAIL and leaving it there
+        hands the next command a database this run never stood behind
+        (#469). Every post-OpenROAD failure return goes through here, so a
+        new failure gate added to `run` inherits the cleanup by using it.
+        """
+        self._clear_stale_outputs()
+        return PnrFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> PnrResults:
         log_event(
@@ -385,6 +519,8 @@ class OpenRoadPnr:
             pnr=self.pnr_cfg.get_name(),
             tool=self.openroad_executable,
         )
+
+        self._clear_stale_outputs()
 
         if not shutil.which(self.openroad_executable):
             log_event(
@@ -478,9 +614,8 @@ class OpenRoadPnr:
                 returncode=result.returncode,
                 log=log_path,
             )
-            return PnrFailResults(
-                name=self.name + "/results",
-                desc=f"OpenROAD exited with code {result.returncode}",
+            return self._fail_after_openroad(
+                f"OpenROAD exited with code {result.returncode}"
             )
 
         try:
@@ -490,9 +625,8 @@ class OpenRoadPnr:
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:
-            return PnrFailResults(
-                name=self.name + "/results",
-                desc=f"{len(error_lines)} ERROR(s) in OpenROAD log",
+            return self._fail_after_openroad(
+                f"{len(error_lines)} ERROR(s) in OpenROAD log"
             )
 
         area = self._parse_area_um2(log_text)

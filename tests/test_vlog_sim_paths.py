@@ -12,6 +12,7 @@ from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.seed_mode import SeedMode
 from rtl_buddy.tools.artifact_paths import (
+    clear_stale_artefacts,
     sanitize_artifact_component,
     test_artifact_dir,
     test_build_dir_name,
@@ -894,3 +895,443 @@ def test_license_marker_helpers_share_one_implementation():
     for text in ("Parsing design file", "", "...."):
         assert not vcs_license.has_license_queue_marker(text)
         assert not vcs_license._is_marker_line(text)
+
+
+# ---------------------------------------------------------------------------
+# clear_stale_artefacts (#469)
+# ---------------------------------------------------------------------------
+
+
+def test_clear_stale_artefacts_removes_only_what_exists(tmp_path):
+    present = tmp_path / "report.json"
+    present.write_text("{}")
+    absent = tmp_path / "never_written.json"
+
+    removed = clear_stale_artefacts([present, absent, None], owner="demo")
+
+    assert removed == [str(present)]
+    assert not present.exists()
+
+
+def test_clear_stale_artefacts_fails_loudly_when_removal_fails(tmp_path):
+    """An artefact we cannot delete would silently mask the run, so refuse to
+    run rather than risk reporting a previous run's numbers."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    # A directory at the artefact's path: unlink() raises, and no flow
+    # writes a directory there, so this stands in for any undeletable file.
+    blocked = tmp_path / "report.json"
+    blocked.mkdir()
+
+    with pytest.raises(FatalRtlBuddyError, match="could not remove"):
+        clear_stale_artefacts([blocked], owner="demo")
+
+
+def test_clear_managed_outputs_matches_by_suffix_only(tmp_path):
+    """Suffix matching is what makes the clear independent of the design's
+    top; everything else in the artefact dir must survive (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "old_top.bit").write_bytes(b"\x00")
+    (tmp_path / "new_top.bit").write_bytes(b"\x00")
+    (tmp_path / "fpga.f").write_text("-v a.sv\n")
+    (tmp_path / "yosys.log").write_text("log\n")
+    nested = tmp_path / "sby_workdir"
+    nested.mkdir()
+    (nested / "inner.bit").write_bytes(b"\x00")
+
+    removed = clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+
+    assert sorted(os.path.basename(p) for p in removed) == [
+        "new_top.bit",
+        "old_top.bit",
+    ]
+    assert (tmp_path / "fpga.f").exists()
+    assert (tmp_path / "yosys.log").exists()
+    # Never recursive: a nested workdir a tool owns is left alone.
+    assert (nested / "inner.bit").exists()
+
+
+def test_clear_managed_outputs_honours_keep(tmp_path):
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "top.json").write_text("{}")
+    (tmp_path / "results.json").write_text("{}")
+
+    removed = clear_managed_outputs(
+        tmp_path, (".json",), owner="demo", keep=("results.json",)
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["top.json"]
+    assert (tmp_path / "results.json").exists()
+
+
+def test_clear_managed_outputs_missing_dir_is_not_an_error(tmp_path):
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    assert clear_managed_outputs(tmp_path / "never-made", (".bit",), owner="d") == []
+
+
+def test_clear_managed_outputs_directory_at_an_output_path_is_fatal(tmp_path):
+    """A directory sitting where an output belongs must not be silently
+    skipped: something has to be removed before the tool can write there, so
+    it takes the documented fatal path rather than being ignored (#469)."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    blocked = tmp_path / "top.bit"
+    blocked.mkdir()
+    (blocked / "inside.txt").write_text("not ours to delete\n")
+
+    with pytest.raises(FatalRtlBuddyError, match="could not remove"):
+        clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+
+    # Never recurses and never removes a tree — the user is told to deal with it.
+    assert blocked.is_dir()
+    assert (blocked / "inside.txt").exists()
+
+
+def test_clear_managed_outputs_removes_a_dangling_symlink(tmp_path):
+    """A broken symlink is not a file, but it *is* the stale artefact, and
+    unlinking it succeeds — so it is cleared rather than skipped (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    link = tmp_path / "top.bit"
+    link.symlink_to(tmp_path / "never-existed.bit")
+    assert link.is_symlink() and not link.is_file()
+
+    removed = clear_managed_outputs(tmp_path, (".bit",), owner="demo")
+
+    assert [os.path.basename(p) for p in removed] == ["top.bit"]
+    assert not link.is_symlink()
+
+
+def test_protected_names_are_outputs_a_flow_really_writes():
+    """Drift guard: every sibling name in the protected set has to be one a
+    flow actually writes into `artefacts/<name>/`, or the set is stale and
+    protecting nothing (#469)."""
+    from rtl_buddy.tools import vlog_sim as vlog_sim_mod
+    from rtl_buddy.tools.artifact_paths import (
+        SHARED_BUILD_STAMP_NAME,
+        SIBLING_OUTPUT_NAMES,
+    )
+
+    # Several of these are shared constants rather than literals in their
+    # writer — `artifact_paths` is the bottom of the import graph, so the
+    # owning module imports the name from here rather than the reverse.
+    # Check the *bindings* for those instead of grepping for the string.
+    from rtl_buddy.cov import manifest as cov_manifest, model as cov_model
+    from rtl_buddy.graph import config_tier, results as graph_results
+    from rtl_buddy.tools import artifact_paths as ap
+    from rtl_buddy.xplr import gitprov, ledger
+
+    rebound = {
+        vlog_sim_mod.SHARED_BUILD_STAMP_NAME: SHARED_BUILD_STAMP_NAME,
+        config_tier.GRAPH_JSON_NAME: ap.GRAPH_JSON_NAME,
+        config_tier.GRAPH_META_NAME: ap.GRAPH_META_NAME,
+        graph_results.RESULTS_OVERLAY_NAME: ap.RESULTS_OVERLAY_NAME,
+        cov_manifest.MANIFEST_FILENAME: ap.COV_MANIFEST_NAME,
+        cov_model.MODEL_FILENAME: ap.COV_MODEL_NAME,
+        ledger.RECORD_FILENAME: ap.XPLR_RECORD_NAME,
+        gitprov.WORKTREE_SIDECAR: ap.XPLR_WORKTREE_SIDECAR_NAME,
+    }
+    for writer_name, protected_name in rebound.items():
+        assert writer_name == protected_name
+
+    tools = Path(__file__).parent.parent / "src" / "rtl_buddy" / "tools"
+    sources = "\n".join(
+        (tools / name).read_text()
+        for name in (
+            "cdc_rtl_buddy.py",
+            "cdc_vivado.py",
+            "power_openroad.py",
+            "pnr_openroad.py",
+            "synth_yosys.py",
+            "synth_openroad.py",
+            "axi_profile_rtl_buddy.py",
+        )
+    )
+    # `cdc.json` / `cdc.txt` are built as f"cdc.{fmt}"; check the stem.
+    unwritten = [
+        name
+        for name in SIBLING_OUTPUT_NAMES
+        if name not in sources and not name.startswith("cdc.") and name not in rebound
+    ]
+    assert not unwritten, f"protected but written by nobody: {unwritten}"
+
+
+def test_a_suffix_clear_spares_every_protected_name_but_takes_its_own():
+    """The protected set must stop a flow eating a *sibling's* outputs without
+    stopping it clearing its own. Every flow that clears by suffix names its
+    outputs after the design's top, so none of them is a fixed name and none
+    can be protected by accident (#469)."""
+    import tempfile
+    from rtl_buddy.tools import fpga_openxc7, pnr_openroad
+    from rtl_buddy.tools.artifact_paths import (
+        PROTECTED_OUTPUT_PATTERNS,
+        clear_managed_outputs,
+    )
+
+    for suffixes in (
+        fpga_openxc7._MANAGED_OUTPUT_SUFFIXES,
+        pnr_openroad._MANAGED_OUTPUT_SUFFIXES,
+        (".bit",),
+    ):
+        d = Path(tempfile.mkdtemp())
+        protected = [n for n in PROTECTED_OUTPUT_PATTERNS if "*" not in n]
+        for name in protected:
+            (d / name).write_text("sibling output\n")
+        # The flow's own outputs, named after this run's top.
+        mine = [f"demo_top{suffix}" for suffix in suffixes]
+        for name in mine:
+            (d / name).write_text("mine\n")
+
+        clear_managed_outputs(d, suffixes, owner="demo")
+
+        for name in protected:
+            assert (d / name).exists(), f"{name} was eaten by a {suffixes} clear"
+        for name in mine:
+            assert not (d / name).exists(), f"{name} should have been cleared"
+
+
+def test_clear_managed_outputs_own_wins_over_the_protected_patterns(tmp_path):
+    """A flow always owns its own outputs, whatever they are called. A design
+    topped `graph` writes `graph.json`, which is a *sibling's* protected name
+    — without `own` the flow could not clear its own netlist (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    mine = tmp_path / "graph.json"  # this run's <top>.json netlist
+    mine.write_text('{"mine": true}')
+    theirs = tmp_path / "record.json"  # a sibling command's output
+    theirs.write_text('{"theirs": true}')
+
+    removed = clear_managed_outputs(
+        tmp_path, (".json",), owner="demo", own=["graph.json"]
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["graph.json"]
+    assert not mine.exists()
+    assert theirs.exists()
+
+
+def test_clear_managed_outputs_own_beats_keep_too(tmp_path):
+    """`own` is the caller asserting ownership, so it outranks `keep` as well
+    — otherwise the two could contradict each other silently (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "top.bit").write_bytes(b"\x00")
+
+    removed = clear_managed_outputs(
+        tmp_path, (".bit",), owner="demo", own=["top.bit"], keep=["top.bit"]
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["top.bit"]
+
+
+def test_clear_managed_outputs_own_clears_even_without_a_matching_suffix(tmp_path):
+    """`own` names files outright; it does not have to match the suffix list."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    (tmp_path / "odd_name.xyz").write_text("mine")
+
+    removed = clear_managed_outputs(
+        tmp_path, (".bit",), owner="demo", own=["odd_name.xyz"]
+    )
+
+    assert [os.path.basename(p) for p in removed] == ["odd_name.xyz"]
+
+
+def test_owned_ledger_round_trips(tmp_path):
+    """The ledger is how ownership survives a rename (#469)."""
+    from rtl_buddy.tools.artifact_paths import (
+        OWNED_LEDGER_NAME,
+        read_owned_ledger,
+        write_owned_ledger,
+    )
+
+    assert read_owned_ledger(tmp_path, "demo-flow") == set()
+
+    write_owned_ledger(tmp_path, "demo-flow", ["b.json", "a.bit"])
+    assert read_owned_ledger(tmp_path, "demo-flow") == {"a.bit", "b.json"}
+    # Claims are per flow: another flow sees nothing of this one's.
+    assert read_owned_ledger(tmp_path, "other-flow") == set()
+
+    # Writing another flow's claim preserves the first.
+    write_owned_ledger(tmp_path, "other-flow", ["c.bit"])
+    assert read_owned_ledger(tmp_path, "demo-flow") == {"a.bit", "b.json"}
+    assert read_owned_ledger(tmp_path, "other-flow") == {"c.bit"}
+
+    # A dotfile with none of the managed suffixes, so no suffix clear can
+    # ever match it.
+    assert OWNED_LEDGER_NAME.startswith(".")
+
+
+def test_owned_ledger_missing_or_unreadable_is_an_empty_claim(tmp_path):
+    """A first run, or a directory written by an rtl_buddy that predates the
+    ledger, behaves exactly as before it existed (#469)."""
+    from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, read_owned_ledger
+
+    assert read_owned_ledger(tmp_path / "never-made", "demo-flow") == set()
+
+    # A directory where the file should be is unreadable, not fatal.
+    (tmp_path / OWNED_LEDGER_NAME).mkdir()
+    assert read_owned_ledger(tmp_path, "demo-flow") == set()
+
+
+def test_clear_managed_outputs_clears_a_renamed_tops_protected_output(tmp_path):
+    """Ownership is durable, not re-derived. A run topped `graph` claims
+    `graph.json`; after the top is renamed, `own` no longer names it and it
+    matches `rb graph`'s protected name again — the ledger is what keeps it
+    clearable (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    suffixes = (".json", ".bit")
+
+    # Run 1: top is `graph`, a protected basename.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["graph.json", "graph.bit"],
+        own_flow="demo-flow",
+    )
+    (tmp_path / "graph.json").write_text("run 1 netlist")
+
+    # Run 2: the top is renamed. The old netlist must still go.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["other.json", "other.bit"],
+        own_flow="demo-flow",
+    )
+
+    assert not (tmp_path / "graph.json").exists()
+
+
+def test_clear_managed_outputs_spares_a_sibling_dir_it_never_owned(tmp_path):
+    """The ledger distinguishes a previously-owned protected name from a
+    genuinely sibling-owned one: a directory this flow has never written has
+    no claim, so `rb graph`'s own output is untouched (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    theirs = tmp_path / "graph.json"
+    theirs.write_text("written by rb graph")
+
+    clear_managed_outputs(tmp_path, (".json",), owner="demo", own=["other.json"])
+
+    assert theirs.read_text() == "written by rb graph"
+
+
+def test_clear_managed_outputs_without_own_does_not_claim_the_directory(tmp_path):
+    """A caller that declares no ownership is not speaking for the directory,
+    so it must not write a claim (#469)."""
+    from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, clear_managed_outputs
+
+    clear_managed_outputs(tmp_path, (".bit",), owner="demo", own_flow="demo-flow")
+
+    assert not (tmp_path / OWNED_LEDGER_NAME).exists()
+
+
+def test_owned_ledger_claims_do_not_leak_between_flows(tmp_path):
+    """An artefact directory is keyed on a run's *name*, so a P&R run and an
+    FPGA run called the same thing share one ledger. A claim is always-clear
+    and bypasses the caller's suffix filter, so inheriting another flow's
+    claim would delete its outputs outright — P&R's `<design>.routed.odb` is
+    none of the FPGA suffixes, yet a flat ledger handed it straight to the
+    FPGA cleanup (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    pnr_suffixes = (".def", ".routed.odb")
+    fpga_suffixes = (".json", ".bit")
+
+    clear_managed_outputs(
+        tmp_path,
+        pnr_suffixes,
+        owner="shared_name",
+        own=[f"top{s}" for s in pnr_suffixes],
+        own_flow="pnr-openroad",
+    )
+    odb = tmp_path / "top.routed.odb"
+    odb.write_bytes(b"the P&R run's routed database")
+
+    # The FPGA flow clears next, in the same directory.
+    clear_managed_outputs(
+        tmp_path,
+        fpga_suffixes,
+        owner="shared_name",
+        own=[f"top{s}" for s in fpga_suffixes],
+        own_flow="fpga-openxc7",
+    )
+    assert odb.exists(), "the FPGA cleanup inherited P&R's claim"
+
+    # And the reverse: the FPGA bitstream survives a P&R clear.
+    bit = tmp_path / "top.bit"
+    bit.write_bytes(b"the FPGA run's bitstream")
+    clear_managed_outputs(
+        tmp_path,
+        pnr_suffixes,
+        owner="shared_name",
+        own=[f"top{s}" for s in pnr_suffixes],
+        own_flow="pnr-openroad",
+    )
+    assert bit.exists(), "the P&R cleanup inherited the FPGA claim"
+
+
+def test_owned_ledger_ignores_the_pre_namespace_flat_format(tmp_path):
+    """The flat list this ledger briefly used was never released. It is
+    ignored rather than migrated: guessing which flow those names belonged to
+    is exactly the mistake being fixed (#469)."""
+    from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, read_owned_ledger
+
+    (tmp_path / OWNED_LEDGER_NAME).write_text("# old format\ngraph.json\ngraph.bit\n")
+
+    assert read_owned_ledger(tmp_path, "fpga-openxc7") == set()
+    assert read_owned_ledger(tmp_path, "pnr-openroad") == set()
+
+
+def test_owned_ledger_retires_a_claim_once_the_leftover_is_cleared(tmp_path):
+    """A claim is a one-shot licence to clear, not a permanent title. An FPGA
+    run once topped `graph` must be able to clear the `graph.json` it left
+    behind — but once that is done the name is retired, so the file `rb graph`
+    later writes at its own protected path is not treated as this flow's
+    history and deleted (#469)."""
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs, read_owned_ledger
+
+    suffixes = (".json", ".bit")
+
+    # Run 1: topped `graph`, which is also `rb graph`'s protected basename.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["graph.json", "graph.bit"],
+        own_flow="fpga-openxc7",
+    )
+    (tmp_path / "graph.json").write_text("the FPGA run's netlist")
+
+    # Run 2: renamed. The leftover is this flow's, and goes.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["other.json", "other.bit"],
+        own_flow="fpga-openxc7",
+    )
+    assert not (tmp_path / "graph.json").exists()
+    # ...and the claim on it is retired, not carried forward.
+    assert read_owned_ledger(tmp_path, "fpga-openxc7") == {"other.json", "other.bit"}
+
+    # `rb graph` now writes its own protected file at that path.
+    theirs = tmp_path / "graph.json"
+    theirs.write_text("written by rb graph")
+
+    # Run 3: the FPGA flow must not take it.
+    clear_managed_outputs(
+        tmp_path,
+        suffixes,
+        owner="demo",
+        own=["other.json", "other.bit"],
+        own_flow="fpga-openxc7",
+    )
+    assert theirs.read_text() == "written by rb graph"

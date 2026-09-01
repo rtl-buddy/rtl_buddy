@@ -33,7 +33,13 @@ from .schema import ExperimentRecord, dumps_record, loads_record
 logger = logging.getLogger(__name__)
 
 LEDGER_DIRNAME = "xplr"
-RECORD_FILENAME = "record.json"
+# Defined in `tools.artifact_paths` — the bottom of the import graph, and
+# where the artefact-clearing helpers protect it from a co-named run's
+# suffix clear (#469). Re-exported here, where consumers already look.
+from ..tools.artifact_paths import (  # noqa: E402
+    XPLR_RECORD_NAME as RECORD_FILENAME,
+)
+
 # Non-experiment dirs that legitimately live under the ledger root: the
 # default cfg-xplr worktree-root is artefacts/xplr/worktrees/ (P2).
 RESERVED_DIRNAMES = ("worktrees",)

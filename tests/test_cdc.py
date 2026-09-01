@@ -376,7 +376,24 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _setup_lint_run(tmp_path, frontend=None, single_unit=False, blackbox=None):
+@pytest.fixture(autouse=True)
+def _analyzer_on_path(monkeypatch):
+    """Pretend rtl-buddy-cdc is installed.
+
+    `RtlBuddyCdc.run` skips when the analyzer is not on PATH (#469), and
+    rtl_buddy does not depend on it — so without this the argv tests below
+    would pass on a developer box that happens to have it and skip-and-fail
+    in CI. Tests that care about the analyzer being absent re-patch `which`
+    themselves; the later `setattr` wins.
+    """
+    from rtl_buddy.tools import cdc_rtl_buddy as _mod
+
+    monkeypatch.setattr(_mod.shutil, "which", lambda name: f"/fake/bin/{name}")
+
+
+def _setup_lint_run(
+    tmp_path, frontend=None, single_unit=False, blackbox=None, emit_maps=False
+):
     """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
     build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
 
@@ -420,7 +437,11 @@ def _setup_lint_run(tmp_path, frontend=None, single_unit=False, blackbox=None):
     )
 
     wrapper = RtlBuddyCdc(
-        name="t", cdc_cfg=cdc_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+        name="t",
+        cdc_cfg=cdc_cfg,
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        emit_maps=emit_maps,
     )
     json_report = Path(wrapper.artefact_dir) / "cdc.json"
 
@@ -671,3 +692,327 @@ def test_cdc_suite_config_loads_xfail_flags(tmp_path):
     assert cfg.get_analyses("cdc_xfail_strict")[0].is_xfail() is True
     assert cfg.get_analyses("cdc_xfail_strict")[0].get_xfail_strict() is True
     assert cfg.get_analyses("cdc_normal")[0].is_xfail() is False
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — stale-report masking (#469)
+# ---------------------------------------------------------------------------
+
+
+def test_lint_stale_json_report_is_not_reported_as_this_run(tmp_path, monkeypatch):
+    """A crash that exits 1 without writing a report must not resurrect the
+    previous run's cdc.json (#469).
+
+    Exit code 1 is the analyzer's "rule violations found" code, so a crash
+    that happens to exit 1 passes the returncode gate. Before the fix the
+    stale report left in the artefact dir was parsed and its counts were
+    reported as the current result.
+    """
+    wrapper, calls, _fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    stale = Path(wrapper.artefact_dir) / "cdc.json"
+    stale.write_text('{"summary": {"violations": 31, "crossings": 49}}')
+    stale_txt = Path(wrapper.artefact_dir) / "cdc.txt"
+    stale_txt.write_text("31 violations from a previous, unrelated run\n")
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    def _crash(cmd, stdout, stderr, **kwargs):
+        # Exits with the "violations found" code but writes no report.
+        return ManagedProcessResult(returncode=1)
+
+    monkeypatch.setattr(mod, "run_managed_process", _crash)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert "no JSON report produced" in res.results["desc"]
+    assert res.is_pass() is False
+    assert not stale.exists()
+    assert not stale_txt.exists()
+
+
+def test_lint_stale_domain_maps_are_cleared_when_emitting(tmp_path, monkeypatch):
+    """`--emit-constraints` reads domain_map.json / reset_map.json back off
+    disk; a crashed run must not hand it the previous run's maps (#469)."""
+    wrapper, calls, _fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+    reset_map = Path(wrapper.artefact_dir) / "reset_map.json"
+    domain_map.write_text('{"clocks": {"stale_clk": []}}')
+    reset_map.write_text('{"resets": {"stale_rst": []}}')
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    def _crash(cmd, stdout, stderr, **kwargs):
+        return ManagedProcessResult(returncode=2)
+
+    monkeypatch.setattr(mod, "run_managed_process", _crash)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert not domain_map.exists()
+    assert not reset_map.exists()
+    assert wrapper.read_emitted_maps() == (None, None)
+    assert wrapper.read_report() == {}
+
+
+def test_lint_fresh_report_from_this_run_is_still_consumed(tmp_path, monkeypatch):
+    """The pre-run cleanup must not break the happy path: a report the
+    current invocation writes is parsed normally (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    stale = Path(wrapper.artefact_dir) / "cdc.json"
+    stale.write_text('{"summary": {"violations": 31, "crossings": 49}}')
+
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert res.is_pass()
+
+
+def test_lint_missing_analyzer_skips_and_keeps_the_previous_reports(
+    tmp_path, monkeypatch
+):
+    """A box without rtl-buddy-cdc never ran it, so it must not delete the
+    reports a box that has it produced — the same carve-out the Vivado
+    backend has, and what the docs promise (#469)."""
+    from rtl_buddy.runner.cdc_results import CdcSkipResults
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    kept = Path(wrapper.artefact_dir) / "cdc.json"
+    kept.write_text('{"summary": {"violations": 3}}')
+    kept_txt = Path(wrapper.artefact_dir) / "cdc.txt"
+    kept_txt.write_text("3 violations from the box that has the analyzer\n")
+
+    res = wrapper.run()
+
+    assert isinstance(res, CdcSkipResults)
+    assert "not found" in res.results["desc"]
+    assert "tool-check" in res.results["desc"]
+    # Nothing was run, so nothing is deleted.
+    assert calls == []
+    assert kept.exists()
+    assert kept_txt.exists()
+
+
+def test_lint_config_error_beats_the_missing_analyzer_skip(tmp_path, monkeypatch):
+    """A broken analysis is broken on every machine. Reporting it as "analyzer
+    not installed" on a box that merely lacks the tool would send the user
+    after the wrong problem, so the config validation runs first (#469)."""
+    import os
+
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+
+    # The analysis names an SDC that does not exist.
+    os.unlink(wrapper.cdc_cfg.get_constraints())
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        wrapper.run()
+
+
+def test_lint_missing_analyzer_skip_still_fires_for_a_valid_analysis(
+    tmp_path, monkeypatch
+):
+    """The reorder must not cost the skip: a well-configured analysis on a box
+    without the analyzer still skips with its reports intact (#469)."""
+    from rtl_buddy.runner.cdc_results import CdcSkipResults
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+
+    kept = Path(wrapper.artefact_dir) / "cdc.json"
+    kept.write_text('{"summary": {"violations": 3}}')
+
+    res = wrapper.run()
+
+    assert isinstance(res, CdcSkipResults)
+    assert kept.exists()
+
+
+def test_lint_config_failure_clears_the_previous_reports(tmp_path, monkeypatch):
+    """A config error is a failed run, so it must not leave the previous
+    run's reports to be read as this one's (#469)."""
+    import os
+
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    stale = Path(wrapper.artefact_dir) / "cdc.json"
+    stale.write_text('{"summary": {"violations": 31}}')
+    os.unlink(wrapper.cdc_cfg.get_constraints())
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        wrapper.run()
+
+    assert not stale.exists()
+
+
+def test_lint_clears_maps_even_when_not_emitting_them(tmp_path, monkeypatch):
+    """`--emit-constraints` / `--check-xdc` read the maps back off a fixed
+    path, so an ordinary run must not leave an earlier constraint-generation
+    run's maps for them to answer from (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=False)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+    reset_map = Path(wrapper.artefact_dir) / "reset_map.json"
+    domain_map.write_text('{"clocks": ["from an --emit-constraints run"]}')
+    reset_map.write_text('{"reset_synchronizers": []}')
+
+    wrapper.run()
+
+    assert not domain_map.exists()
+    assert not reset_map.exists()
+    assert wrapper.read_emitted_maps() == (None, None)
+
+
+def test_lint_analyzer_writes_then_fails_publishes_nothing(tmp_path, monkeypatch):
+    """The analyzer writes its report before it finishes, so an unsupported
+    exit code can arrive with a report on disk. A FAIL publishes nothing, or
+    `read_report` hands the CLI a report the run disowned (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+
+    def _writes_then_dies(cmd, stdout, stderr, **kwargs):
+        report.write_text('{"summary": {"violations": 7}}')
+        domain_map.write_text('{"clocks": []}')
+        return ManagedProcessResult(returncode=2)
+
+    monkeypatch.setattr(mod, "run_managed_process", _writes_then_dies)
+
+    res = wrapper.run()
+
+    assert res.results["violations"] == 0
+    assert "exited with code 2" in res.results["desc"]
+    assert not report.exists()
+    assert not domain_map.exists()
+    assert wrapper.read_report() == {}
+
+
+def test_lint_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
+    """Same for a report the wrapper cannot parse (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+
+    def _writes_garbage(cmd, stdout, stderr, **kwargs):
+        report.write_text("{ not json")
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(mod, "run_managed_process", _writes_garbage)
+
+    res = wrapper.run()
+
+    assert "could not parse JSON report" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_lint_filelist_error_clears_the_previous_reports(tmp_path, monkeypatch):
+    """`_write_filelist` raises `FilelistError`, a *sibling* of
+    `FatalRtlBuddyError` under `RtlBuddyError` rather than a subclass. A
+    rerun after a source file disappears must still publish nothing (#469)."""
+    import os
+
+    from rtl_buddy.errors import FatalRtlBuddyError, FilelistError, RtlBuddyError
+
+    # Guard the premise: catching FatalRtlBuddyError alone would miss this.
+    assert not issubclass(FilelistError, FatalRtlBuddyError)
+    assert issubclass(FilelistError, RtlBuddyError)
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+
+    # What a previously successful analysis left behind.
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+    report.write_text('{"summary": {"violations": 31, "crossings": 49}}')
+    text = Path(wrapper.artefact_dir) / "cdc.txt"
+    text.write_text("31 violations\n")
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+    domain_map.write_text('{"clocks": ["clk_a"]}')
+    reset_map = Path(wrapper.artefact_dir) / "reset_map.json"
+    reset_map.write_text('{"reset_synchronizers": []}')
+
+    # The source named by the model is gone.
+    os.unlink(tmp_path / "top.sv")
+
+    with pytest.raises(RtlBuddyError):
+        wrapper.run()
+
+    assert not report.exists()
+    assert not text.exists()
+    assert not domain_map.exists()
+    assert not reset_map.exists()
+    assert wrapper.read_report() == {}
+    assert wrapper.read_emitted_maps() == (None, None)
+
+
+@pytest.mark.parametrize(
+    "payload, why",
+    [
+        ('[{"summary": {"violations": 0}}]', "top-level list"),
+        ('{"summary": []}', "summary is a list"),
+        ('{"summary": {"violations": "many"}}', "non-numeric violations"),
+        ('{"summary": {"violations": 0, "crossings": {}}}', "non-numeric crossings"),
+        ('"just a string"', "top-level string"),
+    ],
+)
+def test_lint_structurally_bad_report_publishes_nothing(
+    tmp_path, monkeypatch, payload, why
+):
+    """`json.loads` succeeding only says the bytes were valid JSON. A
+    top-level list or a non-numeric `summary.violations` parses fine and then
+    raises on `.get` or `int()` — outside the guard that escaped
+    `_fail_after_analyzer`, leaving the rejected report on disk (#469)."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+
+    report = Path(wrapper.artefact_dir) / "cdc.json"
+    text = Path(wrapper.artefact_dir) / "cdc.txt"
+    domain_map = Path(wrapper.artefact_dir) / "domain_map.json"
+
+    def _writes_odd_shape(cmd, stdout, stderr, **kwargs):
+        report.write_text(payload)
+        text.write_text("a text report\n")
+        domain_map.write_text('{"clocks": []}')
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(mod, "run_managed_process", _writes_odd_shape)
+
+    res = wrapper.run()
+
+    assert "could not parse JSON report" in res.results["desc"], why
+    assert res.results["violations"] == 0
+    assert not report.exists(), why
+    assert not text.exists(), why
+    assert not domain_map.exists(), why
+    assert wrapper.read_report() == {}

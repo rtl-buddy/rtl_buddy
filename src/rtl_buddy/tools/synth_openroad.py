@@ -6,6 +6,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
 from .synth_yosys import emit_frontend_read_cmds, slang_handles_params
 from ..config.synth import (
@@ -561,6 +562,48 @@ class OpenRoadSynth:
     # Entry point
     # ------------------------------------------------------------------
 
+    def _clear_stale_netlists(self) -> None:
+        """Drop the previous run's netlists. The FIRST thing `run` does.
+
+        Stage 2 reads stage 1's netlist back off a fixed path having judged
+        stage 1 by exit code and ERROR lines alone, and the same file is the
+        input `rb pnr` (`_resolve_netlist_path`) and `rb power`
+        (`_resolve_inputs`) resolve, guarded by `isfile`. Every exit from
+        `run` therefore has to leave it absent — including the Liberty / LEF
+        gates and the filelist error, which return before yosys is reached
+        (#469). Both spellings go: which one stage 1 writes depends on
+        whether a Liberty resolved, and that can change between runs.
+        """
+        stale = clear_stale_artefacts(
+            [
+                self._yosys_netlist_path(),
+                os.path.join(self.artefact_dir, "synth.rtlil"),
+            ],
+            owner=self.synth_cfg.get_name(),
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.stale_artefacts_removed",
+                synth=self.synth_cfg.get_name(),
+                paths=stale,
+            )
+
+    def _fail_after_yosys(self, desc: str) -> SynthFailResults:
+        """Fail a run that has already invoked Yosys, publishing no netlist.
+
+        Stage 1's script writes the netlist before its trailing `stat`, so a
+        Yosys that then crashes or logs an `ERROR:` line leaves it on disk —
+        as does a stage 1 that fully succeeds before stage 2 dies on
+        `link_design` or the SDC. Either way `rb synth` reports FAIL while
+        the netlist sits at the fixed path `rb pnr` and `rb power` resolve
+        (#469). Every post-Yosys failure return goes through here, so a new
+        failure gate added to this method inherits the cleanup by using it.
+        """
+        self._clear_stale_netlists()
+        return SynthFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> SynthResults:
         log_event(
             logger,
@@ -570,6 +613,8 @@ class OpenRoadSynth:
             tool=self.tool_cfg.get_executable(),
             top=self.synth_cfg.get_top(),
         )
+
+        self._clear_stale_netlists()
 
         lib_paths = self._resolve_lib_paths()
         lef_paths = self._resolve_lef_paths()
@@ -632,9 +677,12 @@ class OpenRoadSynth:
                 returncode=-1,
                 log=self._yosys_log_path(),
             )
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc="Yosys stage failed; see synth_yosys.log",
-            )
+            # Stage 1 writes the netlist before its trailing `stat`, so a
+            # crash or an ERROR line here can still leave one behind.
+            return self._fail_after_yosys("Yosys stage failed; see synth_yosys.log")
 
-        return self._run_or_stage(gate_count, lef_paths, lib_paths)
+        result = self._run_or_stage(gate_count, lef_paths, lib_paths)
+        if isinstance(result, SynthFailResults):
+            # Stage 1 succeeded and published a netlist; stage 2 then failed.
+            return self._fail_after_yosys(result.results["desc"])
+        return result

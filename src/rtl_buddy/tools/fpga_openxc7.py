@@ -16,6 +16,7 @@ from ..runner.fpga_results import (
     FpgaResults,
     FpgaSkipResults,
 )
+from .artifact_paths import clear_managed_outputs
 from .fpga_base import BaseFpga, resolve_target
 from .fpga_openxc7_reports import parse_nextpnr_log
 
@@ -29,6 +30,13 @@ _PRJXRAY_FAMILIES: dict[str, str] = {
     "xc7v": "virtex7",
     "xc7z": "zynq7",
 }
+
+
+# Everything one openXC7 run writes that is named after the design's top, as
+# a suffix set. An artefact directory belongs to exactly one run, so anything
+# carrying one of these is this run's own output; the fixed-name files it also
+# holds (`fpga.f`, `synth.ys`, the stage logs) carry none of them.
+_MANAGED_OUTPUT_SUFFIXES = (".json", ".fasm", ".frames", ".bit")
 
 
 class OpenXc7Fpga(BaseFpga):
@@ -223,20 +231,92 @@ class OpenXc7Fpga(BaseFpga):
     # Entry point
     # ------------------------------------------------------------------
 
-    def run(self) -> FpgaResults:
-        # Resolve up front: an unknown `platform:` ref is a config error
-        # (exit 2), even when the toolchain is absent.
-        target = resolve_target(self.fpga_cfg, self.root_cfg)
-        part = target.part
-        # openXC7 (nextpnr-xilinx + prjxray) covers the 7-series
-        # families only — anything else is a config error, not a skip.
-        if not part.lower().startswith("xc7"):
-            raise FatalRtlBuddyError(
-                f"fpga run '{self.fpga_cfg.get_name()}': backend 'openxc7' "
-                f"supports 7-series parts only (names starting with 'xc7'), "
-                f"got '{part}' — use tool: vivado for other device families"
-            )
+    def _clear_managed_outputs(self) -> None:
+        """Remove every output a run of this entry produces.
+
+        Each stage hands its output file to the next by name and the bitstream
+        check at the end is a plain `isfile`, so a stage that exits 0 without
+        writing would silently promote a previous run's netlist / FASM /
+        frames / bitstream (#469). `<top>.frames` is on the list even though
+        its own stage truncates it at write time: a run without `--bitstream`
+        never reaches that stage at all, and a bitstream rerun that dies
+        earlier never reaches it either. The bitstream goes even without
+        `--bitstream`, matching the Vivado backend — the artefact dir
+        describes the latest run. Matched by suffix rather than by `<top>` so
+        that editing the run's model or top does not strand the previous
+        top's files here. Stage logs are truncated by `_run_stage` and carry
+        none of these suffixes.
+
+        This run's own `<top>.*` are passed as `own` so they are cleared
+        whatever they are called: a design whose top is `graph`, `manifest`
+        or `record` writes a `<top>.json` netlist that matches a *sibling's*
+        protected name, and without this the flow could not clear its own
+        output — a failed rerun left the previous netlist published, and a
+        Yosys run that exited 0 without writing handed the stale JSON on to
+        nextpnr. `clear_managed_outputs` unions that with the names this
+        directory's flow claimed on earlier runs, so renaming the top away
+        from a protected basename does not strand the old one either.
+        """
         top = self.fpga_cfg.get_top()
+        stale = clear_managed_outputs(
+            self.artefact_dir,
+            _MANAGED_OUTPUT_SUFFIXES,
+            owner=self.fpga_cfg.get_name(),
+            own=[f"{top}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES],
+            own_flow="fpga-openxc7",
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "fpga.stale_artefacts_removed",
+                fpga=self.fpga_cfg.get_name(),
+                paths=stale,
+            )
+
+    def _fail_after_stage(self, result: FpgaFailResults) -> FpgaFailResults:
+        """Fail a run whose stages have started, publishing nothing.
+
+        Every stage writes its output before the next one reads it, so a
+        pipeline that dies at `fasm2frames` or `xc7frames2bit` leaves the
+        `<top>.json` and `<top>.fasm` its predecessors wrote — and possibly a
+        partial `<top>.bit` — sitting at the fixed paths a later run, or a
+        later `--bitstream` rerun, resolves (#469). A run that reports FAIL
+        publishes nothing. Every post-stage failure return goes through here,
+        so a new stage or gate inherits the cleanup by using it.
+        """
+        self._clear_managed_outputs()
+        return result
+
+    def run(self) -> FpgaResults:
+        top = self.fpga_cfg.get_top()
+
+        # Resolved up front, and ahead of the toolchain skip below, because a
+        # bad `platform:` or a part this backend cannot build is a config
+        # error (exit 2) whether or not openXC7 is installed. Raising it over
+        # a previous run's netlist, FASM and deployable bitstream would leave
+        # exactly the stale artefacts this fix removes, so a config error
+        # clears them on its way out — it is a failed run, not a skip (#469).
+        try:
+            target = resolve_target(self.fpga_cfg, self.root_cfg)
+            part = target.part
+            # openXC7 (nextpnr-xilinx + prjxray) covers the 7-series
+            # families only — anything else is a config error, not a skip.
+            if not part.lower().startswith("xc7"):
+                raise FatalRtlBuddyError(
+                    f"fpga run '{self.fpga_cfg.get_name()}': backend 'openxc7' "
+                    f"supports 7-series parts only (names starting with 'xc7'), "
+                    f"got '{part}' — use tool: vivado for other device families"
+                )
+        except Exception:
+            # Every exception, not a list of the expected ones: enumerating
+            # them is how the CDC backend came to miss `FilelistError`, a
+            # sibling of `FatalRtlBuddyError` rather than a subclass (#469).
+            # A run that fails here publishes nothing; re-raised at once, so
+            # nothing is masked.
+            self._clear_managed_outputs()
+            raise
+
         log_event(
             logger,
             logging.INFO,
@@ -271,6 +351,13 @@ class OpenXc7Fpga(BaseFpga):
                     + " for install instructions"
                 ),
             )
+
+        # Everything past the missing-binaries skip is a run of this entry,
+        # however it ends — including the chipdb/prjxray checks and the
+        # filelist error below. Deliberately *after* that skip: a box without
+        # the toolchain never ran anything, so it must not delete what a box
+        # with the toolchain built.
+        self._clear_managed_outputs()
 
         chipdb = self._resolve_chipdb(part)
         if chipdb is None:
@@ -318,7 +405,7 @@ class OpenXc7Fpga(BaseFpga):
                 "yosys.log",
             )
             if fail is not None:
-                return fail
+                return self._fail_after_stage(fail)
 
             nextpnr_cmd = [self._nextpnr, "--chipdb", chipdb]
             for xdc in target.xdc_files:
@@ -326,7 +413,7 @@ class OpenXc7Fpga(BaseFpga):
             nextpnr_cmd += ["--json", f"{top}.json", "--fasm", f"{top}.fasm"]
             fail = self._run_stage("nextpnr-xilinx", nextpnr_cmd, "nextpnr.log")
             if fail is not None:
-                return fail
+                return self._fail_after_stage(fail)
 
             bitstream: str | None = None
             if self.emit_bitstream:
@@ -346,7 +433,7 @@ class OpenXc7Fpga(BaseFpga):
                     stdout_path=frames_path,
                 )
                 if fail is not None:
-                    return fail
+                    return self._fail_after_stage(fail)
                 fail = self._run_stage(
                     "xc7frames2bit",
                     [
@@ -363,12 +450,14 @@ class OpenXc7Fpga(BaseFpga):
                     "xc7frames2bit.log",
                 )
                 if fail is not None:
-                    return fail
+                    return self._fail_after_stage(fail)
                 bit_path = self._bitstream_path()
                 if not os.path.isfile(bit_path):
-                    return FpgaFailResults(
-                        name=self.name + "/results",
-                        desc=f"bitstream not produced at {bit_path}",
+                    return self._fail_after_stage(
+                        FpgaFailResults(
+                            name=self.name + "/results",
+                            desc=f"bitstream not produced at {bit_path}",
+                        )
                     )
                 bitstream = bit_path
 
@@ -376,9 +465,11 @@ class OpenXc7Fpga(BaseFpga):
         try:
             metrics = parse_nextpnr_log(Path(nextpnr_log).read_text())
         except (OSError, ValueError) as e:
-            return FpgaFailResults(
-                name=self.name + "/results",
-                desc=f"failed to parse nextpnr log: {e}",
+            return self._fail_after_stage(
+                FpgaFailResults(
+                    name=self.name + "/results",
+                    desc=f"failed to parse nextpnr log: {e}",
+                )
             )
 
         log_event(

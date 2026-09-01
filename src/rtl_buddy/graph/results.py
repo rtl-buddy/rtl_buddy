@@ -76,7 +76,12 @@ from .coverage import COVERAGE_SOURCE_AUTO, CoverageJoin, join_coverage
 logger = logging.getLogger(__name__)
 
 #: Overlay file name, written next to ``graph.json``.
-RESULTS_OVERLAY_NAME = "results-overlay.json"
+# Defined in `tools.artifact_paths` — the bottom of the import graph, and
+# where the artefact-clearing helpers protect it from a co-named run's
+# suffix clear (#469). Re-exported here, where consumers already look.
+from ..tools.artifact_paths import (  # noqa: E402
+    RESULTS_OVERLAY_NAME as RESULTS_OVERLAY_NAME,
+)
 
 #: ``rtl-buddy-filetype`` marker, so a loader can reject the wrong file.
 OVERLAY_FILETYPE = "graph_results_overlay"

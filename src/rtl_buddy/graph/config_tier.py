@@ -74,8 +74,13 @@ SCHEMA_VERSION = 1
 #: ``generator.tier`` value stamped on every graph this module produces.
 CONFIG_TIER = "config"
 
-GRAPH_JSON_NAME = "graph.json"
-GRAPH_META_NAME = "graph-meta.json"
+# Defined in `tools.artifact_paths` — the bottom of the import graph, and
+# where the artefact-clearing helpers protect it from a co-named run's
+# suffix clear (#469). Re-exported here, where consumers already look.
+from ..tools.artifact_paths import (  # noqa: E402
+    GRAPH_JSON_NAME as GRAPH_JSON_NAME,
+    GRAPH_META_NAME as GRAPH_META_NAME,
+)
 
 #: Confidence tag for links. The config tier is pure config readback, so
 #: every link it emits is EXTRACTED — INFERRED/AMBIGUOUS are reserved for

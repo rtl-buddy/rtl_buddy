@@ -55,6 +55,8 @@ The browser can switch without restarting:
 
 Model discovery is refreshed per request. View generation is serialized per model or test to prevent duplicate concurrent builds. Restart the hub when you need to force regeneration after source changes.
 
+A rebuild clears the cached `view-<NAME>.json` and the model's cached domain map before it starts, so a build that fails — a bad `cdc:` back-pointer, a missing viewer, a crashed analyzer — reports the failure instead of leaving the previous build's hierarchy to be served in its place. A renderer that writes the file and *then* fails, or writes one whose schema this rtl_buddy rejects, has it removed too: the hub serves a cached view by testing the file, so a rejected view left on disk would be served regardless of the recorded failure.
+
 ## Diagnose view errors
 
 Failed `GET /view.json` requests return JSON with `error.kind`. Branch on the kind, not the prose:

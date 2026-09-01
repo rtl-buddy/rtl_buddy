@@ -1,5 +1,7 @@
 """Tests for the power-analysis config schema."""
 
+from contextlib import nullcontext
+from pathlib import Path
 from textwrap import dedent
 
 import pytest
@@ -611,3 +613,191 @@ def test_power_suite_loads_xfail_flags(tmp_path):
     assert suite.get_runs("power_xfail_strict")[0].is_xfail() is True
     assert suite.get_runs("power_xfail_strict")[0].get_xfail_strict() is True
     assert suite.get_runs("power_normal")[0].is_xfail() is False
+
+
+# ---------------------------------------------------------------------------
+# OpenRoadPower backend — stale-report masking (#469)
+# ---------------------------------------------------------------------------
+
+
+def _make_power_backend(tmp_path):
+    """An OpenRoadPower over a synthetic netlist, with input/platform
+    resolution stubbed out — the run() gate under test is downstream of both."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.config.power import PowerActivity
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    netlist = tmp_path / "synth_netlist.v"
+    netlist.write_text("module demo_top(); endmodule\n")
+    sdc = tmp_path / "constraints.sdc"
+    sdc.write_text("create_clock -period 10 [get_ports clk]\n")
+
+    cfg = PowerConfig(
+        name="demo_power",
+        desc="demo",
+        tool="openroad",
+        mode="static",
+        netlist_source="synth",
+        synth_name="demo_synth",
+        synth_suite_path=str(tmp_path / "synth.yaml"),
+        pnr_name=None,
+        pnr_suite_path=None,
+        constraints=str(sdc),
+        platform="nangate45_typ",
+        activity=PowerActivity(
+            saif=None,
+            vcd=None,
+            scope=None,
+            default_toggle_rate=0.1,
+            default_static_prob=0.5,
+        ),
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    backend = OpenRoadPower(
+        name="demo/openroad",
+        power_cfg=cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+    )
+    backend._resolve_inputs = lambda: {
+        "netlist": str(netlist),
+        "odb": None,
+        "sdc": str(sdc),
+        "top": "demo_top",
+    }
+    backend._resolve_platform = lambda: MagicMock()
+    return backend
+
+
+def test_power_ignores_a_previous_runs_report(tmp_path, monkeypatch):
+    """OpenROAD exiting 0 with no [ERROR] is not proof it rewrote power.rpt;
+    a report left by an earlier run must not be quoted as this run's (#469)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    stale = Path(backend.artefact_dir) / "power.rpt"
+    stale.write_text(
+        "Group                  Internal  Switching    Leakage      Total\n"
+        "Total                  1.00e-03   2.00e-03   3.00e-04   3.30e-03 100.0%\n"
+    )
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        # Writes the log (OpenROAD's -log) but no report.
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "power report not produced" in res.results["desc"]
+    assert not stale.exists()
+
+
+def test_power_writes_report_then_fails_publishes_nothing(tmp_path, monkeypatch):
+    """`report_power` writes before the script ends, so OpenROAD can exit
+    non-zero with `power.rpt` on disk. A FAIL publishes nothing (#469)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "power.rpt"
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _writes_then_dies(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        report.write_text("Total 1.0e-03 2.0e-03 3.0e-04 3.3e-03 100.0%\n")
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _writes_then_dies)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "exited with code 1" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_power_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
+    """Same for a report with no parseable `Total` row (#469)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "power.rpt"
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _writes_garbage(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        report.write_text("no totals here\n")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _writes_garbage)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "could not parse Total line" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_power_missing_input_without_openroad_is_a_config_error(tmp_path, monkeypatch):
+    """`_write_script` is where this flow validates its configuration. Running
+    it after the availability check reported a missing SDC as "openroad not
+    found" on a box that merely lacks the tool, and left the previous report
+    in place after a failed run (#469)."""
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    stale = Path(backend.artefact_dir) / "power.rpt"
+    stale.write_text("Total 1.0e-03 2.0e-03 3.0e-04 3.3e-03 100.0%\n")
+
+    # No SDC, and no OpenROAD either.
+    backend._resolve_inputs = lambda: {
+        "netlist": str(tmp_path / "synth_netlist.v"),
+        "odb": None,
+        "sdc": None,
+        "top": "demo_top",
+    }
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: None)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "script generation error" in res.results["desc"]
+    assert "constraints (SDC path) is required" in res.results["desc"]
+    assert not stale.exists()
+
+
+def test_power_valid_config_without_openroad_keeps_the_report(tmp_path, monkeypatch):
+    """The no-deletion behaviour survives for a genuinely valid config: a box
+    without OpenROAD never ran it, so it must not delete a report a box that
+    has it produced (#469)."""
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    kept = Path(backend.artefact_dir) / "power.rpt"
+    kept.write_text("Total 1.0e-03 2.0e-03 3.0e-04 3.3e-03 100.0%\n")
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: None)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "not found" in res.results["desc"]
+    assert kept.exists()

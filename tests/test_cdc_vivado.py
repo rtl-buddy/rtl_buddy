@@ -266,6 +266,22 @@ def test_vivado_cdc_fails_when_report_missing(tmp_path, monkeypatch):
     assert "no CDC report produced" in res.results["desc"]
 
 
+def test_vivado_cdc_ignores_a_previous_runs_report(tmp_path, monkeypatch):
+    """A run that writes no report must not be scored off the cdc.rpt an
+    earlier run left in the artefact dir (#469)."""
+    backend = _make_backend(tmp_path)
+    stale = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", stale)
+
+    _mock_env(monkeypatch, _fake_vivado(fixture_name=None))
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "no CDC report produced" in res.results["desc"]
+    assert res.results["violations"] == 0
+    assert not stale.exists()
+
+
 # ---------------------------------------------------------------------------
 # CdcRunner dispatch
 # ---------------------------------------------------------------------------
@@ -337,3 +353,110 @@ def test_cdc_runner_unconfigured_tool_still_errors(tmp_path):
     runner = _runner_for_tool(tmp_path, "vivado", None)
     with pytest.raises(FatalRtlBuddyError, match="not found in cfg-cdc-tools"):
         runner.run()
+
+
+def test_vivado_cdc_writes_report_then_fails_publishes_nothing(tmp_path, monkeypatch):
+    """`report_cdc` writes partway through the Tcl, so Vivado can exit
+    non-zero with a report on disk. A FAIL publishes nothing (#469)."""
+    backend = _make_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "cdc.rpt"
+
+    def _writes_then_dies(cmd, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "vivado.log").write_text("")
+        shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", report)
+        return ManagedProcessResult(returncode=1)
+
+    _mock_env(monkeypatch, _writes_then_dies)
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "exited with code 1" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_vivado_cdc_error_line_after_writing_publishes_nothing(tmp_path, monkeypatch):
+    """Same for the ERROR-record gate (#469)."""
+    backend = _make_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "cdc.rpt"
+    log = "ERROR: [Synth 8-439] module 'missing_mod' not found\n"
+
+    _mock_env(monkeypatch, _fake_vivado("vivado_cdc_violations.rpt", log_text=log))
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "ERROR(s) in Vivado log" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_vivado_cdc_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
+    """And for a report `parse_report_cdc` rejects (#469)."""
+    backend = _make_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "cdc.rpt"
+
+    def _writes_garbage(cmd, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "vivado.log").write_text("")
+        (cwd / "cdc.rpt").write_text("not a CDC report\n")
+        return ManagedProcessResult(returncode=0)
+
+    _mock_env(monkeypatch, _writes_garbage)
+    monkeypatch.setattr(
+        cdc_vivado_module,
+        "parse_report_cdc",
+        lambda _text: (_ for _ in ()).throw(ValueError("no summary table")),
+    )
+    res = backend.run()
+
+    assert isinstance(res, CdcFailResults)
+    assert "could not parse CDC report" in res.results["desc"]
+    assert not report.exists()
+
+
+def test_vivado_cdc_bad_part_clears_the_previous_report(tmp_path, monkeypatch):
+    """`_resolve_part` raises before Vivado is ever reached. That is a config
+    error, but raising it over a previously successful run's `cdc.rpt` leaves
+    exactly the stale report this fix removes — a config error is a failed
+    run, not a skip (#469)."""
+    backend = _make_backend(tmp_path, part=None)
+    stale = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", stale)
+
+    _mock_env(monkeypatch, _fake_vivado("vivado_cdc_clean.rpt"))
+
+    with pytest.raises(FatalRtlBuddyError, match="opts.part"):
+        backend.run()
+
+    assert not stale.exists()
+
+
+def test_vivado_cdc_skip_still_keeps_the_previous_report(tmp_path, monkeypatch):
+    """The missing-Vivado skip keeps its exemption: a box without Vivado never
+    ran it, so it must not delete a report a box that has it produced (#469)."""
+    backend = _make_backend(tmp_path)
+    kept = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", kept)
+
+    monkeypatch.setattr(cdc_vivado_module.shutil, "which", lambda _name: None)
+    res = backend.run()
+
+    assert isinstance(res, CdcSkipResults)
+    assert kept.exists()
+
+
+def test_vivado_cdc_missing_sdc_without_vivado_is_a_config_error(tmp_path, monkeypatch):
+    """An analysis pointing at a missing SDC is broken on every machine.
+    Reporting it as "vivado not found" on a box that merely lacks the tool
+    sends the user after the wrong problem, and leaves the previous report
+    in place after a failed run (#469)."""
+    backend = _make_backend(tmp_path)
+    stale = Path(backend.artefact_dir) / "cdc.rpt"
+    shutil.copy(FIXTURES / "vivado_cdc_violations.rpt", stale)
+
+    Path(backend.cdc_cfg.get_constraints()).unlink()
+    monkeypatch.setattr(cdc_vivado_module.shutil, "which", lambda _name: None)
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        backend.run()
+
+    assert not stale.exists()

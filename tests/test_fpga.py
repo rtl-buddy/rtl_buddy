@@ -695,6 +695,125 @@ def test_vivado_fpga_fails_when_bitstream_missing(tmp_path, monkeypatch):
     assert "bitstream not produced" in res.results["desc"]
 
 
+def test_vivado_fpga_ignores_a_previous_runs_reports(tmp_path, monkeypatch):
+    """A run that writes no reports must not be scored off the reports (or
+    the bitstream) an earlier run left in the artefact dir (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    for filename in REPORT_FILES.values():
+        shutil.copy(FIXTURES / filename, artefacts / filename)
+    (artefacts / "demo_top.bit").write_bytes(b"\x00stale\x00")
+
+    monkeypatch.setattr(
+        fpga_vivado_module,
+        "run_managed_process",
+        _fake_vivado(drop_reports=False, drop_bitstream=False),
+    )
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "not produced" in res.results["desc"]
+    assert not (artefacts / "demo_top.bit").exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists()
+
+
+def test_vivado_fpga_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypatch):
+    """The bitstream is cleared even on a run that was not asked to build one
+    (#469): the artefact dir describes the latest run, and a run reporting no
+    bitstream beside a deployable `.bit` from an older run is the same trap.
+    Rerun with `--bitstream` to regenerate it."""
+    backend = _make_backend(tmp_path, emit_bitstream=False)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    monkeypatch.setattr(
+        fpga_vivado_module, "run_managed_process", _fake_vivado(drop_bitstream=False)
+    )
+    res = backend.run()
+
+    # The run itself still passes — it produced every report it was asked for.
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert res.results.get("bitstream") is None
+    assert not stale_bit.exists()
+
+
+def test_vivado_fpga_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
+    """The clear sits above the filelist step, so a rerun that dies before
+    Vivado leaves no reports or bitstream from the previous run (#469)."""
+    from rtl_buddy.errors import FilelistError
+
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    for filename in REPORT_FILES.values():
+        shutil.copy(FIXTURES / filename, artefacts / filename)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    def _boom(*a, **kw):
+        raise FilelistError("source file vanished")
+
+    monkeypatch.setattr(type(backend), "_write_filelist", _boom)
+
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "Filelist error" in res.results["desc"]
+    assert not stale_bit.exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists()
+
+
+def test_vivado_fpga_skip_keeps_a_previous_runs_artefacts(tmp_path, monkeypatch):
+    """The clear sits *after* the tool-availability skip on purpose: a box
+    without Vivado never ran it, so it must not delete what a box that has
+    Vivado produced (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(fpga_vivado_module.shutil, "which", lambda _name: None)
+
+    artefacts = Path(backend.artefact_dir)
+    kept = artefacts / "demo_top.bit"
+    kept.write_bytes(b"\x00built elsewhere\x00")
+
+    res = backend.run()
+
+    assert isinstance(res, FpgaSkipResults)
+    assert kept.exists()
+
+
+def test_vivado_fpga_clears_a_previous_tops_bitstream(tmp_path, monkeypatch):
+    """The bitstream is the one top-named Vivado output, so it goes by suffix:
+    editing the run's model or top must not strand the old `.bit` (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    old_bit = artefacts / "old_top.bit"
+    old_bit.write_bytes(b"\x00previous top\x00")
+
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _fake_vivado())
+    res = backend.run()
+
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    assert not old_bit.exists()
+    assert res.results["bitstream"].endswith("demo_top.bit")
+
+
 def test_vivado_fpga_uses_failing_timing_fixture(tmp_path, monkeypatch):
     """A routed-but-timing-failed run still passes; metrics carry the truth."""
     backend = _make_backend(tmp_path)
@@ -1358,3 +1477,97 @@ def test_cli_fpga_regression_missing_config_exits_2(
     assert exit_code == 2, captured
     payload = json.loads(captured.out)
     assert "fpga_regression.yaml not found" in payload["payload"]["error"]
+
+
+def test_vivado_fpga_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
+    """`resolve_target` raises on an unknown `platform:`. That is a config
+    error, but raising it with the previous run's reports and a deployable
+    `.bit` still in place is the same trap as any other failure (#469)."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    model = ModelConfig(name="demo_top", filelist=[], path=str(tmp_path / "m.yaml"))
+    cfg = FpgaConfig(
+        name="demo_fpga",
+        desc="demo",
+        model=model,
+        tool="vivado",
+        part="",
+        platform="no_such_platform",
+        xdc_files=[],
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    backend = VivadoFpga(
+        name="demo/vivado",
+        fpga_cfg=cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=None,  # makes resolve_target raise
+        executable="vivado",
+        emit_bitstream=True,
+    )
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+
+    artefacts = Path(backend.artefact_dir)
+    for filename in REPORT_FILES.values():
+        shutil.copy(FIXTURES / filename, artefacts / filename)
+    stale_bit = artefacts / "demo_top.bit"
+    stale_bit.write_bytes(b"\x00stale\x00")
+
+    with pytest.raises(FatalRtlBuddyError, match="platform"):
+        backend.run()
+
+    assert not stale_bit.exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists()
+
+
+def test_vivado_fpga_bitstream_stage_failure_publishes_nothing(tmp_path, monkeypatch):
+    """The Tcl writes all five reports before `write_bitstream`, so a run that
+    dies at the bitstream stage leaves fresh reports and a partial `.bit`.
+    A FAIL publishes nothing (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    def _reports_then_dies(cmd, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "vivado.log").write_text("")
+        for filename in REPORT_FILES.values():
+            shutil.copy(FIXTURES / filename, cwd / filename)
+        (cwd / "demo_top.bit").write_bytes(b"\x00partial\x00")
+        return ManagedProcessResult(returncode=1)
+
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _reports_then_dies)
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "exited with code 1" in res.results["desc"]
+    assert not (artefacts / "demo_top.bit").exists()
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists(), filename
+
+
+def test_vivado_fpga_missing_bitstream_clears_the_reports(tmp_path, monkeypatch):
+    """The "bitstream not produced" gate fires after the reports were written,
+    so it has to clear them too (#469)."""
+    backend = _make_backend(tmp_path, emit_bitstream=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    artefacts = Path(backend.artefact_dir)
+
+    monkeypatch.setattr(
+        fpga_vivado_module,
+        "run_managed_process",
+        _fake_vivado(drop_bitstream=False),
+    )
+    res = backend.run()
+
+    assert isinstance(res, FpgaFailResults)
+    assert "bitstream not produced" in res.results["desc"]
+    for filename in REPORT_FILES.values():
+        assert not (artefacts / filename).exists(), filename

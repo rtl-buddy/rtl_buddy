@@ -53,7 +53,13 @@ from .schema import ABSENT, ExperimentRecord
 logger = logging.getLogger(__name__)
 
 GB = 1024**3
-WORKTREE_SIDECAR = "worktree.json"
+# Defined in `tools.artifact_paths` — the bottom of the import graph, and
+# where the artefact-clearing helpers protect it from a co-named run's
+# suffix clear (#469). Re-exported here, where consumers already look.
+from ..tools.artifact_paths import (  # noqa: E402
+    XPLR_WORKTREE_SIDECAR_NAME as WORKTREE_SIDECAR,
+)
+
 SNAPSHOT_REF_PREFIX = "refs/heads/exp/"
 
 

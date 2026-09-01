@@ -285,6 +285,9 @@ def test_emit_maps_adds_flags_and_reads_back(tmp_path, monkeypatch):
         Path(wrapper._reset_map_path()).write_text('{"reset_synchronizers": []}')
         return ManagedProcessResult(returncode=0)
 
+    # rtl_buddy does not depend on rtl-buddy-cdc, and `run` skips when it is
+    # not on PATH (#469) — pretend it is installed so this exercises the run.
+    monkeypatch.setattr(mod.shutil, "which", lambda name: f"/fake/bin/{name}")
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullcontext())
     monkeypatch.setattr(mod, "run_managed_process", _fake_run)
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
