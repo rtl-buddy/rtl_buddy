@@ -2083,3 +2083,70 @@ def test_an_explicit_run_top_still_beats_the_models_yaml_override(tmp_path):
     (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
     assert fpv.get_top() == "leaf_chk"
     assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_mut"
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — the name is a path segment (#479)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["..", ".", "../../..", "a/../..", "/etc", "a/b", "a\\b", ".hidden", ""],
+)
+def test_model_config_loader_refuses_a_name_that_is_not_a_path_segment(tmp_path, name):
+    """A model name becomes ``artefacts/<flow>/<name>/`` everywhere.
+
+    Nothing downstream re-checks it, and ``rb graph build`` *deletes*
+    ``artefacts/graph/design/<name>/`` when a model opts out — so a name
+    that normalises upwards or is absolute would reach `rmtree` pointed
+    at the caller's own tree. It is refused at the config boundary, for
+    every model rather than only the opted-out ones, because the export
+    path is keyed on the same string.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        f'  - name: "{name}"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "not usable" in message
+    assert str(path) in message
+
+
+@pytest.mark.parametrize("name", ["pp_axi", "my-model", "blk.a", "_x", "9lives"])
+def test_model_config_loader_accepts_ordinary_names(tmp_path, name):
+    """The rule is "safe path segment", not "SystemVerilog identifier".
+
+    A hyphen or an inner dot is harmless as a directory name and
+    plausible in a project that already exists, so the check must not
+    fail one.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        f'  - name: "{name}"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    assert ModelConfigLoader(str(path)).get_model(name).name == name
+
+
+def test_the_invalid_model_name_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "model_config.invalid_model_name",
+        {"path": "design/x/models.yaml", "name": ".."},
+    )
+    assert msg != "model config invalid_model_name"
+    assert "design/x/models.yaml" in msg
+    assert ".." in msg

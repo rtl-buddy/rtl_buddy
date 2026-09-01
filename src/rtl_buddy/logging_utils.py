@@ -1454,6 +1454,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('first_type')} and {fields.get('second_type')} — "
                 "keeping the first; rename one so the id is unique"
             )
+        case "model_config.invalid_model_name":
+            return (
+                f"{fields.get('path')}: model name {fields.get('name')!r} is "
+                "not usable as a directory name — it must start with a "
+                "letter, digit or underscore and contain only letters, "
+                "digits, underscore, dot or hyphen"
+            )
         case "graph_build.design_export_failed":
             return (
                 f"graph build: rtl-buddy-view graph exited "
@@ -1476,6 +1483,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"(--tb-top {fields.get('top')}) — that run's checker hierarchy "
                 f"is missing from the graph and its `targets` edge is left "
                 f"dangling, the DUT's hierarchy is not; see {fields.get('log')}"
+            )
+        case "graph_build.stale_export_escapes":
+            return (
+                f"graph build: refusing to retract the export of model "
+                f"{fields.get('model')} — {fields.get('path')} resolves to "
+                f"{fields.get('resolved')}, outside "
+                f"{fields.get('design_root')}; a model name is a directory "
+                "name, so fix it in models.yaml or remove the symlink "
+                "standing in for that directory"
             )
         case "graph_build.stale_export_not_dropped":
             return (

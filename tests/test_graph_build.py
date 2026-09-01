@@ -2062,6 +2062,125 @@ def test_both_collapsed_testbenches_are_reported_when_their_model_opts_out(
     assert _tb_calls(record) == []
 
 
+@pytest.mark.parametrize("name", ["..", "../../..", "a/../..", "/tmp/escape"])
+def test_the_retraction_refuses_a_target_outside_the_design_directory(
+    graph_project: Path, tmp_path: Path, name: str
+):
+    """The second belt, at the one place in the build that destroys data.
+
+    Model names are validated where models.yaml is loaded, but a caller
+    who hands ``build_graph`` a hand-built ``ModelConfig`` bypasses that
+    loader entirely — and `rmtree` would not think twice about a name
+    that normalises out of the artefact tree. The resolved target has to
+    be a direct child of ``design/``, or nothing is deleted.
+    """
+    from rtl_buddy.config.model import ModelConfig
+
+    out = graph_project / "artefacts" / "graph"
+    victim = graph_project / "precious"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("do not delete me")
+
+    model = ModelConfig(
+        name=name,
+        filelist=[],
+        graph=False,
+        path=str(graph_project / "design" / "blk_a" / "models.yaml"),
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        graph_build._drop_stale_export(out, model)
+    assert "refusing to retract" in str(excinfo.value)
+    assert (victim / "keep.txt").is_file()
+    assert graph_project.is_dir()
+
+
+def test_the_retraction_refuses_a_symlinked_model_directory(
+    graph_project: Path, tmp_path: Path
+):
+    """`design/<name>` standing in for a directory somewhere else.
+
+    The name is a perfectly ordinary identifier here — it is the
+    directory entry that lies. Resolving before comparing is what
+    catches it; composing the path would not.
+    """
+    from rtl_buddy.config.model import ModelConfig
+
+    out = graph_project / "artefacts" / "graph"
+    design_root = out / graph_build.DESIGN_SUBDIR
+    design_root.mkdir(parents=True)
+    elsewhere = graph_project / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("do not delete me")
+    (design_root / "blk_a").symlink_to(elsewhere, target_is_directory=True)
+
+    model = ModelConfig(
+        name="blk_a",
+        filelist=[],
+        graph=False,
+        path=str(graph_project / "design" / "blk_a" / "models.yaml"),
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        graph_build._drop_stale_export(out, model)
+    assert "symlink" in str(excinfo.value)
+    assert (elsewhere / "keep.txt").is_file()
+
+
+def test_the_escaping_export_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.stale_export_escapes",
+        {
+            "model": "..",
+            "path": "artefacts/graph/design/..",
+            "resolved": "/tmp/project/artefacts/graph",
+            "design_root": "/tmp/project/artefacts/graph/design",
+        },
+    )
+    assert msg != "graph build stale_export_escapes"
+    assert "artefacts/graph/design" in msg
+    assert "symlink" in msg
+
+
+def test_a_name_collision_is_refused_before_any_export_is_retracted(
+    graph_project: Path, tmp_path: Path
+):
+    """The collision check runs before the opt-out cleanup, not after.
+
+    `design/<name>/` is keyed on the model name, so a colliding pair
+    *shares* that directory. Retracting first meant the opted-out
+    newcomer's cleanup deleted the graphable model's export on its way
+    to an error the build was going to raise anyway — destroying a valid
+    artefact for a configuration the command never accepted.
+    """
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    build_graph(graph_project, **common)
+    export = graph_project / "artefacts" / "graph" / "design" / "blk_a" / "graph.json"
+    assert export.is_file()
+
+    # A second models.yaml reusing the name, opted out.
+    dupe = graph_project / "design" / "blk_dupe"
+    dupe.mkdir()
+    (dupe / "blk_a.sv").write_text("module blk_a_alt (input logic clk);\nendmodule\n")
+    (dupe / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    desc: "a second block calling itself blk_a"\n'
+        '    filelist: ["blk_a.sv"]\n'
+        '    top: "blk_a_alt"\n'
+        "    graph: false\n"
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(graph_project, force=True, **common)
+    assert "Rename one of them" in str(excinfo.value)
+    # The valid model's export survived the refusal.
+    assert export.is_file()
+
+
 def test_a_stale_export_that_cannot_be_removed_is_fatal(
     graph_project: Path, tmp_path: Path
 ):

@@ -919,11 +919,22 @@ def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
     selection (:func:`_reject_colliding_models`), so the directory
     cannot be shared.
 
+    The path is re-checked before the delete, not merely composed. The
+    model name is validated where models.yaml is loaded
+    (:func:`~rtl_buddy.config.model.validate_model_name`), but this is
+    the one place in the graph build that *destroys* data, and a caller
+    who hands ``build_graph`` a hand-built :class:`ModelConfig` bypasses
+    that loader entirely. So the resolved target must still be a direct
+    child of ``design/``: that rules out a name that normalises upwards,
+    an absolute one, and a ``design/<name>`` that is a symlink pointing
+    somewhere else — none of which ``rmtree`` would think twice about.
+
     Returns:
       bool: True when something was actually removed.
 
     Raises:
-      FatalRtlBuddyError: when the directory is there and cannot be
+      FatalRtlBuddyError: when the target is not a direct child of the
+        design-export directory, or when the directory is there and cannot be
         removed. Swallowing that would be the worst of both worlds — the
         merged graph and the sidecar would say the model was skipped
         while its old hierarchy stayed on disk and readable, which is
@@ -933,7 +944,25 @@ def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
         also not atomic — it removes what it can before failing — so a
         swallowed error can leave a partial tree that no build produced.
     """
-    target = out_dir / DESIGN_SUBDIR / model.name
+    design_root = out_dir / DESIGN_SUBDIR
+    target = design_root / model.name
+    if target.resolve().parent != design_root.resolve():
+        log_event(
+            logger,
+            logging.ERROR,
+            "graph_build.stale_export_escapes",
+            model=model.name,
+            path=str(target),
+            resolved=str(target.resolve()),
+            design_root=str(design_root.resolve()),
+        )
+        raise FatalRtlBuddyError(
+            f"graph build: refusing to retract the export of model "
+            f"{model.name!r} — {target} resolves to {target.resolve()}, "
+            f"which is not inside {design_root.resolve()}. A model name is "
+            f"a directory name; fix it in models.yaml, or remove the symlink "
+            f"standing in for that directory."
+        )
     if not target.is_dir():
         return False
     try:
@@ -1635,6 +1664,18 @@ def build_graph(
         # was never going to invoke it. Target discovery is config reading
         # only — the config tier reads the same files a few lines below.
         graphable = [model for model in models if model.graph]
+        # First, before anything is planned, exported *or deleted*: no two
+        # models in scope may share a name (their artefact paths and every
+        # name-keyed lookup collide, opt-out or not), and no two graphable
+        # ones may share a top (their graph ids collide).
+        #
+        # The ordering is load-bearing, not tidiness. `design/<name>/` is
+        # keyed on the name, so a colliding pair *shares* that directory —
+        # and the retraction below would delete it on the opted-out
+        # model's behalf before the collision was reported. The command
+        # would fail as intended and destroy the graphable model's export
+        # on the way out, for a configuration it never accepted.
+        _reject_colliding_models(root, models, graphable)
         for model in models:
             if model.graph:
                 continue
@@ -1650,11 +1691,6 @@ def build_graph(
                     model=model.name,
                     path=str(out / DESIGN_SUBDIR / model.name),
                 )
-        # Before anything is planned, let alone exported: no two models
-        # in scope may share a name (their artefact paths and every
-        # name-keyed lookup collide, opt-out or not), and no two
-        # graphable ones may share a top (their graph ids collide).
-        _reject_colliding_models(root, models, graphable)
         if tb:
             tb_targets, opted_out = _split_opted_out(
                 testbenches_from_suites(root, search_verif, models), "testbench"

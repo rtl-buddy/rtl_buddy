@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 import pprint
@@ -10,6 +11,50 @@ from typing import Literal
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+
+#: A model ``name:`` has to be safe as a **single path segment**, because
+#: that is what it becomes: ``artefacts/hier/<name>/``,
+#: ``artefacts/graph/design/<name>/``, and the per-model directories every
+#: flow writes. Nothing downstream re-checks it, and ``rb graph build``
+#: *deletes* ``design/<name>/`` when a model opts out — so a name like
+#: ``..`` or ``/tmp`` would escape the artefact tree with the caller's
+#: permissions. It is also the model's default top module, so an
+#: identifier-shaped name is what every project already writes.
+#:
+#: Deliberately a little wider than a SystemVerilog identifier: ``-`` and
+#: ``.`` inside the name are harmless as a path segment and plausible in
+#: an existing project. The leading character may not be ``.``, which is
+#: what rules out ``.`` and ``..``; ``/`` and ``\\`` are absent from the
+#: class entirely, which rules out every separator and absolute path.
+MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+
+
+def validate_model_name(name: str, path: str) -> None:
+    """Raise unless ``name`` is safe as an artefact directory name.
+
+    Args:
+      name: the ``name:`` field as written.
+      path: the models.yaml it came from, for the message.
+
+    Raises:
+      FatalRtlBuddyError: naming the file, the value and the rule.
+    """
+    if isinstance(name, str) and MODEL_NAME_RE.match(name):
+        return
+    log_event(
+        logger,
+        logging.ERROR,
+        "model_config.invalid_model_name",
+        path=path,
+        name=name,
+    )
+    raise FatalRtlBuddyError(
+        f"{path}: model name {name!r} is not usable — a model name becomes "
+        f"a directory under artefacts/ (and its default top module), so it "
+        f"must start with a letter, digit or underscore and contain only "
+        f"letters, digits, underscore, dot or hyphen. Path separators, "
+        f"absolute paths, '.' and '..' are refused."
+    )
 
 
 def split_back_pointer(value: str) -> tuple[str, str | None]:
@@ -230,6 +275,9 @@ class ModelConfigLoader:
         # rb hub) sees a single source of truth.
         seen: dict[str, int] = {}
         for idx, model in enumerate(self.models):
+            # Before anything else: the name is a path segment everywhere
+            # downstream, and one consumer deletes the directory it names.
+            validate_model_name(model.name, path)
             if model.name in seen:
                 log_event(
                     logger,
