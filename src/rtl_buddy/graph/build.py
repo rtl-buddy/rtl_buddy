@@ -1791,6 +1791,15 @@ def build_graph(
         spec_dir=str(search_spec),
         verif_dir=str(search_verif),
         design_dir=str(search_design),
+        # Only the models this build exports get a config->design stitch
+        # (#479). The config tier walks the whole `--design-dir`, so
+        # `--model` / `-c` leave it holding models the design tier will
+        # not cover — and `module:<top>` is a global id, so an unselected
+        # model sharing a selected one's `top:` would have its `maps_to`
+        # resolve against the *other* model's hierarchy after the merge.
+        # `--no-design` passes None: nothing is exported, so nothing can
+        # be falsely resolved to, and the stitches dangle as documented.
+        exported_models=graphable if design else None,
     )
     config_meta = (config.meta.get("tiers") or {}).get(CONFIG_TIER, {})
     config_report = TierReport(

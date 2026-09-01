@@ -2662,6 +2662,140 @@ def test_a_duplicate_name_is_reported_before_a_duplicate_top(
     assert "Rename one" in str(excinfo.value)
 
 
+def test_an_unselected_model_is_not_stitched_to_another_models_hierarchy(
+    graph_project: Path, tmp_path: Path
+):
+    """`--model A` must not make B look like it maps to A's design.
+
+    The config tier walks the whole `--design-dir` whatever the design
+    tier was narrowed to, so it still emits B's node. `module:<top>` is a
+    global id, so if B's `top:` matches A's, B's `maps_to` would resolve
+    against A's exported hierarchy after the merge and the graph would
+    state that B maps to A's design — a false answer, not a missing one.
+    A model this build does not export gets a node and no stitch, the
+    same rule `graph: false` already follows.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    only_a = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_a"
+    ]
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        models=only_a,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
+
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    # B is still in the graph — spec and test cross-references point at it.
+    assert "model:design/blk_b/models.yaml#blk_b" in nodes
+    assert "module:blk_a" in nodes
+    # ...and it claims nothing about A's hierarchy.
+    assert {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    } == {("model:design/blk_a/models.yaml#blk_a", "module:blk_a")}
+    assert dangling_targets(graph) == []
+
+
+def test_selecting_both_of_two_models_sharing_a_top_is_still_fatal(
+    graph_project: Path, tmp_path: Path
+):
+    """Suppressing the stitch is for models that are NOT exported.
+
+    Two models that both export cannot share a top whatever the config
+    tier does — their design-tier ids collide — so narrowing the stitch
+    must not have quietly turned that refusal off.
+    """
+    _rewrite_model(graph_project, "blk_b", '    top: "blk_a"\n')
+    view, _ = _fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        build_graph(
+            graph_project,
+            view_executable=str(view),
+            view_version="0.4.0",
+            extract_enabled=False,
+        )
+    assert "top 'blk_a' is claimed by" in str(excinfo.value)
+
+
+def test_an_unselected_models_runs_and_testbenches_are_not_stitched_either(
+    graph_project: Path, tmp_path: Path
+):
+    """The same rule for the other two config->design verbs.
+
+    A run's `targets` at its model's own root, and a cocotb testbench's
+    declared `elaborates_as`, name the same `module:<top>` a `maps_to`
+    would — so they carry the same risk of resolving against a different
+    model's export, and they are withheld on the same condition.
+    """
+    only_b = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_b"
+    ]
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        models=only_b,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    graph = json.loads(build.graph_path.read_text())
+    # blk_a is unselected: its synth/cdc/fpv runs and its cocotb
+    # testbench all point at `module:blk_a`, which this build does not
+    # export, so none of them is stitched.
+    assert not [
+        link
+        for link in graph["links"]
+        if link["type"] in ("maps_to", "targets", "elaborates_as")
+        and link["target"] == "module:blk_a"
+    ]
+    # blk_b, which this build does export, keeps its stitch.
+    assert ("model:design/blk_b/models.yaml#blk_b", "module:blk_b") in {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    }
+
+
+def test_no_design_still_stitches_every_graphable_model(
+    graph_project: Path, tmp_path: Path
+):
+    """`--no-design` has no selection to respect.
+
+    Nothing is exported, so no stitch can resolve against the wrong
+    model's hierarchy — and the documented config-only behaviour is that
+    these edges name modules a later design tier supplies. Narrowing
+    them here would delete information for no gain.
+    """
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        design=False,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    graph = json.loads(build.graph_path.read_text())
+    assert {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "maps_to"
+    } == {
+        ("model:design/blk_a/models.yaml#blk_a", "module:blk_a"),
+        ("model:design/blk_b/models.yaml#blk_b", "module:blk_b"),
+    }
+
+
 def test_a_shared_top_is_allowed_when_one_of_the_two_models_opts_out(
     graph_project: Path, tmp_path: Path
 ):

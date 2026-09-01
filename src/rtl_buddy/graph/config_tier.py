@@ -580,15 +580,55 @@ def _add_spec_nodes(
     return cov_owners
 
 
+def _export_key(model) -> tuple[str, str]:
+    """A model's identity across the two ways it can be reached.
+
+    The realpath of its ``models.yaml`` plus its ``name:`` — the same
+    pairing ``graph.build._model_key`` uses, and deliberately not the
+    ``model:`` node id, so the two sides cannot disagree about how a
+    path was made relative.
+    """
+    return (os.path.realpath(model.path) if model.path else "", model.name)
+
+
+def _exports_design(model, exported: frozenset[tuple[str, str]] | None) -> bool:
+    """True when this build's design tier will export ``model``'s hierarchy.
+
+    Two reasons it will not, and they fail the same way if the config
+    tier ignores them (#479):
+
+    * the model declared ``graph: false``;
+    * the build is not selecting it — ``--model`` or ``-c`` narrowed the
+      design tier, but the config tier still walks the whole
+      ``--design-dir``.
+
+    Either way the design tier defines no ``module:`` node for it, so a
+    config->design stitch pointing at one is at best dangling and at
+    worst *false*: ``module:<top>`` is a global id, so an unselected
+    model whose ``top:`` matches a selected one's would have its
+    ``maps_to`` resolve against the other model's hierarchy and the graph
+    would state that B maps to A's design.
+
+    ``exported=None`` means "no selection to respect" — a config-only
+    build (``--no-design``) or a direct caller. Nothing is exported then,
+    so nothing can be falsely resolved *to*, and the stitches stay as
+    documented: dangling until a design tier supplies their targets.
+    """
+    if not model.graph:
+        return False
+    return exported is None or _export_key(model) in exported
+
+
 def _add_model_nodes(
     gb: _GraphBuilder,
     project_root: Path,
     spec_configs: list[SpecConfig],
     model_entries: list[tuple[str, object]],
+    exported: frozenset[tuple[str, str]] | None = None,
 ) -> None:
     """Emit model nodes plus their spec and design-tier links."""
     for models_path, model in model_entries:
-        _add_model_node(gb, project_root, models_path, model)
+        _add_model_node(gb, project_root, models_path, model, exported)
 
     # Reuse the exact mapping `rb spec check-design` reports, so a model
     # that command calls "covered" is the same one linked here.
@@ -604,17 +644,30 @@ def _add_model_nodes(
 
 
 def _add_model_node(
-    gb: _GraphBuilder, project_root: Path, models_path: str, model
+    gb: _GraphBuilder,
+    project_root: Path,
+    models_path: str,
+    model,
+    exported: frozenset[tuple[str, str]] | None = None,
 ) -> str:
     """Emit one model node and its ``maps_to`` stitch to the design tier.
 
-    A ``graph: false`` model (#479) still gets its node — spec and test
-    cross-references point at it, and dropping it would break them — but
-    no ``maps_to``: the whole content of the opt-out is that no module is
-    named after this model, so an edge claiming otherwise would be false
-    *and* would strand the model as a permanent dangling target in the
-    merged graph. The flag rides on the node so a consumer can tell an
-    opted-out model from one whose export merely has not run.
+    A model the design tier is not going to export (#479) still gets its
+    node — spec and test cross-references point at it, and dropping it
+    would break them — but no ``maps_to``. That covers a ``graph: false``
+    model, whose whole point is that no module is named after it, and a
+    model this build did not select, which the config tier still walks
+    because it reads the whole ``--design-dir``.
+
+    The stitch is withheld rather than left to dangle because it can be
+    worse than dangling. ``module:<top>`` is a global id: an unselected
+    model whose ``top:`` matches a selected one's would have its
+    ``maps_to`` resolve, after the merge, against the *other* model's
+    exported hierarchy — and the graph would state that B maps to A's
+    design. See :func:`_exports_design`.
+
+    The ``graph:`` flag rides on the node so a consumer can tell an
+    opted-out model from one that is merely out of this build's scope.
     """
     models_rel = _rel(project_root, models_path)
     node = gb.add_node(
@@ -629,7 +682,7 @@ def _add_model_node(
     # this tier does not define; it resolves when the tiers are merged,
     # and stays dangling (harmless — node-link readers auto-create it) if
     # only the config tier is exported.
-    if model.graph:
+    if _exports_design(model, exported):
         gb.add_link(node, module_id(model.get_top()), MAPS_TO)
     return node
 
@@ -649,7 +702,7 @@ def _add_testbench_node(
     tests_rel: str,
     tb: TestbenchConfig,
     flow: str | list[str],
-    opted_out: bool = False,
+    unexported: bool = False,
 ) -> str:
     node = gb.add_node(
         testbench_id(suite_rel, tb.get_name()),
@@ -677,14 +730,16 @@ def _add_testbench_node(
     # config readback. `rb graph build` adds that edge instead, from
     # the top the viewer really elaborated.
     #
-    # `opted_out` says every test naming this testbench runs against a
-    # `graph: false` model (#479). The design tier drops such a TB export
-    # outright, so the declared edge would point at a `module:` node
-    # nothing is going to define — the same permanently dangling stitch
-    # the model node's `maps_to` is suppressed to avoid. The decision is
-    # per *testbench*, never per top name: two models can share a root
-    # module, and a graphable model's testbench must keep its edge.
-    if tb.toplevel and not opted_out:
+    # `unexported` says no test naming this testbench runs against a
+    # model this build will export (#479) — every one of them opted out,
+    # or was left out of the selection. The design tier drops such a TB
+    # export outright, so the declared edge would point at a `module:`
+    # node nothing is going to define, and if some *other* model exported
+    # a module of that name it would resolve against that one instead.
+    # The decision is per *testbench*, never per top name: two models can
+    # share a root module, and an exported model's testbench must keep
+    # its edge.
+    if tb.toplevel and not unexported:
         gb.add_link(node, module_id(tb.toplevel), ELABORATES_AS)
     return node
 
@@ -712,6 +767,7 @@ def _add_suite_nodes(
     verif_dir: str,
     cov_owners: dict[str, list[str]],
     by_suite: dict[str, list[str]],
+    exported: frozenset[tuple[str, str]] | None = None,
 ) -> list[str]:
     """Emit suites, testbenches, tests and everything hanging off them.
 
@@ -743,23 +799,23 @@ def _add_suite_nodes(
             flow=flow,
         )
 
-        # Testbenches every one of whose tests runs against a
-        # `graph: false` model (#479), keyed by testbench name so a
-        # graphable model's testbench is unaffected even when the two
-        # models share a root module. Computed before any testbench node
-        # is emitted, because the declared-but-unused pass below runs
-        # first and `add_link` keeps the first sighting of an edge.
-        # A declared-but-unused testbench has no model to inherit an
-        # opt-out from, so it keeps whatever it declares.
+        # Testbenches none of whose tests runs against a model this build
+        # exports (#479) — opted out, or outside the selection — keyed by
+        # testbench name so an exported model's testbench is unaffected
+        # even when the two models share a root module. Computed before
+        # any testbench node is emitted, because the declared-but-unused
+        # pass below runs first and `add_link` keeps the first sighting
+        # of an edge. A declared-but-unused testbench has no model to
+        # inherit anything from, so it keeps whatever it declares.
         tb_models: dict[str, list] = {}
         for test in suite.get_tests():
             tb_models.setdefault(test.get_testbench().get_name(), []).append(
                 test.get_model()
             )
-        opted_out_tbs = frozenset(
+        unexported_tbs = frozenset(
             name
             for name, tb_dut in tb_models.items()
-            if all(not model.graph for model in tb_dut)
+            if all(not _exports_design(model, exported) for model in tb_dut)
         )
 
         declared = _declared_testbenches(path)
@@ -772,7 +828,7 @@ def _add_suite_nodes(
                     tests_rel,
                     tb,
                     flow,
-                    tb.get_name() in opted_out_tbs,
+                    tb.get_name() in unexported_tbs,
                 )
 
         for test in suite.get_tests():
@@ -783,10 +839,10 @@ def _add_suite_nodes(
                 tests_rel,
                 test.get_testbench(),
                 flow,
-                test.get_testbench().get_name() in opted_out_tbs,
+                test.get_testbench().get_name() in unexported_tbs,
             )
             model = test.get_model()
-            model_node = _add_model_node(gb, project_root, model.path, model)
+            model_node = _add_model_node(gb, project_root, model.path, model, exported)
 
             test_node = gb.add_node(
                 test_id(suite_rel, test.get_name()),
@@ -836,6 +892,7 @@ def _add_flow_suite_nodes(
     project_root: Path,
     flows: _Flows,
     cov_owners: dict[str, list[str]],
+    exported: frozenset[tuple[str, str]] | None = None,
 ) -> None:
     """Emit the non-simulation flows' suites and runs.
 
@@ -867,7 +924,7 @@ def _add_flow_suite_nodes(
         )
         for entry in getattr(suite_cfg, entries_attr)():
             model = entry.get_model()
-            model_node = _add_model_node(gb, project_root, model.path, model)
+            model_node = _add_model_node(gb, project_root, model.path, model, exported)
             top = entry.get_top()
             test_node = gb.add_node(
                 test_id(suite_rel, entry.get_name()),
@@ -889,12 +946,13 @@ def _add_flow_suite_nodes(
             )
             gb.add_link(suite_node, test_node, "declares")
             gb.add_link(test_node, model_node, "exercises")
-            # Every run over a `graph: false` model inherits the opt-out
-            # (#479), whether it tops at the model's own root or at a
-            # checker of its own (the fpv shape): the design tier drops
-            # both export kinds for such a model, so either stitch would
-            # only add a permanently dangling target.
-            if top and model.graph:
+            # Every run over a model this build will not export inherits
+            # that (#479) — opted out, or outside the selection — whether
+            # it tops at the model's own root or at a checker of its own
+            # (the fpv shape): the design tier drops both export kinds for
+            # such a model, so either stitch would add a dangling target,
+            # or resolve against another model's module of the same name.
+            if top and _exports_design(model, exported):
                 gb.add_link(test_node, module_id(top), TARGETS)
             # An fpv run may declare `covers:` exactly as a test does
             # (rtl-buddy/rtl_buddy#385) — same field, same edge, same
@@ -939,6 +997,7 @@ def extract_config_tier(
     spec_dir: str | os.PathLike | None = None,
     verif_dir: str | os.PathLike | None = None,
     design_dir: str | os.PathLike | None = None,
+    exported_models: list | None = None,
 ) -> ConfigTier:
     """Extract the config tier of the design knowledge graph.
 
@@ -949,6 +1008,13 @@ def extract_config_tier(
         ``<project_root>/spec`` — the same default as ``rb spec check-coverage``.
       verif_dir: Tree searched for ``tests.yaml``. Defaults to ``<project_root>/verif``.
       design_dir: Tree searched for ``models.yaml``. Defaults to ``<project_root>/design``.
+      exported_models: the models this build's design tier will export,
+        when there is a selection to respect. Config->design stitches are
+        emitted only for those, because a stitch naming a module no
+        design tier defines is dangling at best and, when another model
+        exported a module of that name, false (#479). ``None`` means "no
+        selection" — a config-only build or a direct caller — and every
+        graphable model is stitched, as documented.
 
     Returns:
       ConfigTier: graph, provenance meta, and any suites that failed to load.
@@ -972,16 +1038,21 @@ def extract_config_tier(
     )
 
     flows = _collect_flows(root)
+    exported = (
+        None
+        if exported_models is None
+        else frozenset(_export_key(m) for m in exported_models)
+    )
 
     gb = _GraphBuilder()
     cov_owners = _add_spec_nodes(gb, root, spec_configs, verif_sources)
-    _add_model_nodes(gb, root, spec_configs, model_entries)
+    _add_model_nodes(gb, root, spec_configs, model_entries, exported)
     failures = (
-        _add_suite_nodes(gb, root, search_verif, cov_owners, flows.by_suite)
+        _add_suite_nodes(gb, root, search_verif, cov_owners, flows.by_suite, exported)
         if os.path.isdir(search_verif)
         else []
     )
-    _add_flow_suite_nodes(gb, root, flows, cov_owners)
+    _add_flow_suite_nodes(gb, root, flows, cov_owners, exported)
     failures += flows.failures
 
     generator = {
