@@ -4685,3 +4685,39 @@ def test_a_conflicting_filelist_define_does_not_change_the_scan(tmp_path, caplog
             tmp_path, "+define+WIDTH=8\n", {"WIDTH": 16}, "verilog"
         )
     assert defines["WIDTH"] == "16"
+
+
+# ---------------------------------------------------------------------------
+# Anonymous struct return types (review round 12)
+# ---------------------------------------------------------------------------
+
+
+def test_an_out_of_block_method_returning_an_anonymous_struct_passes_the_gate(
+    tmp_path, monkeypatch
+):
+    """The `;` inside the struct body used to stop the header scan, losing the
+    `C::` and reporting an automatic class method as a static free function —
+    a false failure under the default slang gate."""
+    src = dedent("""\
+        module my_module;
+          function struct packed { logic a; } C::f(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    assert isinstance(ys.run(), SynthPassResults)
+
+
+def test_a_module_scope_struct_returning_function_still_fails_the_gate(
+    tmp_path, monkeypatch
+):
+    src = dedent("""\
+        module my_module;
+          function struct packed { logic a; } free_fn(); return 0; endfunction
+        endmodule
+    """)
+    ys, _ = _gate_yosys(tmp_path, src, opts_overrides={"static_functions": "error"})
+    _patch_yosys(monkeypatch)
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "function free_fn" in result.results["desc"]

@@ -1350,3 +1350,109 @@ def test_an_escaped_name_ending_in_a_separator_keeps_it():
 def test_an_escaped_name_with_no_separator_is_unaffected():
     src = "module m;\n  function int \\odd$name (input int a); return a; endfunction\nendmodule\n"
     assert [f.name for f in scan_text(src, "m.sv")] == ["odd$name"]
+
+
+# ---------------------------------------------------------------------------
+# Anonymous struct/union return types (review round 12)
+# ---------------------------------------------------------------------------
+
+
+def test_anonymous_packed_struct_return_type_on_an_out_of_block_method():
+    """An anonymous struct body ends its members with `;`. The header scan
+    used to stop at the first of those, mid-type, losing the `C::` that makes
+    this an automatic class method and naming it after the struct's last
+    member instead."""
+    src = dedent("""\
+        module m;
+          function struct packed { logic a; } C::f(); return 0; endfunction
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_anonymous_packed_union_return_type_on_an_out_of_block_method():
+    src = dedent("""\
+        module m;
+          function union packed { logic a; logic b; } C::g(); return 0; endfunction
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_anonymous_struct_return_type_on_a_module_scope_function():
+    """The other side: still a finding, and named for itself rather than for
+    the struct's last member."""
+    src = dedent("""\
+        module m;
+          function struct packed { logic a; } free_fn(); return 0; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "free_fn")]
+
+
+def test_a_nested_anonymous_struct_return_type():
+    src = dedent("""\
+        module m;
+          function struct packed {
+            struct packed { logic x; } inner;
+            logic y;
+          } nested_fn(); return 0; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["nested_fn"]
+
+
+def test_an_anonymous_struct_return_type_with_packed_ranges():
+    src = dedent("""\
+        module m;
+          function struct packed { logic [7:0] a; logic [3:0] b; } ranged();
+            return 0;
+          endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["ranged"]
+
+
+def test_an_anonymous_struct_return_type_with_no_argument_list():
+    """The header then terminates on its own `;`, not the struct's."""
+    src = dedent("""\
+        module m;
+          function struct packed { logic a; } noargs; return 0; endfunction
+        endmodule
+    """)
+    assert _names(scan_text(src, "m.sv")) == [(2, "function", "noargs")]
+
+
+def test_automatic_still_exempts_a_struct_returning_function():
+    src = dedent("""\
+        module m;
+          function automatic struct packed { logic a; } ok_fn(); return 0; endfunction
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []
+
+
+def test_a_struct_returning_task_free_function_is_still_found_after_one():
+    """The struct body must not leave the header scan desynchronised for the
+    declarations that follow it."""
+    src = dedent("""\
+        module m;
+          function struct packed { logic a; } first(); return 0; endfunction
+          function int second(input int x); return x; endfunction
+        endmodule
+    """)
+    assert [f.name for f in scan_text(src, "m.sv")] == ["first", "second"]
+
+
+def test_an_unclosed_struct_brace_does_not_hang_the_scan():
+    src = "module m;\n  function struct packed { logic a; f();\n"
+    assert isinstance(scan_text(src, "m.sv"), list)
+
+
+def test_a_parameterised_and_struct_returning_out_of_block_method():
+    src = dedent("""\
+        module m;
+          function struct packed { logic a; } D#(int)::h(); return 0; endfunction
+        endmodule
+    """)
+    assert scan_text(src, "m.sv") == []

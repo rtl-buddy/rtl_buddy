@@ -436,11 +436,16 @@ def _parse_subroutine_header(
 
     Returns `(explicit_lifetime, name, qualified)` where `explicit_lifetime`
     is ``"automatic"``, ``"static"``, or None. The name is the last identifier
-    at bracket depth zero before the argument list or the terminating `;`,
+    at nesting depth zero before the argument list or the terminating `;`,
     which handles `ptr_t inc(`, `bit [W-1:0] f;`, `pkg::t_e g(`, and
-    `void run;` without needing a type grammar. A `#(...)` parameterisation on
-    the return type is skipped rather than mistaken for the argument list
-    (`function R#(int) C::f(`).
+    `void run;` without needing a type grammar.
+
+    Only the header's *own* `(` or `;` stops the scan, so every grouping a
+    return type can bring has to be tracked: `[ ]` for packed ranges, `{ }`
+    for an anonymous `struct`/`union` body -- whose member declarations end in
+    `;`, which used to stop the scan mid-type and name the subroutine after
+    its last member -- and `#( )` for a parameterisation, skipped whole so its
+    `(` is not read as the argument list (`function R#(int) C::f(`).
 
     `qualified` says an **unescaped** `::` or `.` separator was consumed, so
     the declaration is an out-of-block definition of a method declared
@@ -451,6 +456,7 @@ def _parse_subroutine_header(
     explicit: str | None = None
     name = ""
     bracket = 0
+    brace = 0
     qualify = False
     qualified = False
     name_escaped = False
@@ -462,6 +468,14 @@ def _parse_subroutine_header(
                 bracket += 1
             elif tok.text == "]":
                 bracket = max(0, bracket - 1)
+            elif tok.text == "{":
+                brace += 1
+            elif tok.text == "}":
+                brace = max(0, brace - 1)
+            elif brace:
+                # Inside an anonymous struct/union body nothing is the name,
+                # and its members' `;` are not the header's terminator.
+                pass
             elif (
                 bracket == 0
                 and tok.text == "#"
@@ -493,7 +507,7 @@ def _parse_subroutine_header(
                 qualified = True
                 name += "::"
                 j += 1
-        elif tok.kind == _WORD and bracket == 0:
+        elif tok.kind == _WORD and bracket == 0 and brace == 0:
             if (
                 not tok.escaped
                 and tok.text in ("automatic", "static")
