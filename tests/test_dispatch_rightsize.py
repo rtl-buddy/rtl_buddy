@@ -2377,3 +2377,105 @@ def test_an_unknowable_task_count_still_states_only_what_it_knows():
     assert cpu.suggested == "4"
     # ...and with no task count to state, the note says only what it knows.
     assert "per task x" not in cpu.edit_hint["note"]
+
+
+# ---- #505 review: runs of one test that were not submitted alike
+
+
+def _mixed_seed_rows(second_override):
+    """Two seeds of one test, the second submitted under a changed request."""
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 1000,
+        "timelimit_s": 3600,
+        "alloc_cpus": 4,
+        "req_cpus": 4,
+        "total_cpu_s": 1000.0,  # 0.25 efficiency
+    }
+    return [
+        _row("t", telemetry, run_id=1, requested_cpus=4, submitted_cpus_per_task=4),
+        _row(
+            "t",
+            telemetry,
+            run_id=2,
+            requested_cpus=None,
+            submitted_cpus_per_task=4,
+            cpus_override=second_override,
+        ),
+    ]
+
+
+def test_cpus_advice_is_withheld_when_a_tests_runs_were_not_submitted_alike(caplog):
+    """One `reserved` and one `edit_hint` cannot describe two reservations.
+
+    A retry is submitted into whatever environment the process holds by
+    then, so when only some seeds of a test retried after the ambient
+    `SBATCH_*` changed, their rows describe a different request from the
+    rest. Efficiency is still the peak across every run, so a row built
+    from the first one's metadata would pair a retried run's ratio with
+    another run's lever — pointing at a YAML field when the environment is
+    what moved, or the reverse. Withheld, the same answer
+    `parallel-utilization-ambiguous` gives the build job (#505 review).
+    """
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        findings = _analyze(
+            _mixed_seed_rows(["SBATCH_NTASKS=4"]), root_config_path="root_config.yaml"
+        )
+
+    assert [f for f in findings if f.resource == "cpus"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.cpus_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "mixed-cpu-requests"
+    assert record.rtl_fields["test"] == "t"
+    assert record.rtl_fields["runs"] == 2
+    # The omission is legible, not a silent gap.
+    assert "no cpus advice for t" in caplog.text
+    assert "not all submitted with the same cpu request" in caplog.text
+
+
+def test_runs_submitted_alike_still_get_their_cpus_advice(caplog):
+    """The guard is about disagreement, not about having several runs."""
+    import logging
+
+    rows = _mixed_seed_rows(None)
+    # ...make the second row agree with the first again.
+    rows[1]["requested_cpus"] = 4
+    with caplog.at_level(logging.INFO):
+        (cpu,) = [
+            f
+            for f in _analyze(rows, root_config_path="root_config.yaml")
+            if f.resource == "cpus"
+        ]
+    assert cpu.reserved == "4"
+    assert cpu.suggested == "2"
+    assert "cpus_advice_withheld" not in caplog.text
+
+
+def test_a_differing_per_task_value_alone_also_withholds():
+    """`submitted_cpus_per_task` is part of the request, so it counts too."""
+    rows = _mixed_seed_rows(None)
+    rows[1]["requested_cpus"] = 4
+    rows[1]["submitted_cpus_per_task"] = 2
+    assert [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ] == []
+
+
+def test_mem_and_time_advice_survive_a_mixed_cpu_request():
+    """Only the cpus row depends on the reservation that differed."""
+    rows = _mixed_seed_rows(["SBATCH_NTASKS=4"])
+    for row in rows:
+        row["results"].results["telemetry"] = {
+            **row["results"].results["telemetry"],
+            "req_mem_bytes": 8 * 2**30,
+            "max_rss_bytes": 2**30,
+        }
+    findings = _analyze(rows, root_config_path="root_config.yaml")
+    assert {f.resource for f in findings} == {"mem", "time"}

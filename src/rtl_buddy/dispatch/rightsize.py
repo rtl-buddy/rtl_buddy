@@ -354,8 +354,24 @@ def _aggregate(rows):
                 # bounds, and what the whole-job request decomposes into
                 # (#505 review).
                 "submitted_cpus_per_task": row.get("submitted_cpus_per_task"),
+                # ...all three taken from the first row that carries
+                # telemetry. Set when a later row disagrees: a retry is
+                # submitted into whatever environment the process holds by
+                # then, so when only some seeds of a test retried, their
+                # rows can describe a different request from the rest. The
+                # efficiency below is still maxed over every run, so one
+                # `reserved`/`edit_hint` cannot honestly describe them all
+                # and the cpus row is withheld instead (#505 review).
+                "cpus_request_mixed": False,
             },
         )
+        request_key = (
+            row.get("requested_cpus"),
+            tuple(row.get("cpus_override") or ()),
+            row.get("submitted_cpus_per_task"),
+        )
+        if agg.setdefault("_cpus_request_key", request_key) != request_key:
+            agg["cpus_request_mixed"] = True
         agg["runs"] += 1
         state = telemetry.get("state")
         if state and state not in agg["states"]:
@@ -1104,7 +1120,25 @@ def analyze_suite_reservations(
         # construction and needs no cooperation from the site.
         efficiency = agg.get("cpu_efficiency")
         if cpus and cpus > 1 and efficiency is not None:
-            if efficiency < rightsize_cfg.over_threshold:
+            if efficiency < rightsize_cfg.over_threshold and agg["cpus_request_mixed"]:
+                # The runs of this test were not all submitted with the same
+                # cpu request — a retry went out after the ambient `SBATCH_*`
+                # moved, so some seeds asked for something else. Efficiency is
+                # the peak across all of them, and one `reserved` plus one
+                # `edit_hint` cannot describe two different reservations: the
+                # row would pair a retried run's ratio with another run's
+                # lever. Withheld rather than guessed, the same answer
+                # `parallel-utilization-ambiguous` gives the build job.
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "rightsize.cpus_advice_withheld",
+                    suite=suite_display,
+                    test=test,
+                    reason="mixed-cpu-requests",
+                    runs=agg["runs"],
+                )
+            elif efficiency < rightsize_cfg.over_threshold:
                 suggested_cpus = max(
                     1, math.ceil(cpus * efficiency * rightsize_cfg.margin)
                 )

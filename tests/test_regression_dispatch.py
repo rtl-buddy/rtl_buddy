@@ -3785,3 +3785,70 @@ def test_a_retry_re_snapshots_the_cpu_overrides_it_was_submitted_with(
         "`SBATCH_NTASKS=4` multiplies this job's cpu request"
         in (cpus["edit_hint"]["note"])
     )
+
+
+@pytest.mark.parametrize("fail_at", ["submit", "wait"])
+def test_an_abandoned_retry_leaves_the_first_attempts_cpu_metadata(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_at: str,
+):
+    """Metadata must describe the attempt whose telemetry sits beside it.
+
+    The ambient `SBATCH_NTASKS` changes before the retry, but the retry is
+    then refused by `sbatch` — or its wait fails. The head deliberately
+    keeps the first attempt's results and telemetry after those cluster
+    failures, so the row must keep the first attempt's reservation too.
+    Rewriting it up front paired that telemetry with an attempt that never
+    ran, picking the wrong cpu denominator and naming an override that was
+    never in force for it (#505 review).
+
+    With the first attempt's metadata the resolved request is 1 cpu, which
+    the `cpus > 1` guard drops — so a cpus row appearing at all is the bug.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch,
+        _RetryBackend(
+            cpu_telemetry={
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 100.0,  # 0.25 efficiency
+            },
+        ),
+    )
+
+    real_wait_all = backend.wait_all
+    real_submit = backend.submit
+
+    def wait_all_then_export(handles, **kwargs):
+        # The window a later suite's in-process sweep hook would run in.
+        os.environ["SBATCH_NTASKS"] = "4"
+        if fail_at == "wait" and backend.wait_calls >= 1:
+            raise FatalRtlBuddyError("max-wait elapsed on the retry round")
+        return real_wait_all(handles, **kwargs)
+
+    def submit_or_refuse(spec, **kwargs):
+        if fail_at == "submit" and backend.attempts.get(spec.test_name):
+            raise FatalRtlBuddyError("sbatch: error: QOSMaxSubmitJobPerUserLimit")
+        return real_submit(spec, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_export)
+    monkeypatch.setattr(backend, "submit", submit_or_refuse)
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    # The retry was abandoned, not the run: the first attempt's rows stand.
+    assert "retry_abandoned" in result.output or "abandoned" in result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    # The first attempt asked for the resolved 1 cpu with nothing overriding
+    # it, and a one-cpu reservation has no cpus advice to give.
+    assert [a for a in advice if a["resource"] == "cpus"] == []

@@ -546,6 +546,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "for this suite is measured against the scheduler's own "
                 "ReqCPUS instead."
             )
+        case "rightsize.cpus_advice_withheld":
+            return (
+                f"{fields.get('suite')}: no cpus advice for "
+                f"{fields.get('test')} — its {fields.get('runs')} run(s) were "
+                "not all submitted with the same cpu request (a retry went "
+                "out after the ambient SBATCH_* environment changed), so no "
+                "single reservation or edit hint describes them all"
+            )
         case "rightsize.mem_advice_unsampled":
             tests = fields.get("tests") or []
             interval = fields.get("interval_s")

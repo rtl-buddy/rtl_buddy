@@ -3744,6 +3744,7 @@ class RtlBuddy:
         their sum.
         """
         resubmitted = []
+        staged = []
         longest_delay = 0.0
         try:
             for idx, handle, classifier in retryable:
@@ -3784,12 +3785,22 @@ class RtlBuddy:
                 # the row has to describe this attempt. Stale metadata here
                 # picks the wrong cpu denominator and names an override that
                 # was not in force (#505 review).
+                #
+                # Read now, beside the submit it describes, but applied only
+                # once the whole round has landed: an `sbatch` that refuses,
+                # or a wait that fails, leaves the caller holding the
+                # PREVIOUS attempt's results and telemetry, and those must
+                # not be paired with this attempt's reservation.
                 if suite_results is not None:
-                    self._refresh_cpu_request_metadata(
-                        suite_results[idx], spec, backend=backend, attempt=attempt
+                    staged.append(
+                        self._stage_cpu_request_metadata(suite_results[idx], spec)
                     )
                 resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
             backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
+            # The round landed: every job of it was accepted and waited on,
+            # so the rows may now describe it. Anything short of that leaves
+            # them describing the attempt whose results the caller keeps.
+            self._commit_cpu_request_metadata(staged, backend=backend, attempt=attempt)
         except BaseException:
             # Same contract as the submit fan-out: a failure mid-retry must
             # not leave this attempt's jobs running behind the head.
@@ -3797,32 +3808,48 @@ class RtlBuddy:
             raise
         return resubmitted
 
-    def _refresh_cpu_request_metadata(self, row, spec, *, backend, attempt):
-        """Re-snapshot the cpu overrides for one resubmission (#505 review)."""
-        overrides = cpu_request_overrides(
-            getattr(self.root_cfg.get_dispatch_cfg(), "sbatch_args", None)
-        )
-        was = row.get("cpus_override") or []
-        self._record_cpu_request_metadata(
+    def _stage_cpu_request_metadata(self, row, spec):
+        """Read this resubmission's cpu overrides; do NOT write them yet.
+
+        Returned staged, not applied, because a row's metadata must always
+        describe the attempt whose telemetry sits beside it. If this round's
+        `sbatch` is refused or its wait fails, the caller keeps the previous
+        attempt's results and telemetry — and a row already rewritten here
+        would pair those with the reservation of an attempt that never ran
+        (#505 review).
+        """
+        return (
             row,
-            per_task_cpus=spec.resources.cpus,
-            overrides=overrides,
+            spec,
+            cpu_request_overrides(
+                getattr(self.root_cfg.get_dispatch_cfg(), "sbatch_args", None)
+            ),
         )
-        if overrides != was:
-            # Worth a line: the advice for this test is about to be derived
-            # from a different set of overrides than its first attempt was,
-            # and nothing else in the run would say so.
-            log_event(
-                logger,
-                logging.DEBUG,
-                "rightsize.request_overrides_changed",
-                backend=backend.name,
-                test=spec.test_name,
-                run_id=spec.run_id,
-                attempt=attempt,
-                was=was,
-                now=overrides,
+
+    def _commit_cpu_request_metadata(self, staged, *, backend, attempt):
+        """Apply a round's staged metadata, once that round has landed."""
+        for row, spec, overrides in staged:
+            was = row.get("cpus_override") or []
+            self._record_cpu_request_metadata(
+                row,
+                per_task_cpus=spec.resources.cpus,
+                overrides=overrides,
             )
+            if overrides != was:
+                # Worth a line: the advice for this test is now derived from
+                # a different set of overrides than its first attempt was,
+                # and nothing else in the run would say so.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "rightsize.request_overrides_changed",
+                    backend=backend.name,
+                    test=spec.test_name,
+                    run_id=spec.run_id,
+                    attempt=attempt,
+                    was=was,
+                    now=overrides,
+                )
 
     @staticmethod
     def _retry_spec(spec, *, attempt):
