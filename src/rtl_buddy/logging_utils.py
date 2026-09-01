@@ -530,9 +530,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "rightsize.request_from_scheduler":
             args = fields.get("sbatch_args") or []
-            # Several arguments MULTIPLY (ReqCPUS = tasks x cpus-per-task),
-            # so they are listed as a product rather than as alternatives.
-            named = " x ".join(f"`{a}`" for a in args)
+            # Listed, not multiplied: several of them combine by sbatch's own
+            # precedence, which this line does not try to reproduce (#505).
+            quoted = [f"`{a}`" for a in args]
+            named = (
+                quoted[0]
+                if len(quoted) == 1
+                else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+            )
             return (
                 f"cfg-dispatch.sbatch-args sets {named}, which is appended "
                 "after the generated flags and wins — so the resolved cpus "

@@ -1698,24 +1698,38 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     assert "ReqCPUS" in result.output
 
 
-def test_a_node_selection_constraint_is_not_treated_as_a_cpu_override(
+@pytest.mark.parametrize(
+    "arg",
+    [
+        # Node SELECTION: restricts which nodes and hardware threads may be
+        # used; the generated `--cpus-per-task` still states the request.
+        "--threads-per-core=2",
+        "-B 2:4:1",
+        # Placement MAXIMA: cap where the tasks `--ntasks` asked for may
+        # land. Alone they request nothing at all (#505 review).
+        "--ntasks-per-core=2",
+        "--ntasks-per-socket=2",
+        "--ntasks-per-gpu=2",
+    ],
+)
+def test_a_placement_or_selection_arg_is_not_treated_as_a_cpu_override(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
     monkeypatch: pytest.MonkeyPatch,
+    arg: str,
 ):
-    """`--threads-per-core` selects nodes; it does not set the request.
+    """These shape placement; they do not set the cpu request.
 
     The generated `--cpus-per-task=1` still states what the job asks for,
-    so the head knows the request and must keep using it. Reading the
-    constraint as an override would throw that away, fall back to a
-    `ReqCPUS` the site rounded to 2, and resurrect the exact spurious
-    "reduce cpus to 1" this issue is about — with the hint pointing at
-    `sbatch-args` for good measure (#505 review).
+    so the head knows the request and must keep using it. Reading one of
+    these as an override would throw that away, fall back to a `ReqCPUS`
+    the site rounded to 2, and resurrect the exact spurious "reduce cpus
+    to 1" this issue is about — with the hint pointing at `sbatch-args`
+    for good measure (#505 review).
     """
     root_cfg = minimal_project / "root_config.yaml"
     root_cfg.write_text(
-        root_cfg.read_text()
-        + "\ncfg-dispatch:\n  sbatch-args: [--threads-per-core=2]\n"
+        root_cfg.read_text() + f"\ncfg-dispatch:\n  sbatch-args: [{arg}]\n"
     )
     backend = _RecordingBackend(
         telemetry={
@@ -1794,7 +1808,7 @@ def test_a_lone_ntasks_override_does_not_claim_to_take_the_suggestion(
     assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5), whole-job
     assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
     note = cpus["edit_hint"]["note"]
-    assert "`--ntasks=4` scales this job's cpu request rather than stating it" in note
+    assert "`--ntasks=4` raises this job's cpu request rather than stating it" in note
     assert "change it there" not in note
 
 
@@ -1853,10 +1867,14 @@ def test_orthogonal_sbatch_args_cpu_options_withhold_the_per_argument_edit(
     assert cpus["suggested"] == "3"  # ceil(8 x 0.25 x 1.5), whole-job
     assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
     note = cpus["edit_hint"]["note"]
-    assert "the product of `--ntasks=4` x `--cpus-per-task=2`" in note
-    assert "decompose it across those arguments yourself" in note
+    assert (
+        "`--ntasks=4` and `--cpus-per-task=2` set this job's cpu request together"
+        in note
+    )
+    assert "product" not in note
+    assert "decompose it across those arguments per sbatch's own precedence" in note
     # The DEBUG line lists both arguments, for the same reason.
-    assert "`--ntasks=4` x `--cpus-per-task=2`" in result.output
+    assert "`--ntasks=4` and `--cpus-per-task=2`" in result.output
 
 
 def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(

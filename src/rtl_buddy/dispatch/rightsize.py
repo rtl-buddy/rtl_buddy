@@ -167,29 +167,42 @@ def format_time(seconds: float) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
 
 
+def _join_args(quoted: list) -> str:
+    """``A``, ``B`` and ``C`` — a list, deliberately NOT a product.
+
+    An earlier wording said "the product of A x B", which is arithmetic
+    the note cannot back up: with ``--ntasks=8 --nodes=2
+    --ntasks-per-node=4 --cpus-per-task=2`` sbatch's own precedence makes
+    the request 16, not the product of all four (``--ntasks`` wins and
+    ``--ntasks-per-node`` degrades to a per-node maximum). The note names
+    the arguments and leaves the combining rule to sbatch (#505 review).
+    """
+    if len(quoted) == 2:
+        return f"{quoted[0]} and {quoted[1]}"
+    return f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
 def _override_note(sbatch_args: list, masked_path: str) -> str:
     """Why a cpus finding names ``sbatch-args`` instead of a YAML field.
 
     ``cfg-dispatch.sbatch-args`` is appended after the generated reservation
     flags, so an argument there decides the job's cpu request — either
-    directly (``--cpus-per-task``) or as the task/node count ``ReqCPUS``
-    multiplies it by (``--ntasks``, ``--ntasks-per-node``, ...). Advice
-    that named the masked field would be unappliable: the edit lands, the
-    next job is submitted with the same argument, and the finding returns
-    (#505 review).
+    directly (``--cpus-per-task``) or as a task/node count that raises it
+    (``--ntasks``, ``--ntasks-per-node``, ``--nodes``). Advice that named
+    the masked field would be unappliable: the edit lands, the next job is
+    submitted with the same argument, and the finding returns (#505
+    review).
 
-    Only one shape can be handed the suggested number: a single DIRECT cpu
-    count (``-c``/``--cpus-per-task``), which states the
-    request outright. Two shapes cannot. Several arguments MULTIPLY —
-    ``ReqCPUS`` is *tasks x cpus-per-task* — so none of them alone takes a
-    whole-job figure. And a lone task or topology modifier (``--ntasks``,
-    ``--ntasks-per-node``, ``--nodes``) is not a cpu count at all:
-    writing 3 into ``--ntasks`` asks for
-    three tasks, not three cpus. Telling a reader to do either would
-    produce exactly the unappliable advice this rule exists to prevent, so
-    the note states what the arguments do and hands the decomposition back
-    to the reader, who is the only party that knows which factor should
-    shrink (#505 review).
+    Only one shape can be handed the suggested number: a single
+    ``-c``/``--cpus-per-task``, which states the request outright. Two
+    shapes cannot. A lone task or node count is not a cpu count at all —
+    writing 3 into ``--ntasks`` asks for three tasks, not three cpus. And
+    where several arguments are present they combine by sbatch's own
+    precedence rules, which the note does not attempt to reproduce: it
+    names them and hands the decomposition back to the reader, who is the
+    only party that knows which one should shrink. Telling a reader to put
+    the figure into any single argument in either case would produce
+    exactly the unappliable advice this rule exists to prevent.
     """
     quoted = [f"`{arg}`" for arg in sbatch_args]
     if len(quoted) == 1 and sbatch_arg_sets_cpu_count_directly(sbatch_args[0]):
@@ -200,17 +213,17 @@ def _override_note(sbatch_args: list, masked_path: str) -> str:
         )
     if len(quoted) == 1:
         return (
-            f"sbatch-args supersedes {masked_path}: {quoted[0]} scales "
+            f"sbatch-args supersedes {masked_path}: {quoted[0]} raises "
             "this job's cpu request rather than stating it. Suggested "
             "value is the whole-job cpu count — that argument does not "
             "take it, so work out the reservation that reaches it "
             "yourself."
         )
     return (
-        f"sbatch-args supersedes {masked_path}: this job's cpu request is "
-        f"the product of {' x '.join(quoted)}. Suggested value is the "
-        "whole-job cpu count — decompose it across those arguments "
-        "yourself; no single one of them takes it."
+        f"sbatch-args supersedes {masked_path}: {_join_args(quoted)} set "
+        "this job's cpu request together. Suggested value is the whole-job "
+        "cpu count — decompose it across those arguments per sbatch's own "
+        "precedence; no single one of them takes it."
     )
 
 

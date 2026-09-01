@@ -489,6 +489,15 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
 #   unconditionally on every job — so sbatch rejects the pair and the
 #   "override" can never take effect. Detecting it would only degrade the
 #   advice for a submission that never runs.
+# - `--ntasks-per-core` and `--ntasks-per-socket` are documented as placement
+#   MAXIMA ("request the maximum ntasks be invoked on each core/socket ...
+#   meant to be used with the --ntasks option"): they cap where the tasks
+#   `--ntasks` asked for may land, and a lone one requests nothing. The
+#   `--ntasks` they accompany is in this set, so a real task-count change is
+#   still caught. `--ntasks-per-gpu` is left out on the same conservative
+#   footing: it only takes effect beside a GPU request (`--gpus`/`--gres`)
+#   that rtl-buddy neither generates nor tracks, so on its own it moves no
+#   cpu request (#505 review).
 #
 # Keyed by the long form, valued by the short one, because the two are the
 # SAME option: `[-c 4, --cpus-per-task=8]` is one option written twice (the
@@ -502,12 +511,15 @@ _DIRECT_CPU_COUNT_OPTS = {
     "--cpus-per-task": "-c",
 }
 _CPU_SCALING_OPTS = {
-    # The task and node counts `ReqCPUS` multiplies the cpu count by.
+    # The task and node counts that raise the cpu request above one
+    # cpus-per-task. `--ntasks-per-node` earns its place because sbatch
+    # documents it as a REQUEST when `--ntasks` is absent ("request that
+    # ntasks be invoked on each node ... meant to be used with the --nodes
+    # option"), so `--nodes=2 --ntasks-per-node=4` asks for eight tasks; it
+    # degrades to a maximum only when `--ntasks` is also given, and that
+    # option is in this set too, so the pair is caught either way.
     "--ntasks": "-n",
     "--ntasks-per-node": None,
-    "--ntasks-per-core": None,
-    "--ntasks-per-socket": None,
-    "--ntasks-per-gpu": None,
     "--nodes": "-N",
 }
 _CPU_REQUEST_OPTS = {**_DIRECT_CPU_COUNT_OPTS, **_CPU_SCALING_OPTS}
@@ -521,8 +533,8 @@ def sbatch_arg_sets_cpu_count_directly(arg: str) -> bool:
 
     ``-c``/``--cpus-per-task`` names a number of cpus, so a whole-job
     suggestion can be written straight into it. ``--ntasks``,
-    ``--ntasks-per-*`` and ``-N``/``--nodes`` are task and node counts:
-    they scale the request rather than stating it, and telling a reader to
+    ``--ntasks-per-node`` and ``-N``/``--nodes`` are task and node counts:
+    they raise the request rather than stating it, and telling a reader to
     put a cpu count into one of them would be advice that cannot be
     applied (#505 review).
 
@@ -554,9 +566,9 @@ def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:
 
     Two families of option qualify, because ``ReqCPUS`` is *tasks x
     cpus-per-task*: the cpu count (``-c``/``--cpus-per-task``) and the
-    task/node counts that multiply it (``-n``/``--ntasks``,
-    ``--ntasks-per-node``/``-core``/``-socket``/``-gpu``,
-    ``-N``/``--nodes``). Node-selection constraints
+    task/node counts that raise it (``-n``/``--ntasks``,
+    ``--ntasks-per-node``, ``-N``/``--nodes``). Placement maxima
+    (``--ntasks-per-core``/``-socket``/``-gpu``), node-selection constraints
     (``--threads-per-core``, ``-B``/``--extra-node-info``), allocation
     modifiers (``--exclusive``, ``--overcommit``) and ``--cpus-per-gpu``
     (which sbatch rejects alongside the ``--cpus-per-task`` every job

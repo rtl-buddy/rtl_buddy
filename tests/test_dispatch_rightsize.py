@@ -1824,8 +1824,13 @@ def test_two_orthogonal_cpu_options_withhold_the_per_argument_suggestion():
     assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
     assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
     note = cpu.edit_hint["note"]
-    assert "the product of `--ntasks=4` x `--cpus-per-task=2`" in note
-    assert "decompose it across those arguments yourself" in note
+    assert (
+        "`--ntasks=4` and `--cpus-per-task=2` set this job's cpu request together"
+        in note
+    )
+    # No arithmetic claim: sbatch's own precedence decides how they combine.
+    assert "product" not in note
+    assert "decompose it across those arguments per sbatch's own precedence" in note
     # ...and it must NOT claim any single argument takes the number.
     assert "sets this job's cpu request" not in note
     assert "change it there" not in note
@@ -1885,8 +1890,13 @@ def test_the_build_row_withholds_it_too_under_orthogonal_options():
     assert cpus_a.suggested == "3"
     assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
     note = cpus_a.edit_hint["note"]
-    assert "the product of `--ntasks=4` x `--cpus-per-task=2`" in note
-    assert "decompose it across those arguments yourself" in note
+    assert (
+        "`--ntasks=4` and `--cpus-per-task=2` set this job's cpu request together"
+        in note
+    )
+    # No arithmetic claim: sbatch's own precedence decides how they combine.
+    assert "product" not in note
+    assert "decompose it across those arguments per sbatch's own precedence" in note
     assert "cfg-dispatch.compile.cpus" in note
     # The superseded per-build decomposition stays gone.
     assert "the build job reserved" not in note
@@ -1911,9 +1921,6 @@ _MODIFIER_TELEMETRY = {
         "--ntasks=4",
         "-n 4",
         "--ntasks-per-node=2",
-        "--ntasks-per-core=2",
-        "--ntasks-per-socket=2",
-        "--ntasks-per-gpu=2",
         "--nodes=2",
         "-N 2",
     ],
@@ -1941,7 +1948,7 @@ def test_a_lone_task_or_node_count_does_not_take_the_suggestion(arg):
     ]
     assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
     note = cpu.edit_hint["note"]
-    assert f"`{arg}` scales this job's cpu request rather than stating it" in note
+    assert f"`{arg}` raises this job's cpu request rather than stating it" in note
     assert "that argument does not take it" in note
     # ...and it must NOT be the "write the number in here" wording.
     assert "sets this job's cpu request" not in note
@@ -1960,7 +1967,7 @@ def test_a_lone_direct_cpu_count_still_takes_the_suggestion(arg):
     note = cpu.edit_hint["note"]
     assert f"sbatch-args `{arg}` sets this job's cpu request" in note
     assert "change it there" in note
-    assert "scales this job's cpu request" not in note
+    assert "raises this job's cpu request" not in note
 
 
 def test_the_build_row_also_declines_a_lone_modifier():
@@ -1985,7 +1992,7 @@ def test_the_build_row_also_declines_a_lone_modifier():
     assert cpus_a.suggested == "3"
     assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
     note = cpus_a.edit_hint["note"]
-    assert "`--ntasks-per-node=4` scales this job's cpu request" in note
+    assert "`--ntasks-per-node=4` raises this job's cpu request" in note
     assert "cfg-dispatch.compile.cpus" in note
     assert "change it there" not in note
 
@@ -2051,3 +2058,52 @@ def test_an_override_disables_the_compile_cpus_floor():
     # The mem and time floors are untouched: `--cpus-per-task` supersedes
     # neither, so those reservations really are still max(sim, compile).
     assert [f for f in _analyze(overridden) if f.resource == "mem"] == []
+
+
+def test_the_note_makes_no_arithmetic_claim_about_four_arguments():
+    """`--ntasks=8 --nodes=2 --ntasks-per-node=4 --cpus-per-task=2` is 16.
+
+    Not the product of all four. sbatch's own precedence decides: `--ntasks`
+    wins and `--ntasks-per-node` degrades to a per-node maximum. An earlier
+    note said "the product of A x B x C x D", which is arithmetic it cannot
+    back up — and a reader who trusted it would compute the wrong
+    reservation. The note names the arguments and leaves the combining rule
+    to sbatch (#505 review).
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 16,
+                "req_cpus": 16,  # 8 tasks x 2 cpus, NOT 8 x 2 x 4 x 2
+                "total_cpu_s": 4000.0,  # 0.25 efficiency against those 16
+            },
+            requested_cpus=None,
+            cpus_override=[
+                "--ntasks=8",
+                "--nodes=2",
+                "--ntasks-per-node=4",
+                "--cpus-per-task=2",
+            ],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "16"
+    assert cpu.suggested == "6"  # ceil(16 x 0.25 x 1.5), the whole-job figure
+    note = cpu.edit_hint["note"]
+    # Every argument is named, in the order the project wrote them...
+    assert (
+        "`--ntasks=8`, `--nodes=2`, `--ntasks-per-node=4` and "
+        "`--cpus-per-task=2` set this job's cpu request together" in note
+    )
+    # ...and no arithmetic is claimed about how they combine.
+    assert "product" not in note
+    assert " x " not in note
+    assert "decompose it across those arguments per sbatch's own precedence" in note

@@ -728,10 +728,10 @@ def test_parallel_is_not_a_field_of_a_suite_level_compile_block(
         (["--ntasks=4"], "--ntasks=4"),
         (["-n", "4"], "-n 4"),
         (["-n4"], "-n4"),
+        # sbatch documents this one as a REQUEST when `--ntasks` is absent
+        # ("meant to be used with the --nodes option"), so `--nodes=2
+        # --ntasks-per-node=4` asks for eight tasks (#505 review).
         (["--ntasks-per-node=2"], "--ntasks-per-node=2"),
-        (["--ntasks-per-core=2"], "--ntasks-per-core=2"),
-        (["--ntasks-per-socket=2"], "--ntasks-per-socket=2"),
-        (["--ntasks-per-gpu=2"], "--ntasks-per-gpu=2"),
         (["--nodes=2"], "--nodes=2"),
         (["-N", "2"], "-N 2"),
     ],
@@ -833,6 +833,16 @@ def test_distinct_cpu_options_multiply_instead_of_overriding(args, expected):
         # effect, and a job that never runs has nothing to right-size.
         ["--cpus-per-gpu=4"],
         ["--cpus-per-gpu", "4"],
+        # Placement MAXIMA, not requests: they cap where the tasks
+        # `--ntasks` asked for may land ("request the maximum ntasks be
+        # invoked on each core/socket ... meant to be used with the
+        # --ntasks option"), so a lone one requests nothing. The `--ntasks`
+        # they accompany is in the set, so a real change is still caught.
+        ["--ntasks-per-core=2"],
+        ["--ntasks-per-socket=2"],
+        # Only takes effect beside a GPU request rtl-buddy neither generates
+        # nor tracks, so on its own it moves no cpu request.
+        ["--ntasks-per-gpu=2"],
     ],
 )
 def test_args_that_do_not_touch_cpus_are_left_alone(args):

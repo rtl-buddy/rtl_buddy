@@ -65,10 +65,10 @@ of the global reservation.
   except on such a `cpus` row. Edit the requested figure named in `Field`.
 - ...unless `cfg-dispatch.sbatch-args` carries an argument that sets the job's
   cpu request: `-c`/`--cpus-per-task`, or a task/node count `ReqCPUS`
-  multiplies it by (`-n`/`--ntasks`, `--ntasks-per-*`, `-N`/`--nodes`).
-  Node-selection constraints (`--threads-per-core`, `-B`) and `--exclusive`
-  do not count — they change what is selected or allocated, not what is
-  requested. Those are appended last and win — within
+  raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`).
+  Node-selection constraints (`--threads-per-core`, `-B`), placement maxima
+  (`--ntasks-per-core`/`-socket`/`-gpu`) and `--exclusive` do not count — they
+  change what is selected, capped or allocated, not what is requested. Those are appended last and win — within
   one option the last occurrence, as for sbatch. The advice then falls back to
   `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line names the
   arguments, and the `cpus` row's `edit_hint` points at
@@ -77,8 +77,10 @@ of the global reservation.
 - `suggested` is always the whole-job cpu count, but only ONE shape of override
   takes it: exactly one `-c`/`--cpus-per-task` — write it straight in. A lone
   task or node count (`--ntasks`, `--ntasks-per-*`, `--nodes`) is not a cpu
-  count, and several arguments multiply, so in both cases the note says the
-  number is the whole-job figure and the decomposition is yours.
+  count, and several arguments combine by sbatch's own precedence, so in both
+  cases the note says the number is the whole-job figure and the decomposition
+  is yours. It never claims a product: `--ntasks=8 --nodes=2
+  --ntasks-per-node=4 --cpus-per-task=2` requests 16, not the product of four.
 - An override also disables the compile `cpus` floor: that floor bounds the
   generated `max(sim, compile)` reservation, which sbatch never saw, so leaving
   it in would clamp every suggestion up and then discard it. `mem` and `time`
