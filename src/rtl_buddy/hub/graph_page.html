@@ -1341,27 +1341,47 @@
   // `maps_to` link (`config_tier.MAPS_TO`), so the targets of the ACTIVE
   // model's own `maps_to` links are its roots.
   //
-  // The model NAME is a FALLBACK, used only when the payload carries no
-  // stitch for this model — a design-tier-only graph, where no config
-  // tier has been built and so no `model:` node exists at all. Seeding
-  // it unconditionally was wrong once `top:` existed: an active model
-  // `foo` topped at `bar` would own both names, so an instance rooted at
-  // a *different* selected model that happens to be named `foo` scored
-  // as the active model's own and `shallowestInstancePath` could prefer
-  // it — landing the selection in a model that is not on screen, which
-  // is the exact bug the active-model preference exists to prevent.
-  // Where a stitch exists it is the whole answer. A suite qualifier (`@<suite>`,
-  // `graph.build.QUALIFIER_SEP`) is appended to an id two files claimed;
-  // it is not part of the module name, so it comes off.
+  // The model NAME is a FALLBACK for one payload shape only: a
+  // design-tier-only graph, where no config tier has been built and so
+  // there is no `model:` node for the active model to read a stitch
+  // off. There the naming convention is all there is.
+  //
+  // Two things had to be ruled out to get here. Seeding the name
+  // unconditionally was wrong once `top:` existed: an active model
+  // `foo` topped at `bar` would own both names, so an instance rooted
+  // at a *different* selected model named `foo` scored as the active
+  // model's own. Falling back whenever the STITCH is missing was wrong
+  // too, because a `graph: false` model has a `model:` node and no
+  // stitch by design (#479) — and its name is a legal `top:` for some
+  // other model, since opted-out models are excluded from the build's
+  // top-collision check. Both mistakes end the same way:
+  // `shallowestInstancePath` prefers another model's instance, landing
+  // the selection in a model that is not on screen, which is the exact
+  // bug the active-model preference exists to prevent.
+  //
+  // So the question is not "did we find a stitch" but "does this
+  // payload know this model at all". A `model:` node with no stitch is
+  // an answer — no roots — not an absence of one. A suite qualifier
+  // (`@<suite>`, `graph.build.QUALIFIER_SEP`) is appended to an id two
+  // files claimed; it is not part of the module name, so it comes off.
   //
   // An unknown model — no `state_snapshot` yet, or a hub with no active
   // model at all — returns an EMPTY set, and an empty set is what makes
   // `shallowestInstancePath` behave exactly as it did before: no state
-  // from the hub, no new preference.
-  function activeModelRoots(links, model) {
+  // from the hub, no new preference. A model the graph simply does not
+  // cover (a build narrowed with `--model`) is indistinguishable from
+  // the design-tier-only shape from here, and takes the same fallback:
+  // a root nothing matches costs nothing.
+  function activeModelRoots(links, model, nodes) {
     var roots = Object.create(null);
     if (typeof model !== 'string' || !model) { return roots; }
-    var stitched = false;
+    var known = false;
+    (nodes || []).forEach(function (n) {
+      if (known || !n || n.type !== 'model') { return; }
+      var id = String(n.id == null ? '' : n.id);
+      var hash = id.indexOf('#');
+      if (hash >= 0 && id.slice(hash + 1) === model) { known = true; }
+    });
     (links || []).forEach(function (l) {
       if (!l || l.type !== 'maps_to') { return; }
       var source = String(l.source == null ? '' : l.source);
@@ -1370,9 +1390,9 @@
       var hash = source.indexOf('#');
       if (hash < 0 || source.slice(hash + 1) !== model) { return; }
       var name = target.slice('module:'.length).split('@')[0];
-      if (name) { roots[name] = true; stitched = true; }
+      if (name) { roots[name] = true; }
     });
-    if (!stitched) { roots[model] = true; }
+    if (!known) { roots[model] = true; }
     return roots;
   }
 
@@ -1421,17 +1441,19 @@
   }
   // <<< active-model
 
-  // `activeModelRoots` over the payload on screen, memoised on the two
+  // `activeModelRoots` over the payload on screen, memoised on the
   // things that can change it: the hub's active model and the ingested
-  // graph (`ingest` replaces `state.links` wholesale, so identity is a
-  // sound cache key).
+  // graph (`ingest` replaces `state.nodes` and `state.links` wholesale,
+  // so their identities are sound cache keys). Both halves of the graph
+  // are keys because the answer now reads nodes as well as links.
   var modelRootsCache = null;
   function currentModelRoots() {
     if (!modelRootsCache || modelRootsCache.model !== activeModel ||
-        modelRootsCache.links !== state.links) {
+        modelRootsCache.links !== state.links ||
+        modelRootsCache.nodes !== state.nodes) {
       modelRootsCache = {
-        model: activeModel, links: state.links,
-        roots: activeModelRoots(state.links, activeModel)
+        model: activeModel, links: state.links, nodes: state.nodes,
+        roots: activeModelRoots(state.links, activeModel, state.nodes)
       };
     }
     return modelRootsCache.roots;

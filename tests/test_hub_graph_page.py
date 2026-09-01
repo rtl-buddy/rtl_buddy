@@ -838,12 +838,39 @@ def test_a_models_roots_come_off_the_maps_to_stitch():
           // prefix — a `tb:` node's roots are not a model's.
           { type: 'maps_to', source: 'tb:verif/x#tb', target: 'module:tb_top' },
           { type: 'instance_of', source: 'inst:fifo/fifo', target: 'module:fifo' },
+          // A graphable model whose `top:` IS the opted-out model's
+          // name. Legal: opted-out models are excluded from the build's
+          // top-collision check, so nothing stops `apb_intf` being some
+          // other model's root module.
+          { type: 'maps_to', source: 'model:design/w/models.yaml#wrapper',
+            target: 'module:apb_intf' },
           null
         ];
-        ['fifo', 'alias', 'twin', 'nope', '', null, undefined].forEach(function (m) {
-          console.log(JSON.stringify(Object.keys(activeModelRoots(links, m)).sort()));
+        // The config tier emits a `model:` node for every model it reads,
+        // including the ones that opted out of the design tier.
+        var nodes = [
+          { id: 'model:design/common/models.yaml#fifo', type: 'model' },
+          { id: 'model:design/cdc/models.yaml#cdc', type: 'model' },
+          { id: 'model:design/x/models.yaml#alias', type: 'model' },
+          { id: 'model:design/y/models.yaml#other', type: 'model' },
+          { id: 'model:design/z/models.yaml#twin', type: 'model' },
+          { id: 'model:design/w/models.yaml#wrapper', type: 'model' },
+          // `graph: false`: a node, and no stitch, by design.
+          { id: 'model:design/v/models.yaml#apb_intf', type: 'model',
+            graph: false },
+          // Not a model node, and not a name to match on.
+          { id: 'module:apb_intf', type: 'module' },
+          { id: 'tb:verif/x#tb', type: 'testbench' },
+          null
+        ];
+        var names = ['fifo', 'alias', 'twin', 'apb_intf', 'nope',
+                     '', null, undefined];
+        names.forEach(function (m) {
+          console.log(JSON.stringify(
+            Object.keys(activeModelRoots(links, m, nodes)).sort()));
         });
-        console.log(JSON.stringify(Object.keys(activeModelRoots(null, 'fifo'))));
+        console.log(JSON.stringify(Object.keys(
+          activeModelRoots(null, 'fifo', null))));
         """
     )
     assert [json.loads(line) for line in out.strip().splitlines()] == [
@@ -853,14 +880,20 @@ def test_a_models_roots_come_off_the_maps_to_stitch():
         # elaboration it does not own.
         ["real_top"],
         ["twin_a", "twin_b"],
-        # A model this graph knows nothing about still owns its own name:
-        # there is no stitch to read, so the convention is all there is.
+        # The opted-out model: the payload knows it and it has no stitch,
+        # which is an answer — no roots — not a missing one. Seeding its
+        # name would hand it `module:apb_intf`, which is `wrapper`'s
+        # elaboration, and the schematic would prefer another model's
+        # instances as the active model's own.
+        [],
+        # A model this payload has no node for: no config tier to read a
+        # stitch off, so the naming convention is all there is.
         ["nope"],
         # No active model -> no roots -> no preference (see below).
         [],
         [],
         [],
-        # No links yet is the same answer as an unbuilt config tier.
+        # No payload at all is the same answer as an unbuilt config tier.
         ["fifo"],
     ]
 
@@ -975,7 +1008,7 @@ def test_the_module_branch_resolves_through_the_active_model_preference():
     assert "return shallowestInstancePath(paths, currentModelRoots());" in branch
     # The roots are the ACTIVE model's, over the payload on screen.
     roots = js.split("function currentModelRoots() {")[1].split("\n  }")[0]
-    assert "activeModelRoots(state.links, activeModel)" in roots
+    assert "activeModelRoots(state.links, activeModel, state.nodes)" in roots
     assert "modelRootsCache.model !== activeModel" in roots
     assert "modelRootsCache.links !== state.links" in roots
 

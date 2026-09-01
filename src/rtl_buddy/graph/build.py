@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from dataclasses import dataclass, field as dc_field
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
@@ -881,6 +882,37 @@ def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
     return keep, skipped
 
 
+def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
+    """Remove a model's design-tier exports when it opts out (#479).
+
+    The per-model export is a *durable* artefact: ``graph.json`` and the
+    viewer's ``graph-meta.json`` sidecar under
+    ``artefacts/graph/design/<name>/``, plus the TB- and run-rooted
+    exports nested beneath it. Nothing rewrites them but a later export
+    of the same model, so a model that was exported yesterday and
+    declares ``graph: false`` today would leave that hierarchy on disk,
+    fully readable, while the tier report and the merged graph both say
+    the model has none. The extractor's cross-check reads those files
+    directly, and so does anyone debugging a merge — a stale one is a
+    confident wrong answer.
+
+    The whole ``design/<name>/`` subtree is the model's own: the DUT
+    export sits at its root and the ``tb/`` and ``run/`` exports nest
+    inside it, so removing the subtree removes exactly this model's
+    exports and nothing else. Model names are unique across the
+    selection (:func:`_reject_colliding_models`), so the directory
+    cannot be shared.
+
+    Returns:
+      bool: True when something was actually removed.
+    """
+    target = out_dir / DESIGN_SUBDIR / model.name
+    if not target.is_dir():
+        return False
+    shutil.rmtree(target, ignore_errors=True)
+    return not target.exists()
+
+
 def _model_ident(project_root: Path, model: ModelConfig) -> str:
     """A model's whole design-tier identity, for the build fingerprint.
 
@@ -1559,11 +1591,21 @@ def build_graph(
         # was never going to invoke it. Target discovery is config reading
         # only — the config tier reads the same files a few lines below.
         graphable = [model for model in models if model.graph]
-        design_report.skipped.extend(
-            {"model": model.name, "reason": GRAPH_OPT_OUT}
-            for model in models
-            if not model.graph
-        )
+        for model in models:
+            if model.graph:
+                continue
+            design_report.skipped.append({"model": model.name, "reason": GRAPH_OPT_OUT})
+            # The export is durable, so opting out has to retract it —
+            # otherwise `design/<name>/graph.json` keeps serving the
+            # hierarchy this build just declared the model does not have.
+            if _drop_stale_export(out, model):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "graph_build.stale_export_dropped",
+                    model=model.name,
+                    path=str(out / DESIGN_SUBDIR / model.name),
+                )
         # Before anything is planned, let alone exported: no two models
         # in scope may share a name (their artefact paths and every
         # name-keyed lookup collide, opt-out or not), and no two

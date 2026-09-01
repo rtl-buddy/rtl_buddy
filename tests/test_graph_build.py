@@ -1956,6 +1956,52 @@ def test_graph_false_model_skips_its_testbench_and_run_exports(
     assert "module:blk_a_chk" not in _nodes(graph)
 
 
+def test_opting_out_retracts_a_models_previously_written_export(
+    graph_project: Path, tmp_path: Path
+):
+    """A design-tier export is durable, so an opt-out has to retract it.
+
+    Nothing rewrites ``artefacts/graph/design/<model>/`` but a later
+    export of that same model. So a model exported yesterday and marked
+    ``graph: false`` today would leave a complete, readable hierarchy on
+    disk while `graph-meta.json` and the merged graph both say it has
+    none — and the extractor's cross-check reads those files directly.
+    A stale export is a confident wrong answer, not a missing one.
+    """
+    _flow_suite(graph_project)
+    view, _ = _fake_view(tmp_path)
+    common = dict(
+        view_executable=str(view), view_version="0.4.0", extract_enabled=False
+    )
+    build_graph(graph_project, **common)
+
+    design_dir = graph_project / "artefacts" / "graph" / "design"
+    dut = design_dir / "blk_a" / "graph.json"
+    assert dut.is_file()
+    # The viewer's own provenance sidecar, and the TB- and run-rooted
+    # exports that nest under the same model directory.
+    sidecar = design_dir / "blk_a" / "graph-meta.json"
+    sidecar.write_text('{"generator": {"tool": "rtl-buddy-view"}}')
+    tb_export = design_dir / "blk_a" / "tb" / "tb_hdl" / "graph.json"
+    run_export = design_dir / "blk_a" / "run" / "blk_a_chk" / "graph.json"
+    assert tb_export.is_file() and run_export.is_file()
+
+    _rewrite_model(graph_project, "blk_a", "    graph: false\n")
+    build = build_graph(graph_project, **common)
+
+    assert not (design_dir / "blk_a").exists()
+    for path in (dut, sidecar, tb_export, run_export):
+        assert not path.exists(), path
+    # The neighbour is untouched — only the opted-out model's subtree goes.
+    assert (design_dir / "blk_b" / "graph.json").is_file()
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert design.status == "built"
+    assert {r["model"] for r in design.skipped} == {"blk_a"}
+    # Idempotent: a second build with the model still opted out is fine.
+    assert build_graph(graph_project, force=True, **common).graph_path.is_file()
+    assert not (design_dir / "blk_a").exists()
+
+
 def test_a_dut_rooted_tb_and_run_are_reported_when_their_model_opts_out(
     graph_project: Path, tmp_path: Path
 ):
