@@ -263,6 +263,17 @@ _SBATCH_DEPENDENCY_ENV = "SBATCH_DEPENDENCY"
 # and one expression may not mix them. A configured `?` therefore cannot be
 # composed with, and this is the marker for that case.
 _DEPENDENCY_OR_SEPARATOR = "?"
+# sbatch takes any UNAMBIGUOUS abbreviation of a long option, so
+# `--depend=afterok:7` is a real dependency and reading only the full
+# spelling would let the generated clause replace it (#507 review). Its
+# `d` options are `--deadline`, `--delay-boot`, `--dependency` and
+# `--distribution`: `--de` still collides with the first two, so `--dep`
+# is the shortest prefix that can only mean this one. Over-claiming a
+# longer prefix sbatch would reject as ambiguous is harmless — the
+# submission fails on the user's own flag either way — but claiming a
+# shorter one would read `--deadline` as a dependency.
+_DEPENDENCY_OPT = "--dependency"
+_DEPENDENCY_MIN_ABBREV = "--dep"
 # What the informational probe counts as "still in flight". `--states`
 # takes the long names. COMPLETING is included deliberately: such a job is
 # still finishing, so naming it explains a wait that has not ended. Every
@@ -273,6 +284,19 @@ _DEDUP_STATES = "PENDING,RUNNING,CONFIGURING,SUSPENDED,COMPLETING"
 # never the run. It only feeds a log line — the guarantee is the
 # dependency above — so losing it loses nothing but the explanation.
 _DEDUP_TIMEOUT_SEC = 20.0
+
+
+def _is_dependency_opt(arg: str) -> bool:
+    """Is ``arg`` the long ``--dependency`` option, however abbreviated?
+
+    True for every spelling sbatch resolves to it — ``--dep``, ``--depe``,
+    ..., ``--dependency`` — and false for the options an abbreviation
+    could otherwise be confused with (``--deadline``, ``--delay-boot``,
+    ``--distribution``), because a prefix shorter than
+    :data:`_DEPENDENCY_MIN_ABBREV` is not claimed. The ``=value`` form is
+    the caller's business: it splits first and asks about the flag half.
+    """
+    return arg.startswith(_DEPENDENCY_MIN_ABBREV) and _DEPENDENCY_OPT.startswith(arg)
 
 
 def build_job_name(spec: BuildJobSpec) -> str:
@@ -775,8 +799,9 @@ class SlurmDispatchBackend(DispatchBackend):
         decides whether composing is possible at all.
 
         Two sources, in sbatch's own precedence. ``sbatch-args`` first —
-        the **last** occurrence there, because that is the one Slurm
-        obeys: a repeated option overrides the earlier copy, so composing
+        every spelling sbatch itself resolves, abbreviations included (see
+        :func:`_is_dependency_opt`), and the **last** occurrence, because
+        that is the one Slurm obeys: a repeated option overrides the earlier copy, so composing
         onto the first would build the dedup on top of an expression the
         scheduler has already discarded, and the flag this backend emits
         (later still) would then drop the one the user actually meant.
@@ -797,13 +822,16 @@ class SlurmDispatchBackend(DispatchBackend):
                 # A value consumed by the separated spelling above; it is
                 # not a flag, whatever it looks like.
                 continue
-            if arg.startswith("--dependency="):
-                found = arg.split("=", 1)[1]
-            elif arg in ("-d", "--dependency"):
+            flag, equals, value = arg.partition("=")
+            if equals and _is_dependency_opt(flag):
+                found = value
+            elif arg == "-d" or _is_dependency_opt(arg):
                 if index + 1 < len(args):
                     found = args[index + 1]
                     skip = index + 1
             elif arg.startswith("-d") and arg[1] != "-":
+                # `-dafterok:7`, the joined SHORT spelling. Long
+                # abbreviations begin `--` and were answered above.
                 found = arg[2:]
         if found is not None:
             return found

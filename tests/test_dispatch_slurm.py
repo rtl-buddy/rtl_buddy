@@ -3336,3 +3336,143 @@ def test_the_cluster_banner_is_not_read_as_a_job_id(monkeypatch, caplog):
         if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
     ]
     assert record.__dict__["rtl_fields"]["job_ids"] == ["41", "42"]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [
+        ["--dep=afterok:7"],
+        ["--depe=afterok:7"],
+        ["--depend=afterok:7"],
+        ["--dependenc=afterok:7"],
+        ["--dep", "afterok:7"],
+        ["--depend", "afterok:7"],
+    ],
+    ids=[
+        "shortest-equals",
+        "depe-equals",
+        "depend-equals",
+        "dependenc-equals",
+        "shortest-separated",
+        "depend-separated",
+    ],
+)
+def test_an_abbreviated_dependency_is_composed_with(monkeypatch, sbatch_args):
+    """sbatch resolves any unambiguous abbreviation of a long option, so
+    `--depend=afterok:7` is a real gate. Reading only the full spelling
+    would let the generated `singleton` replace it — the exact failure the
+    composition exists to prevent."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:7,singleton" in argv
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [
+        ["--deadline=2026-01-01T00:00:00"],
+        ["--delay-boot=10"],
+        ["--distribution=cyclic"],
+        ["--de=afterok:7"],
+        ["--d=afterok:7"],
+    ],
+    ids=["deadline", "delay-boot", "distribution", "ambiguous-de", "ambiguous-d"],
+)
+def test_a_colliding_prefix_is_not_read_as_a_dependency(monkeypatch, sbatch_args):
+    """`--de` still matches `--deadline` and `--delay-boot`, so `--dep` is
+    the shortest prefix that can only mean `--dependency`. Claiming less
+    would compose the dedup onto a deadline."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+    # Whatever it was, it was left alone.
+    assert all(arg in argv for arg in sbatch_args)
+
+
+def test_abbreviations_take_part_in_last_wins(monkeypatch):
+    """One option, however spelled: the last occurrence is the one Slurm
+    obeys, so the scan cannot rank spellings above position."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7", "--dep=afterok:8"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:8,singleton" in argv
+
+
+def test_an_abbreviated_any_of_dependency_stands_the_dedup_down(monkeypatch, caplog):
+    """The `?` stand-down reads the same expression, so it sees the
+    abbreviated spelling too — otherwise this submission would carry the
+    mixed-separator argv sbatch rejects."""
+    import logging
+
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--depend=afterok:7?afterok:8"]).initialise()
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+
+    (argv,) = calls
+    assert [a for a in argv if a.startswith("--dep")] == [
+        "--depend=afterok:7?afterok:8"
+    ]
+    assert [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["--job=custom"], ["--job-nam=custom"], ["--j", "custom"], ["-J", "custom"]],
+    ids=["job", "job-nam", "shortest", "short-flag"],
+)
+def test_an_abbreviated_job_name_cannot_take_the_identity_either(
+    monkeypatch, sbatch_args
+):
+    """`--job-name` is the only `j` option sbatch has, so `--j custom` is
+    a valid rename — and the build job's name must survive every spelling
+    of it, since `--dependency=singleton` serialises on that name. Nothing
+    scans for it: the generated flag is simply emitted after
+    `sbatch-args`, which is what makes the guarantee spelling-proof.
+    """
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+    spec = _build_spec()
+
+    backend.submit_build(spec)
+
+    probe, argv = calls
+    generated = f"--job-name={slurm_module.build_job_name(spec)}"
+    assert argv.index(generated) > max(
+        index for index, arg in enumerate(argv) if arg in sbatch_args
+    )
+    assert f"--name={slurm_module.build_job_name(spec)}" in probe
