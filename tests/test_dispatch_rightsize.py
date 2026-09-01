@@ -34,6 +34,7 @@ def _row(
     compile_floor=None,
     requested_cpus=None,
     cpus_override=None,
+    submitted_cpus_per_task=None,
 ):
     results = (
         TestPassResults(name=test + "/results")
@@ -54,6 +55,8 @@ def _row(
         "requested_cpus": requested_cpus,
         # ...and the `sbatch-args` entry that superseded it, if any.
         "cpus_override": cpus_override,
+        # The generated `--cpus-per-task`, still in force under a task count.
+        "submitted_cpus_per_task": submitted_cpus_per_task,
     }
 
 
@@ -1948,8 +1951,11 @@ def test_a_lone_task_or_node_count_does_not_take_the_suggestion(arg):
     ]
     assert cpu.suggested == "3"  # ceil(8 x 0.25 x 1.5), the whole-job figure
     note = cpu.edit_hint["note"]
-    assert f"`{arg}` raises this job's cpu request rather than stating it" in note
-    assert "that argument does not take it" in note
+    assert f"`{arg}` multiplies this job's cpu request" in note
+    # The generated `--cpus-per-task` is untouched, so the per-task field is
+    # still a lever and is named as one.
+    assert "the generated --cpus-per-task from tests[name=t].resources.cpus" in note
+    assert "no single one of them takes it" in note
     # ...and it must NOT be the "write the number in here" wording.
     assert "sets this job's cpu request" not in note
     assert "change it there" not in note
@@ -1992,7 +1998,7 @@ def test_the_build_row_also_declines_a_lone_modifier():
     assert cpus_a.suggested == "3"
     assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
     note = cpus_a.edit_hint["note"]
-    assert "`--ntasks-per-node=4` raises this job's cpu request" in note
+    assert "`--ntasks-per-node=4` multiplies this job's cpu request" in note
     assert "cfg-dispatch.compile.cpus" in note
     assert "change it there" not in note
 
@@ -2146,10 +2152,10 @@ def test_an_env_override_names_the_variable_and_no_file():
     assert cpu.edit_hint["path"] == "env"
     assert "file" not in cpu.edit_hint
     note = cpu.edit_hint["note"]
-    assert "the environment supersedes tests[name=t].resources.cpus" in note
-    # A variable is not an argument, and it is not a cpu count either.
-    assert "`SBATCH_NTASKS=4` raises this job's cpu request" in note
-    assert "that variable does not take it" in note
+    # A variable is not a cpu count: it multiplies the generated one.
+    assert "`SBATCH_NTASKS=4` multiplies this job's cpu request" in note
+    assert "the generated --cpus-per-task from tests[name=t].resources.cpus" in note
+    assert "the task count in the environment" in note
     assert "sbatch-args" not in note
 
 
@@ -2213,5 +2219,161 @@ def test_the_build_row_takes_an_env_override_too():
     assert cpus_a.edit_hint["path"] == "env"
     assert "file" not in cpus_a.edit_hint
     note = cpus_a.edit_hint["note"]
-    assert "the environment supersedes cfg-dispatch.compile.cpus" in note
-    assert "`SBATCH_NODES=4` raises this job's cpu request" in note
+    assert "`SBATCH_NODES=4` multiplies this job's cpu request" in note
+    assert "the generated --cpus-per-task from cfg-dispatch.compile.cpus" in note
+
+
+# ---- #505 review: a task count multiplies the floor, it does not clear it
+
+
+def test_a_task_count_override_keeps_the_per_task_compile_floor():
+    """`--ntasks=2` leaves `--cpus-per-task=8` alone and asks for two of it.
+
+    So the compile floor of 8 still holds, and no whole-job suggestion may
+    go below it: even one task costs 8 cpus, so a suggestion of 3 could
+    never be reached and the finding would recur on every run — the exact
+    failure #505 exists to stop. Clearing the floor, which is right for a
+    direct `-c` override because that one replaces the generated flag, let
+    exactly that through (#505 review).
+
+    The floor is NOT multiplied by the tasks observed: the task count is
+    one of the two levers the advice offers, so 8 really is reachable, by
+    dropping to a single task.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 16,
+                "req_cpus": 16,  # 2 tasks x the generated 8 cpus
+                "total_cpu_s": 1600.0,  # 0.10 efficiency against those 16
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 8, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,  # withdrawn: ReqCPUS is not the per-task value
+            submitted_cpus_per_task=8,
+            cpus_override=["--ntasks=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    # ceil(16 x 0.10 x 1.5) = 3, which is below the per-task floor and so
+    # is clamped up to it. Never below 8; and 8 is reachable at one task.
+    assert cpu.reserved == "16"
+    assert cpu.suggested == "8"
+    # The note states the decomposition as an observation, and names both
+    # levers rather than pointing only at the task count.
+    note = cpu.edit_hint["note"]
+    assert "the request is 8 per task x 2 tasks" in note
+    assert "lower cfg-dispatch.compile.cpus, the task count in sbatch-args" in note
+
+
+def test_a_direct_override_still_clears_the_floor():
+    """`-c` replaces the generated flag, so the floor it bounded is gone."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 1000.0,  # 0.25 efficiency
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 8, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=8,
+            cpus_override=["--cpus-per-task=4"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.suggested == "2"  # ceil(4 x 0.25 x 1.5), not clamped up to 8
+
+
+def test_a_task_count_override_still_advises_what_it_can_reach():
+    """The floor scales; it does not silence everything above it.
+
+    4 cpus per task over 4 tasks is 16 requested against a floor of 2 per
+    task — 8 whole-job — so a suggestion of 12 is real and reachable, by
+    halving the tasks or the per-task field.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 16,
+                "req_cpus": 16,  # 4 tasks x the generated 4 cpus
+                "total_cpu_s": 8000.0,  # 0.50 efficiency... just under
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 2, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=4,
+            cpus_override=["--ntasks=4"],
+        )
+    ]
+    cfg = RightsizeConfigFile(over_threshold=0.6)
+    (cpu,) = [
+        f
+        for f in _analyze(rows, cfg=cfg, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.reserved == "16"
+    assert cpu.suggested == "12"  # ceil(16 x 0.5 x 1.5), above the 2 x 4 floor
+    # The note decomposes the request from observation, not sbatch arithmetic.
+    assert "the request is 4 per task x 4 tasks" in cpu.edit_hint["note"]
+
+
+def test_an_unknowable_task_count_still_states_only_what_it_knows():
+    """A request that is not a whole multiple of the per-task cpus.
+
+    The floor is unaffected — it is per-task and never scaled — but the
+    note's "N per task x M tasks" clause is an observation, so it is
+    omitted rather than guessed at.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 10,
+                "req_cpus": 10,  # not a multiple of the generated 4
+                "total_cpu_s": 1000.0,  # 0.10 efficiency
+            },
+            compile_in_job=True,
+            governed_by={"cpus": "compile"},
+            compile_floor={"cpus": 4, "mem": "16G", "time": "02:00:00"},
+            requested_cpus=None,
+            submitted_cpus_per_task=4,
+            cpus_override=["--ntasks=2"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    # ceil(10 x 0.1 x 1.5) = 2, clamped up to the per-task floor of 4.
+    assert cpu.suggested == "4"
+    # ...and with no task count to state, the note says only what it knows.
+    assert "per task x" not in cpu.edit_hint["note"]

@@ -3314,12 +3314,11 @@ class RtlBuddy:
                 # tests.yaml already holds (#505). Recorded after the in-job
                 # compile max, so it is the number that actually governed
                 # the allocation.
-                suite_results[idx]["requested_cpus"] = (
-                    None if cpus_request_args else resources.cpus
+                self._record_cpu_request_metadata(
+                    suite_results[idx],
+                    per_task_cpus=resources.cpus,
+                    overrides=cpus_request_args,
                 )
-                # ...and the arguments that superseded it, so the cpus
-                # advice can name what an edit has to change.
-                suite_results[idx]["cpus_override"] = cpus_request_args
             dispatch_dir = (
                 Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
             )
@@ -3441,6 +3440,28 @@ class RtlBuddy:
             # a later suite's in-process sweep hook (#505 review).
             "cpus_override": cpus_request_args,
         }
+
+    @staticmethod
+    def _record_cpu_request_metadata(row, *, per_task_cpus, overrides):
+        """What right-sizing needs to know about ONE submission's cpus.
+
+        Written at submit and rewritten on every resubmission, because a
+        retry is a fresh `sbatch` with a fresh inherited environment and it
+        is the retry's telemetry the analysis ends up reading (#505 review).
+
+        - ``submitted_cpus_per_task`` is the generated ``--cpus-per-task``
+          verbatim. Recorded unconditionally: a task-count override
+          multiplies it rather than replacing it, so it stays the value the
+          compile floor bounds and the value the request decomposes into.
+        - ``requested_cpus`` is that same number *as the whole-job request*,
+          which it only is when nothing overrode it — hence ``None`` under
+          any override, sending the denominator to the scheduler's
+          ``ReqCPUS``.
+        - ``cpus_override`` is what did the overriding, for the edit hint.
+        """
+        row["submitted_cpus_per_task"] = per_task_cpus
+        row["requested_cpus"] = None if overrides else per_task_cpus
+        row["cpus_override"] = overrides
 
     def _announce_dispatched_suite(self, state, *, backend, suite):
         """Put a suite's job ids on the console, before the wait begins (#435).
@@ -3662,7 +3683,11 @@ class RtlBuddy:
             resubmitted_at = time.time()
             try:
                 pending = self._resubmit_retryable(
-                    backend, retryable, attempt=attempt, retry_cfg=retry_cfg
+                    backend,
+                    retryable,
+                    attempt=attempt,
+                    retry_cfg=retry_cfg,
+                    suite_results=suite_results,
                 )
                 submitted_at = resubmitted_at
             except (FatalRtlBuddyError, OSError, subprocess.SubprocessError) as e:
@@ -3695,7 +3720,9 @@ class RtlBuddy:
                 )
                 return suite_results
 
-    def _resubmit_retryable(self, backend, retryable, *, attempt, retry_cfg):
+    def _resubmit_retryable(
+        self, backend, retryable, *, attempt, retry_cfg, suite_results=None
+    ):
         """Re-launch the retryable jobs after their backoff; wait; return them.
 
         The delay is served by the **backend** (Slurm holds the job on
@@ -3749,6 +3776,18 @@ class RtlBuddy:
                 # directory) is kept by the stamp, not by the edge.
                 # Re-arming the edge is not an option: an afterok on a job
                 # the scheduler has forgotten never becomes satisfiable.
+                # A retry is a fresh `sbatch` from THIS moment's environment,
+                # not a replay of the first submission's. Between the two, a
+                # later suite's sweep hook has run in this process and may
+                # have set or unset `SBATCH_NTASKS`/`_NODES`/`_NTASKS_PER_NODE`
+                # — and it is this attempt's telemetry the analysis reads, so
+                # the row has to describe this attempt. Stale metadata here
+                # picks the wrong cpu denominator and names an override that
+                # was not in force (#505 review).
+                if suite_results is not None:
+                    self._refresh_cpu_request_metadata(
+                        suite_results[idx], spec, backend=backend, attempt=attempt
+                    )
                 resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
             backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
         except BaseException:
@@ -3757,6 +3796,33 @@ class RtlBuddy:
             backend.cancel_all([h for _, h in resubmitted])
             raise
         return resubmitted
+
+    def _refresh_cpu_request_metadata(self, row, spec, *, backend, attempt):
+        """Re-snapshot the cpu overrides for one resubmission (#505 review)."""
+        overrides = cpu_request_overrides(
+            getattr(self.root_cfg.get_dispatch_cfg(), "sbatch_args", None)
+        )
+        was = row.get("cpus_override") or []
+        self._record_cpu_request_metadata(
+            row,
+            per_task_cpus=spec.resources.cpus,
+            overrides=overrides,
+        )
+        if overrides != was:
+            # Worth a line: the advice for this test is about to be derived
+            # from a different set of overrides than its first attempt was,
+            # and nothing else in the run would say so.
+            log_event(
+                logger,
+                logging.DEBUG,
+                "rightsize.request_overrides_changed",
+                backend=backend.name,
+                test=spec.test_name,
+                run_id=spec.run_id,
+                attempt=attempt,
+                was=was,
+                now=overrides,
+            )
 
     @staticmethod
     def _retry_spec(spec, *, attempt):

@@ -1817,7 +1817,8 @@ def test_an_sbatch_env_var_reaches_the_analysis_end_to_end(
     assert cpus["edit_hint"]["path"] == "env"
     assert "file" not in cpus["edit_hint"]
     assert (
-        "`SBATCH_NTASKS=4` raises this job's cpu request" in (cpus["edit_hint"]["note"])
+        "`SBATCH_NTASKS=4` multiplies this job's cpu request"
+        in (cpus["edit_hint"]["note"])
     )
 
 
@@ -1972,7 +1973,7 @@ def test_a_lone_ntasks_override_does_not_claim_to_take_the_suggestion(
     assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5), whole-job
     assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
     note = cpus["edit_hint"]["note"]
-    assert "`--ntasks=4` raises this job's cpu request rather than stating it" in note
+    assert "`--ntasks=4` multiplies this job's cpu request" in note
     assert "change it there" not in note
 
 
@@ -2796,8 +2797,12 @@ class _RetryBackend(_FakeBackend):
         state="TIMEOUT",
         capture=True,
         build_result=True,
+        cpu_telemetry=None,
     ):
         super().__init__(write_results=False)
+        # Reserved-vs-used numbers folded into every job's row, so a retry
+        # fleet can also exercise reservation advice (#505 review).
+        self.cpu_telemetry = cpu_telemetry or {}
         self.banner = banner
         self.passes_on_attempt = passes_on_attempt
         self.state = state
@@ -2863,7 +2868,10 @@ class _RetryBackend(_FakeBackend):
 
     def collect_telemetry(self, handles):
         self.telemetry_queries.append([h.job_id for h in handles])
-        return {h.job_id: {"state": self.states.get(h.job_id)} for h in handles}
+        return {
+            h.job_id: {**self.cpu_telemetry, "state": self.states.get(h.job_id)}
+            for h in handles
+        }
 
 
 def _use_backend(monkeypatch: pytest.MonkeyPatch, backend):
@@ -3715,3 +3723,65 @@ def test_non_dispatched_test_payload_has_no_reservation_advice(
         line for line in result.output.splitlines() if line.startswith("{")
     ][-1]
     assert "reservation_advice" not in json.loads(payload_line)["payload"]
+
+
+def test_a_retry_re_snapshots_the_cpu_overrides_it_was_submitted_with(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry is a fresh sbatch from a possibly different environment.
+
+    The first attempt went out with nothing overriding cpus, so the row
+    recorded the resolved 1 as the request. Between then and the retry a
+    later suite's in-process sweep hook exported `SBATCH_NTASKS=4`, and
+    `_resubmit_retryable` submits into that environment — so the retry
+    really did ask for four cpus, and it is the retry's telemetry the
+    analysis reads. Keeping the first attempt's metadata would judge it
+    against a request of 1, which the `cpus > 1` guard drops, silently
+    losing valid advice (#505 review).
+
+    The first `wait_all` is that window: it runs after the first attempt is
+    submitted and before it is collected and resubmitted.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch,
+        _RetryBackend(
+            passes_on_attempt=2,
+            cpu_telemetry={
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            },
+        ),
+    )
+
+    real_wait_all = backend.wait_all
+
+    def wait_all_then_export(handles, **kwargs):
+        os.environ["SBATCH_NTASKS"] = "4"
+        return real_wait_all(handles, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_export)
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # The retry really was submitted, and into the changed environment.
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"  # the retry's request, not the first attempt's 1
+    assert cpus["edit_hint"]["path"] == "env"
+    assert (
+        "`SBATCH_NTASKS=4` multiplies this job's cpu request"
+        in (cpus["edit_hint"]["note"])
+    )

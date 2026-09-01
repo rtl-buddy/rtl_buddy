@@ -299,7 +299,11 @@ precedence; no single one of them takes it.
 
 An override that came only from the environment names no file at all: its `edit_hint.path` is `env` and there is no `file` key, because a variable lives in nothing an agent can edit. Where an `sbatch-args` entry is also in play the hint keeps pointing there — the command line is what can defeat the variable — and the note names both.
 
-An override also disables the **compile cpus floor**. That floor exists because a job compiling inside itself is allocated `max(sim, compile)`, so no reduction can take it below the compile side — but an override supersedes that generated reservation entirely, and sbatch never sees the max. Left in place it clamps every suggestion up to the floor and then discards it for not being below the request, so a genuinely over-reserved run reports nothing at all. The `mem` and `time` floors are untouched, since no cpu argument supersedes them.
+A **direct** cpu override also disables the **compile cpus floor**. That floor exists because a job compiling inside itself is allocated `max(sim, compile)`, so no reduction can take it below the compile side — but a `--cpus-per-task` in `sbatch-args` replaces that generated flag, and sbatch never sees the max. Left in place it clamps every suggestion up to the floor and then discards it for not being below the request, so a genuinely over-reserved run reports nothing at all.
+
+A task or node count does **not** disable it. `--ntasks=2` leaves `--cpus-per-task=8` exactly where it was and asks for two tasks of it, so the floor still holds and the advice may not suggest below it: even one task costs 8 cpus, so a whole-job suggestion of 3 could never be reached and the finding would recur every run. The floor is kept *unscaled* rather than multiplied by the tasks observed — the task count is one of the two levers the advice offers, so 8 really is reachable, by dropping to a single task, and flooring at 8 × 2 would suppress every reduction there is.
+
+The `mem` and `time` floors are untouched throughout, since no cpu argument supersedes them.
 
 Only `cpus` is retargeted: none of these arguments supersedes a `mem` or `time` field, so those findings keep naming the reservation that governs them.
 

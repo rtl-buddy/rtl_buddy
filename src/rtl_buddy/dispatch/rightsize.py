@@ -177,6 +177,60 @@ def _is_arg_override(entry: str) -> bool:
     return entry.startswith("-")
 
 
+def _replaces_the_per_task_cpus(entries: list) -> bool:
+    """Does this override REPLACE the generated ``--cpus-per-task``?
+
+    Only a direct cpu count does. ``-c``/``--cpus-per-task`` in
+    ``sbatch-args`` is appended after the generated one and wins, so the
+    reservation rtl-buddy sized never reaches sbatch.
+
+    A task or node count does not: ``--ntasks=2`` leaves
+    ``--cpus-per-task=8`` exactly where it was and asks for two tasks OF
+    it, so the per-task reservation still applies and the job requests 16.
+    Treating the two alike is what let a compile floor of 8 be dropped
+    entirely under ``--ntasks=2``, and a whole-job suggestion below 8 is
+    then unreachable however far the task count is lowered — advice that
+    cannot retire, which is the whole subject of #505 (#505 review).
+
+    No environment entry can be direct: the only direct variable,
+    ``SBATCH_CPUS_PER_TASK``, is excluded because the generated flag beats
+    it on the command line.
+    """
+    return any(
+        _is_arg_override(e) and sbatch_arg_sets_cpu_count_directly(e) for e in entries
+    )
+
+
+def _effective_cpus_floor(floor_cpus, cpus_override):
+    """The whole-job cpus floor a ``reduce`` may not suggest below.
+
+    ``floor_cpus`` is per task: it bounds the generated
+    ``--cpus-per-task``, because an in-job compile's allocation is
+    ``max(sim, compile)`` and no trimming of the test's own ``resources:``
+    takes it below the compile side.
+
+    A DIRECT cpu count in ``sbatch-args`` replaces that generated flag, so
+    the floor it bounded never reaches sbatch and there is nothing to clamp
+    to. A task or node count does not replace it — ``--ntasks=2`` leaves
+    ``--cpus-per-task=8`` alone and asks for two tasks of it — so the floor
+    still holds and must be kept (#505 review). Dropping it there let a
+    whole-job suggestion below 8 through, which no task count can reach:
+    even one task still costs 8 cpus, so the finding recurred on every run.
+
+    Kept *unscaled*, deliberately. The whole-job minimum is the per-task
+    floor times the tasks that must remain, and the task count is itself
+    one of the two levers this advice offers — a reader told to lower
+    ``--ntasks`` can go to one task. Multiplying by the tasks observed
+    would floor the suggestion at the current reservation and suppress
+    every reachable reduction, trading one kind of unretirable advice for
+    silence. So the bound is the per-task floor: below it nothing is
+    reachable, at or above it something is.
+    """
+    if not floor_cpus or not cpus_override:
+        return floor_cpus
+    return None if _replaces_the_per_task_cpus(cpus_override) else floor_cpus
+
+
 def _override_source(entries: list) -> str:
     """Where a reader has to go to change the request."""
     from_args = any(_is_arg_override(e) for e in entries)
@@ -201,7 +255,9 @@ def _join_args(quoted: list) -> str:
     return f"{', '.join(quoted[:-1])} and {quoted[-1]}"
 
 
-def _override_note(sbatch_args: list, masked_path: str) -> str:
+def _override_note(
+    sbatch_args: list, masked_path: str, *, per_task=None, tasks=None
+) -> str:
     """Why a cpus finding names ``sbatch-args`` instead of a YAML field.
 
     ``cfg-dispatch.sbatch-args`` is appended after the generated reservation
@@ -225,24 +281,31 @@ def _override_note(sbatch_args: list, masked_path: str) -> str:
     """
     quoted = [f"`{arg}`" for arg in sbatch_args]
     source = _override_source(sbatch_args)
-    if (
-        len(quoted) == 1
-        and _is_arg_override(sbatch_args[0])
-        and sbatch_arg_sets_cpu_count_directly(sbatch_args[0])
-    ):
+    if not _replaces_the_per_task_cpus(sbatch_args):
+        # Task and node counts leave the generated `--cpus-per-task` alone
+        # and ask for that many tasks OF it, so nothing is superseded: the
+        # per-task field is still in force and is still one of the two
+        # levers. Saying "supersedes" here would send a reader past the
+        # field they can actually edit (#505 review).
+        verb = "multiplies" if len(quoted) == 1 else "multiply"
+        decomposition = (
+            f", so the request is {per_task} per task x {tasks} tasks"
+            if per_task and tasks
+            else ""
+        )
+        return (
+            f"{_join_args(quoted) if len(quoted) > 1 else quoted[0]} "
+            f"{verb} this job's cpu request: the generated "
+            f"--cpus-per-task from {masked_path} still applies"
+            f"{decomposition}. Suggested value is the whole-job cpu count "
+            f"— lower {masked_path}, the task count in {source}, or both; "
+            "no single one of them takes it."
+        )
+    if len(quoted) == 1:
         return (
             f"sbatch-args {quoted[0]} sets this job's cpu request, "
             f"superseding {masked_path}; change it there. Suggested value "
             "is the whole-job cpu count."
-        )
-    if len(quoted) == 1:
-        noun = "argument" if _is_arg_override(sbatch_args[0]) else "variable"
-        return (
-            f"{source} supersedes {masked_path}: {quoted[0]} raises "
-            "this job's cpu request rather than stating it. Suggested "
-            f"value is the whole-job cpu count — that {noun} does not "
-            "take it, so work out the reservation that reaches it "
-            "yourself."
         )
     return (
         f"{source} supersedes {masked_path}: {_join_args(quoted)} set "
@@ -285,6 +348,12 @@ def _aggregate(rows):
                 # than one means they multiply, and no single one of them
                 # can be handed the suggestion (#505 review).
                 "cpus_override": row.get("cpus_override"),
+                # The `--cpus-per-task` the head actually submitted. Still
+                # in force under a task-count override, which multiplies it
+                # rather than replacing it — so it is what the compile floor
+                # bounds, and what the whole-job request decomposes into
+                # (#505 review).
+                "submitted_cpus_per_task": row.get("submitted_cpus_per_task"),
             },
         )
         agg["runs"] += 1
@@ -473,6 +542,37 @@ def analyze_build_reservation(
 
     origins = compile_origins or {}
 
+    alloc_cpus = build_telemetry.get("alloc_cpus")
+    # This job's generated `--cpus-per-task`: the resolved per-build cpus
+    # scaled by `parallel`. Still submitted under a task-count override,
+    # which asks for that many tasks OF it rather than replacing it, so it
+    # is what the request decomposes into (#505 review).
+    generated_per_task = (
+        (compile_resources.cpus or 0) * parallel if compile_resources is not None else 0
+    )
+    # What the head itself submitted, first: that generated value IS the
+    # request by construction and needs no cooperation from the site. A
+    # cluster allocating whole cores hands the job more than that, and
+    # rationing against the surplus advises a per-build value the config
+    # already holds (#505). `ReqCPUS` is the next best thing for a head that
+    # could not resolve the block, and the allocation the last (it is also
+    # the only one available to telemetry predating the field).
+    # ...unless an override is in force: a direct `--cpus-per-task` replaces
+    # the generated flag, and a task count multiplies it, so in neither case
+    # is the generated value the whole-job request. `ReqCPUS` is then the
+    # best available answer (#505 review) — and the decomposition below
+    # drops the same value for the same reason.
+    submitted = 0 if cpus_override else generated_per_task
+    cpus = submitted or build_telemetry.get("req_cpus") or alloc_cpus
+    build_tasks = (
+        cpus // generated_per_task
+        if generated_per_task
+        and cpus
+        and cpus % generated_per_task == 0
+        and cpus != generated_per_task
+        else None
+    )
+
     def hint(resource_field, note=None):
         # `cfg-dispatch.sbatch-args` is appended after the generated
         # reservation flags and wins, so an argument there that sets the cpu
@@ -492,7 +592,12 @@ def analyze_build_reservation(
             from_args = any(_is_arg_override(e) for e in cpus_override)
             edit = {
                 "path": "cfg-dispatch.sbatch-args" if from_args else "env",
-                "note": _override_note(cpus_override, masked),
+                "note": _override_note(
+                    cpus_override,
+                    masked,
+                    per_task=generated_per_task or None,
+                    tasks=build_tasks,
+                ),
             }
             if from_args and root_config_hint:
                 edit["file"] = root_config_hint
@@ -575,27 +680,6 @@ def analyze_build_reservation(
             )
 
     # --- cpus (efficiency; only ever suggests reducing) --------------
-    alloc_cpus = build_telemetry.get("alloc_cpus")
-    # What the head itself submitted, first: the resolved per-build cpus
-    # scaled by `parallel` IS this job's `--cpus-per-task`, so it is the
-    # request by construction and needs no cooperation from the site. A
-    # cluster allocating whole cores hands the job more than that, and
-    # rationing against the surplus advises a per-build value the config
-    # already holds (#505). `ReqCPUS` is the next best thing for a head that
-    # could not resolve the block, and the allocation the last (it is also
-    # the only one available to telemetry predating the field).
-    # ...unless `cfg-dispatch.sbatch-args` carries its own
-    # `--cpus-per-task`: those are appended after the generated flags and
-    # win, so the resolved reservation is not what was submitted and cannot
-    # stand in for the request. `ReqCPUS` is then the best available answer
-    # (#505 review) — and the decomposition below drops the same value for
-    # the same reason.
-    submitted = (
-        0
-        if cpus_override or compile_resources is None
-        else (compile_resources.cpus or 0) * parallel
-    )
-    cpus = submitted or build_telemetry.get("req_cpus") or alloc_cpus
     cpu_time = build_telemetry.get("total_cpu_s")
     # Whole-job cpu efficiency is a *per-build* number only when the job ran
     # one build at a time. Above that it also carries the tail — builds of
@@ -772,15 +856,29 @@ def analyze_suite_reservations(
         floor = agg["compile_floor"]
         floor_mem_b = mem_to_bytes(floor.get("mem"))
         floor_time_s = time_to_seconds(floor.get("time"))
-        cpus_override = agg.get("cpus_override")
-        # ...but the cpus floor only bounds the reservation rtl-buddy
-        # GENERATED, and a `sbatch-args` cpu argument supersedes that
-        # whole reservation — the max never reaches sbatch. Clamping to a
-        # floor the allocation does not have discards valid advice: an
-        # override to 4 under a compile floor of 8 has every suggestion
-        # pushed up to 8 and then dropped for not being below 4, so the
-        # run reports nothing at all (#505 review).
-        floor_cpus = None if cpus_override else floor.get("cpus")
+        cpus_override = agg.get("cpus_override") or []
+        # The cpus floor is PER TASK — it bounds the generated
+        # `--cpus-per-task`. Whether an override reaches it depends on which
+        # kind it is, so the effective whole-job floor is resolved down in
+        # the cpus section, where the request it scales against is known.
+        floor_cpus_per_task = floor.get("cpus")
+        # The request, and how it decomposes. Resolved before `hint` so the
+        # override note can state "N per task x M tasks": a task-count
+        # override multiplies the generated `--cpus-per-task` instead of
+        # replacing it, so the per-task floor still holds and the whole-job
+        # floor is that many cpus in each task actually requested (#505
+        # review). The task count is an observation — the scheduler's own
+        # request divided by the flag the head submitted — not an attempt to
+        # reproduce sbatch's precedence across several options.
+        alloc_cpus = agg.get("alloc_cpus")
+        cpus = agg.get("requested_cpus") or agg.get("req_cpus") or alloc_cpus
+        per_task = agg.get("submitted_cpus_per_task")
+        tasks = (
+            cpus // per_task
+            if per_task and cpus and cpus % per_task == 0 and cpus != per_task
+            else None
+        )
+        floor_cpus = _effective_cpus_floor(floor_cpus_per_task, cpus_override)
         common = {
             "suite": suite_display,
             "test": test,
@@ -806,6 +904,8 @@ def analyze_suite_reservations(
             from_compile=False,
             _governed_by=governed_by,
             _cpus_override=cpus_override,
+            _per_task=per_task,
+            _tasks=tasks,
         ):
             # `cfg-dispatch.sbatch-args` is appended after the generated
             # reservation flags and wins, so an argument written there that
@@ -820,7 +920,12 @@ def analyze_suite_reservations(
                 from_args = any(_is_arg_override(e) for e in _cpus_override)
                 edit = {
                     "path": "cfg-dispatch.sbatch-args" if from_args else "env",
-                    "note": _override_note(_cpus_override, masked_cpus_path),
+                    "note": _override_note(
+                        _cpus_override,
+                        masked_cpus_path,
+                        per_task=_per_task,
+                        tasks=_tasks,
+                    ),
                 }
                 if from_args and root_config_path:
                     edit["file"] = root_config_path
@@ -997,8 +1102,6 @@ def analyze_suite_reservations(
         # The head's own resolved reservation comes first — it is the
         # `--cpus-per-task` that was submitted, so it is the request by
         # construction and needs no cooperation from the site.
-        alloc_cpus = agg.get("alloc_cpus")
-        cpus = agg.get("requested_cpus") or agg.get("req_cpus") or alloc_cpus
         efficiency = agg.get("cpu_efficiency")
         if cpus and cpus > 1 and efficiency is not None:
             if efficiency < rightsize_cfg.over_threshold:
