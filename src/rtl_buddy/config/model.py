@@ -97,16 +97,29 @@ def validate_model_name(name: str, path: str) -> None:
 MODEL_TOP_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
-def validate_model_top(top: str, name: str, path: str) -> None:
+def validate_top(
+    top: str,
+    name: str,
+    path: str,
+    *,
+    subject: str = "model",
+    event: str = "model_config.invalid_model_top",
+) -> None:
     """Raise unless ``top`` is a simple SystemVerilog identifier.
+
+    ``fpv.yaml`` and ``mut.yaml`` carry their own ``top:`` which wins over
+    the model's and reaches the same generators, so they validate against
+    this rule too — under their own event name and wording.
 
     Args:
       top: the ``top:`` field as written.
-      name: the model declaring it, for the message.
-      path: the models.yaml it came from, for the message.
+      name: the model / verification / campaign declaring it, for the message.
+      path: the YAML it came from, for the message.
+      subject: what ``name`` names, for the message.
+      event: the machine event to log.
 
     Raises:
-      FatalRtlBuddyError: naming the file, the model, the value and the rule.
+      FatalRtlBuddyError: naming the file, the declarer, the value and the rule.
     """
     if isinstance(top, str) and MODEL_TOP_RE.match(top):
         return
@@ -115,7 +128,7 @@ def validate_model_top(top: str, name: str, path: str) -> None:
     log_event(
         logger,
         logging.ERROR,
-        "model_config.invalid_model_top",
+        event,
         path=path,
         name=name,
         top=top,
@@ -139,11 +152,16 @@ def validate_model_top(top: str, name: str, path: str) -> None:
             "letters, digits or underscore."
         )
     raise FatalRtlBuddyError(
-        f"{path}: model {name!r} declares top {top!r}, which is not a simple "
-        f"SystemVerilog identifier. {detail} The top is elaborated by every "
-        f"backend and also lands in artefact names and generated Tcl, so a "
-        f"path separator, newline or shell/Tcl metacharacter is refused."
+        f"{path}: {subject} {name!r} declares top {top!r}, which is not a "
+        f"simple SystemVerilog identifier. {detail} The top is elaborated by "
+        f"every backend and also lands in artefact names and generated Tcl, "
+        f"so a path separator, newline or shell/Tcl metacharacter is refused."
     )
+
+
+def validate_model_top(top: str, name: str, path: str) -> None:
+    """Raise unless a models.yaml ``top:`` is a simple SV identifier."""
+    validate_top(top, name, path)
 
 
 def split_back_pointer(value: str) -> tuple[str, str | None]:

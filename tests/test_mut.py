@@ -244,6 +244,47 @@ def test_mut_config_rejects_unknown_operator(tmp_path):
         MutSuiteConfig(path=str(mut_path))
 
 
+@pytest.mark.parametrize(
+    "scalar",
+    ['"../../etc/leaf"', '"leaf$cfg"', "'\\leaf.top '", '"leaf\\n"'],
+)
+def test_mut_config_rejects_a_top_that_is_not_a_simple_identifier(tmp_path, scalar):
+    """The campaign `top:` wins over the model's and reaches the same
+    generated yosys / sby script lines, so it answers to the models.yaml rule.
+    """
+    mut_path = _write_project(tmp_path)
+    mut_path.write_text(
+        mut_path.read_text().replace(
+            'model: "leaf"\n', f'model: "leaf"\ntop: {scalar}\n', 1
+        )
+    )
+    with pytest.raises(FatalRtlBuddyError, match="not a simple SystemVerilog"):
+        MutSuiteConfig(path=str(mut_path))
+
+
+def test_mut_config_accepts_a_top_that_overrides_the_model(tmp_path):
+    mut_path = _write_project(tmp_path)
+    mut_path.write_text(
+        mut_path.read_text().replace(
+            'model: "leaf"\n', 'model: "leaf"\ntop: "leaf_wrapper"\n', 1
+        )
+    )
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_wrapper"
+
+
+def test_the_invalid_mut_top_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "mut_config.invalid_top",
+        {"path": "fpv/leaf/mut.yaml", "name": "leaf", "top": "a/b"},
+    )
+    assert msg != "mut config invalid_top"
+    assert "fpv/leaf/mut.yaml" in msg
+    assert "leaf" in msg
+    assert "a/b" in msg
+
+
 def test_mut_config_rejects_bad_schedule(tmp_path):
     mut_path = _write_project(tmp_path)
     text = mut_path.read_text().replace("round_robin", "fifo")

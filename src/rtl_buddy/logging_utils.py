@@ -1532,6 +1532,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "only letters, digits or underscore ('$' is legal SV but "
                 "substitutes in the generated Tcl)"
             )
+        case "fpv_config.invalid_top" | "mut_config.invalid_top":
+            subject = (
+                "verification" if event == "fpv_config.invalid_top" else "campaign"
+            )
+            return (
+                f"{fields.get('path')}: {subject} {fields.get('name')!r} "
+                f"declares top {fields.get('top')!r}, which is not a simple "
+                "SystemVerilog identifier — this top wins over the model's "
+                "and is written into the generated yosys and sby scripts, so "
+                "it must start with a letter or underscore and contain only "
+                "letters, digits or underscore ('$' is legal SV but "
+                "substitutes in the generated Tcl)"
+            )
         case "model_config.invalid_model_name":
             return (
                 f"{fields.get('path')}: model name {fields.get('name')!r} is "

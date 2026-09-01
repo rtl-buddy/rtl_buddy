@@ -17,7 +17,7 @@ from serde import field, serde
 from serde.yaml import from_yaml
 from typing import Literal
 
-from .model import ModelConfig, ModelConfigLoader
+from .model import ModelConfig, ModelConfigLoader, validate_top
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .toolpath import resolve_tool_path
@@ -470,6 +470,19 @@ class FpvSuiteConfig:
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
         config_dir = os.path.dirname(os.path.abspath(path))
+        # A verification's own `top:` wins over the model's and lands in a
+        # yosys script line (`prep -top <top>`), the chparam lines and the
+        # `bind_to` construction, so it answers to the same rule the model
+        # top does — checked here, once, rather than escaped per generator.
+        for v in data.verifications:
+            if v.top is not None:
+                validate_top(
+                    v.top,
+                    v.name,
+                    path,
+                    subject="verification",
+                    event="fpv_config.invalid_top",
+                )
         try:
             self.verifications = {
                 v.name: v.initialise(config_dir) for v in data.verifications

@@ -21,7 +21,7 @@ from typing import Literal
 from serde import field, serde
 from serde.yaml import from_yaml
 
-from .model import ModelConfig, ModelConfigLoader
+from .model import ModelConfig, ModelConfigLoader, validate_top
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -263,6 +263,17 @@ class MutSuiteConfig:
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
         config_dir = os.path.dirname(os.path.abspath(path))
+        # The campaign's own `top:` wins over the model's and reaches the
+        # same generated yosys / sby scripts through the FPV oracle, so it
+        # answers to the same rule the model top does.
+        if data.top is not None:
+            validate_top(
+                data.top,
+                data.name or data.model,
+                path,
+                subject="campaign",
+                event="mut_config.invalid_top",
+            )
         try:
             self.config = data.initialise(config_dir)
         except FatalRtlBuddyError:
