@@ -107,20 +107,22 @@ Any tracked compile input change invalidates a shared build; stamps compare
 content, so a byte-for-byte regeneration does not. Stamps list each
 `+incdir+`/`-y` directory's contents, so a header edit rebuilds on every builder. Runtime-only plusargs, seeds,
 and simulation timeout do not either. Batch compile-input changes before
-launching a large build; use independent cheap suites while it compiles.
+launching a large build.
 
 - An edit that seems not to take effect, or a suspicious PASS right after one:
-  read the `compile.build_reused` line (the run's own log; console once per
-  build directory) and the test's `compile.log` breadcrumb, which name the reused build directory and its stamp's age.
-- `--rebuild` forces a fresh compile — once per build directory per invocation,
-  carried by the build job. Prefer it to deleting `artefacts/.shared-builds/`;
-  dropping `--share-build` does not stop reuse.
+  read the `compile.build_reused` line (run log; console once per build
+  dir) and the test's `compile.log` breadcrumb — both name the reused
+  build directory and its stamp's age.
+- `--rebuild` forces a fresh compile, once per build directory per invocation.
+  Prefer it to deleting `artefacts/.shared-builds/`; dropping `--share-build`
+  does not stop reuse.
 - A wait on `compile.build_lock_wait` is another process compiling into the same
   directory, not a hang.
 - `dispatch.build_job_deduped` means an earlier run's build job for this suite
   (`rb-build-<hash>`, one per suite directory) is still queued or running, so
-  this one waits on it (`--dependency=singleton`), then reuses the shared
-  build. Expected after an interrupted run; not a fault. If it stays
+  this one waits on it (`--dependency=singleton`), then revalidates the shared
+  build: unchanged inputs reuse it; `--rebuild`, an edit or another builder
+  recompile, correctly. Expected after an interrupt. If it stays
   PENDING, inspect the job ahead (`squeue -j <ids> -O JobID,State,Reason`);
   `scancel` only a held or stale one — a healthy build gates the sims.
 
