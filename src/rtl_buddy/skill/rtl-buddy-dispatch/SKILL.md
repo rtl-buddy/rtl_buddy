@@ -126,7 +126,11 @@ launching a large build; use independent cheap suites while it compiles.
   Expected after an interrupted run; nothing to fix. Jobs are named
   `rb-build-<hash>` per suite directory, so every run of that suite — a
   regression, one test, another builder mode — shares one. If the new job
-  stays PENDING, the one ahead is stuck: `scancel` the ids the warning names.
+  stays PENDING, inspect the one ahead first
+  (`squeue -j <ids> -O JobID,State,Reason`): RUNNING, or PENDING on ordinary
+  capacity, means the serialisation is working — wait. `scancel` only an id
+  that is stale or held (`JobHeldUser`/`JobHeldAdmin`); cancelling a healthy
+  build kills the sims gated on it.
 
 For missing envelopes, retries, license queues, accounting gaps, and builders
 that compile inside simulation jobs, read `concepts/dispatch` and `known-issues`.

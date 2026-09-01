@@ -906,9 +906,13 @@ class SlurmDispatchBackend(DispatchBackend):
         if inflight:
             # WARNING, so it reaches the console: this run's build will not
             # start until an earlier one finishes, and a user watching the
-            # queue needs to read that wait as deliberate — and to know
-            # which ids to `scancel` if the job ahead is held. After the
-            # submit, so it describes a job that exists and can name it.
+            # queue needs to read that wait as deliberate — and to have
+            # the ids to inspect if it lasts (a predecessor that is
+            # RUNNING or queued on capacity is the serialisation working;
+            # only a held or abandoned one is worth cancelling, and
+            # cancelling a healthy one discards the build this run is
+            # about to reuse). After the submit, so it describes a job
+            # that exists and can name it.
             log_event(
                 logger,
                 logging.WARNING,
