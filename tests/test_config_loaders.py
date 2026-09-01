@@ -2184,6 +2184,10 @@ def _models_yaml_with_top(tmp_path, top: str):
         "9x",
         "",
         "\\escaped.id",
+        # Legal SystemVerilog, refused anyway: `$` substitutes in the Tcl
+        # these tops are written into unquoted.
+        "a$b",
+        "foo$bar",
     ],
 )
 def test_model_config_loader_refuses_a_top_that_is_not_an_identifier(tmp_path, top):
@@ -2222,12 +2226,50 @@ def test_an_escaped_identifier_top_says_why_it_is_refused(tmp_path):
     assert "escaped identifiers are refused" in str(excinfo.value)
 
 
-@pytest.mark.parametrize("top", ["top", "axi_xbar", "_t1", "a$b"])
+@pytest.mark.parametrize("top", ["top", "axi_xbar", "_t1", "_", "T9"])
 def test_model_config_loader_accepts_simple_identifier_tops(tmp_path, top):
     from rtl_buddy.config.model import ModelConfigLoader
 
     path = _models_yaml_with_top(tmp_path, top)
     assert ModelConfigLoader(str(path)).get_model("blk_a").get_top() == top
+
+
+def test_a_dollar_in_a_top_is_refused_with_the_tcl_reason(tmp_path):
+    """`foo$bar` is a legal SV identifier and still cannot be used.
+
+    The generators write it into Tcl unquoted — `synth_design -top
+    foo$bar` in the Vivado flow, `synth -top foo$bar` in Yosys and
+    OpenROAD — where `$bar` substitutes, so the tool elaborates a
+    different name than the YAML declares, or fails. Having chosen to
+    make the value safe at the boundary rather than escape it in six
+    generators, the rule is the intersection of "legal SV" and "inert in
+    Tcl", so the message has to explain the narrowing rather than call a
+    legal identifier malformed.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, "foo$bar")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "substitution character" in message
+    assert "Rename the module" in message
+
+
+def test_a_model_name_is_inert_in_tcl_even_though_it_is_wider(tmp_path):
+    """The name rule reaches the same Tcl through the `get_top()` fallback.
+
+    It admits `-` and `.`, which are not Tcl metacharacters, and its
+    first character may not be `-`, so a name can never be read as an
+    option flag either. Nothing here needs narrowing — but it does need
+    pinning, because the fallback makes a name a script token.
+    """
+    from rtl_buddy.config.model import MODEL_NAME_RE
+
+    for hostile in ["a$b", "a[b]", "a{b}", 'a"b', "a\\b", "a;b", "a b", "-a"]:
+        assert not MODEL_NAME_RE.match(hostile), hostile
+    for benign in ["my-model", "blk.a", "blk_a"]:
+        assert MODEL_NAME_RE.match(benign), benign
 
 
 def test_a_model_without_a_top_is_not_top_checked(tmp_path):

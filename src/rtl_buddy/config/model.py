@@ -71,19 +71,30 @@ def validate_model_name(name: str, path: str) -> None:
 #: downstream interpolation safe, and it is enforced once, here, rather
 #: than escaped differently in each flow.
 #:
+#: ``$`` is legal in a SystemVerilog identifier and is **excluded here
+#: anyway**, because it is a substitution character in exactly the Tcl
+#: this value is interpolated into unquoted: ``synth_design -top foo$bar``
+#: makes Vivado substitute an empty (or wrong) ``$bar`` and elaborate a
+#: different module than the YAML names, or fail outright. Having chosen
+#: to make the value safe at the boundary rather than escape it in six
+#: generators, the rule has to be the intersection of "legal SV" and
+#: "inert in Tcl and in a filename" — not the union. A design whose top
+#: really is named with a ``$`` has to be renamed or wrapped.
+#:
 #: SystemVerilog also has *escaped* identifiers — a backslash, then
-#: printable characters, then whitespace — which legally admit ``/``,
-#: ``;`` and ``$``. Those are refused outright rather than escaped
-#: per-tool: no flow can name a file or a Tcl token after one safely,
-#: and a design that needs one cannot be driven through these flows
-#: anyway.
+#: printable characters, then whitespace — which legally admit ``/`` and
+#: ``;``. Those are refused outright for the same reason: no flow can
+#: name a file or a Tcl token after one safely, and a design that needs
+#: one cannot be driven through these flows anyway.
 #:
 #: ``get_top()`` falls back to the model ``name`` when ``top:`` is unset,
-#: and :data:`MODEL_NAME_RE` is wider (it allows ``-`` and ``.``) — but it
-#: admits no separator, no whitespace and no metacharacter either, so the
-#: same safety invariant holds on both paths.
+#: so :data:`MODEL_NAME_RE` reaches the same Tcl. It is wider — it allows
+#: ``-`` and ``.`` — but neither is a Tcl metacharacter, and its first
+#: character may not be ``-``, so a name can never be read as an option
+#: flag either. The safety invariant holds on both paths.
+#:
 #: Anchored with ``\\Z`` for the reason :data:`MODEL_NAME_RE` states.
-MODEL_TOP_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_$]*\Z")
+MODEL_TOP_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
 def validate_model_top(top: str, name: str, path: str) -> None:
@@ -100,6 +111,7 @@ def validate_model_top(top: str, name: str, path: str) -> None:
     if isinstance(top, str) and MODEL_TOP_RE.match(top):
         return
     escaped = isinstance(top, str) and top.startswith("\\")
+    dollar = isinstance(top, str) and "$" in top and not escaped
     log_event(
         logger,
         logging.ERROR,
@@ -108,13 +120,24 @@ def validate_model_top(top: str, name: str, path: str) -> None:
         name=name,
         top=top,
     )
-    detail = (
-        "SystemVerilog escaped identifiers are refused here: no flow can "
-        "name an artefact file or a Tcl token after one safely."
-        if escaped
-        else "It must start with a letter or underscore and contain only "
-        "letters, digits, underscore or '$'."
-    )
+    if escaped:
+        detail = (
+            "SystemVerilog escaped identifiers are refused here: no flow can "
+            "name an artefact file or a Tcl token after one safely."
+        )
+    elif dollar:
+        detail = (
+            "'$' is legal in SystemVerilog but is a substitution character "
+            "in the Vivado and OpenROAD Tcl this value is written into "
+            "unquoted, so `synth_design -top` would elaborate a different "
+            "name than the one declared here. Rename the module, or wrap it "
+            "in one whose name has no '$'."
+        )
+    else:
+        detail = (
+            "It must start with a letter or underscore and contain only "
+            "letters, digits or underscore."
+        )
     raise FatalRtlBuddyError(
         f"{path}: model {name!r} declares top {top!r}, which is not a simple "
         f"SystemVerilog identifier. {detail} The top is elaborated by every "

@@ -1461,7 +1461,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "SystemVerilog identifier — the top is elaborated by every "
                 "backend and also lands in artefact names and generated Tcl, "
                 "so it must start with a letter or underscore and contain "
-                "only letters, digits, underscore or '$'"
+                "only letters, digits or underscore ('$' is legal SV but "
+                "substitutes in the generated Tcl)"
             )
         case "model_config.invalid_model_name":
             return (
