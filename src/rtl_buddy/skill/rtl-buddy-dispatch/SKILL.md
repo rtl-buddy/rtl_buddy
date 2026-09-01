@@ -118,18 +118,11 @@ launching a large build; use independent cheap suites while it compiles.
 - A wait on `compile.build_lock_wait` is another process compiling into the same
   directory, not a hang.
 - `dispatch.build_job_deduped` means an earlier run's build job for this suite
-  is still queued or running, so this run's build job waits for it
-  (`--dependency=singleton`, per job name and user), then revalidates the shared
-  build and reuses it if the inputs are unchanged — `--rebuild`, an edit, or
-  another builder makes it recompile instead, which is correct.
-  Expected after an interrupted run; nothing to fix. Jobs are named
-  `rb-build-<hash>` per suite directory, so every run of that suite — a
-  regression, one test, another builder mode — shares one. If the new job
-  stays PENDING, inspect the one ahead first
-  (`squeue -j <ids> -O JobID,State,Reason`): RUNNING, or PENDING on ordinary
-  capacity, means the serialisation is working — wait. `scancel` only an id
-  that is stale or held (`JobHeldUser`/`JobHeldAdmin`); cancelling a healthy
-  build kills the sims gated on it.
+  (`rb-build-<hash>`, one per suite directory) is still queued or running, so
+  this one waits on it (`--dependency=singleton`), then reuses the shared
+  build. Expected after an interrupted run; not a fault. If it stays
+  PENDING, inspect the job ahead (`squeue -j <ids> -O JobID,State,Reason`);
+  `scancel` only a held or stale one — a healthy build gates the sims.
 
 For missing envelopes, retries, license queues, accounting gaps, and builders
 that compile inside simulation jobs, read `concepts/dispatch` and `known-issues`.
