@@ -1964,6 +1964,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/fpv-coi-analysis-is-best-effort.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-simulation-only-mutation-campaign-ignores-top",
+          "slug": "a-simulation-only-mutation-campaign-ignores-top",
+          "title": "A simulation-only mutation campaign ignores `top`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-simulation-only-mutation-campaign-ignores-top.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#fpga-bitstream-generation-relaxes-two-io-drcs",
           "slug": "fpga-bitstream-generation-relaxes-two-io-drcs",
           "title": "FPGA bitstream generation relaxes two I/O DRCs",
