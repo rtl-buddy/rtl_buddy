@@ -15,6 +15,7 @@ Use the catalog for page and section-level retrieval:
 - [cocotb Testbenches](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/cocotb.md): Configure cocotb testbenches for Verilator, Icarus Verilog, or VCS and interpret their results.
 - [Coverage](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/coverage.md): Collect Verilator coverage, merge and export results, and inspect saved coverage by file, module, point, and test.
 - [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/dispatch.md): Run tests concurrently on one host or Slurm, configure resources and retries, and diagnose dispatched builds and jobs.
+- [Model Elaboration](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/elaboration.md): Parse, type-check, and elaborate models quickly with pyslang, using optional profiles in models.yaml and explicit regression manifests.
 - [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/execution-context.md): Resolve RTL Buddy command roots, configuration paths, logs, artefacts, hook paths, and concurrent-run conflicts.
 - [Expected Failures](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/expected-failures.md): Mark known failures and choose whether an unexpected pass should fail a test, formal, synthesis, P&R, or power run.
 - [FPGA Implementation](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/fpga.md): Configure and run FPGA synthesis, placement, routing, reports, and optional bitstream generation with Vivado or openXC7.
@@ -47,4 +48,4 @@ Use the catalog for page and section-level retrieval:
 - [Migrations](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/migrations.md): Required project changes for rtl_buddy major-version upgrades and the legacy submodule-to-uv migration.
 - [Quick Start](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/quickstart.md): Run tests, regressions, synthesis, and randomized simulation in an existing RTL Buddy project.
 - [CLI Reference](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/reference/cli.md): Auto-generated CLI reference for documented rtl-buddy commands and their options.
-- [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/reference/yaml.md): Canonical field reference for rtl_buddy project, model, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files.
+- [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/reference/yaml.md): Canonical field reference for rtl_buddy project, model, elaboration, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files.

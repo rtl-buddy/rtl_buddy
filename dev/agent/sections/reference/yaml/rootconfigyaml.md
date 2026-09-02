@@ -199,7 +199,7 @@ cfg-tools:
 
 ### Regression manifest defaults
 
-`cfg-rtl-reg.reg-cfg-path` is the fallback when `regression.yaml` is absent from the current directory. Optional flow fallbacks are `synth-reg-cfg-path`, `power-reg-cfg-path`, `fpga-reg-cfg-path`, `cdc-reg-cfg-path`, `fpv-reg-cfg-path`, and `lint-reg-cfg-path`. Relative paths resolve from `root_config.yaml`. A root-local manifest takes precedence over its fallback.
+`cfg-rtl-reg.reg-cfg-path` is the fallback when `regression.yaml` is absent from the current directory. Optional flow fallbacks are `elab-reg-cfg-path`, `synth-reg-cfg-path`, `power-reg-cfg-path`, `fpga-reg-cfg-path`, `cdc-reg-cfg-path`, `fpv-reg-cfg-path`, and `lint-reg-cfg-path`. Relative paths resolve from `root_config.yaml`. A root-local manifest takes precedence over its fallback.
 
 ### Parallel dispatch
 
@@ -231,7 +231,7 @@ cfg-dispatch:
 
 | Field | Default and validation |
 |---|---|
-| `backend` | `local`; values are `local`, `local-parallel`, `slurm`. Applies automatically to regression and randtest; `rb test` requires an explicit `--dispatch` |
+| `backend` | `local`; values are `local`, `local-parallel`, `slurm`. Applies automatically to regression, elaboration regression, and randtest; `rb test` and `rb elab` require an explicit `--dispatch` |
 | `jobs` | `min(4, CPU count)`; positive local-parallel global pool size; CLI `--jobs` wins |
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
@@ -252,7 +252,7 @@ cfg-dispatch:
 | `rightsize.report` | true |
 | `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5 |
 
-Local-parallel ignores resource reservations and produces no right-sizing advice; `compile.parallel` still applies, being concurrency inside the build job rather than a reservation. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` and a successful build. See [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/).
+Local-parallel ignores scheduler memory/time reservations and produces no right-sizing advice; an elaboration profile's `cpus` still sizes its pyslang worker, and `compile.parallel` still applies to simulation builds as concurrency inside the build job. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` and a successful build. See [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/).
 
 ### XPLR experiment storage
 

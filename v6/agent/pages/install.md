@@ -24,6 +24,7 @@ RTL Buddy's wheel provides required Python dependencies. Integrated tools are fi
 | Workflow | Required tools | Notes |
 | --- | --- | --- |
 | `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
+| `elab`, `elab-regression` | `rtl_buddy[elab]` | Install with `uv add "rtl_buddy[elab]"`; supports pyslang 10.x and 11.x and needs no simulator executable. |
 | Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Requires a Linux submit host and shared filesystem. `sacct` supplies right-sizing telemetry; `scontrol` supplies `MaxArraySize`, without which a resource group too large for one job array is not split — set `cfg-dispatch.max-array-size` instead. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
 | `synth`, `synth-regression` | [rtl-buddy Yosys fork](https://github.com/rtl-buddy/yosys); OpenROAD for `tool: openroad` | See [Synthesis](concepts/synthesis.md#install-the-tools). |

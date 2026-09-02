@@ -51,6 +51,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ test               run a simple test                                                 │
 │ randtest           repeat a test with multiple random seeds                          │
 │ regression         run rtl regression                                                │
+│ elab               elaborate a model with pyslang                                    │
+│ elab-regression    run named model elaboration profiles                              │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
@@ -226,6 +228,46 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 [default: (cfg-dispatch jobs, else   │
 │                                                 min(4, cpu count))]                  │
 │ --help                                          Show this message and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## elab
+
+```text
+Usage: rtl-buddy elab [OPTIONS] [MODEL_NAME]
+
+ elaborate a model with pyslang
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   model_name      [MODEL_NAME]  model to elaborate; required unless --list is used   │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --models-config  -c      TEXT     models.yaml to use [default: models.yaml]          │
+│ --profile                TEXT     named elaboration profile                          │
+│ --list                            list models and named profiles, then exit          │
+│ --dispatch               TEXT     execution backend (local, local-parallel, slurm)   │
+│ --jobs           -j      INTEGER  local-parallel process count                       │
+│ --help                            Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## elab-regression
+
+```text
+Usage: rtl-buddy elab-regression [OPTIONS]
+
+ run named model elaboration profiles
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config  -c      TEXT                  elab_regression.yaml to use              │
+│                                             [default: (Use ./elab_regression.yaml if │
+│                                             present, otherwise root_config.yaml      │
+│                                             elab-reg-cfg-path)]                      │
+│ --reg-level   -l      INTEGER RANGE [x>=0]  regression level to stop at [default: 0] │
+│ --dispatch            TEXT                  execution backend (local,                │
+│                                             local-parallel, slurm)                   │
+│ --jobs        -j      INTEGER               local-parallel process count             │
+│ --help                                      Show this message and exit.              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

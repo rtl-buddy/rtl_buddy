@@ -316,6 +316,33 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/dispatch.md"
     },
     {
+      "description": "Parse, type-check, and elaborate models quickly with pyslang, using optional profiles in models.yaml and explicit regression manifests.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/elaboration/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/elaboration/#run-a-model",
+          "slug": "run-a-model",
+          "title": "Run a model",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/elaboration/run-a-model.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/elaboration/#run-a-regression",
+          "slug": "run-a-regression",
+          "title": "Run a regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/elaboration/run-a-regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/elaboration/#outputs-and-dispatch",
+          "slug": "outputs-and-dispatch",
+          "title": "Outputs and dispatch",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/elaboration/outputs-and-dispatch.md"
+        }
+      ],
+      "slug": "concepts/elaboration",
+      "title": "Model Elaboration",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/elaboration.md"
+    },
+    {
       "description": "Resolve RTL Buddy command roots, configuration paths, logs, artefacts, hook paths, and concurrent-run conflicts.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/",
       "sections": [
@@ -2123,6 +2150,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/regression.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#elab",
+          "slug": "elab",
+          "title": "elab",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/elab.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#elab-regression",
+          "slug": "elab-regression",
+          "title": "elab-regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/elab-regression.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#filelist",
           "slug": "filelist",
           "title": "filelist",
@@ -2782,7 +2821,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/reference/cli.md"
     },
     {
-      "description": "Canonical field reference for rtl_buddy project, model, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files.",
+      "description": "Canonical field reference for rtl_buddy project, model, elaboration, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/",
       "sections": [
         {
@@ -2802,6 +2841,12 @@
           "slug": "modelsyaml",
           "title": "models.yaml",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/yaml/modelsyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#elabregressionyaml",
+          "slug": "elabregressionyaml",
+          "title": "elab_regression.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/yaml/elabregressionyaml.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#testsyaml",

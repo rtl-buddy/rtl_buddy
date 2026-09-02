@@ -7,6 +7,8 @@ Use these roots unless a command documents a narrower exception:
 | `test` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | compile: `<artifact>`; sim: `<artifact>` |
 | `randtest` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | compile: `<artifact>`; sim: `<artifact>/run-NNNN` |
 | `regression` | `dirname(regression.yaml)` | each suite's `<suite>/artefacts/<test>` | same as `test` per suite |
+| `elab` | `dirname(models.yaml)` | `<model_root>/artefacts/elab/<model>/<base-or-profile>` | `<artifact>` |
+| `elab-regression` | `dirname(elab_regression.yaml)` | each model's `artefacts/elab/<model>/<profile>` | each profile artifact |
 | `wave --resim` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | same as `test` |
 | `synth` | `dirname(synth.yaml)` | `<suite>/artefacts/<synth>` | `<artifact>` |
 | `fpv` | `dirname(fpv.yaml)` | `<suite>/artefacts/<fpv>` | `<artifact>` |

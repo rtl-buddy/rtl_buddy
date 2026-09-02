@@ -8,6 +8,11 @@ models:
   - name: my_design
     filelist: [-F my_design.f]
     spec: ../../spec/my_design/specs.yaml
+    elaborations:
+      - name: smoke
+        defines: {CHECKS_ENABLED: 1}
+        parameters: {DATA_WIDTH: 32}
+        resources: {cpus: 2, mem: 2G, time: "00:10:00"}
 ```
 
 | Field | Requirement | Meaning |
@@ -20,6 +25,7 @@ models:
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `graph` | Optional | `false` opts the model out of `rb graph build`'s design tier; default `true` |
 | `top` | Optional | Root module of the filelist when it is not named after the model; default `name`. Letters, digits and underscore only (no `$`), and unique across the graphable models `rb graph build` selects |
+| `elaborations` | Optional, default empty | Named pyslang profile deltas used by `rb elab --profile` and `rb elab-regression`; the model remains directly elaborable without this field |
 
 `top` is the model's root module everywhere rtl_buddy elaborates it, and it is binding, not advisory: a model has one root module, and a model whose name is not a module was already broken in every one of these flows. It roots `rb hier`, `rb hier-query`, and `rb axi-profile`, it roots the `rb graph build` design-tier export, it is the target of the graph's `model --maps_to--> module:` edge, and it is the default top of a `cdc.yaml`, `synth.yaml`, `lint.yaml`, `fpga.yaml`, `fpv.yaml`, or `mut.yaml` run against the model. Only `fpv.yaml` and `mut.yaml` have a `top:` field of their own; where one is set it wins, because a formal checker top lives in the run's own `properties:`. Setting `top` therefore changes artefact names that embed it — the FPGA bitstream is `<top>.bit`, and OpenROAD's design name follows the synthesis top.
 
@@ -49,4 +55,30 @@ models:
     top: axi_xbar
 ```
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. Only the simulation flow acts on that include path: the synthesis, CDC, and FPGA flows drop `+incdir+` entries when they read the generated filelist back, so a header those flows must see needs a search path configured for them instead (see [FPGA Implementation](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/)). `rb synth` likewise drops `+define+` entries and passes only the synth.yaml entry's `defines:`; it warns when the filelist carries macros it is not applying. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Environment variables in entries are expanded. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. `+define+NAME[=VALUE]` declares a preprocessor macro; several may share one entry with `+` separators, so a value cannot contain `+`.
+
+Not every flow honors `+incdir+` and `+define+`. Simulation and model elaboration apply both. Synthesis, CDC, and FPGA drop `+incdir+` when they read the generated filelist back, so a header those flows need requires a search path configured for them instead (see [FPGA Implementation](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/)). `rb synth` also drops `+define+` in favour of the synth.yaml entry's `defines:` and warns when the filelist carries macros it is not applying. Renderer-only flows drop definitions.
+
+### Elaboration profiles
+
+A profile is a delta on its containing model, not another model reference. Paths in `prepend_sources`, `append_sources`, and `include_dirs` resolve from `models.yaml`. Top precedence is profile `top`, then model `top`, then model `name`. Profile names are unique ignoring case, and every case variant of `base` is reserved so artifact paths remain portable to case-insensitive filesystems.
+
+| Field | Default and validation |
+|---|---|
+| `name` | Required, unique within the model, and a safe single path segment; `base` is reserved for the bare-model artifact |
+| `desc` | Optional description |
+| `top` | Model top; optional simple SystemVerilog identifier |
+| `reglvl` | 0; non-negative integer used by `elab-regression` |
+| `prepend_sources` / `append_sources` | Empty; source or filelist entries placed before or after the model's expanded filelist |
+| `include_dirs` | Empty; extra include directories placed before the model filelist |
+| `defines` | Empty map of identifier to string, integer, boolean, or null. Boolean values render as `1`/`0`; null defines only the name. String values cannot be empty or contain whitespace or `+`. Profile definitions take precedence over same-named definitions in the model filelist |
+| `parameters` | Empty map of top-level parameter overrides. String values are SystemVerilog expression text; booleans render as `1`/`0`. Unknown and local parameter names fail elaboration |
+| `vcs_compat` | false; enables slang VCS compatibility mode |
+| `single_unit` | false; parses primary sources as one compilation unit |
+| `libraries_inherit_macros` | false; requires `single_unit: true` and shares primary-unit macros with library sources |
+| `timescale` | Unset; command-line timescale such as `1ns/1ps` |
+| `ignored_directives` | Empty; directive names for slang to ignore |
+| `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. These cannot suppress hard compilation errors |
+| `resources` | Inherits `cfg-dispatch.resources` field by field; `cpus` must be positive and also controls pyslang worker threads |
+
+`rb elab MODEL -c models.yaml` runs the base model. `rb elab MODEL --profile NAME -c models.yaml` applies one profile. Outputs are `artefacts/elab/<model>/<base-or-profile>/elab.f`, `elab.log`, and `result.json`. See [Model Elaboration](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/elaboration/).

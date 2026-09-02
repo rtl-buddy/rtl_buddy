@@ -40,6 +40,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ test               run a simple test                                                 │
 │ randtest           repeat a test with multiple random seeds                          │
 │ regression         run rtl regression                                                │
+│ elab               elaborate a model with pyslang                                    │
+│ elab-regression    run named model elaboration profiles                              │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │

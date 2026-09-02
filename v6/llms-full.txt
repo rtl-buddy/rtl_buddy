@@ -178,6 +178,7 @@ Common payload conventions:
 
 - listing commands use `payload.names`;
 - regression results use `payload.results` and include `suite`;
+- elaboration results include top, source and diagnostic counts, elapsed time, peak memory, and `result_json`;
 - `docs list` uses `payload.pages`;
 - coverage and formal commands attach structured metrics and artefact paths to their results.
 
@@ -973,6 +974,111 @@ To inspect accounting manually, query step rows without `sacct -X`:
 ```bash
 sacct -j <jobid> --format=JobID,Elapsed,MaxRSS
 ```
+
+
+---
+
+<!-- source: concepts/elaboration -->
+
+---
+description: Parse, type-check, and elaborate models quickly with pyslang, using optional profiles in models.yaml and explicit regression manifests.
+---
+
+# Model Elaboration
+
+Use `rb elab` for a fast SystemVerilog parse, type-check, and elaboration gate
+without building a simulator executable. It consumes the same model and
+filelist every other model-based flow already uses; there is no separate
+`elab.yaml` and no second model path to keep synchronized.
+
+## Run a model
+
+Install the optional Python frontend, inspect the available models, then run
+one:
+
+```bash
+uv add "rtl_buddy[elab]"
+rb --machine elab --list -c design/models.yaml
+rb --machine elab core -c design/models.yaml
+```
+
+A bare run uses the model's `filelist` and selects `model.top`, falling back to
+the model name. Add a named profile only when a gate needs different sources,
+defines, parameters, compatibility options, resources, or top:
+
+```yaml
+rtl-buddy-filetype: model_config
+models:
+  - name: core
+    top: core_top
+    filelist: [-F core.f]
+    elaborations:
+      - name: smoke
+        append_sources: [checks/bind_checks.sv]
+        defines: {CHECKS_ENABLED: 1}
+        parameters: {DATA_WIDTH: 32}
+        warnings: [all]
+        reglvl: 0
+        resources: {cpus: 2, mem: 2G, time: "00:10:00"}
+```
+
+Run it with:
+
+```bash
+rb --machine elab core --profile smoke -c design/models.yaml
+```
+
+Profile `top` overrides model `top`; model `top` overrides the model name.
+Profile source and include paths resolve from `models.yaml`. Warning controls
+contain only the text after `-W`; they can suppress warnings but cannot disable
+hard parse, type, or elaboration errors.
+
+## Run a regression
+
+An elaboration regression deliberately selects `models.yaml` files through a
+small manifest. It runs only named profiles, so adding an ordinary model does
+not silently expand a project-wide gate.
+
+```yaml
+rtl-buddy-filetype: elab_reg_config
+model-configs:
+  - design/core/models.yaml
+  - design/peripherals/models.yaml
+```
+
+```bash
+rb --machine elab-regression -c elab_regression.yaml --reg-level 1
+```
+
+Profiles above the requested level produce `SKIP`. A manifest with no named
+profiles is an error instead of an empty passing regression. Set
+`cfg-rtl-reg.elab-reg-cfg-path` when the manifest is not at the project root.
+
+## Outputs and dispatch
+
+Each run writes below the directory containing its `models.yaml`:
+
+```text
+artefacts/elab/<model>/<base-or-profile>/
+  elab.f
+  elab.log
+  result.json
+```
+
+`elab.f` has unrolled includes and absolute path-valued entries. `result.json` records
+the selected top, explicit and parsed source counts, error and warning counts,
+elapsed time, peak worker memory, and pyslang version. A profile whose
+`prepend_sources`, `append_sources`, or `include_dirs` entry is missing produces
+a `FAIL` result at stage `filelist` instead of aborting the command, so a
+regression continues with its remaining profiles. Machine mode returns the
+same result payload and writes JSONL events to `rtl_buddy.log`.
+
+`rb elab` dispatch is opt-in with `--dispatch`. `rb elab-regression` also honors
+`cfg-dispatch.backend`. Profiles layer their `resources` over
+`cfg-dispatch.resources`; `cpus` is both the scheduler request and pyslang
+worker thread count. Slurm enforces memory and time reservations.
+Local-parallel passes `cpus` to pyslang and uses its process-pool limit for
+concurrency, but does not enforce memory or time.
 
 
 ---
@@ -3601,9 +3707,9 @@ rb tool-check --format json           # bare JSON for scripts
 rb --machine tool-check               # standard machine envelope
 ```
 
-Optional tools appear by default. Use `--no-include-optional` to hide them. The report contains:
+Optional tools appear by default. Use `--no-include-optional` to hide them. A tool may be optional globally but required by a command that is itself optional: pyslang does not block the core install, but it does block `elab` and `elab-regression`. The report contains:
 
-- **Tools:** canonical name, `ok` / `missing` / `outdated`, detected version, resolved path, minimum version, and optional status.
+- **Tools:** canonical name, `ok` / `missing` / `outdated` / `unsupported`, detected version, resolved path, minimum version, and optional status. `unsupported` marks a tool newer than the version range rtl-buddy is built against (pyslang 12 and later, for example); it blocks commands like `outdated` does.
 - **Subcommand readiness:** each declared `rb` command and the dependencies that block it. An optional feature does not make unrelated commands unready.
 
 Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, any optional binaries, and platform-specific install hints.
@@ -3620,11 +3726,11 @@ Exit behavior depends on the invocation:
 |---|---:|---|
 | `rb tool-check` | 0 | Informational, regardless of tool state |
 | `rb tool-check --strict` | 0 | All required tools are ready |
-| `rb tool-check --strict` | 1 | A required tool is missing or outdated |
+| `rb tool-check --strict` | 1 | A required tool is missing, outdated, or unsupported |
 | `rb tool-check --required-for <subcommand>` | 0 | That command's required tools are ready |
 | `rb tool-check --required-for <subcommand>` | 2 | That command is blocked |
 
-`--required-for` implies enforcement. Optional dependencies do not fail `--strict`.
+`--required-for` implies enforcement. Optional dependencies do not fail the global `--strict` check, but they do fail a focused check for a command that declares them required.
 
 The JSON payload contains `tools`, `subcommands`, and `exit_code`. Each `tools` entry carries `status`, `version`, `path`, `optional`, and `minimum_version` when one is declared. Optional binaries are deliberately absent from it: they are documentation of what a tool can additionally use, not a state anything can gate on, so machine consumers see no field for them. `rb --machine tool-check --explain <tool>` mirrors the human explanation verbatim in the payload's `instructions` field, which is where they do appear. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
 
@@ -4184,6 +4290,8 @@ Use these roots unless a command documents a narrower exception:
 | `test` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | compile: `<artifact>`; sim: `<artifact>` |
 | `randtest` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | compile: `<artifact>`; sim: `<artifact>/run-NNNN` |
 | `regression` | `dirname(regression.yaml)` | each suite's `<suite>/artefacts/<test>` | same as `test` per suite |
+| `elab` | `dirname(models.yaml)` | `<model_root>/artefacts/elab/<model>/<base-or-profile>` | `<artifact>` |
+| `elab-regression` | `dirname(elab_regression.yaml)` | each model's `artefacts/elab/<model>/<profile>` | each profile artifact |
 | `wave --resim` | `dirname(tests.yaml)` | `<suite>/artefacts/<test>` | same as `test` |
 | `synth` | `dirname(synth.yaml)` | `<suite>/artefacts/<synth>` | `<artifact>` |
 | `fpv` | `dirname(fpv.yaml)` | `<suite>/artefacts/<fpv>` | `<artifact>` |
@@ -4212,6 +4320,8 @@ Resolve config-owned paths from the config file that owns them:
 - `regression.yaml` resolves listed suite configs relative to itself.
 - `tests.yaml` resolves testbench filelists, hook script paths, and suite-local runtime assets relative to the suite directory.
 - `models.yaml` resolves model filelist entries relative to the `models.yaml` file that defined them.
+- `models.yaml` also owns elaboration profile sources, include directories, and output artifacts; profiles never carry another model path.
+- `elab_regression.yaml` resolves its explicit `model-configs` relative to the manifest.
 - `synth.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, and `fpga.yaml` resolve their own fields relative to their config directory.
 
 Pass absolute paths to external tools unless a value is intentionally artifact-relative.
@@ -4613,6 +4723,7 @@ RTL Buddy's wheel provides required Python dependencies. Integrated tools are fi
 | Workflow | Required tools | Notes |
 | --- | --- | --- |
 | `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
+| `elab`, `elab-regression` | `rtl_buddy[elab]` | Install with `uv add "rtl_buddy[elab]"`; supports pyslang 10.x and 11.x and needs no simulator executable. |
 | Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Requires a Linux submit host and shared filesystem. `sacct` supplies right-sizing telemetry; `scontrol` supplies `MaxArraySize`, without which a resource group too large for one job array is not split — set `cfg-dispatch.max-array-size` instead. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
 | `synth`, `synth-regression` | [rtl-buddy Yosys fork](https://github.com/rtl-buddy/yosys); OpenROAD for `tool: openroad` | See [Synthesis](concepts/synthesis.md#install-the-tools). |
@@ -5173,6 +5284,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ test               run a simple test                                                 │
 │ randtest           repeat a test with multiple random seeds                          │
 │ regression         run rtl regression                                                │
+│ elab               elaborate a model with pyslang                                    │
+│ elab-regression    run named model elaboration profiles                              │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
@@ -5348,6 +5461,46 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 [default: (cfg-dispatch jobs, else   │
 │                                                 min(4, cpu count))]                  │
 │ --help                                          Show this message and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## elab
+
+```text
+Usage: rtl-buddy elab [OPTIONS] [MODEL_NAME]
+
+ elaborate a model with pyslang
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   model_name      [MODEL_NAME]  model to elaborate; required unless --list is used   │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --models-config  -c      TEXT     models.yaml to use [default: models.yaml]          │
+│ --profile                TEXT     named elaboration profile                          │
+│ --list                            list models and named profiles, then exit          │
+│ --dispatch               TEXT     execution backend (local, local-parallel, slurm)   │
+│ --jobs           -j      INTEGER  local-parallel process count                       │
+│ --help                            Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## elab-regression
+
+```text
+Usage: rtl-buddy elab-regression [OPTIONS]
+
+ run named model elaboration profiles
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config  -c      TEXT                  elab_regression.yaml to use              │
+│                                             [default: (Use ./elab_regression.yaml if │
+│                                             present, otherwise root_config.yaml      │
+│                                             elab-reg-cfg-path)]                      │
+│ --reg-level   -l      INTEGER RANGE [x>=0]  regression level to stop at [default: 0] │
+│ --dispatch            TEXT                  execution backend (local,                │
+│                                             local-parallel, slurm)                   │
+│ --jobs        -j      INTEGER               local-parallel process count             │
+│ --help                                      Show this message and exit.              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7635,7 +7788,7 @@ Usage: rtl-buddy xplr mock score [OPTIONS]
 <!-- source: reference/yaml -->
 
 ---
-description: Canonical field reference for rtl_buddy project, model, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files.
+description: Canonical field reference for rtl_buddy project, model, elaboration, test, regression, implementation, FPGA, formal, lint, CDC, XPLR, mutation, and specification YAML files.
 ---
 
 # YAML Formats
@@ -7850,7 +8003,7 @@ cfg-tools:
 
 ### Regression manifest defaults
 
-`cfg-rtl-reg.reg-cfg-path` is the fallback when `regression.yaml` is absent from the current directory. Optional flow fallbacks are `synth-reg-cfg-path`, `power-reg-cfg-path`, `fpga-reg-cfg-path`, `cdc-reg-cfg-path`, `fpv-reg-cfg-path`, and `lint-reg-cfg-path`. Relative paths resolve from `root_config.yaml`. A root-local manifest takes precedence over its fallback.
+`cfg-rtl-reg.reg-cfg-path` is the fallback when `regression.yaml` is absent from the current directory. Optional flow fallbacks are `elab-reg-cfg-path`, `synth-reg-cfg-path`, `power-reg-cfg-path`, `fpga-reg-cfg-path`, `cdc-reg-cfg-path`, `fpv-reg-cfg-path`, and `lint-reg-cfg-path`. Relative paths resolve from `root_config.yaml`. A root-local manifest takes precedence over its fallback.
 
 ### Parallel dispatch
 
@@ -7882,7 +8035,7 @@ cfg-dispatch:
 
 | Field | Default and validation |
 |---|---|
-| `backend` | `local`; values are `local`, `local-parallel`, `slurm`. Applies automatically to regression and randtest; `rb test` requires an explicit `--dispatch` |
+| `backend` | `local`; values are `local`, `local-parallel`, `slurm`. Applies automatically to regression, elaboration regression, and randtest; `rb test` and `rb elab` require an explicit `--dispatch` |
 | `jobs` | `min(4, CPU count)`; positive local-parallel global pool size; CLI `--jobs` wins |
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
@@ -7903,7 +8056,7 @@ cfg-dispatch:
 | `rightsize.report` | true |
 | `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5 |
 
-Local-parallel ignores resource reservations and produces no right-sizing advice; `compile.parallel` still applies, being concurrency inside the build job rather than a reservation. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` and a successful build. See [Parallel dispatch](../concepts/dispatch.md).
+Local-parallel ignores scheduler memory/time reservations and produces no right-sizing advice; an elaboration profile's `cpus` still sizes its pyslang worker, and `compile.parallel` still applies to simulation builds as concurrency inside the build job. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` and a successful build. See [Parallel dispatch](../concepts/dispatch.md).
 
 ### XPLR experiment storage
 
@@ -7953,6 +8106,11 @@ models:
   - name: my_design
     filelist: [-F my_design.f]
     spec: ../../spec/my_design/specs.yaml
+    elaborations:
+      - name: smoke
+        defines: {CHECKS_ENABLED: 1}
+        parameters: {DATA_WIDTH: 32}
+        resources: {cpus: 2, mem: 2G, time: "00:10:00"}
 ```
 
 | Field | Requirement | Meaning |
@@ -7965,6 +8123,7 @@ models:
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `graph` | Optional | `false` opts the model out of `rb graph build`'s design tier; default `true` |
 | `top` | Optional | Root module of the filelist when it is not named after the model; default `name`. Letters, digits and underscore only (no `$`), and unique across the graphable models `rb graph build` selects |
+| `elaborations` | Optional, default empty | Named pyslang profile deltas used by `rb elab --profile` and `rb elab-regression`; the model remains directly elaborable without this field |
 
 `top` is the model's root module everywhere rtl_buddy elaborates it, and it is binding, not advisory: a model has one root module, and a model whose name is not a module was already broken in every one of these flows. It roots `rb hier`, `rb hier-query`, and `rb axi-profile`, it roots the `rb graph build` design-tier export, it is the target of the graph's `model --maps_to--> module:` edge, and it is the default top of a `cdc.yaml`, `synth.yaml`, `lint.yaml`, `fpga.yaml`, `fpv.yaml`, or `mut.yaml` run against the model. Only `fpv.yaml` and `mut.yaml` have a `top:` field of their own; where one is set it wins, because a formal checker top lives in the run's own `properties:`. Setting `top` therefore changes artefact names that embed it — the FPGA bitstream is `<top>.bit`, and OpenROAD's design name follows the synthesis top.
 
@@ -7994,7 +8153,46 @@ models:
     top: axi_xbar
 ```
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. Only the simulation flow acts on that include path: the synthesis, CDC, and FPGA flows drop `+incdir+` entries when they read the generated filelist back, so a header those flows must see needs a search path configured for them instead (see [FPGA Implementation](../concepts/fpga.md)). `rb synth` likewise drops `+define+` entries and passes only the synth.yaml entry's `defines:`; it warns when the filelist carries macros it is not applying. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Environment variables in entries are expanded. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. `+define+NAME[=VALUE]` declares a preprocessor macro; several may share one entry with `+` separators, so a value cannot contain `+`.
+
+Not every flow honors `+incdir+` and `+define+`. Simulation and model elaboration apply both. Synthesis, CDC, and FPGA drop `+incdir+` when they read the generated filelist back, so a header those flows need requires a search path configured for them instead (see [FPGA Implementation](../concepts/fpga.md)). `rb synth` also drops `+define+` in favour of the synth.yaml entry's `defines:` and warns when the filelist carries macros it is not applying. Renderer-only flows drop definitions.
+
+### Elaboration profiles
+
+A profile is a delta on its containing model, not another model reference. Paths in `prepend_sources`, `append_sources`, and `include_dirs` resolve from `models.yaml`. Top precedence is profile `top`, then model `top`, then model `name`. Profile names are unique ignoring case, and every case variant of `base` is reserved so artifact paths remain portable to case-insensitive filesystems.
+
+| Field | Default and validation |
+|---|---|
+| `name` | Required, unique within the model, and a safe single path segment; `base` is reserved for the bare-model artifact |
+| `desc` | Optional description |
+| `top` | Model top; optional simple SystemVerilog identifier |
+| `reglvl` | 0; non-negative integer used by `elab-regression` |
+| `prepend_sources` / `append_sources` | Empty; source or filelist entries placed before or after the model's expanded filelist |
+| `include_dirs` | Empty; extra include directories placed before the model filelist |
+| `defines` | Empty map of identifier to string, integer, boolean, or null. Boolean values render as `1`/`0`; null defines only the name. String values cannot be empty or contain whitespace or `+`. Profile definitions take precedence over same-named definitions in the model filelist |
+| `parameters` | Empty map of top-level parameter overrides. String values are SystemVerilog expression text; booleans render as `1`/`0`. Unknown and local parameter names fail elaboration |
+| `vcs_compat` | false; enables slang VCS compatibility mode |
+| `single_unit` | false; parses primary sources as one compilation unit |
+| `libraries_inherit_macros` | false; requires `single_unit: true` and shares primary-unit macros with library sources |
+| `timescale` | Unset; command-line timescale such as `1ns/1ps` |
+| `ignored_directives` | Empty; directive names for slang to ignore |
+| `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. These cannot suppress hard compilation errors |
+| `resources` | Inherits `cfg-dispatch.resources` field by field; `cpus` must be positive and also controls pyslang worker threads |
+
+`rb elab MODEL -c models.yaml` runs the base model. `rb elab MODEL --profile NAME -c models.yaml` applies one profile. Outputs are `artefacts/elab/<model>/<base-or-profile>/elab.f`, `elab.log`, and `result.json`. See [Model Elaboration](../concepts/elaboration.md).
+
+## elab_regression.yaml
+
+The regression manifest explicitly lists model configuration files and runs every named profile they contain. Bare models are not synthesized into implicit profiles.
+
+```yaml
+rtl-buddy-filetype: elab_reg_config
+model-configs:
+  - design/core/models.yaml
+  - design/peripherals/models.yaml
+```
+
+`model-configs` must be non-empty, paths resolve from the manifest, duplicate paths and profiles that would share an artifact directory are rejected with case-insensitive path comparison, and the selected files must contain at least one profile. `rb elab-regression` applies `--reg-level` and records higher-level profiles as `SKIP`. Discovery checks `./elab_regression.yaml` before `cfg-rtl-reg.elab-reg-cfg-path`.
 
 ## tests.yaml
 
