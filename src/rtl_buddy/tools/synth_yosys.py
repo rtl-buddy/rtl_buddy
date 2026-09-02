@@ -120,6 +120,11 @@ def filelist_scan_context(
     A macro's value is ``None`` when the entry carried no ``=``: a bare
     ``+define+X`` and ``+define+X=`` are different things -- the former is
     passed to Yosys as a valueless ``-D X``, the latter as ``-D X=``.
+
+    A value containing whitespace is fatal: a Yosys script line is tokenised
+    on whitespace with no quoting that survives (see
+    :func:`fpv_coi.render_slang_read`), so no ``-D`` can carry it and the
+    read command would otherwise fail on a mangled source path.
     """
     fl_dir = os.path.dirname(os.path.abspath(fl_path))
     incdirs: list[str] = []
@@ -140,8 +145,16 @@ def filelist_scan_context(
                 if not entry:
                     continue
                 name, sep, value = entry.partition("=")
-                if name:
-                    defines[name] = value if sep else None
+                if not name:
+                    continue
+                if any(c.isspace() for c in value):
+                    raise FatalRtlBuddyError(
+                        f"{fl_path}: `+define+{entry}` has a value containing "
+                        "whitespace, which a Yosys read command cannot "
+                        "express; drop the whitespace or move the macro out "
+                        "of the filelist"
+                    )
+                defines[name] = value if sep else None
     return incdirs, defines
 
 

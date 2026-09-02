@@ -220,7 +220,9 @@ A run whose `defines:` override a filelist entry with a different value (or any
 value, for a bare entry) logs one `synth.filelist_defines_overridden` warning
 naming both values: simulation then elaborates with the filelist's value and
 synthesis with the synth.yaml one. Drop one of the two if the flows are meant
-to agree.
+to agree. A filelist `+define+` whose value contains whitespace is fatal: a
+Yosys script line is split on whitespace and no quoting survives, so no `-D`
+can carry it.
 
 `` `undefineall `` follows the frontend in use, which differ: slang clears the
 source's own macros but re-applies the command-line ones, so the seed above

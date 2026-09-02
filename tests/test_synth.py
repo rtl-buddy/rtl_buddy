@@ -4752,6 +4752,50 @@ def test_write_script_slang_forwards_filelist_defines(tmp_path):
     assert "-DFROM_FL=8 -DBARE -DR=1 " in read_line
 
 
+def _whitespace_define_filelist(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"+define+MSG=a b\n-v {sv}\n")
+    return fl
+
+
+@pytest.mark.parametrize("frontend", ["verilog", "slang"])
+def test_a_whitespace_filelist_define_value_is_fatal(tmp_path, frontend):
+    """A yosys script line is split on whitespace and no quoting survives, so
+    `+define+MSG=a b` cannot be expressed as a `-D`; refuse it up front rather
+    than emit a read command that fails on a mangled source path."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    fl = _whitespace_define_filelist(tmp_path)
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend=frontend, plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    with pytest.raises(FatalRtlBuddyError, match=r"\+define\+MSG=a b.*whitespace"):
+        ys._write_script(str(fl))
+
+
+def test_a_whitespace_filelist_define_value_is_fatal_for_openroad(tmp_path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    fl = _whitespace_define_filelist(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    with pytest.raises(FatalRtlBuddyError, match="whitespace"):
+        or_synth._write_yosys_script(str(fl))
+
+
 # ---------------------------------------------------------------------------
 # Anonymous struct return types (review round 12)
 # ---------------------------------------------------------------------------
