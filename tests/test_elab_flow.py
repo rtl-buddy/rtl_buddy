@@ -586,6 +586,39 @@ def test_worker_failure_cannot_reuse_a_stale_pass(
     assert "did not produce a result" in result.results["desc"]
 
 
+def test_filelist_error_becomes_a_fail_result(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import rtl_buddy.runner.elab_runner as elab_runner_module
+
+    _write_models(
+        minimal_project,
+        """\
+rtl-buddy-filetype: model_config
+models:
+  - name: core
+    filelist: [src/example.sv]
+    elaborations:
+      - name: smoke
+        prepend_sources: [src/does_not_exist.sv]
+""",
+    )
+    model = ModelConfigLoader(str(minimal_project / "models.yaml")).get_model("core")
+    cfg = ElabConfig(model, model.get_elaboration("smoke"))
+
+    def no_worker(*_args, **_kwargs):
+        raise AssertionError("worker must not run without a filelist")
+
+    monkeypatch.setattr(elab_runner_module, "run_managed_process", no_worker)
+
+    result = ElabRunner(root_cfg=None, elab_cfg=cfg, resources=JobResources()).run()
+    assert result.results["result"] == "FAIL"
+    assert result.results["stage"] == "filelist"
+    assert "does_not_exist.sv" in result.results["desc"]
+    assert (cfg.artifact_dir / "result.json").exists()
+    assert "Filelist error" in (cfg.artifact_dir / "elab.log").read_text()
+
+
 def test_elab_dispatch_argv_is_machine_mode_and_carries_resources():
     spec = ElabJobSpec(
         model_name="core",

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..config.dispatch import JobResources
 from ..config.elab import ElabConfig
-from ..errors import FatalRtlBuddyError
+from ..errors import FatalRtlBuddyError, FilelistError
 from ..process_utils import run_managed_process
 from ..tool_manifest import require
 from ..tools.vlog_filelist import VlogFilelist
@@ -79,9 +79,15 @@ class ElabRunner:
         filelist = VlogFilelist(
             "elab/filelist", self.elab_cfg.model, str(self.filelist_path)
         )
-        input_source_count = filelist.write_elab_output(
-            self.elab_cfg, str(self.filelist_path)
-        )
+        try:
+            input_source_count = filelist.write_elab_output(
+                self.elab_cfg, str(self.filelist_path)
+            )
+        except FilelistError as exc:
+            self.log_path.write_text(f"Filelist error: {exc}\n")
+            return self._finish(
+                elab_failure(f"Filelist error: {exc}", stage="filelist")
+            )
         cmd = [
             sys.executable,
             "-m",
@@ -122,27 +128,28 @@ class ElabRunner:
                 profile=self.elab_cfg.profile_name,
             )
         except FatalRtlBuddyError as exc:
-            results = elab_failure(
-                f"elaboration worker exited with code {proc.returncode} without a valid result: {exc}"
+            return self._finish(
+                elab_failure(
+                    f"elaboration worker exited with code {proc.returncode} "
+                    f"without a valid result: {exc}"
+                )
             )
-            write_elab_result_json(
-                self.worker_result_path,
-                model=self.elab_cfg.model.name,
-                profile=self.elab_cfg.profile_name,
-                results=results,
-            )
-            worker_result = load_elab_result_json(
-                self.worker_result_path,
-                model=self.elab_cfg.model.name,
-                profile=self.elab_cfg.profile_name,
-            )
+        return self._finish(worker_result.results)
 
+    def _finish(self, results: dict):
+        """Persist ``results`` to the worker and durable paths and reload."""
+        write_elab_result_json(
+            self.worker_result_path,
+            model=self.elab_cfg.model.name,
+            profile=self.elab_cfg.profile_name,
+            results=results,
+        )
         if self.worker_result_path != self.durable_result_path:
             write_elab_result_json(
                 self.durable_result_path,
                 model=self.elab_cfg.model.name,
                 profile=self.elab_cfg.profile_name,
-                results=worker_result.results,
+                results=results,
             )
         return load_elab_result_json(
             self.durable_result_path,

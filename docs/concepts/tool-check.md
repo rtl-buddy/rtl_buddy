@@ -19,7 +19,7 @@ rb --machine tool-check               # standard machine envelope
 
 Optional tools appear by default. Use `--no-include-optional` to hide them. A tool may be optional globally but required by a command that is itself optional: pyslang does not block the core install, but it does block `elab` and `elab-regression`. The report contains:
 
-- **Tools:** canonical name, `ok` / `missing` / `outdated`, detected version, resolved path, minimum version, and optional status.
+- **Tools:** canonical name, `ok` / `missing` / `outdated` / `unsupported`, detected version, resolved path, minimum version, and optional status. `unsupported` marks a tool newer than the version range rtl-buddy is built against (pyslang 12 and later, for example); it blocks commands like `outdated` does.
 - **Subcommand readiness:** each declared `rb` command and the dependencies that block it. An optional feature does not make unrelated commands unready.
 
 Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, any optional binaries, and platform-specific install hints.
@@ -36,7 +36,7 @@ Exit behavior depends on the invocation:
 |---|---:|---|
 | `rb tool-check` | 0 | Informational, regardless of tool state |
 | `rb tool-check --strict` | 0 | All required tools are ready |
-| `rb tool-check --strict` | 1 | A required tool is missing or outdated |
+| `rb tool-check --strict` | 1 | A required tool is missing, outdated, or unsupported |
 | `rb tool-check --required-for <subcommand>` | 0 | That command's required tools are ready |
 | `rb tool-check --required-for <subcommand>` | 2 | That command is blocked |
 
