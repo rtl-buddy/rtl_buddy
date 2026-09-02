@@ -878,6 +878,58 @@ def test_colocated_suite_plans_survive_until_delayed_job_consumption(
     } == expected
 
 
+def test_a_later_suites_sweep_hook_does_not_alter_an_earlier_suites_submission(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Every suite is planned before any submits; each submits from its own env.
+
+    The second suite's sweep hook exports `SBATCH_NTASKS=64` in this process.
+    Pre-expansion runs that hook before the first suite's jobs go out, so
+    without a per-suite snapshot the first suite's build and array would
+    inherit the second suite's environment (and its analysis would record
+    the wrong override). After the last submission the process keeps the
+    hook's environment, since a retry is documented as a fresh sbatch from
+    whatever the head holds by then.
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    _mark_stub_builder_verilator(minimal_project)
+    second = _write_colocated_suites(minimal_project)
+    second.write_text(
+        second.read_text().replace(
+            "    sweep:\n", "    sweep:\n      path: export-sweep.py\n"
+        )
+    )
+    (minimal_project / "export-sweep.py").write_text(
+        "import os\nos.environ['SBATCH_NTASKS'] = '64'\nout_test_cfgs = [test_cfg]\n"
+    )
+
+    seen = {"build": {}, "sim": {}}
+    real_submit_build = recording_backend.submit_build
+    real_submit = recording_backend.submit
+
+    def submit_build_recording_env(spec):
+        seen["build"][Path(spec.test_config_path).name] = os.environ["SBATCH_NTASKS"]
+        return real_submit_build(spec)
+
+    def submit_recording_env(spec, **kwargs):
+        seen["sim"][spec.test_name] = os.environ["SBATCH_NTASKS"]
+        return real_submit(spec, **kwargs)
+
+    monkeypatch.setattr(recording_backend, "submit_build", submit_build_recording_env)
+    monkeypatch.setattr(recording_backend, "submit", submit_recording_env)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["build"] == {"tests.yaml": "4", "other-tests.yaml": "64"}
+    assert seen["sim"] == {"basic": "4", "other_basic": "64"}
+    assert os.environ["SBATCH_NTASKS"] == "64"
+
+
 def test_colocated_duplicate_test_artifact_is_rejected_before_submission(
     minimal_project: Path,
     recording_backend: _RecordingBackend,

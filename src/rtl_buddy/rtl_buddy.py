@@ -179,6 +179,14 @@ def _dispatch_suite_identity(config_path: str | Path) -> str:
     return f"{stem}-{digest}"
 
 
+def _replace_environ(snapshot: dict) -> None:
+    """Make ``os.environ`` equal to ``snapshot`` (keys removed and restored)."""
+    for key in list(os.environ):
+        if key not in snapshot:
+            del os.environ[key]
+    os.environ.update(snapshot)
+
+
 def _graph_where(node: dict) -> str:
     """``file:line`` for a graph node summary, or ``-`` (#380)."""
     file_path = node.get("file")
@@ -2925,7 +2933,6 @@ class RtlBuddy:
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
     ):
-
         if run_ids is None:
             run_ids = [None]
 
@@ -4756,9 +4763,19 @@ class RtlBuddy:
                         "dispatch_namespace": namespaces[
                             str(Path(suite_cfg.get_path()).resolve())
                         ],
+                        # A sweep hook is `exec()`d in this process and may
+                        # set or unset `SBATCH_*`, and entering a suite loads
+                        # its `.rtl-buddy/.env`. Snapshot the environment as
+                        # it stood right after this suite's own planning so
+                        # its submission sees exactly that, not what a later
+                        # suite's hook left behind (docs/concepts/dispatch.md).
+                        "environ": dict(os.environ),
                     }
                 )
             self._validate_dispatch_test_artifacts(prepared_suites)
+            # Retries, collection, and analysis run from whatever the process
+            # holds after every hook has run, as before pre-expansion.
+            final_environ = dict(os.environ)
 
             # Submit every suite before waiting: the job fleet spans all
             # suites, so slow suites overlap instead of serializing (#351 P2).
@@ -4770,6 +4787,7 @@ class RtlBuddy:
             try:
                 for prepared in prepared_suites:
                     suite_cfg = prepared["suite_cfg"]
+                    _replace_environ(prepared["environ"])
                     self._enter_command_context(primary_config=suite_cfg.get_path())
                     state = self._dispatch_suite_submit(
                         suite_cfg,
@@ -4798,11 +4816,13 @@ class RtlBuddy:
                     # during the next suite's submission, so give it a chance
                     # to refill; a scheduler-backed backend no-ops here.
                     dispatch_backend.advance()
+                _replace_environ(final_environ)
                 if all_handles:
                     dispatch_backend.wait_all(all_handles)
             except BaseException:
                 # Interrupt or fatal error on the head: don't leave the
                 # fleet running.
+                _replace_environ(final_environ)
                 dispatch_backend.cancel_all(all_handles)
                 raise
             for suite_cfg, state in submitted:
