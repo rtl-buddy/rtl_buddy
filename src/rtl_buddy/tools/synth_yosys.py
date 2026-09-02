@@ -408,7 +408,14 @@ def emit_frontend_read_cmds(
         # each frontend gives it its own meaning (BARE_DEFINE_MEANINGS).
         if v is None:
             return f"-D{sep}{k}"
-        return f"-D{sep}{k}={shlex.quote(str(v))}"
+        v = str(v)
+        # Yosys splits a script line on whitespace and passes quote characters
+        # through verbatim (see fpv_coi.render_slang_read), so a Verilog literal
+        # such as 8'hff or "ok" must reach the frontend untouched: shlex.quote
+        # would wrap it in quotes the frontend then reads as part of the value.
+        if any(c.isspace() for c in v):
+            v = shlex.quote(v)
+        return f"-D{sep}{k}={v}"
 
     define_flags_v = ""
     if defines:

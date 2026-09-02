@@ -4752,6 +4752,33 @@ def test_write_script_slang_forwards_filelist_defines(tmp_path):
     assert "-DFROM_FL=8 -DBARE -DR=1 " in read_line
 
 
+@pytest.mark.parametrize("frontend", ["verilog", "slang"])
+def test_a_verilog_literal_define_value_reaches_yosys_verbatim(tmp_path, frontend):
+    """`shlex.quote` would turn 8'hff into '8'"'"'hff', and Yosys passes the
+    quote characters through to the frontend rather than stripping them."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f'+define+MASK=8\'hff\n+define+MSG="ok"\n-v {sv}\n')
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend=frontend, plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(
+        tmp_path,
+        tool_cfg=SynthToolConfig(cfg_file),
+        synth_cfg=_make_synth_cfg(defines={"RUN": "4'd3"}),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    sep = " " if frontend == "verilog" else ""
+    assert f"-D{sep}MASK=8'hff -D{sep}MSG=\"ok\" -D{sep}RUN=4'd3 " in script
+
+
 def _whitespace_define_filelist(tmp_path):
     sv = tmp_path / "top.sv"
     sv.write_text("")
