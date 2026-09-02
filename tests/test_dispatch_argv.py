@@ -153,6 +153,13 @@ def test_job_log_path_pairs_a_build_envelope():
     ) == Path("/proj/verif/blk/artefacts/.dispatch/build-rtl_buddy-4711.log")
 
 
+def test_job_log_path_keeps_a_colocated_suite_namespace():
+    namespace = Path("/proj/verif/blk/artefacts/.dispatch/other-tests-a1b2c3d4e5f6")
+    assert job_log_path(namespace / "build-result-4711.json") == (
+        namespace / "build-rtl_buddy-4711.log"
+    )
+
+
 def test_job_log_path_falls_back_to_the_stem():
     """A hand-written envelope name still gets a paired log, not a crash."""
     assert job_log_path(Path("/tmp/foo.json")) == Path("/tmp/rtl_buddy-foo.log")

@@ -1,2 +1,10 @@
 #!/usr/bin/env bash
+# Dedup probes omit --jobs; only the global wait releases deferred jobs.
+if [ -n "${RB_SHIM_DEFER_DIR:-}" ] && [[ " $* " == *" --jobs "* ]]; then
+  for queue_file in "$RB_SHIM_DEFER_DIR"/*.sh; do
+    [ -e "$queue_file" ] || continue
+    bash "$queue_file"
+    rm "$queue_file"
+  done
+fi
 exit 0

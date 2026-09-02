@@ -21,7 +21,7 @@ from typing import Literal
 from serde import field, serde
 from serde.yaml import from_yaml
 
-from .model import ModelConfig, ModelConfigLoader
+from .model import ModelConfig, ModelConfigLoader, validate_top
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -158,6 +158,17 @@ class MutConfigFile:
                 "(the verification name to use as the oracle)"
             )
 
+        if self.top is not None and not has_fpv:
+            # Only the FPV oracle elaborates a top; the sim oracle runs the
+            # suite's own testbenches.
+            log_event(
+                logger,
+                logging.WARNING,
+                "mut_config.top_override_unused",
+                name=self.name or self.model,
+                top=self.top,
+            )
+
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
@@ -177,6 +188,7 @@ class MutConfigFile:
             name=self.name or self.model,
             model=model,
             top=self.top or model.get_top(),
+            top_override=self.top,
             design_file=design_file,
             operators=list(self.operators),
             fpv_config=fpv_config,
@@ -203,6 +215,11 @@ class MutConfig:
     design_file: str
     operators: list[str]
     budget: MutBudget
+    # The campaign's own `top:` when mut.yaml states one, else None. `top`
+    # above is the effective value, so the runner needs this to tell an
+    # override apart from the model default it would otherwise impose on
+    # an FPV oracle that names its own top.
+    top_override: str | None = None
     # FPV oracle (optional)
     fpv_config: str | None = None
     verification: str | None = None
@@ -218,6 +235,12 @@ class MutConfig:
 
     def get_model(self) -> ModelConfig:
         return self.model
+
+    def get_top(self) -> str:
+        return self.top
+
+    def get_top_override(self) -> str | None:
+        return self.top_override
 
     def get_design_file(self) -> str:
         return self.design_file
@@ -263,6 +286,17 @@ class MutSuiteConfig:
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
         config_dir = os.path.dirname(os.path.abspath(path))
+        # The campaign's own `top:` wins over the model's and reaches the
+        # same generated yosys / sby scripts through the FPV oracle, so it
+        # answers to the same rule the model top does.
+        if data.top is not None:
+            validate_top(
+                data.top,
+                data.name or data.model,
+                path,
+                subject="campaign",
+                event="mut_config.invalid_top",
+            )
         try:
             self.config = data.initialise(config_dir)
         except FatalRtlBuddyError:

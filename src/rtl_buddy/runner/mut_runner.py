@@ -535,7 +535,23 @@ class MutRunner:
 
         suite = FpvSuiteConfig(path=self.mut_cfg.fpv_config)
         # Raises FatalRtlBuddyError if the named verification is absent.
-        return suite.get_verifications(self.mut_cfg.verification)[0]
+        fpv_cfg = suite.get_verifications(self.mut_cfg.verification)[0]
+        override = self.mut_cfg.get_top_override()
+        if override is None or override == fpv_cfg.get_top():
+            return fpv_cfg
+        # The campaign states its own top, so it wins over the oracle
+        # verification's for both the baseline and every mutant — they are
+        # only comparable when elaborated from the same root module.
+        log_event(
+            logger,
+            logging.INFO,
+            "mut_runner.fpv_top_override",
+            campaign=self.mut_cfg.get_name(),
+            verification=fpv_cfg.get_name(),
+            fpv_top=fpv_cfg.get_top(),
+            top=override,
+        )
+        return dataclasses.replace(fpv_cfg, top=override)
 
     def _baseline_fpv(self, fpv_cfg) -> str:
         suite_dir = os.path.join(self.work_dir, "baseline_fpv")

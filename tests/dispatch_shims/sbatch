@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Fake sbatch: runs the job(s) synchronously and records element job ids.
+# RB_SHIM_DEFER_DIR instead queues them until the head's first wait poll.
 # Job ids are monotonic (derived from the DB) so two arrays in one run
 # never collide and cross-contaminate sacct telemetry rows.
 db="${RB_SHIM_DB:-$PWD/.rb_shim_jobs}"
@@ -31,13 +32,38 @@ done
 run_one() { ( eval "$1" ) >>"$log" 2>&1 || true; }
 if [ -n "$wrap" ]; then
   echo "$jobid" >> "$db"
-  run_one "$wrap"
+  if [ -n "${RB_SHIM_DEFER_DIR:-}" ]; then
+    mkdir -p "$RB_SHIM_DEFER_DIR"
+    queue_file=$(printf '%s/%020d.sh' "$RB_SHIM_DEFER_DIR" "$jobid")
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf 'cd %q\n' "$PWD"
+      printf '( eval %q ) >> %q 2>&1 || true\n' "$wrap" "$log"
+    } > "$queue_file"
+  else
+    run_one "$wrap"
+  fi
 elif [ -n "$script" ] && [ -n "$manifest" ]; then
   n=$(wc -l < "$manifest")
   for k in $(seq 1 "$n"); do
     echo "${jobid}_${k}" >> "$db"
-    export SLURM_ARRAY_TASK_ID="$k"
-    run_one "bash '$script' '$manifest'"
   done
+  if [ -n "${RB_SHIM_DEFER_DIR:-}" ]; then
+    mkdir -p "$RB_SHIM_DEFER_DIR"
+    queue_file=$(printf '%s/%020d.sh' "$RB_SHIM_DEFER_DIR" "$jobid")
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf 'cd %q\n' "$PWD"
+      printf 'for k in $(seq 1 %q); do\n' "$n"
+      printf '  export SLURM_ARRAY_TASK_ID="$k"\n'
+      printf '  ( bash %q %q ) >> %q 2>&1 || true\n' "$script" "$manifest" "$log"
+      printf 'done\n'
+    } > "$queue_file"
+  else
+    for k in $(seq 1 "$n"); do
+      export SLURM_ARRAY_TASK_ID="$k"
+      run_one "bash '$script' '$manifest'"
+    done
+  fi
 fi
 echo "$jobid"
