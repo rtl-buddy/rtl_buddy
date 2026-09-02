@@ -1,5 +1,6 @@
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -146,11 +147,14 @@ class OpenXc7Fpga(BaseFpga):
     def _write_script(self, fl_path: str) -> str:
         top = self.fpga_cfg.get_top()
         lines = ["# openXC7 synthesis script -- templated by rb fpga."]
+        inc_flags = "".join(
+            f" -I {shlex.quote(inc)}" for inc in self._incdirs_from_filelist(fl_path)
+        )
         for src in self._source_files_from_filelist(fl_path):
             if src.lower().endswith(".sv"):
-                lines.append(f"read_verilog -sv {src}")
+                lines.append(f"read_verilog -sv{inc_flags} {src}")
             else:
-                lines.append(f"read_verilog {src}")
+                lines.append(f"read_verilog{inc_flags} {src}")
         lines.append(f"synth_xilinx -flatten -abc9 -arch xc7 -top {top}")
         lines.append(f"write_json {top}.json")
         lines.append("")

@@ -27,7 +27,7 @@ import re
 # runner can use for progress reporting; the synth command carries the
 # ``{{ top }}`` / ``{{ part }}`` placeholders resolved at render time.
 FLOW_STAGES: tuple[tuple[str, str], ...] = (
-    ("synth", "synth_design -top {{ top }} -part {{ part }}"),
+    ("synth", "synth_design -top {{ top }} -part {{ part }}{{ include_dirs }}"),
     ("opt", "opt_design"),
     ("place", "place_design"),
     ("route", "route_design"),
@@ -123,12 +123,31 @@ def _read_source_commands(verilog_sources: list[str]) -> list[str]:
     return commands
 
 
+def tcl_string(value: str) -> str:
+    """``value`` as a double-quoted Tcl word that evaluates to exactly
+    ``value``: backslash, double quote, ``$`` and brackets are escaped so
+    no substitution or command runs, and spaces stay inside the word."""
+    escaped = re.sub(r'([\\"$\[\]])', r"\\\1", value)
+    return f'"{escaped}"'
+
+
+def include_dirs_arg(include_dirs: list[str]) -> str:
+    """``synth_design``'s ``-include_dirs`` option for the filelist's ``+incdir+``
+    directories, or the empty string when there are none. Built with
+    ``[list ...]`` of :func:`tcl_string` words, so a path with spaces stays
+    one list element and a path with Tcl metacharacters stays a path."""
+    if not include_dirs:
+        return ""
+    return " -include_dirs [list " + " ".join(tcl_string(d) for d in include_dirs) + "]"
+
+
 def render_flow_tcl(
     *,
     top: str,
     part: str,
     verilog_sources: list[str],
     xdc_files: list[str],
+    include_dirs: list[str] | None = None,
     bitstream: str | None = None,
     emit_bitstream: bool = True,
     report_files: dict[str, str] | None = None,
@@ -140,6 +159,8 @@ def render_flow_tcl(
       part: Full Vivado part name (e.g. ``xczu7ev-ffvc1156-2-e``).
       verilog_sources: HDL sources, read in order.
       xdc_files: Constraint files, read in order.
+      include_dirs: `` `include `` search directories, passed to
+        ``synth_design -include_dirs``.
       bitstream: Output bitstream filename. Defaults to ``<top>.bit``.
       emit_bitstream: When False, the ``write_bitstream`` stage is
         replaced with a comment (smoke/timing runs don't need bitgen).
@@ -183,6 +204,7 @@ def render_flow_tcl(
         "part": part,
         "read_sources": "\n".join(_read_source_commands(verilog_sources)),
         "read_constraints": read_constraints,
+        "include_dirs": include_dirs_arg(include_dirs or []),
         "reports": "\n".join(report_tcl_commands(report_files)),
         "bitstream_cmd": bitstream_cmd,
     }

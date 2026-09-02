@@ -2,6 +2,7 @@
 suite/regression YAML loading. Mirrors the structure of ``test_synth.py``.
 """
 
+import logging
 from pathlib import Path
 from textwrap import dedent
 
@@ -455,6 +456,44 @@ def _setup_lint_run(
         return ManagedProcessResult(returncode=0)
 
     return wrapper, calls, _fake_run, cdc_rtl_buddy_module, nullcontext
+
+
+def test_lint_warns_when_the_filelist_has_incdirs(tmp_path, monkeypatch, caplog):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    (tmp_path / "inc").mkdir()
+    wrapper.cdc_cfg.model.filelist.insert(0, f"+incdir+{tmp_path / 'inc'}")
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy"):
+        wrapper.run()
+
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "cdc.filelist_incdirs_unsupported"
+    ]
+    assert len(events) == 1
+    assert events[0].rtl_fields["incdirs"] == [str(tmp_path / "inc")]
+    assert events[0].rtl_fields["analysis"] == "test_cdc"
+    assert all("-I" not in cmd and "+incdir+" not in " ".join(cmd) for cmd in calls)
+
+
+def test_lint_is_quiet_without_filelist_incdirs(tmp_path, monkeypatch, caplog):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy"):
+        wrapper.run()
+
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "cdc.filelist_incdirs_unsupported"
+    ]
 
 
 def test_lint_argv_omits_frontend_when_unset(tmp_path, monkeypatch):

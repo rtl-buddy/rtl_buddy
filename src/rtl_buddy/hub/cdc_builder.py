@@ -33,6 +33,7 @@ from ..config.model import ModelConfig, resolve_back_pointer
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tools.artifact_paths import clear_stale_artefacts
+from ..tools.cdc_rtl_buddy import warn_unsupported_incdirs
 from ..tools.vlog_filelist import VlogFilelist
 from .view_builder import cache_dir
 
@@ -117,8 +118,9 @@ def _resolve_cdc_executable() -> str:
 
 
 # Filelist entries we drop from the rtl-buddy-cdc command line —
-# CDC takes plain SystemVerilog source paths; ``-y`` / ``-F`` /
-# ``+incdir+`` directives don't apply.
+# CDC takes plain SystemVerilog source paths; ``-y`` / ``-F`` don't
+# apply, and ``+incdir+`` has no analyzer option to map onto (warned
+# via ``cdc.filelist_incdirs_unsupported``).
 _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
@@ -226,6 +228,7 @@ def build_domain_map(
         )
 
     cdc_exe = _resolve_cdc_executable()
+    warn_unsupported_incdirs(analysis.get_name(), fl_path)
     log_path = artefact_dir / "cdc.log"
     # ``--format json --output /dev/null`` keeps lint's chatter off
     # the hub log; we only care about the emitted domain map. The

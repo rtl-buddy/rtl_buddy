@@ -592,6 +592,23 @@ def test_vivado_fpga_pass_parses_fixture_reports(tmp_path, monkeypatch):
     assert "set_property SEVERITY {Warning} [get_drc_checks UCIO-1]" in script
 
 
+def test_vivado_fpga_forwards_filelist_incdirs(tmp_path, monkeypatch):
+    backend = _make_backend(tmp_path)
+    (tmp_path / "inc").mkdir()
+    backend.fpga_cfg.model.filelist = ["+incdir+inc", "src/demo_top.sv"]
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _fake_vivado())
+    res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
+    assert (
+        "synth_design -top demo_top -part xczu7ev-ffvc1156-2-e "
+        f'-include_dirs [list "{tmp_path / "inc"}"]\n' in script
+    )
+
+
 def test_vivado_fpga_no_bitstream_flag_skips_bitgen(tmp_path, monkeypatch):
     backend = _make_backend(tmp_path, emit_bitstream=False)
     monkeypatch.setattr(

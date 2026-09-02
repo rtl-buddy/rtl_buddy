@@ -190,7 +190,9 @@ endfunction
 ### What the scan sees
 
 `` `include `` directives are followed, resolved against the including file's
-directory and then the filelist's `+incdir+` entries. Each inclusion is scanned
+directory and then the filelist's `+incdir+` entries — the same directories
+`rb synth` hands Yosys as `read_verilog -I` / `read_slang -I`, each resolved
+against the filelist that declared it. Each inclusion is scanned
 in its own context — a header included from a class is exempt there and still
 reported when the same header is included from an ordinary module — and one
 declaration is reported once however many places include it.

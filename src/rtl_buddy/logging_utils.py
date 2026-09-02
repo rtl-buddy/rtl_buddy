@@ -1485,6 +1485,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'cdc "{fields.get("analysis")}": {fields.get("exe")!r} not found — '
                 "skipping; run `rb tool-check --explain vivado` for install instructions"
             )
+        case "cdc.filelist_incdirs_unsupported":
+            incdirs = fields.get("incdirs") or []
+            return (
+                f'cdc "{fields.get("analysis")}": {fields.get("count")} '
+                "filelist +incdir+ entr(ies) cannot reach rtl-buddy-cdc, "
+                "which has no include-path option: "
+                + ", ".join(str(d) for d in incdirs)
+                + ". A header found only through them fails with "
+                "'Cannot find include file'; spell the `include relative to "
+                "the including file or use the vivado cdc tool"
+            )
         case "cdc.vivado_waivers_unsupported":
             return (
                 f'cdc "{fields.get("analysis")}": rtl-buddy-cdc waiver files do not '
