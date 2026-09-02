@@ -473,6 +473,64 @@ class VlogFilelist:
         log_event(logger, logging.INFO, "filelist.write_done", output=output_filepath)
         return
 
+    def write_elab_output(self, elab_cfg, output_filepath) -> int:
+        """Write one absolute, unrolled filelist for a model elaboration.
+
+        Returns the number of explicit source and ``-v`` entries. Library
+        directory discovery may cause slang to parse additional sources; the
+        worker reports that final count separately.
+        """
+        model = elab_cfg.model
+        entries = []
+        profile = elab_cfg.profile
+        anchor = os.path.abspath(model.get_model_path())
+        if profile is not None:
+            entries.extend(
+                (elab_cfg.resolve_profile_path(path), "+incdir+")
+                for path in profile.include_dirs
+            )
+            entries.extend(self._extract(profile.prepend_sources, True, anchor))
+        entries.extend(self._extract(model.get_filelist(), True, anchor))
+        if profile is not None:
+            entries.extend(self._extract(profile.append_sources, True, anchor))
+            overridden_defines = set(profile.defines)
+            entries = [
+                (path, option)
+                for path, option in entries
+                if not (
+                    option == _DEFINE_PREFIX
+                    and path.partition("=")[0] in overridden_defines
+                )
+            ]
+            entries.extend(
+                (
+                    name
+                    if value is None
+                    else f"{name}={'1' if value is True else '0' if value is False else value}",
+                    _DEFINE_PREFIX,
+                )
+                for name, value in profile.defines.items()
+            )
+
+        lines = self._process(
+            entries,
+            output_dir=os.path.dirname(output_filepath) or ".",
+            absolute_sources=True,
+        )
+        os.makedirs(os.path.dirname(output_filepath) or ".", exist_ok=True)
+        tmp_path = f"{output_filepath}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp_path, "w") as file:
+                file.write("// rtl-buddy generated elaboration filelist\n")
+                file.writelines(lines)
+            os.replace(tmp_path, output_filepath)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        log_event(logger, logging.INFO, "elab.filelist_written", output=output_filepath)
+        return sum(option in (None, "-v ") for _, option in entries)
+
     def extract_source_files(self, model_cfg):
         """Bare source entries of a model's filelist, ``-F`` chains unrolled.
 

@@ -14,6 +14,7 @@ from typing import Iterator
 import pytest
 
 from rtl_buddy import tool_manifest as tm
+from rtl_buddy.errors import FatalRtlBuddyError
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +39,54 @@ def test_version_satisfies():
     assert tm._version_satisfies("v0.0-3600", "v0.0-3724") is False
     # Non-digit minimum → bail out as satisfied (we can't compare).
     assert tm._version_satisfies("1.0", "anything") is True
+
+
+def test_version_below():
+    assert tm._version_below("99", None) is True
+    assert tm._version_below(None, "12") is True
+    assert tm._version_below("11.9.1", "12") is True
+    assert tm._version_below("12", "12") is False
+    assert tm._version_below("12.0.0", "12") is False
+    assert tm._version_below("13.1", "12") is False
+    assert tm._version_below("1.0", "anything") is True
+
+
+def test_check_tool_reports_unsupported_above_maximum(monkeypatch):
+    spec = tm.resolve_spec(tm.get_manifest(), "pyslang")
+    assert spec is not None
+    assert spec.minimum_version == "10.0.0"
+    assert spec.maximum_version_exclusive == "12"
+
+    def fake_version(package: str) -> str:
+        return fake_version.value
+
+    monkeypatch.setattr(tm.importlib_metadata, "version", fake_version)
+    for value, expected in (
+        ("9.9", "outdated"),
+        ("10.0.0", "ok"),
+        ("11.3.0", "ok"),
+        ("12.0.0", "unsupported"),
+        ("13.0", "unsupported"),
+    ):
+        fake_version.value = value
+        status = tm.check_tool(spec)
+        assert status.status == expected, value
+        assert status.maximum_version_exclusive == "12"
+
+    fake_version.value = "12.0.0"
+    with pytest.raises(FatalRtlBuddyError, match="not supported"):
+        tm.require("pyslang", None)
+    statuses = [tm.check_tool(spec)]
+    readiness = tm.subcommand_readiness(statuses, [spec])
+    assert readiness["elab"]["status"] == "unsupported"
+    assert readiness["elab"]["unsupported"] == ["pyslang"]
+    assert (
+        tm.compute_exit_code(statuses, required_for="elab", subcommands=readiness) == 2
+    )
+    assert "(need < 12)" in tm.render_text(statuses, readiness)
+    payload = tm.build_json_payload(statuses, readiness)
+    assert payload["tools"]["pyslang"]["maximum_version_exclusive"] == "12"
+    assert payload["subcommands"]["elab"]["unsupported"] == ["pyslang"]
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +603,13 @@ def test_slurm_gates_test_as_well_as_regression():
 
     slurm = by_name["slurm"]
     assert slurm.optional  # the default --dispatch local needs nothing
-    assert set(slurm.used_by) == {"regression", "randtest", "test"}
+    assert set(slurm.used_by) == {
+        "regression",
+        "randtest",
+        "test",
+        "elab",
+        "elab-regression",
+    }
     assert "rb test --dispatch slurm" in slurm.notes
 
 

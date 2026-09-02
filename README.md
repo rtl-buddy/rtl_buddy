@@ -39,6 +39,7 @@ uv run rb tool-check
 - **Randomized testing support**: create new seeds, repeat runs, and replay previous randomized iterations
 - **Structured config model**: describe suites, regressions, platforms, builders, and models in readable YAML
 - **Filelist generation**: build simulator-ready filelists from `models.yaml`
+- **Fast model elaboration** (`rb elab`, `rb elab-regression`): parse, type-check, and elaborate existing `models.yaml` filelists with optional pyslang profiles and structured artifacts
 - **Synthesis flows** (`rb synth`): run Yosys synthesis from `synth.yaml`, including optional Liberty-mapped runs, synthesis regressions, configurable effort levels, and an optional yosys-slang frontend; OpenROAD is also available as an alternative backend
 - **Place-and-route** (`rb pnr`): OpenROAD-driven flow that consumes the post-synth netlist and produces routed DEF, post-route netlist + SDC, and timing/DRC reports
 - **Power analysis** (`rb power`, `rb power-regression`): OpenROAD `report_power` over post-synth or post-PnR netlists, with static, synthetic, or SAIF/VCD activity sources (`rb saif` converts FST/VCD traces to SAIF v2.0)

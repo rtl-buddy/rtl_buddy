@@ -278,12 +278,16 @@ class ToolSpec:
         ``version_cmd``. The first match wins.
       minimum_version: Lower-bound version string. ``None`` means "any
         version is acceptable as long as the tool is present."
+      maximum_version_exclusive: First version that is NOT supported.
+        A detected version at or above it reports ``unsupported``.
+        ``None`` means no upper bound.
       detection: Ordered detectors. First ``found=True`` wins.
       install_hint: Per-platform install instructions for ``--explain``.
       used_by: Subcommands that this tool participates in. Drives the
         "Subcommand readiness" section of the report.
       optional: ``True`` means missing this tool does not gate
         subcommand readiness.
+      required_by: Subcommands for which an otherwise optional tool is required.
       description: Short one-liner shown by ``--explain``.
       notes: Free-form additional context for ``--explain``.
     """
@@ -301,6 +305,8 @@ class ToolSpec:
     description: str = ""
     notes: str = ""
     aliases: tuple[str, ...] = ()
+    required_by: tuple[str, ...] = ()
+    maximum_version_exclusive: str | None = None
 
 
 @dataclass
@@ -308,13 +314,14 @@ class ToolStatus:
     """Result of evaluating a single :class:`ToolSpec` against the env."""
 
     name: str
-    status: str  # "ok" | "missing" | "outdated"
+    status: str  # "ok" | "missing" | "outdated" | "unsupported"
     version: str | None
     path: str | None
     optional: bool
     minimum_version: str | None
     kind: str | None  # "path" | "vendor" | "python" | None
     used_by: tuple[str, ...]
+    maximum_version_exclusive: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -420,12 +427,13 @@ def _builtin_manifest() -> list[ToolSpec]:
                 "cluster/submit host is provided by your site",
                 "source": "https://slurm.schedmd.com/quickstart_admin.html",
             },
-            used_by=("regression", "randtest", "test"),
+            used_by=("regression", "randtest", "test", "elab", "elab-regression"),
             optional=True,
             description="Slurm workload manager client "
             "(sbatch/squeue/sacct/scancel; scontrol optional)",
             notes="Only needed for `regression --dispatch slurm` (and randtest, "
-            "and `rb test --dispatch slurm`). "
+            "`rb test --dispatch slurm`, `rb elab --dispatch slurm`, and "
+            "`rb elab-regression --dispatch slurm`). "
             "Requires a shared filesystem between the submit host and compute "
             "nodes; sacct (slurmdbd accounting) drives reservation right-sizing "
             "telemetry and degrades gracefully when absent. scontrol is an "
@@ -793,14 +801,16 @@ def _builtin_manifest() -> list[ToolSpec]:
             binaries=("pyslang",),
             version_cmd=None,
             version_regex=None,
-            minimum_version=None,
+            minimum_version="10.0.0",
+            maximum_version_exclusive="12",
             detection=(PythonPackageDetector("pyslang"),),
             install_hint={
-                "any": "uv pip install pyslang  (only needed for --frontend slang)",
+                "any": "uv add 'rtl_buddy[elab]'  (or uv pip install 'pyslang>=10,<12')",
             },
-            used_by=("hier", "synth", "cdc"),
+            used_by=("hier", "synth", "cdc", "elab", "elab-regression"),
             optional=True,
-            description="Python slang frontend — alternative parser for rb hier / synth / cdc",
+            description="Python slang frontend for model elaboration and optional parsing flows",
+            required_by=("elab", "elab-regression"),
         ),
         ToolSpec(
             name="mcp",
@@ -1094,6 +1104,20 @@ def _version_satisfies(actual: str | None, minimum: str | None) -> bool:
     return a >= m
 
 
+def _version_below(actual: str | None, maximum_exclusive: str | None) -> bool:
+    """Tolerant ``actual < maximum_exclusive`` check.
+
+    An unknown version or incomparable strings count as below the bound;
+    only a provably too-new version is reported unsupported.
+    """
+    if maximum_exclusive is None or actual is None:
+        return True
+    a, m = _version_tuple(actual), _version_tuple(maximum_exclusive)
+    if not a or not m:
+        return True
+    return a[: len(m)] < m
+
+
 # ---------------------------------------------------------------------------
 # Version cache (~/.cache/rtl_buddy/tool_versions.json)
 
@@ -1225,6 +1249,8 @@ def check_tool(
     status = "ok"
     if not _version_satisfies(version, spec.minimum_version):
         status = "outdated"
+    elif not _version_below(version, spec.maximum_version_exclusive):
+        status = "unsupported"
 
     return ToolStatus(
         name=spec.name,
@@ -1235,6 +1261,7 @@ def check_tool(
         minimum_version=spec.minimum_version,
         kind=det.kind,
         used_by=spec.used_by,
+        maximum_version_exclusive=spec.maximum_version_exclusive,
     )
 
 
@@ -1270,9 +1297,10 @@ def subcommand_readiness(
     """Group tool statuses by the subcommands they gate.
 
     Each subcommand entry has:
-        ``status`` — overall ``ok`` / ``outdated`` / ``missing``
+        ``status`` — overall ``ok`` / ``unsupported`` / ``outdated`` / ``missing``
         ``missing`` — list of required tools that are absent
         ``outdated`` — list of required tools that are too old
+        ``unsupported`` — list of required tools that are too new
         ``optional_feature`` — True iff *all* gating tools are optional
             (i.e. the subcommand only runs when the user opts in)
     """
@@ -1286,20 +1314,24 @@ def subcommand_readiness(
                 {
                     "missing": [],
                     "outdated": [],
+                    "unsupported": [],
                     "tools": [],
                     "optional_only": True,
                 },
             )
             slot["tools"].append(spec.name)
-            if not spec.optional:
+            required = not spec.optional or sub in spec.required_by
+            if required:
                 slot["optional_only"] = False
             st = by_name.get(spec.name)
             if st is None:
                 continue
-            if st.status == "missing" and not spec.optional:
+            if st.status == "missing" and required:
                 slot["missing"].append(spec.name)
-            elif st.status == "outdated" and not spec.optional:
+            elif st.status == "outdated" and required:
                 slot["outdated"].append(spec.name)
+            elif st.status == "unsupported" and required:
+                slot["unsupported"].append(spec.name)
 
     out: dict[str, dict] = {}
     for sub, slot in sorted(subcommands.items()):
@@ -1308,10 +1340,13 @@ def subcommand_readiness(
             status = "missing"
         elif slot["outdated"]:
             status = "outdated"
+        elif slot["unsupported"]:
+            status = "unsupported"
         out[sub] = {
             "status": status,
             "missing": slot["missing"],
             "outdated": slot["outdated"],
+            "unsupported": slot["unsupported"],
             "tools": slot["tools"],
             "optional_feature": slot["optional_only"],
         }
@@ -1381,6 +1416,12 @@ def require(name: str, root_cfg=None) -> ToolStatus:
             f"{spec.minimum_version} — run `rb tool-check --explain {canonical}` "
             "for upgrade instructions"
         )
+    if status.status == "unsupported":
+        raise FatalRtlBuddyError(
+            f"{canonical} {status.version} is not supported (requires "
+            f"< {spec.maximum_version_exclusive}) — run `rb tool-check --explain "
+            f"{canonical}` for install instructions"
+        )
     return status
 
 
@@ -1412,6 +1453,8 @@ def explain(spec: ToolSpec, status: ToolStatus | None = None) -> str:
             lines.append(f"    {platform:8s} {hint}")
     if spec.minimum_version:
         lines.append(f"  Minimum version: {spec.minimum_version}")
+    if spec.maximum_version_exclusive:
+        lines.append(f"  Supported below: {spec.maximum_version_exclusive}")
     if spec.optional:
         lines.append("  Optional: yes (subcommands using it are opt-in)")
     if spec.notes:
@@ -1437,7 +1480,13 @@ def render_text(
     ok = sum(1 for s in statuses if s.status == "ok")
     missing = sum(1 for s in statuses if s.status == "missing" and not s.optional)
     outdated = sum(1 for s in statuses if s.status == "outdated" and not s.optional)
-    header = f"Tools ({ok} ok, {missing} missing, {outdated} outdated)\n" + ("-" * 70)
+    unsupported = sum(
+        1 for s in statuses if s.status == "unsupported" and not s.optional
+    )
+    header = (
+        f"Tools ({ok} ok, {missing} missing, {outdated} outdated, "
+        f"{unsupported} unsupported)\n" + ("-" * 70)
+    )
 
     name_w = max(20, max((len(s.name) for s in statuses), default=0) + 2)
     rows: list[str] = []
@@ -1450,6 +1499,8 @@ def render_text(
         suffix = "  (optional)" if st.optional else ""
         if st.status == "outdated" and st.minimum_version:
             suffix = f"  (need ≥ {st.minimum_version})" + suffix
+        elif st.status == "unsupported" and st.maximum_version_exclusive:
+            suffix = f"  (need < {st.maximum_version_exclusive})" + suffix
         rows.append(
             f"{st.name:<{name_w}}{_status_glyph(st.status):12}{version:14}"
             f"{path_display}{suffix}"
@@ -1464,6 +1515,8 @@ def render_text(
             gloss_parts.append(f"needs: {', '.join(info['missing'])}")
         if info["outdated"]:
             gloss_parts.append(f"outdated: {', '.join(info['outdated'])}")
+        if info["unsupported"]:
+            gloss_parts.append(f"unsupported: {', '.join(info['unsupported'])}")
         if not gloss_parts:
             gloss_parts.append(", ".join(info["tools"]) or "no external deps")
         opt = "  (optional feature)" if info["optional_feature"] else ""
@@ -1498,6 +1551,8 @@ def build_json_payload(
         }
         if st.minimum_version:
             entry["minimum_version"] = st.minimum_version
+        if st.maximum_version_exclusive:
+            entry["maximum_version_exclusive"] = st.maximum_version_exclusive
         tools_out[st.name] = entry
 
     subs_out: dict[str, dict] = {}
@@ -1506,6 +1561,7 @@ def build_json_payload(
             "status": info["status"],
             "missing": info["missing"],
             "outdated": info["outdated"],
+            "unsupported": info["unsupported"],
         }
         if info["optional_feature"]:
             entry["optional_feature"] = True

@@ -10,7 +10,8 @@ from .reg import RegConfig
 from .root import RootConfig
 from .platform import PlatformConfig
 from .rtl import RtlBuilderConfig
-from .model import ModelConfig, ModelConfigLoader
+from .model import ElaborationProfile, ModelConfig, ModelConfigLoader
+from .elab import ElabConfig, ElabRegConfig
 from .spec import SpecConfig, SpecBlock, SpecCoverageItem
 from .verible import VeribleConfig
 from .coverage import CoverageConfig, CoverageConfigFile
@@ -37,6 +38,9 @@ __all__ = [
     "RtlBuilderConfig",
     "ModelConfig",
     "ModelConfigLoader",
+    "ElaborationProfile",
+    "ElabConfig",
+    "ElabRegConfig",
     "VeribleConfig",
     "CoverageConfig",
     "CoverageConfigFile",

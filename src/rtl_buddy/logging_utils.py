@@ -1691,6 +1691,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')} ({fields.get('error')}) — the run itself "
                 "is unaffected, but `rb graph results` will report it as UNKNOWN"
             )
+        case "elab.result_json_write_failed":
+            name = fields.get("model")
+            if fields.get("profile") is not None:
+                name = f"{name}:{fields.get('profile')}"
+            return (
+                f"could not write the elaboration result record for {name} to "
+                f"{fields.get('path')} ({fields.get('error')}) — the run itself "
+                "is unaffected"
+            )
         case "test.result_json_refresh_failed":
             return (
                 f"could not refresh the result record for {fields.get('test')} at "

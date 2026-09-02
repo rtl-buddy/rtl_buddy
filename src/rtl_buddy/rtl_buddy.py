@@ -32,6 +32,7 @@ from .config.root import (
 )
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.lint import LintRegConfig, LintSuiteConfig
+from .config.elab import ElabConfig, ElabRegConfig
 from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
@@ -67,6 +68,13 @@ from .runner.cdc_runner import CdcRunner
 from .runner.lint_runner import LintRunner
 from .runner.cdc_results import CdcSkipResults
 from .runner.lint_results import LintSkipResults
+from .runner.elab_runner import ElabRunner
+from .runner.elab_results import (
+    ElabResults,
+    elab_failure,
+    load_elab_result_json,
+    write_elab_result_json_best_effort,
+)
 from .runner.fpv_runner import FpvRunner
 from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
@@ -86,7 +94,7 @@ from .dispatch import (
     validate_backend_name,
 )
 from .dispatch.argv import job_log_path
-from .dispatch.base import BuildJobSpec, TestJobSpec, telemetry_key
+from .dispatch.base import BuildJobSpec, ElabJobSpec, TestJobSpec, telemetry_key
 from .dispatch.plan import (
     read_plan_config,
     read_plan_configs,
@@ -340,6 +348,8 @@ class RtlBuddy:
         "fpv-regression",
         "hier",
         "hier-query",
+        "elab",
+        "elab-regression",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -403,6 +413,17 @@ class RtlBuddy:
         self.app.command("regression", help="run rtl regression")(
             self.do_rtl_regression
         )
+        self.app.command("elab", help="elaborate a model with pyslang")(
+            self.do_cmd_elab
+        )
+        self.app.command(
+            "elab-regression", help="run named model elaboration profiles"
+        )(self.do_elab_regression)
+        self.app.command(
+            "_elab-job",
+            hidden=True,
+            help="internal: elaborate one model/profile and write its result JSON",
+        )(self.do_cmd_elab_job)
         # Remote-dispatch re-entry point (#351): one (test, run_id) run
         # whose result is serialized for a collecting head process.
         self.app.command(
@@ -805,7 +826,16 @@ class RtlBuddy:
     # configured names from the primary config file. The `--list` paths
     # do not need RootConfig, the selected builder, or CoverageReporter,
     # so list-only invocations short-circuit those setup steps.
-    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "fpga", "cdc", "fpv"}
+    _LIST_FLAG_COMMANDS = {
+        "test",
+        "synth",
+        "pnr",
+        "power",
+        "fpga",
+        "cdc",
+        "fpv",
+        "elab",
+    }
 
     def _is_list_invocation(self, ctx: typer.Context) -> bool:
         return (
@@ -991,6 +1021,7 @@ class RtlBuddy:
         if getattr(self, "_pending_invoked_subcommand", None) not in (
             "_test-job",
             "_build-job",
+            "_elab-job",
         ):
             self._artifact_locks.acquire(
                 ctx.artifact_root,
@@ -3060,7 +3091,7 @@ class RtlBuddy:
             raise FatalRtlBuddyError(
                 f"--jobs sizes the --dispatch {LocalProcessBackend.name} pool, "
                 f"but the backend is {backend_name or 'local'}: 'local' runs "
-                "one test at a time in-process, and Slurm concurrency is "
+                "one job at a time in-process, and Slurm concurrency is "
                 "cfg-dispatch.max-jobs-per-array."
             )
         if jobs < 1:
@@ -8497,6 +8528,421 @@ class RtlBuddy:
             results.append({"cdc_name": a.get_name(), "results": res})
         return results
 
+    # --- model elaboration --------------------------------------------------
+
+    def _resolve_elab_resources(
+        self, cfg: ElabConfig, *, cpus: int | None = None
+    ) -> JobResources:
+        resolved = JobResources()
+        dispatch_cfg = self.root_cfg.get_dispatch_cfg()
+        for layer in (dispatch_cfg.resources, cfg.resources):
+            if layer is None:
+                continue
+            if layer.cpus is not None:
+                if (
+                    not isinstance(layer.cpus, int)
+                    or isinstance(layer.cpus, bool)
+                    or layer.cpus < 1
+                ):
+                    raise FatalRtlBuddyError(
+                        "elaboration resources.cpus must be a positive integer"
+                    )
+                resolved.cpus = layer.cpus
+            if layer.mem is not None:
+                resolved.mem = str(layer.mem)
+            if layer.time is not None:
+                resolved.time = str(layer.time)
+        if cpus is not None:
+            if cpus < 1:
+                raise FatalRtlBuddyError(f"--cpus must be >= 1 (got {cpus})")
+            resolved.cpus = cpus
+        return resolved
+
+    @staticmethod
+    def _elab_skip(cfg: ElabConfig, reg_level: int) -> ElabResults:
+        results = {
+            "result": "SKIP",
+            "desc": f"lvl {cfg.reglvl} > cmd reg_level {reg_level}",
+            "stage": "filtered",
+            "top": cfg.top,
+            "source_count": 0,
+            "input_source_count": 0,
+            "diagnostics": {"errors": 0, "warnings": 0},
+            "elapsed_sec": 0.0,
+            "peak_memory_bytes": 0,
+        }
+        result_path = cfg.artifact_dir / "result.json"
+        write_elab_result_json_best_effort(
+            result_path,
+            model=cfg.model.name,
+            profile=cfg.profile_name,
+            results=results,
+        )
+        return ElabResults(cfg.name, results, result_json=result_path)
+
+    def _run_elab_local(
+        self, cfg: ElabConfig, *, resources: JobResources | None = None
+    ) -> ElabResults:
+        if resources is None:
+            resources = self._resolve_elab_resources(cfg)
+        return ElabRunner(
+            root_cfg=self.root_cfg, elab_cfg=cfg, resources=resources
+        ).run()
+
+    def _dispatch_elaborations(
+        self,
+        configs,
+        backend,
+        *,
+        resources: list[JobResources] | None = None,
+    ) -> list[ElabResults]:
+        if not configs:
+            return []
+        if resources is None:
+            resources = [self._resolve_elab_resources(cfg) for cfg in configs]
+        run_token = uuid.uuid4().hex
+        array_root = self.exec_ctx.artifact_root / ".dispatch" / "elab" / run_token
+        groups = {}
+        for index, (cfg, job_resources) in enumerate(
+            zip(configs, resources, strict=True)
+        ):
+            dispatch_dir = cfg.artifact_dir / "dispatch"
+            dispatch_dir.mkdir(parents=True, exist_ok=True)
+            result_json = dispatch_dir / f"result-{run_token}.json"
+            spec = ElabJobSpec(
+                model_name=cfg.model.name,
+                profile_name=cfg.profile_name,
+                suite_dir=str(cfg.config_dir),
+                model_config_path=str(Path(cfg.model.path).resolve()),
+                result_json=result_json,
+                resources=job_resources,
+                log_path=dispatch_dir / f"{backend.name}-{run_token}.log",
+            )
+            key = (job_resources.cpus, job_resources.mem, job_resources.time)
+            groups.setdefault(key, []).append((index, cfg, spec))
+
+        pending = []
+        submitted = []
+        try:
+            dispatch_cfg = self.root_cfg.get_dispatch_cfg()
+            for group_index, entries in enumerate(groups.values(), start=1):
+                specs = [entry[2] for entry in entries]
+                handles = backend.submit_array(
+                    specs,
+                    array_dir=array_root / f"group-{group_index}",
+                    max_parallel=dispatch_cfg.max_jobs_per_array,
+                )
+                submitted.extend(handles)
+                pending.extend(
+                    (index, cfg, handle)
+                    for (index, cfg, _), handle in zip(entries, handles, strict=True)
+                )
+            backend.wait_all(submitted)
+        except BaseException:
+            backend.cancel_all(submitted)
+            raise
+
+        telemetry = backend.collect_telemetry(submitted)
+        collected: list[ElabResults | None] = [None] * len(configs)
+        for index, cfg, handle in pending:
+            try:
+                remote = load_elab_result_json(
+                    handle.spec.result_json,
+                    model=cfg.model.name,
+                    profile=cfg.profile_name,
+                )
+                payload = dict(remote.results)
+            except FatalRtlBuddyError as exc:
+                payload = elab_failure(
+                    f"dispatch job {handle.job_id} produced no valid result: {exc}"
+                )
+                payload["top"] = cfg.top
+            job_telemetry = telemetry.get(telemetry_key(handle))
+            if job_telemetry:
+                payload["telemetry"] = job_telemetry
+            durable = cfg.artifact_dir / "result.json"
+            write_elab_result_json_best_effort(
+                durable,
+                model=cfg.model.name,
+                profile=cfg.profile_name,
+                results=payload,
+            )
+            collected[index] = ElabResults(cfg.name, payload, result_json=durable)
+        return [item for item in collected if item is not None]
+
+    @staticmethod
+    def _exit_code_from_elab_results(results) -> int:
+        return 0 if all(result.is_pass() for result in results) else 1
+
+    def _render_elab_summary(self, title: str, results, *, metadata=None) -> None:
+        rows = []
+        for result in results:
+            payload = result.results
+            diagnostics = payload.get("diagnostics", {})
+            rows.append(
+                {
+                    "name": result.name,
+                    "result": payload.get("result", "NA"),
+                    "desc": payload.get("desc", ""),
+                    "top": payload.get("top", ""),
+                    "sources": payload.get("source_count", 0),
+                    "errors": diagnostics.get("errors", 0),
+                    "warnings": diagnostics.get("warnings", 0),
+                    "elapsed": payload.get("elapsed_sec", 0),
+                }
+            )
+        render_summary(
+            title=title,
+            columns=[
+                ("name", "Model/Profile"),
+                ("result", "Result"),
+                ("desc", "Description"),
+                ("top", "Top"),
+                ("sources", "Sources"),
+                ("errors", "Errors"),
+                ("warnings", "Warnings"),
+                ("elapsed", "Seconds"),
+            ],
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _finish_elab_command(self, command: str, title: str, results) -> None:
+        exit_code = self._exit_code_from_elab_results(results)
+        counts = {
+            verdict: sum(result.results.get("result") == verdict for result in results)
+            for verdict in ("PASS", "FAIL", "SKIP")
+        }
+        log_event(
+            logger,
+            logging.INFO,
+            "elab.verdict",
+            command=command,
+            result="PASS" if exit_code == 0 else "FAIL",
+            passed=counts["PASS"],
+            failed=counts["FAIL"],
+            skipped=counts["SKIP"],
+        )
+        if self.machine:
+            self._emit_machine_result(
+                command, exit_code, results=[result.to_row() for result in results]
+            )
+        else:
+            self._render_elab_summary(title, results)
+        raise typer.Exit(exit_code)
+
+    def do_cmd_elab(
+        self,
+        model_name: Annotated[
+            str | None,
+            typer.Argument(help="model to elaborate; required unless --list is used"),
+        ] = None,
+        models_config: Annotated[
+            str,
+            typer.Option("-c", "--models-config", help="models.yaml to use"),
+        ] = "models.yaml",
+        profile_name: Annotated[
+            str | None,
+            typer.Option("--profile", help="named elaboration profile"),
+        ] = None,
+        list_elaborations: Annotated[
+            bool,
+            typer.Option("--list", help="list models and named profiles, then exit"),
+        ] = False,
+        dispatch: Annotated[
+            str | None,
+            typer.Option(
+                "--dispatch", help="execution backend (local, local-parallel, slurm)"
+            ),
+        ] = None,
+        jobs: Annotated[
+            int | None,
+            typer.Option("-j", "--jobs", help="local-parallel process count"),
+        ] = None,
+    ):
+        """Elaborate one model using its existing ``models.yaml`` entry."""
+        if dispatch is not None:
+            validate_backend_name(dispatch)
+        ctx = self._enter_command_context(
+            primary_config=models_config, list_only=list_elaborations
+        )
+        loader = ModelConfigLoader(str(ctx.primary_config))
+        if list_elaborations:
+            names = []
+            for model in loader.get_models():
+                names.append(model.name)
+                names.extend(f"{model.name}:{p.name}" for p in model.elaborations)
+            if self.machine:
+                self._emit_machine_result("elab --list", 0, names=names)
+            else:
+                emit_console_text("  ".join(names), stream="stdout")
+            raise typer.Exit(0)
+        if model_name is None:
+            raise FatalRtlBuddyError(
+                "elab requires a MODEL argument unless --list is used"
+            )
+        log_event(
+            logger,
+            logging.INFO,
+            "command.elab",
+            model=model_name,
+            profile=profile_name,
+            models_config=str(ctx.primary_config),
+            dispatch=dispatch or "local",
+        )
+        model = loader.get_model(model_name)
+        profile = (
+            model.get_elaboration(profile_name) if profile_name is not None else None
+        )
+        cfg = ElabConfig(model=model, profile=profile)
+        if dispatch is None and jobs is not None:
+            raise FatalRtlBuddyError("--jobs requires --dispatch local-parallel")
+        backend = (
+            self._resolve_dispatch_backend(dispatch, jobs=jobs)
+            if dispatch is not None
+            else None
+        )
+        results = (
+            [self._run_elab_local(cfg)]
+            if backend is None
+            else self._dispatch_elaborations([cfg], backend)
+        )
+        self._finish_elab_command("elab", "Elaboration Results", results)
+
+    def do_elab_regression(
+        self,
+        reg_config: Annotated[
+            str | None,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="elab_regression.yaml to use",
+                show_default="Use ./elab_regression.yaml if present, otherwise root_config.yaml elab-reg-cfg-path",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l", "--reg-level", min=0, help="regression level to stop at"
+            ),
+        ] = 0,
+        dispatch: Annotated[
+            str | None,
+            typer.Option(
+                "--dispatch", help="execution backend (local, local-parallel, slurm)"
+            ),
+        ] = None,
+        jobs: Annotated[
+            int | None,
+            typer.Option("-j", "--jobs", help="local-parallel process count"),
+        ] = None,
+    ):
+        """Run every explicitly declared profile at or below ``reg-level``."""
+        reg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "elab_regression.yaml", "elab"
+        )
+        orchestration_ctx = self._enter_command_context(primary_config=reg_path)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.elab_regression",
+            reg_config=str(reg_path),
+            reg_level=reg_level,
+            dispatch=dispatch,
+        )
+        reg = ElabRegConfig(self.name + "/elab_regression", str(reg_path))
+        configs = reg.get_elaborations()
+        resources_by_index: dict[int, JobResources] = {}
+        for model_path in dict.fromkeys(cfg.model.path for cfg in configs):
+            self._enter_command_context(primary_config=model_path)
+            for index, cfg in enumerate(configs):
+                if cfg.model.path == model_path:
+                    resources_by_index[index] = self._resolve_elab_resources(cfg)
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+        skipped = [
+            self._elab_skip(cfg, reg_level) for cfg in configs if cfg.reglvl > reg_level
+        ]
+        runnable = [
+            (cfg, resources_by_index[index])
+            for index, cfg in enumerate(configs)
+            if cfg.reglvl <= reg_level
+        ]
+        backend_name = self._dispatch_backend_name(dispatch)
+        validate_backend_name(backend_name)
+        self._validate_jobs_flag(backend_name, jobs)
+        backend = (
+            self._resolve_dispatch_backend(dispatch, jobs=jobs) if runnable else None
+        )
+        if backend is None:
+            executed = []
+            for cfg, resources in runnable:
+                self._enter_command_context(primary_config=cfg.model.path)
+                executed.append(self._run_elab_local(cfg, resources=resources))
+            self._enter_command_context(command_root=orchestration_ctx.command_root)
+        else:
+            executed = self._dispatch_elaborations(
+                [cfg for cfg, _ in runnable],
+                backend,
+                resources=[resources for _, resources in runnable],
+            )
+        skipped_iter = iter(skipped)
+        executed_iter = iter(executed)
+        results = [
+            next(skipped_iter) if cfg.reglvl > reg_level else next(executed_iter)
+            for cfg in configs
+        ]
+        self._finish_elab_command(
+            "elab-regression", "Elaboration Regression Results", results
+        )
+
+    def do_cmd_elab_job(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model to elaborate")],
+        result_json: Annotated[
+            str, typer.Option("--result-json", help="result JSON envelope path")
+        ],
+        models_config: Annotated[
+            str,
+            typer.Option("-c", "--models-config", help="models.yaml to use"),
+        ] = "models.yaml",
+        profile_name: Annotated[
+            str | None, typer.Option("--profile", help="named elaboration profile")
+        ] = None,
+        cpus: Annotated[
+            int | None, typer.Option("--cpus", help="pyslang worker threads")
+        ] = None,
+    ):
+        """Internal dispatch re-entry for one elaboration."""
+        result_path = self._abs_invocation_path(result_json)
+        ctx = self._enter_command_context(
+            primary_config=models_config,
+            log_path=job_log_path(result_path),
+        )
+        model = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
+        profile = (
+            model.get_elaboration(profile_name) if profile_name is not None else None
+        )
+        cfg = ElabConfig(model=model, profile=profile)
+        resources = self._resolve_elab_resources(cfg, cpus=cpus)
+        result = ElabRunner(
+            root_cfg=self.root_cfg,
+            elab_cfg=cfg,
+            resources=resources,
+            result_json=result_path,
+        ).run()
+        exit_code = 0 if result.is_pass() else 1
+        if self.machine:
+            self._emit_machine_result(
+                "_elab-job",
+                exit_code,
+                result=result.to_row(),
+                result_json=str(result_path),
+            )
+        else:
+            self._render_elab_summary("Elaboration Job Result", [result])
+        raise typer.Exit(exit_code)
+
     # --- style-lint subcommands ---------------------------------------------
 
     def _render_lint_summary(self, title, lint_results, *, metadata=None):
@@ -11120,7 +11566,7 @@ class RtlBuddy:
             specs,
             project_root=project_root,
             probe_versions=probe_versions,
-            include_optional=include_optional,
+            include_optional=include_optional or required_for is not None,
         )
         subcommands = tm.subcommand_readiness(statuses, specs)
 

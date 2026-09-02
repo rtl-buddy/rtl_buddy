@@ -205,7 +205,13 @@ def test_slurm_tool_in_manifest():
     # test_slurm_explains_scontrol_as_an_optional_probe.
     assert set(slurm.optional_binaries) == {"scontrol"}
     assert slurm.optional is True
-    assert slurm.used_by == ("regression", "randtest", "test")
+    assert slurm.used_by == (
+        "regression",
+        "randtest",
+        "test",
+        "elab",
+        "elab-regression",
+    )
 
 
 # ------------------------------------- #358: in-job compile reservations

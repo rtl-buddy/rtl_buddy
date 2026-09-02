@@ -18,7 +18,7 @@ sims gated on its success — here the gate is "the build process exited 0"
 rather than ``--dependency=afterok`` — and per-job ``result.json``
 envelopes that the head collects.
 
-Two things it deliberately does **not** do:
+Two things it deliberately does **not** do for simulation jobs:
 
 * **Enforce reservations.** ``resources:`` cpus/mem/time are ignored, not
   half-honoured: a single host has no portable per-process cap
@@ -32,6 +32,9 @@ Two things it deliberately does **not** do:
 * **Report usage.** With no accounting source there is no reserved-vs-used
   telemetry, so reservation right-sizing yields no advice
   (:meth:`LocalProcessBackend.collect_telemetry`).
+
+Elaboration jobs are the exception for ``cpus``: the worker passes that value
+to pyslang's thread setting. Memory and time remain advisory on this backend.
 
 Jobs run in their own session (``start_new_session``) so the *head* owns
 their lifecycle: an interrupt reaches the head, which takes the fleet down
@@ -64,11 +67,25 @@ from ..config.dispatch import JobResources
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..process_utils import DEFAULT_KILL_TIMEOUT, signal_process_group
-from .argv import build_job_argv, test_job_argv
-from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
+from .argv import build_job_argv, elab_job_argv, test_job_argv
+from .base import (
+    BuildJobSpec,
+    DispatchBackend,
+    ElabJobSpec,
+    JobHandle,
+    RunnableJobSpec,
+    TestJobSpec,
+)
 from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
+
+
+def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
+    if isinstance(spec, ElabJobSpec):
+        return elab_job_argv(spec)
+    return test_job_argv(spec)
+
 
 # How long the pool sleeps between reap/launch sweeps. Deliberately not
 # `cfg-dispatch.poll-interval`: that paces `squeue` calls against a
@@ -100,7 +117,7 @@ class _PoolJob:
     """
 
     job_id: str
-    spec: BuildJobSpec | TestJobSpec
+    spec: BuildJobSpec | RunnableJobSpec
     argv: list[str] = field(default_factory=list)
     kind: str = "sim"  # "build" | "sim"; builds launch first
     seq: int = 0
@@ -127,7 +144,7 @@ class _PoolJob:
         return self.skipped or self.returncode is not None
 
     def label(self) -> str:
-        if isinstance(self.spec, TestJobSpec):
+        if isinstance(self.spec, (TestJobSpec, ElabJobSpec)):
             return f"job for {self.spec.display_name()}"
         return f"build job for {self.spec.suite_dir}"
 
@@ -202,7 +219,13 @@ class LocalProcessBackend(DispatchBackend):
                 mem=resources.mem,
                 time=resources.time,
             )
-        if resources == JobResources():
+        honors_cpus = isinstance(spec, ElabJobSpec)
+        ignored = JobResources(
+            cpus=1 if honors_cpus else resources.cpus,
+            mem=resources.mem,
+            time=resources.time,
+        )
+        if ignored == JobResources():
             return
         self._warned_reservations = True
         log_event(
@@ -210,7 +233,7 @@ class LocalProcessBackend(DispatchBackend):
             logging.WARNING,
             "dispatch.reservations_ignored",
             backend=self.name,
-            cpus=resources.cpus,
+            cpus=None if honors_cpus else resources.cpus,
             mem=resources.mem,
             time=resources.time,
         )
@@ -275,29 +298,29 @@ class LocalProcessBackend(DispatchBackend):
 
     def submit(
         self,
-        spec: TestJobSpec,
+        spec: RunnableJobSpec,
         *,
         dependency: str | None = None,
         delay_sec: float = 0.0,
     ) -> JobHandle:
         handle = self._enqueue(
             spec,
-            test_job_argv(spec),
+            _runnable_job_argv(spec),
             kind="sim",
             dependency=dependency,
             delay_sec=delay_sec,
         )
-        log_event(
-            logger,
-            logging.INFO,
-            "dispatch.submitted",
-            backend=self.name,
-            job_id=handle.job_id,
-            test=spec.test_name,
-            run_id=spec.run_id,
-            dependency=dependency,
-            begin_delay_sec=delay_sec or None,
-        )
+        fields = {
+            "backend": self.name,
+            "job_id": handle.job_id,
+            "dependency": dependency,
+            "begin_delay_sec": delay_sec or None,
+        }
+        if isinstance(spec, TestJobSpec):
+            fields.update(test=spec.test_name, run_id=spec.run_id)
+        else:
+            fields.update(model=spec.model_name, profile=spec.profile_name)
+        log_event(logger, logging.INFO, "dispatch.submitted", **fields)
         self._pump()
         return handle
 
@@ -457,7 +480,7 @@ class LocalProcessBackend(DispatchBackend):
         oldest = min(started, key=lambda job: job.started_at)
         name = (
             oldest.spec.display_name()
-            if isinstance(oldest.spec, TestJobSpec)
+            if isinstance(oldest.spec, (TestJobSpec, ElabJobSpec))
             else f"build:{os.path.basename(str(oldest.spec.suite_dir).rstrip(os.sep))}"
         )
         return name, time.monotonic() - oldest.started_at

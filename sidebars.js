@@ -13,6 +13,7 @@ const sidebars = {
         'concepts/tests',
         'concepts/simulators',
         'concepts/regressions',
+        'concepts/elaboration',
         'concepts/dispatch',
         'concepts/expected-failures',
         'concepts/coverage',

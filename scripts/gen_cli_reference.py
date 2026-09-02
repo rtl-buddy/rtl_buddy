@@ -21,6 +21,8 @@ SUBCOMMANDS = [
     "test",
     "randtest",
     "regression",
+    "elab",
+    "elab-regression",
     "filelist",
     "hier",
     "hier-query",

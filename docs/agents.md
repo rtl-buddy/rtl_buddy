@@ -135,6 +135,7 @@ Common payload conventions:
 
 - listing commands use `payload.names`;
 - regression results use `payload.results` and include `suite`;
+- elaboration results include top, source and diagnostic counts, elapsed time, peak memory, and `result_json`;
 - `docs list` uses `payload.pages`;
 - coverage and formal commands attach structured metrics and artefact paths to their results.
 

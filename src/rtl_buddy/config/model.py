@@ -9,6 +9,7 @@ from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
 
+from .dispatch import DispatchResourcesFile, validate_resources_block
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -95,6 +96,14 @@ def validate_model_name(name: str, path: str) -> None:
 #:
 #: Anchored with ``\\Z`` for the reason :data:`MODEL_NAME_RE` states.
 MODEL_TOP_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+ELAB_TIMESCALE_RE = re.compile(r"\A\d+(?:s|ms|us|ns|ps|fs)/\d+(?:s|ms|us|ns|ps|fs)\Z")
+ELAB_WARNING_RE = re.compile(
+    r"\A(?:none|all|error|no-[A-Za-z0-9_][A-Za-z0-9_-]*|"
+    r"error=[A-Za-z0-9_][A-Za-z0-9_-]*|"
+    r"no-error=[A-Za-z0-9_][A-Za-z0-9_-]*|"
+    r"[A-Za-z0-9_][A-Za-z0-9_-]*)\Z"
+)
+ELAB_BASE_ARTIFACT_NAME = "base"
 
 
 def validate_top(
@@ -207,6 +216,134 @@ def resolve_back_pointer(
 
 
 @serde
+class ElaborationProfile:
+    """Optional elaboration overrides nested in one ``models.yaml`` model."""
+
+    name: str
+    desc: str | None = None
+    top: str | None = None
+    reglvl: int = 0
+    prepend_sources: list[str] = field(default_factory=list)
+    append_sources: list[str] = field(default_factory=list)
+    include_dirs: list[str] = field(default_factory=list)
+    defines: dict[str, int | bool | str | None] = field(default_factory=dict)
+    parameters: dict[str, int | bool | str] = field(default_factory=dict)
+    vcs_compat: bool = False
+    single_unit: bool = False
+    libraries_inherit_macros: bool = False
+    timescale: str | None = None
+    ignored_directives: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    resources: DispatchResourcesFile | None = None
+
+    def get_top(self, model: "ModelConfig") -> str:
+        return self.top or model.get_top()
+
+
+def _validate_elaboration_profile(
+    profile: ElaborationProfile, model: "ModelConfig", path: str
+) -> None:
+    prefix = f"{path}: model {model.name!r} elaboration {profile.name!r}"
+    if not isinstance(profile.name, str) or not MODEL_NAME_RE.match(profile.name):
+        raise FatalRtlBuddyError(
+            f"{prefix} has an invalid name; profile names must be safe single "
+            "path segments containing only letters, digits, underscore, dot or hyphen"
+        )
+    if profile.name.casefold() == ELAB_BASE_ARTIFACT_NAME.casefold():
+        raise FatalRtlBuddyError(
+            f"{prefix} uses reserved name {ELAB_BASE_ARTIFACT_NAME!r}; that "
+            "directory records a bare-model elaboration"
+        )
+    if profile.desc is not None and not isinstance(profile.desc, str):
+        raise FatalRtlBuddyError(f"{prefix} desc must be a string or null")
+    if profile.top is not None:
+        if not isinstance(profile.top, str):
+            raise FatalRtlBuddyError(f"{prefix} top must be a simple identifier")
+        validate_model_top(profile.top, f"{model.name}:{profile.name}", path)
+    if not isinstance(profile.reglvl, int) or isinstance(profile.reglvl, bool):
+        raise FatalRtlBuddyError(f"{prefix} reglvl must be a non-negative integer")
+    if profile.reglvl < 0:
+        raise FatalRtlBuddyError(f"{prefix} reglvl must be a non-negative integer")
+    for option in ("vcs_compat", "single_unit", "libraries_inherit_macros"):
+        if not isinstance(getattr(profile, option), bool):
+            raise FatalRtlBuddyError(f"{prefix} {option} must be a boolean")
+    if profile.libraries_inherit_macros and not profile.single_unit:
+        raise FatalRtlBuddyError(
+            f"{prefix} enables libraries_inherit_macros without single_unit; "
+            "slang requires both options together"
+        )
+    if profile.timescale is not None:
+        if not isinstance(profile.timescale, str) or not ELAB_TIMESCALE_RE.match(
+            profile.timescale
+        ):
+            raise FatalRtlBuddyError(
+                f"{prefix} timescale {profile.timescale!r} must look like '1ns/1ps'"
+            )
+    for option in ("prepend_sources", "append_sources", "include_dirs"):
+        values = getattr(profile, option)
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) for value in values
+        ):
+            raise FatalRtlBuddyError(f"{prefix} {option} must be a list of strings")
+    if not isinstance(profile.defines, dict):
+        raise FatalRtlBuddyError(f"{prefix} defines must be a mapping")
+    for key, value in profile.defines.items():
+        if not isinstance(key, str) or not MODEL_TOP_RE.match(key):
+            raise FatalRtlBuddyError(
+                f"{prefix} define name {key!r} is not a simple identifier"
+            )
+        if value is not None and not isinstance(value, (str, int, bool)):
+            raise FatalRtlBuddyError(
+                f"{prefix} define {key!r} must be a string, integer, boolean or null"
+            )
+        if isinstance(value, str) and (
+            not value or "+" in value or any(char.isspace() for char in value)
+        ):
+            raise FatalRtlBuddyError(
+                f"{prefix} define {key!r} has an invalid value; string values "
+                "cannot be empty or contain whitespace or '+'"
+            )
+    if not isinstance(profile.parameters, dict):
+        raise FatalRtlBuddyError(f"{prefix} parameters must be a mapping")
+    for key, value in profile.parameters.items():
+        if not isinstance(key, str) or not MODEL_TOP_RE.match(key):
+            raise FatalRtlBuddyError(
+                f"{prefix} parameter name {key!r} is not a simple identifier"
+            )
+        if not isinstance(value, (str, int, bool)):
+            raise FatalRtlBuddyError(
+                f"{prefix} parameter {key!r} must be a string, integer or boolean"
+            )
+        rendered = "1" if value is True else "0" if value is False else str(value)
+        if not rendered or "\n" in rendered or "\x00" in rendered:
+            raise FatalRtlBuddyError(f"{prefix} parameter {key!r} has an invalid value")
+    if not isinstance(profile.ignored_directives, list):
+        raise FatalRtlBuddyError(
+            f"{prefix} ignored_directives must be a list of identifiers"
+        )
+    for directive in profile.ignored_directives:
+        if not isinstance(directive, str) or not MODEL_TOP_RE.match(directive):
+            raise FatalRtlBuddyError(
+                f"{prefix} ignored directive {directive!r} is not an identifier"
+            )
+    if not isinstance(profile.warnings, list):
+        raise FatalRtlBuddyError(f"{prefix} warnings must be a list of controls")
+    for warning in profile.warnings:
+        if not isinstance(warning, str) or not ELAB_WARNING_RE.match(warning):
+            raise FatalRtlBuddyError(
+                f"{prefix} warning control {warning!r} is invalid; write the part "
+                "after '-W', for example 'all', 'no-unused' or 'error=unused'"
+            )
+    profile.resources = validate_resources_block(profile.resources)
+    if profile.resources is not None and profile.resources.cpus is not None:
+        cpus = profile.resources.cpus
+        if not isinstance(cpus, int) or isinstance(cpus, bool) or cpus < 1:
+            raise FatalRtlBuddyError(
+                f"{prefix} resources.cpus must be a positive integer"
+            )
+
+
+@serde
 class ModelConfig:
     """
     Representation of a single model entry in a 'model_config' file
@@ -264,6 +401,7 @@ class ModelConfig:
     graph: bool = True
     top: str | None = None
     path: str | None = None
+    elaborations: list[ElaborationProfile] = field(default_factory=list)
 
     def _resolve_relative(self, rel: str) -> str:
         """Resolve ``rel`` against the directory containing models.yaml.
@@ -306,6 +444,14 @@ class ModelConfig:
         worth elaborating, not that this fallback changed.
         """
         return self.top or self.name
+
+    def get_elaboration(self, profile_name: str) -> ElaborationProfile:
+        for profile in self.elaborations:
+            if profile.name == profile_name:
+                return profile
+        raise FatalRtlBuddyError(
+            f"model {self.name!r} has no elaboration profile {profile_name!r}"
+        )
 
     def get_model_name(self):
         """
@@ -382,6 +528,7 @@ class ModelConfigLoader:
         # rb hub) sees a single source of truth.
         seen: dict[str, int] = {}
         for idx, model in enumerate(self.models):
+            model.path = self.path
             # Before anything else: the name is a path segment everywhere
             # downstream, and one consumer deletes the directory it names.
             validate_model_name(model.name, path)
@@ -399,6 +546,16 @@ class ModelConfigLoader:
                 )
                 raise FatalRtlBuddyError(f"{path}: duplicate model name {model.name!r}")
             seen[model.name] = idx
+            seen_profiles: dict[str, int] = {}
+            for profile_idx, profile in enumerate(model.elaborations):
+                _validate_elaboration_profile(profile, model, path)
+                profile_key = profile.name.casefold()
+                if profile_key in seen_profiles:
+                    raise FatalRtlBuddyError(
+                        f"{path}: model {model.name!r} has duplicate elaboration "
+                        f"profile {profile.name!r}"
+                    )
+                seen_profiles[profile_key] = profile_idx
 
     def get_model(self, model_name: str) -> ModelConfig:
         """
@@ -414,7 +571,6 @@ class ModelConfigLoader:
         """
         for model in self.models:
             if model.name == model_name:
-                model.path = self.path
                 return model
 
         log_event(
@@ -425,3 +581,6 @@ class ModelConfigLoader:
             path=self.path,
         )
         raise FatalRtlBuddyError(f"model '{model_name}' not found")
+
+    def get_models(self) -> list[ModelConfig]:
+        return list(self.models)

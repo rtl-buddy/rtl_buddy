@@ -112,6 +112,30 @@ class TestJobSpec:
 
 
 @dataclass
+class ElabJobSpec:
+    """Everything a backend needs to launch one model elaboration."""
+
+    model_name: str
+    profile_name: str | None
+    suite_dir: str
+    model_config_path: str
+    result_json: Path
+    resources: JobResources = field(default_factory=JobResources)
+    log_path: Path | None = None
+    builder_mode: str | None = None
+    builder_override: str | None = None
+    extra_sim_timeout: int | None = None
+
+    def display_name(self) -> str:
+        if self.profile_name is None:
+            return self.model_name
+        return f"{self.model_name}:{self.profile_name}"
+
+
+RunnableJobSpec = TestJobSpec | ElabJobSpec
+
+
+@dataclass
 class JobHandle:
     """An accepted submission: the backend's job id plus its spec.
 
@@ -190,7 +214,7 @@ class DispatchBackend(ABC):
     @abstractmethod
     def submit(
         self,
-        spec: TestJobSpec,
+        spec: RunnableJobSpec,
         *,
         dependency: str | None = None,
         delay_sec: float = 0.0,
@@ -207,7 +231,7 @@ class DispatchBackend(ABC):
 
     def submit_array(
         self,
-        specs: list[TestJobSpec],
+        specs: list[RunnableJobSpec],
         *,
         array_dir: Path,
         max_parallel: int | None = None,
