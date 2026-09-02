@@ -73,7 +73,7 @@ from .runner.elab_results import (
     ElabResults,
     elab_failure,
     load_elab_result_json,
-    write_elab_result_json,
+    write_elab_result_json_best_effort,
 )
 from .runner.fpv_runner import FpvRunner
 from .runner.fpv_results import FpvSkipResults
@@ -8539,6 +8539,14 @@ class RtlBuddy:
             if layer is None:
                 continue
             if layer.cpus is not None:
+                if (
+                    not isinstance(layer.cpus, int)
+                    or isinstance(layer.cpus, bool)
+                    or layer.cpus < 1
+                ):
+                    raise FatalRtlBuddyError(
+                        "elaboration resources.cpus must be a positive integer"
+                    )
                 resolved.cpus = layer.cpus
             if layer.mem is not None:
                 resolved.mem = str(layer.mem)
@@ -8564,7 +8572,7 @@ class RtlBuddy:
             "peak_memory_bytes": 0,
         }
         result_path = cfg.artifact_dir / "result.json"
-        write_elab_result_json(
+        write_elab_result_json_best_effort(
             result_path,
             model=cfg.model.name,
             profile=cfg.profile_name,
@@ -8653,7 +8661,7 @@ class RtlBuddy:
             if job_telemetry:
                 payload["telemetry"] = job_telemetry
             durable = cfg.artifact_dir / "result.json"
-            write_elab_result_json(
+            write_elab_result_json_best_effort(
                 durable,
                 model=cfg.model.name,
                 profile=cfg.profile_name,
@@ -8860,7 +8868,12 @@ class RtlBuddy:
             for index, cfg in enumerate(configs)
             if cfg.reglvl <= reg_level
         ]
-        backend = self._resolve_dispatch_backend(dispatch, jobs=jobs)
+        backend_name = self._dispatch_backend_name(dispatch)
+        validate_backend_name(backend_name)
+        self._validate_jobs_flag(backend_name, jobs)
+        backend = (
+            self._resolve_dispatch_backend(dispatch, jobs=jobs) if runnable else None
+        )
         if backend is None:
             executed = []
             for cfg, resources in runnable:

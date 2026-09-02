@@ -1,11 +1,15 @@
 """Structured results for one pyslang elaboration."""
 
 import json
+import logging
 import os
 from importlib.metadata import version
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event
+
+logger = logging.getLogger(__name__)
 
 ELAB_RESULT_FILETYPE = "elab_result"
 ELAB_RESULT_SCHEMA_VERSION = 1
@@ -43,6 +47,30 @@ def write_elab_result_json(
     tmp.write_text(json.dumps(envelope, ensure_ascii=True, indent=2) + "\n")
     os.replace(tmp, path)
     return path
+
+
+def write_elab_result_json_best_effort(
+    path: str | Path, *, model: str, profile: str | None, results: dict
+) -> Path:
+    path = Path(path)
+    try:
+        return write_elab_result_json(
+            path,
+            model=model,
+            profile=profile,
+            results=results,
+        )
+    except Exception as exc:  # noqa: BLE001 - a sidecar cannot change the verdict
+        log_event(
+            logger,
+            logging.WARNING,
+            "elab.result_json_write_failed",
+            model=model,
+            profile=profile,
+            path=str(path),
+            error=str(exc),
+        )
+        return path
 
 
 def load_elab_result_json(

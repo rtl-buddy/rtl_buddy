@@ -84,6 +84,7 @@ models:
         ("name: smoke\n        defines: {FEATURE: 'one+two'}", "define.*value"),
         ("name: smoke\n        resources: {cpus: 0}", "resources.cpus"),
         ("name: base", "reserved name"),
+        ("name: BASE", "reserved name"),
     ],
 )
 def test_profile_validation_fails_before_running(
@@ -115,6 +116,23 @@ models:
     elaborations:
       - name: smoke
       - name: smoke
+""",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="duplicate elaboration profile"):
+        ModelConfigLoader(str(minimal_project / "models.yaml"))
+
+
+def test_case_only_duplicate_profile_is_rejected(minimal_project: Path):
+    _write_models(
+        minimal_project,
+        """\
+rtl-buddy-filetype: model_config
+models:
+  - name: core
+    filelist: [src/example.sv]
+    elaborations:
+      - name: smoke
+      - name: SMOKE
 """,
     )
     with pytest.raises(FatalRtlBuddyError, match="duplicate elaboration profile"):
@@ -376,6 +394,47 @@ models:
     )
 
 
+def test_fully_filtered_regression_does_not_construct_dispatch_backend(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import rtl_buddy.rtl_buddy as rtl_buddy_module
+
+    _write_models(
+        minimal_project,
+        """\
+rtl-buddy-filetype: model_config
+models:
+  - name: example
+    filelist: [src/example.sv]
+    elaborations:
+      - name: deferred
+        reglvl: 1
+""",
+    )
+    (minimal_project / "elab_regression.yaml").write_text(
+        "rtl-buddy-filetype: elab_reg_config\nmodel-configs: [models.yaml]\n"
+    )
+    root = minimal_project / "root_config.yaml"
+    root.write_text(root.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
+
+    def unexpected_backend(*_args, **_kwargs):
+        raise AssertionError("a fully filtered regression must not create a backend")
+
+    monkeypatch.setattr(rtl_buddy_module, "create_dispatch_backend", unexpected_backend)
+    result = _cli(
+        "--machine",
+        "elab-regression",
+        "-c",
+        "elab_regression.yaml",
+        "--reg-level",
+        "0",
+    )
+
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.output.strip().splitlines()[-1])
+    assert [row["result"] for row in envelope["payload"]["results"]] == ["SKIP"]
+
+
 def test_regression_falls_back_to_root_config_manifest(minimal_project: Path):
     _write_models(
         minimal_project,
@@ -440,6 +499,28 @@ models:
 """
     _write_models(minimal_project, profile)
     (minimal_project / "models_alt.yaml").write_text(profile)
+    (minimal_project / "elab_regression.yaml").write_text(
+        "rtl-buddy-filetype: elab_reg_config\n"
+        "model-configs: [models.yaml, models_alt.yaml]\n"
+    )
+    with pytest.raises(FatalRtlBuddyError, match="share the artifact directory"):
+        ElabRegConfig("reg", str(minimal_project / "elab_regression.yaml"))
+
+
+def test_regression_manifest_rejects_case_only_artifact_targets(
+    minimal_project: Path,
+):
+    first = """\
+rtl-buddy-filetype: model_config
+models:
+  - name: example
+    filelist: [src/example.sv]
+    elaborations:
+      - name: smoke
+"""
+    second = first.replace("name: smoke", "name: SMOKE")
+    _write_models(minimal_project, first)
+    (minimal_project / "models_alt.yaml").write_text(second)
     (minimal_project / "elab_regression.yaml").write_text(
         "rtl-buddy-filetype: elab_reg_config\n"
         "model-configs: [models.yaml, models_alt.yaml]\n"
@@ -561,6 +642,16 @@ models:
     )
 
 
+def test_elab_rejects_invalid_root_dispatch_cpus(minimal_project: Path):
+    root = minimal_project / "root_config.yaml"
+    root.write_text(root.read_text() + "\ncfg-dispatch:\n  resources: {cpus: 0}\n")
+
+    result = _cli("--machine", "elab", "example", "-c", "models.yaml")
+
+    assert isinstance(result.exception, FatalRtlBuddyError)
+    assert "resources.cpus must be a positive integer" in str(result.exception)
+
+
 def test_worker_failure_cannot_reuse_a_stale_pass(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -584,6 +675,27 @@ def test_worker_failure_cannot_reuse_a_stale_pass(
     result = ElabRunner(root_cfg=None, elab_cfg=cfg, resources=JobResources()).run()
     assert result.results["result"] == "FAIL"
     assert "did not produce a result" in result.results["desc"]
+
+
+def test_result_rewrite_failure_preserves_in_memory_verdict(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import rtl_buddy.runner.elab_results as elab_results_module
+
+    model = ModelConfigLoader(str(minimal_project / "models.yaml")).get_model("example")
+    cfg = ElabConfig(model)
+    payload = {"result": "PASS", "desc": "worker completed"}
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(elab_results_module, "write_elab_result_json", fail_write)
+    result = ElabRunner(root_cfg=None, elab_cfg=cfg, resources=JobResources())._finish(
+        payload
+    )
+
+    assert result.results == payload
+    assert result.result_json == cfg.artifact_dir / "result.json"
 
 
 def test_filelist_error_becomes_a_fail_result(

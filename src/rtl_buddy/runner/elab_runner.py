@@ -12,9 +12,11 @@ from ..process_utils import run_managed_process
 from ..tool_manifest import require
 from ..tools.vlog_filelist import VlogFilelist
 from .elab_results import (
+    ElabResults,
     elab_failure,
     load_elab_result_json,
     write_elab_result_json,
+    write_elab_result_json_best_effort,
 )
 
 
@@ -137,22 +139,22 @@ class ElabRunner:
         return self._finish(worker_result.results)
 
     def _finish(self, results: dict):
-        """Persist ``results`` to the worker and durable paths and reload."""
-        write_elab_result_json(
+        """Best-effort persist ``results`` after the worker has completed."""
+        write_elab_result_json_best_effort(
             self.worker_result_path,
             model=self.elab_cfg.model.name,
             profile=self.elab_cfg.profile_name,
             results=results,
         )
         if self.worker_result_path != self.durable_result_path:
-            write_elab_result_json(
+            write_elab_result_json_best_effort(
                 self.durable_result_path,
                 model=self.elab_cfg.model.name,
                 profile=self.elab_cfg.profile_name,
                 results=results,
             )
-        return load_elab_result_json(
-            self.durable_result_path,
-            model=self.elab_cfg.model.name,
-            profile=self.elab_cfg.profile_name,
+        return ElabResults(
+            self.elab_cfg.name,
+            results,
+            result_json=self.durable_result_path,
         )

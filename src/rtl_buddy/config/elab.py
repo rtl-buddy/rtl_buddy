@@ -21,6 +21,10 @@ from .model import (
 logger = logging.getLogger(__name__)
 
 
+def _portable_path_key(path: Path) -> tuple[str, ...]:
+    return tuple(part.casefold() for part in path.parts)
+
+
 @dataclass(frozen=True)
 class ElabConfig:
     """One model plus either its base settings or one named profile."""
@@ -119,14 +123,17 @@ class ElabRegConfig:
             raise FatalRtlBuddyError(
                 f"{self.path}: elaboration regression has no named profiles"
             )
-        owners: dict[Path, str] = {}
+        owners: dict[tuple[str, ...], ElabConfig] = {}
         for cfg in self.get_elaborations():
-            previous = owners.setdefault(cfg.artifact_dir, cfg.model.path)
-            if previous != cfg.model.path:
+            key = _portable_path_key(cfg.artifact_dir)
+            previous = owners.get(key)
+            if previous is not None:
                 raise FatalRtlBuddyError(
-                    f"{self.path}: {cfg.name!r} in {cfg.model.path} and {previous} "
+                    f"{self.path}: {cfg.name!r} in {cfg.model.path} and "
+                    f"{previous.name!r} in {previous.model.path} "
                     f"share the artifact directory {cfg.artifact_dir}"
                 )
+            owners[key] = cfg
 
     def get_elaborations(self) -> list[ElabConfig]:
         return [

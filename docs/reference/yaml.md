@@ -370,7 +370,7 @@ Not every flow honors `+incdir+` and `+define+`. Simulation and model elaboratio
 
 ### Elaboration profiles
 
-A profile is a delta on its containing model, not another model reference. Paths in `prepend_sources`, `append_sources`, and `include_dirs` resolve from `models.yaml`. Top precedence is profile `top`, then model `top`, then model `name`.
+A profile is a delta on its containing model, not another model reference. Paths in `prepend_sources`, `append_sources`, and `include_dirs` resolve from `models.yaml`. Top precedence is profile `top`, then model `top`, then model `name`. Profile names are unique ignoring case, and every case variant of `base` is reserved so artifact paths remain portable to case-insensitive filesystems.
 
 | Field | Default and validation |
 |---|---|
@@ -403,7 +403,7 @@ model-configs:
   - design/peripherals/models.yaml
 ```
 
-`model-configs` must be non-empty, paths resolve from the manifest, duplicate paths and profiles that would share an artifact directory are rejected, and the selected files must contain at least one profile. `rb elab-regression` applies `--reg-level` and records higher-level profiles as `SKIP`. Discovery checks `./elab_regression.yaml` before `cfg-rtl-reg.elab-reg-cfg-path`.
+`model-configs` must be non-empty, paths resolve from the manifest, duplicate paths and profiles that would share an artifact directory are rejected with case-insensitive path comparison, and the selected files must contain at least one profile. `rb elab-regression` applies `--reg-level` and records higher-level profiles as `SKIP`. Discovery checks `./elab_regression.yaml` before `cfg-rtl-reg.elab-reg-cfg-path`.
 
 ## tests.yaml
 

@@ -249,7 +249,7 @@ def _validate_elaboration_profile(
             f"{prefix} has an invalid name; profile names must be safe single "
             "path segments containing only letters, digits, underscore, dot or hyphen"
         )
-    if profile.name == ELAB_BASE_ARTIFACT_NAME:
+    if profile.name.casefold() == ELAB_BASE_ARTIFACT_NAME.casefold():
         raise FatalRtlBuddyError(
             f"{prefix} uses reserved name {ELAB_BASE_ARTIFACT_NAME!r}; that "
             "directory records a bare-model elaboration"
@@ -549,12 +549,13 @@ class ModelConfigLoader:
             seen_profiles: dict[str, int] = {}
             for profile_idx, profile in enumerate(model.elaborations):
                 _validate_elaboration_profile(profile, model, path)
-                if profile.name in seen_profiles:
+                profile_key = profile.name.casefold()
+                if profile_key in seen_profiles:
                     raise FatalRtlBuddyError(
                         f"{path}: model {model.name!r} has duplicate elaboration "
                         f"profile {profile.name!r}"
                     )
-                seen_profiles[profile.name] = profile_idx
+                seen_profiles[profile_key] = profile_idx
 
     def get_model(self, model_name: str) -> ModelConfig:
         """
