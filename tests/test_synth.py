@@ -1687,7 +1687,6 @@ def _make_openroad(tmp_path, synth_cfg=None, tool_cfg=None, root_cfg=None):
 
 
 def test_openroad_synth_artefact_dir_created(tmp_path):
-
     or_synth = _make_openroad(tmp_path)
     assert Path(or_synth.artefact_dir).is_dir()
     assert Path(or_synth.artefact_dir).name == "test_synth"
@@ -2198,14 +2197,12 @@ def test_openroad_yosys_stage_warns_on_unknown_yosys_override(tmp_path, caplog):
 
 
 def test_openroad_parse_area():
-
     or_synth = _make_openroad(Path("/tmp"))
     log = "Design area 179 um^2 100% utilization.\n"
     assert or_synth._parse_or_area_um2(log) == 179.0
 
 
 def test_openroad_parse_wns_met():
-
     or_synth = _make_openroad(Path("/tmp"))
     assert or_synth._parse_or_wns_ns(
         "            6.754   slack (MET)\n"
@@ -2213,7 +2210,6 @@ def test_openroad_parse_wns_met():
 
 
 def test_openroad_parse_wns_violated():
-
     or_synth = _make_openroad(Path("/tmp"))
     assert or_synth._parse_or_wns_ns(
         "           -0.431   slack (VIOLATED)\n"
@@ -2249,13 +2245,11 @@ def test_openroad_parse_wns_multi_group_fallback_picks_min():
 
 
 def test_openroad_parse_tns_with_corner():
-
     or_synth = _make_openroad(Path("/tmp"))
     assert or_synth._parse_or_tns_ns("tns max -3.964\n") == pytest.approx(-3.964)
 
 
 def test_openroad_parse_area_missing_returns_none():
-
     or_synth = _make_openroad(Path("/tmp"))
     assert or_synth._parse_or_area_um2("no area here\n") is None
 
@@ -2266,7 +2260,6 @@ def test_openroad_parse_area_missing_returns_none():
 
 
 def test_openroad_run_fails_without_library(tmp_path, monkeypatch):
-
     or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(platform=None))
     result = or_synth.run()
     assert isinstance(result, SynthFailResults)
@@ -2274,7 +2267,6 @@ def test_openroad_run_fails_without_library(tmp_path, monkeypatch):
 
 
 def test_openroad_run_fails_without_lef(tmp_path, monkeypatch):
-
     lib = tmp_path / "cells.lib"
     lib.write_text("")
     root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)}, lef_map={})
@@ -3766,8 +3758,7 @@ def test_verilog_frontend_ignores_single_unit_for_the_scan_too(tmp_path, monkeyp
 
 
 def _gate_yosys_with_filelist_define(tmp_path, src, macro, *, opts_overrides=None):
-    """A model whose filelist carries `+define+<macro>` — which the synth flow
-    drops, so Yosys never sees it."""
+    """A model whose filelist carries `+define+<macro>=1`."""
     from rtl_buddy.config.model import ModelConfig
     from rtl_buddy.config.synth import SynthToolOptsFile
 
@@ -3810,10 +3801,9 @@ def _gate_yosys_with_filelist_define(tmp_path, src, macro, *, opts_overrides=Non
     )
 
 
-def test_filelist_define_does_not_suppress_a_finding(tmp_path, monkeypatch):
-    """`_write_script()` passes only the run's `defines:` to Yosys, so a
-    filelist `+define+` must not make the scan skip a region Yosys elaborates.
-    """
+def test_filelist_define_suppresses_a_finding(tmp_path, monkeypatch):
+    """`_write_script()` passes the filelist's `+define+` entries to Yosys, so
+    a region they exclude is never elaborated and must not be reported."""
     ys = _gate_yosys_with_filelist_define(
         tmp_path,
         _IFNDEF_SRC.format(macro="FAST_SIM_ONLY"),
@@ -3821,12 +3811,23 @@ def test_filelist_define_does_not_suppress_a_finding(tmp_path, monkeypatch):
         opts_overrides={"static_functions": "error"},
     )
     _patch_yosys(monkeypatch)
-    result = ys.run()
-    assert isinstance(result, SynthFailResults)
-    assert "function dbg" in result.results["desc"]
+    assert isinstance(ys.run(), SynthPassResults)
 
 
-def test_filelist_defines_the_flow_drops_are_warned_about(
+def test_filelist_define_reaches_the_yosys_script(tmp_path, monkeypatch):
+    ys = _gate_yosys_with_filelist_define(
+        tmp_path,
+        "module my_module; endmodule\n",
+        "FAST_SIM_ONLY",
+        opts_overrides={"static_functions": "allow"},
+    )
+    _patch_yosys(monkeypatch)
+    ys.run()
+    script = Path(ys._script_path()).read_text()
+    assert "-D FAST_SIM_ONLY=1" in script
+
+
+def test_filelist_defines_the_run_overrides_are_warned_about(
     tmp_path, monkeypatch, caplog
 ):
     import logging
@@ -3837,17 +3838,23 @@ def test_filelist_defines_the_flow_drops_are_warned_about(
         "FAST_SIM_ONLY",
         opts_overrides={"static_functions": "error"},
     )
+    ys.synth_cfg.defines = {"FAST_SIM_ONLY": 0}
     _patch_yosys(monkeypatch)
     with caplog.at_level(logging.WARNING):
         ys.run()
     events = [
         r
         for r in caplog.records
-        if getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        if getattr(r, "rtl_event", "") == "synth.filelist_defines_overridden"
     ]
     assert len(events) == 1
-    assert events[0].rtl_fields["defines"] == ["FAST_SIM_ONLY"]
+    assert events[0].rtl_fields["overridden"] == [
+        "FAST_SIM_ONLY (filelist='1', synth='0')"
+    ]
     assert events[0].levelno == logging.WARNING
+    script = Path(ys._script_path()).read_text()
+    assert "-D FAST_SIM_ONLY=0" in script
+    assert "-D FAST_SIM_ONLY=1" not in script
 
 
 def test_filelist_defines_warning_fires_even_when_the_gate_is_off(
@@ -3862,16 +3869,17 @@ def test_filelist_defines_warning_fires_even_when_the_gate_is_off(
         "FAST_SIM_ONLY",
         opts_overrides={"static_functions": "allow"},
     )
+    ys.synth_cfg.defines = {"FAST_SIM_ONLY": 0}
     _patch_yosys(monkeypatch)
     with caplog.at_level(logging.WARNING):
         ys.run()
     assert any(
-        getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        getattr(r, "rtl_event", "") == "synth.filelist_defines_overridden"
         for r in caplog.records
     )
 
 
-def test_a_filelist_define_the_run_also_sets_is_not_warned_about(
+def test_a_filelist_define_the_run_also_sets_identically_is_not_warned_about(
     tmp_path, monkeypatch, caplog
 ):
     import logging
@@ -3887,7 +3895,7 @@ def test_a_filelist_define_the_run_also_sets_is_not_warned_about(
     with caplog.at_level(logging.WARNING):
         ys.run()
     assert not any(
-        getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        getattr(r, "rtl_event", "") == "synth.filelist_defines_overridden"
         for r in caplog.records
     )
 
@@ -3902,7 +3910,7 @@ def test_a_filelist_with_no_defines_is_quiet(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         ys.run()
     assert not any(
-        getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        getattr(r, "rtl_event", "") == "synth.filelist_defines_overridden"
         for r in caplog.records
     )
 
@@ -3945,8 +3953,8 @@ def test_lifetime_scan_inputs_seeds_the_implicit_defines(tmp_path):
     fl.write_text("+incdir+inc\n+define+FROM_FILELIST=1\n-v top.sv\n")
     incdirs, defines = lifetime_scan_inputs(str(fl), "s", {"FROM_RUN": 2}, "verilog")
     assert incdirs == [str(tmp_path / "inc")]
-    # Filelist macros are reported, never applied.
-    assert "FROM_FILELIST" not in defines
+    # Filelist macros are applied, exactly as `_write_script()` passes them.
+    assert defines["FROM_FILELIST"] == "1"
     assert defines["FROM_RUN"] == "2"
     assert defines["SYNTHESIS"] == implicit_defines("verilog")["SYNTHESIS"]
 
@@ -4100,16 +4108,25 @@ def test_openroad_invalid_static_functions_mode_is_fatal_before_lef(tmp_path):
         or_synth.run()
 
 
-def test_filelist_defines_ignored_has_a_dedicated_human_message():
+def test_filelist_defines_overridden_has_a_dedicated_human_message():
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(
-        "synth.filelist_defines_ignored",
-        {"synth": "block", "defines": ["A", "B"], "count": 2, "filelist": "synth.f"},
+        "synth.filelist_defines_overridden",
+        {
+            "synth": "block",
+            "overridden": [
+                "A (filelist='1', synth='0')",
+                "B (filelist=bare, synth='2')",
+            ],
+            "count": 2,
+            "filelist": "synth.f",
+        },
     )
-    assert msg != "synth filelist_defines_ignored"
-    for sub in ("block", "A, B", "defines:"):
+    assert msg != "synth filelist_defines_overridden"
+    for sub in ("block", "A (filelist='1', synth='0')", "B (filelist=bare", "defines:"):
         assert sub in msg
+    assert "Verilator" in msg and "Icarus" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -4533,7 +4550,7 @@ def test_a_keep_attribute_does_not_change_the_gate_verdict(tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# The filelist-define warning compares values, not just names (round 10)
+# Filelist +define+ entries are forwarded to Yosys; the run's `defines:` win
 # ---------------------------------------------------------------------------
 
 
@@ -4549,8 +4566,24 @@ def _defines_event(caplog):
     return [
         r
         for r in caplog.records
-        if getattr(r, "rtl_event", "") == "synth.filelist_defines_ignored"
+        if getattr(r, "rtl_event", "") == "synth.filelist_defines_overridden"
     ]
+
+
+def test_merge_defines_keeps_filelist_order_and_lets_the_run_win():
+    from rtl_buddy.tools.synth_yosys import merge_defines
+
+    merged, overridden = merge_defines(
+        {"A": "1", "B": None, "C": "x"}, {"C": "y", "D": 4}
+    )
+    assert list(merged.items()) == [("A", "1"), ("B", None), ("C", "y"), ("D", "4")]
+    assert overridden == ["C (filelist='x', synth='y')"]
+
+
+def test_merge_defines_with_no_run_defines_is_the_filelist():
+    from rtl_buddy.tools.synth_yosys import merge_defines
+
+    assert merge_defines({"A": None}, None) == ({"A": None}, [])
 
 
 def test_an_explicit_filelist_value_is_compared_literally(tmp_path, caplog):
@@ -4564,189 +4597,230 @@ def test_an_explicit_filelist_value_is_compared_literally(tmp_path, caplog):
     assert _defines_event(caplog) == []
 
 
-def test_a_matching_filelist_value_is_quiet(tmp_path, caplog):
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+WIDTH=8\n", {"WIDTH": 8}, "verilog")
-    assert _defines_event(caplog) == []
-
-
 def test_a_conflicting_filelist_value_is_warned_with_both_values(tmp_path, caplog):
-    """The case the name-only filter swallowed: simulation builds an 8-bit
-    design and synthesis a 16-bit one, and nothing said so."""
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+WIDTH=8\n", {"WIDTH": 16}, "verilog")
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    fields = events[0].rtl_fields
-    assert fields["defines"] == []
-    assert fields["conflicts"] == ["WIDTH (filelist='8', synth='16')"]
-    assert fields["count"] == 1
-
-
-def test_a_conflict_with_an_implicit_macro_is_warned(tmp_path, caplog):
-    """`+define+SYNTHESIS=0` disagrees with the value the frontend forces."""
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+SYNTHESIS=0\n", None, "verilog")
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    assert events[0].rtl_fields["conflicts"] == ["SYNTHESIS (filelist='0', synth='1')"]
-
-
-def test_a_matching_implicit_macro_is_quiet(tmp_path, caplog):
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+SYNTHESIS=1\n", None, "verilog")
-    assert _defines_event(caplog) == []
-
-
-@pytest.mark.parametrize("frontend", ["slang", "verilog"])
-def test_a_bare_filelist_define_is_always_reported(tmp_path, caplog, frontend):
-    """A bare `+define+X` has no single meaning to compare against.
-
-    Measured by expanding the macro in an expression (`-E` output as the
-    witness), the consumers disagree with each other: Verilator and Yosys's
-    `read_verilog` give it an EMPTY body, while Icarus and slang give it 1.
-    The filelist is read by whichever simulator the suite selects, so
-    resolving the entry against the *synthesis* frontend modelled the wrong
-    consumer — and under slang it silently suppressed this very pair even
-    though Verilator would build the design with an empty `DEBUG`.
-    """
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, frontend)
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    fields = events[0].rtl_fields
-    assert fields["ambiguous"] == ["DEBUG (bare, synth='1')"]
-    assert fields["conflicts"] == []
-    assert fields["defines"] == []
-    assert fields["count"] == 1
-
-
-def test_a_bare_filelist_define_matching_an_implicit_macro_is_reported(
-    tmp_path, caplog
-):
-    """Same reasoning when the synth value came from the frontend itself."""
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+SYNTHESIS\n", None, "slang")
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    assert events[0].rtl_fields["ambiguous"] == ["SYNTHESIS (bare, synth='1')"]
-
-
-def test_a_bare_filelist_define_for_an_unset_name_is_just_not_passed(tmp_path, caplog):
-    """With no synth value there is nothing to be ambiguous against — it is
-    simply a macro synthesis never sees."""
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+ONLY_SIM\n", None, "verilog")
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    assert events[0].rtl_fields["defines"] == ["ONLY_SIM"]
-    assert events[0].rtl_fields["ambiguous"] == []
-
-
-def test_all_three_kinds_are_reported_in_one_event(tmp_path, caplog):
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(
-            tmp_path,
-            "+define+W=8\n+define+MISSING=1\n+define+BARE\n",
-            {"W": 16, "BARE": 1},
-            "verilog",
-        )
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    fields = events[0].rtl_fields
-    assert fields["defines"] == ["MISSING"]
-    assert fields["conflicts"] == ["W (filelist='8', synth='16')"]
-    assert fields["ambiguous"] == ["BARE (bare, synth='1')"]
-    assert fields["count"] == 3
-
-
-def test_an_absent_name_is_still_reported_as_not_passed(tmp_path, caplog):
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(tmp_path, "+define+ONLY_IN_FILELIST=1\n", None, "verilog")
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    assert events[0].rtl_fields["defines"] == ["ONLY_IN_FILELIST"]
-    assert events[0].rtl_fields["conflicts"] == []
-
-
-def test_both_kinds_are_reported_in_one_event(tmp_path, caplog):
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        _scan_inputs(
-            tmp_path,
-            "+define+WIDTH=8\n+define+MISSING=1\n",
-            {"WIDTH": 16},
-            "verilog",
-        )
-    events = _defines_event(caplog)
-    assert len(events) == 1
-    fields = events[0].rtl_fields
-    assert fields["defines"] == ["MISSING"]
-    assert fields["conflicts"] == ["WIDTH (filelist='8', synth='16')"]
-    assert fields["count"] == 2
-
-
-def test_the_defines_message_names_both_kinds():
-    from rtl_buddy.logging_utils import _human_message
-
-    msg = _human_message(
-        "synth.filelist_defines_ignored",
-        {
-            "synth": "block",
-            "defines": ["MISSING"],
-            "conflicts": ["WIDTH (filelist='8', synth='16')"],
-            "count": 2,
-            "filelist": "synth.f",
-        },
-    )
-    assert "not passed to Yosys at all: MISSING" in msg
-    assert "passed with a different value: WIDTH (filelist='8', synth='16')" in msg
-
-    with_bare = _human_message(
-        "synth.filelist_defines_ignored",
-        {
-            "synth": "block",
-            "defines": [],
-            "conflicts": [],
-            "ambiguous": ["BARE (bare, synth='1')"],
-            "count": 1,
-            "filelist": "synth.f",
-        },
-    )
-    assert "no single value to compare" in with_bare
-    assert "Verilator" in with_bare and "Icarus" in with_bare
-    assert "BARE (bare, synth='1')" in with_bare
-
-
-def test_a_conflicting_filelist_define_does_not_change_the_scan(tmp_path, caplog):
-    """The warning reports the divergence; the macro table still models the
-    Yosys invocation, so the run's value is the one the scan uses."""
+    """Simulation builds an 8-bit design and synthesis a 16-bit one, and this
+    is the only place that says so."""
     import logging
 
     with caplog.at_level(logging.WARNING):
         _incdirs, defines = _scan_inputs(
             tmp_path, "+define+WIDTH=8\n", {"WIDTH": 16}, "verilog"
         )
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["overridden"] == ["WIDTH (filelist='8', synth='16')"]
+    assert fields["count"] == 1
+    # The scan models the Yosys invocation: the run's value is the one used.
     assert defines["WIDTH"] == "16"
+
+
+def test_a_filelist_only_define_is_applied_quietly(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _incdirs, defines = _scan_inputs(
+            tmp_path, "+define+ONLY_IN_FILELIST=1\n", None, "verilog"
+        )
+    assert _defines_event(caplog) == []
+    assert defines["ONLY_IN_FILELIST"] == "1"
+
+
+def test_a_filelist_define_overrides_an_implicit_macro_in_the_scan(tmp_path, caplog):
+    """`+define+SYNTHESIS=0` is passed as `-D SYNTHESIS=0`, exactly as a run
+    `defines: {SYNTHESIS: 0}` is; the scan follows the same layering."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _incdirs, defines = _scan_inputs(
+            tmp_path, "+define+SYNTHESIS=0\n", None, "verilog"
+        )
+    assert _defines_event(caplog) == []
+    assert defines["SYNTHESIS"] == "0"
+
+
+@pytest.mark.parametrize(("frontend", "expected"), [("slang", "1"), ("verilog", "")])
+def test_a_bare_filelist_define_takes_the_frontend_meaning(
+    tmp_path, caplog, frontend, expected
+):
+    """A bare `+define+X` is passed to Yosys valueless, so the scan gives it
+    what the selected frontend gives a valueless `-D`: an EMPTY body under
+    `read_verilog`, 1 under slang."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _incdirs, defines = _scan_inputs(tmp_path, "+define+DEBUG\n", None, frontend)
+    assert _defines_event(caplog) == []
+    assert defines["DEBUG"] == expected
+
+
+@pytest.mark.parametrize("frontend", ["slang", "verilog"])
+def test_a_bare_filelist_define_paired_with_a_run_value_is_reported(
+    tmp_path, caplog, frontend
+):
+    """A bare entry has no single meaning to compare against (Verilator and
+    `read_verilog` give it an empty body, Icarus and slang give it 1), so any
+    run value on top of it is reported as an override, never as a match."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _incdirs, defines = _scan_inputs(
+            tmp_path, "+define+DEBUG\n", {"DEBUG": 1}, frontend
+        )
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    assert events[0].rtl_fields["overridden"] == ["DEBUG (filelist=bare, synth='1')"]
+    assert defines["DEBUG"] == "1"
+
+
+def test_all_overrides_are_reported_in_one_event(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _scan_inputs(
+            tmp_path,
+            "+define+W=8\n+define+KEPT=1\n+define+BARE\n",
+            {"W": 16, "BARE": 1},
+            "verilog",
+        )
+    events = _defines_event(caplog)
+    assert len(events) == 1
+    fields = events[0].rtl_fields
+    assert fields["overridden"] == [
+        "W (filelist='8', synth='16')",
+        "BARE (filelist=bare, synth='1')",
+    ]
+    assert fields["count"] == 2
+
+
+def test_write_script_forwards_filelist_defines_before_the_run_defines(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"+define+FROM_FL=8\n+define+BARE\n+define+W=8\n-v {sv}\n")
+
+    ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(defines={"W": 16, "R": 1}))
+    script = Path(ys._write_script(str(fl))).read_text()
+    read_line = next(ln for ln in script.splitlines() if ln.startswith("read_verilog"))
+    assert "-D FROM_FL=8 -D BARE -D W=16 -D R=1 " in read_line
+    assert "W=8" not in read_line
+
+
+def test_openroad_yosys_script_forwards_filelist_defines(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"+define+FROM_FL=8\n+define+W=8\n-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top", platform="mylib", defines={"W": 16}
+        ),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    read_line = next(ln for ln in script.splitlines() if ln.startswith("read_verilog"))
+    assert "-D FROM_FL=8 -D W=16 " in read_line
+    assert "W=8" not in read_line
+
+
+def test_write_script_slang_forwards_filelist_defines(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"+define+FROM_FL=8\n+define+BARE\n-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(defines={"R": 1}),
+        tool_cfg=SynthToolConfig(cfg_file),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    read_line = next(ln for ln in script.splitlines() if ln.startswith("read_slang"))
+    assert "-DFROM_FL=8 -DBARE -DR=1 " in read_line
+
+
+@pytest.mark.parametrize("frontend", ["verilog", "slang"])
+def test_a_verilog_literal_define_value_reaches_yosys_verbatim(tmp_path, frontend):
+    """`shlex.quote` would turn 8'hff into '8'"'"'hff', and Yosys passes the
+    quote characters through to the frontend rather than stripping them."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f'+define+MASK=8\'hff\n+define+MSG="ok"\n-v {sv}\n')
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend=frontend, plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(
+        tmp_path,
+        tool_cfg=SynthToolConfig(cfg_file),
+        synth_cfg=_make_synth_cfg(defines={"RUN": "4'd3"}),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    sep = " " if frontend == "verilog" else ""
+    assert f"-D{sep}MASK=8'hff -D{sep}MSG=\"ok\" -D{sep}RUN=4'd3 " in script
+
+
+def _whitespace_define_filelist(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"+define+MSG=a b\n-v {sv}\n")
+    return fl
+
+
+@pytest.mark.parametrize("frontend", ["verilog", "slang"])
+def test_a_whitespace_filelist_define_value_is_fatal(tmp_path, frontend):
+    """A yosys script line is split on whitespace and no quoting survives, so
+    `+define+MSG=a b` cannot be expressed as a `-D`; refuse it up front rather
+    than emit a read command that fails on a mangled source path."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    fl = _whitespace_define_filelist(tmp_path)
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend=frontend, plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    with pytest.raises(FatalRtlBuddyError, match=r"\+define\+MSG=a b.*whitespace"):
+        ys._write_script(str(fl))
+
+
+def test_a_whitespace_filelist_define_value_is_fatal_for_openroad(tmp_path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    fl = _whitespace_define_filelist(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    with pytest.raises(FatalRtlBuddyError, match="whitespace"):
+        or_synth._write_yosys_script(str(fl))
 
 
 # ---------------------------------------------------------------------------

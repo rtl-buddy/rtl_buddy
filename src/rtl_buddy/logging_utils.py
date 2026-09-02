@@ -1212,32 +1212,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "lifetime (no explicit `automatic`); its formals are shared "
                 "storage and are not portable across synthesis frontends"
             )
-        case "synth.filelist_defines_ignored":
-            names = fields.get("defines") or []
-            conflicts = fields.get("conflicts") or []
-            parts = []
-            if names:
-                parts.append(
-                    "not passed to Yosys at all: " + ", ".join(str(n) for n in names)
-                )
-            if conflicts:
-                parts.append(
-                    "passed with a different value: "
-                    + ", ".join(str(c) for c in conflicts)
-                )
-            if fields.get("ambiguous"):
-                parts.append(
-                    "bare, so no single value to compare (empty under Verilator "
-                    "and read_verilog, 1 under Icarus and slang): "
-                    + ", ".join(str(a) for a in fields["ambiguous"])
-                )
+        case "synth.filelist_defines_overridden":
+            overridden = fields.get("overridden") or []
             return (
                 f'synthesis "{fields.get("synth")}": {fields.get("count")} '
-                "+define+ entr(ies) in the generated filelist do not reach "
-                f"Yosys as written — {'; '.join(parts)}. The synthesis flow "
-                "only applies the synth.yaml entry's `defines:`; move them "
-                "there if the design needs them, or the elaborated RTL will "
-                "differ from the simulation flow's"
+                "+define+ entr(ies) in the generated filelist are overridden "
+                "by the synth.yaml entry's `defines:` — "
+                + ", ".join(str(o) for o in overridden)
+                + ". Synthesis elaborates with the synth.yaml value, the "
+                "simulation flow with the filelist's; a bare filelist entry "
+                "has no single value to compare (empty under Verilator and "
+                "read_verilog, 1 under Icarus and slang). Drop one of the two "
+                "if the flows are meant to agree"
             )
         case "synth.conflicting_drivers":
             return (

@@ -10,6 +10,7 @@ from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
+    elaboration_defines,
     emit_frontend_read_cmds,
     find_conflicting_driver_warnings,
     lifetime_scan_inputs,
@@ -193,7 +194,7 @@ class OpenRoadSynth:
         top = self.synth_cfg.get_top()
         lib_paths = self._resolve_lib_paths()
         params = self.synth_cfg.get_params()
-        defines = self.synth_cfg.get_defines()
+        defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
         opts = self._resolve_yosys_opts()
 
         lines = []

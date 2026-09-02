@@ -200,8 +200,8 @@ evaluated on definedness and updated by `` `define ``, `` `undef `` and
 `` `undefineall `` in the sources. The macro table is seeded to match the Yosys
 invocation exactly:
 
-- the run's `defines:`, which is all `rb synth` passes to `read_verilog -D` /
-  `read_slang -D`;
+- the filelist's `+define+` entries and then the run's `defines:`, which is
+  what `rb synth` passes to `read_verilog -D` / `read_slang -D`;
 - the macros the selected frontend defines for itself, which differ:
   `read_verilog` predefines `SYNTHESIS` and `YOSYS`, while `read_slang`
   predefines `SYNTHESIS` and slang's own built-ins (`__slang__`, the
@@ -211,23 +211,18 @@ invocation exactly:
   reported only under `frontend: slang`, which is the frontend that compiles
   it.
 
-`+define+` entries in the generated filelist are **not** included, because the
-synthesis flow does not pass them to Yosys either; seeding the scan with them
-would make it skip a declaration that really is elaborated. A run whose
-filelist carries `+define+` macros that do not reach Yosys as written logs one
-`synth.filelist_defines_ignored` warning naming them, in three groups:
-
-- macros synthesis never sees at all;
-- macros it elaborates with a *different* value than the filelist gives, with
-  both values shown;
-- **bare** `+define+X` entries paired with a synthesis value, which cannot be
-  compared and are always reported. Tools disagree about what a valueless
-  macro expands to: Verilator and Yosys's `read_verilog` give it an empty body,
-  while Icarus and slang give it `1`. Write `+define+X=1` if a value is meant.
-
-That divergence from the simulation flow, which does apply these macros,
-predates this gate and is tracked separately — move the macro to the synth.yaml
-entry's `defines:` if the design needs it.
+Filelist `+define+` entries come first so the synth.yaml entry's `defines:`
+win on conflict. A bare `+define+X` takes the value the
+selected frontend gives a valueless `-D`: tools disagree about what such a
+macro expands to — Verilator and Yosys's `read_verilog` give it an empty body,
+while Icarus and slang give it `1` — so write `+define+X=1` if a value is meant.
+A run whose `defines:` override a filelist entry with a different value (or any
+value, for a bare entry) logs one `synth.filelist_defines_overridden` warning
+naming both values: simulation then elaborates with the filelist's value and
+synthesis with the synth.yaml one. Drop one of the two if the flows are meant
+to agree. A filelist `+define+` whose value contains whitespace is fatal: a
+Yosys script line is split on whitespace and no quoting survives, so no `-D`
+can carry it.
 
 `` `undefineall `` follows the frontend in use, which differ: slang clears the
 source's own macros but re-applies the command-line ones, so the seed above
@@ -243,7 +238,7 @@ losing whatever it declares.
 The macro table follows the compilation-unit boundary the frontend actually
 uses. With `single-unit: false` — the default — each source is its own
 compilation unit, so a `` `define `` in one file does not reach the next and
-the table is re-seeded from the run's defines for each; `single-unit: true`
+the table is re-seeded from the filelist and run defines for each; `single-unit: true`
 under `frontend: slang` shares it, matching `read_slang --single-unit`. A
 header always shares its includer's table, because `` `include `` is textual.
 
