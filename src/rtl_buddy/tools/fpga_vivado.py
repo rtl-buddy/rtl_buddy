@@ -94,6 +94,7 @@ class VivadoFpga(BaseFpga):
             part=target.part,
             verilog_sources=self._source_files_from_filelist(fl_path),
             xdc_files=list(target.xdc_files),
+            include_dirs=self._incdirs_from_filelist(fl_path),
             bitstream=f"{top}.bit",
             emit_bitstream=self.emit_bitstream,
         )

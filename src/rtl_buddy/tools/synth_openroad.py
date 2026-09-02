@@ -7,7 +7,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
-from .vlog_filelist import VlogFilelist
+from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
     elaboration_defines,
@@ -195,6 +195,7 @@ class OpenRoadSynth:
         lib_paths = self._resolve_lib_paths()
         params = self.synth_cfg.get_params()
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
+        incdirs = incdirs_from_filelist(fl_path)
         opts = self._resolve_yosys_opts()
 
         lines = []
@@ -210,6 +211,7 @@ class OpenRoadSynth:
                 defines=defines,
                 params=params,
                 root_cfg=self.root_cfg,
+                incdirs=incdirs,
             )
         )
 

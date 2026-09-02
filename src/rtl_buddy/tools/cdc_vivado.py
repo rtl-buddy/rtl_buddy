@@ -29,7 +29,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
-from .vlog_filelist import VlogFilelist
+from .fpga_vivado_flow import include_dirs_arg
+from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from ..config.cdc import CdcConfig, CdcToolConfig
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
@@ -187,6 +188,7 @@ def render_cdc_tcl(
     verilog_sources: list[str],
     sdc_file: str,
     report_file: str = "cdc.rpt",
+    include_dirs: list[str] | None = None,
 ) -> str:
     """Render the batch-Tcl script for one Vivado CDC analysis.
 
@@ -217,7 +219,7 @@ def render_cdc_tcl(
         'puts ">>> Reading constraints"',
         f"read_xdc {sdc_file}",
         'puts ">>> Stage: synth"',
-        f"synth_design -top {top} -part {part}",
+        f"synth_design -top {top} -part {part}{include_dirs_arg(include_dirs or [])}",
         'puts ">>> Report: cdc"',
         f"report_cdc -details -file {report_file}",
         'puts ">>> DONE"',
@@ -429,6 +431,7 @@ class VivadoCdc:
             part=part,
             verilog_sources=sources,
             sdc_file=sdc_path,
+            include_dirs=incdirs_from_filelist(fl_path),
         )
         script_path = self._script_path()
         Path(script_path).write_text(script)

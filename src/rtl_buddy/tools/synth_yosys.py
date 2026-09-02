@@ -8,7 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
-from .vlog_filelist import VlogFilelist
+from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
     SynthConfig,
@@ -113,9 +113,11 @@ def filelist_scan_context(
 
     `_source_files_from_filelist` drops both because Yosys is handed sources
     only. The incdirs are what the lifetime scan resolves `` `include ``
-    through. The defines feed the Yosys read commands (see
-    :func:`elaboration_defines`) and the lifetime scan's macro table. Paths
-    resolve relative to the filelist, matching the source entries.
+    through (the read commands get theirs from
+    :func:`vlog_filelist.incdirs_from_filelist`). The defines feed the Yosys
+    read commands (see :func:`elaboration_defines`) and the lifetime scan's
+    macro table. Paths resolve relative to the filelist, matching the source
+    entries.
 
     A macro's value is ``None`` when the entry carried no ``=``: a bare
     ``+define+X`` and ``+define+X=`` are different things -- the former is
@@ -378,9 +380,14 @@ def emit_frontend_read_cmds(
     defines: dict | None,
     params: dict | None,
     root_cfg,
+    incdirs: list[str] | None = None,
 ) -> list[str]:
     """Emit the Yosys commands that load + elaborate the design, based on
     the selected frontend (``verilog`` | ``slang``).
+
+    ``incdirs`` are the filelist's ``+incdir+`` directories, passed as ``-I``
+    to both frontends so a `` `include `` resolves the same way it does under
+    the simulation flow (#519).
 
     - verilog (default): per-file ``read_verilog -sv -defer`` matching the
       legacy behavior. Elaboration is lazy; ``synth -top`` resolves later
@@ -417,9 +424,11 @@ def emit_frontend_read_cmds(
             v = shlex.quote(v)
         return f"-D{sep}{k}={v}"
 
-    define_flags_v = ""
+    inc_flags = [f"-I {shlex.quote(inc)}" for inc in (incdirs or [])]
+
+    define_flags_v = "".join(f" {f}" for f in inc_flags)
     if defines:
-        define_flags_v = " " + " ".join(_d(k, v, " ") for k, v in defines.items())
+        define_flags_v += " " + " ".join(_d(k, v, " ") for k, v in defines.items())
 
     if opts.frontend == "verilog":
         # Not fatal — the legacy frontend simply has no equivalent knob —
@@ -440,7 +449,7 @@ def emit_frontend_read_cmds(
     if opts.frontend == "slang":
         plugin_abs = validate_frontend(opts, root_cfg)
         cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
-        flags: list[str] = []
+        flags: list[str] = list(inc_flags)
         if defines:
             flags.extend(_d(k, v, "") for k, v in defines.items())
         if params:
@@ -647,6 +656,7 @@ class YosysSynth:
         mapped = bool(lib_paths)
 
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
+        incdirs = incdirs_from_filelist(fl_path)
 
         lines = []
         for lib in lib_paths:
@@ -661,6 +671,7 @@ class YosysSynth:
                 defines=defines,
                 params=params,
                 root_cfg=self.root_cfg,
+                incdirs=incdirs,
             )
         )
 

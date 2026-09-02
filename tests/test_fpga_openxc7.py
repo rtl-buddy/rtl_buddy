@@ -263,6 +263,17 @@ def test_openxc7_mocked_pipeline_passes(tmp_path, monkeypatch):
     assert "write_json demo_top.json" in script
 
 
+def test_openxc7_forwards_filelist_incdirs(tmp_path, monkeypatch):
+    backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
+    (tmp_path / "inc").mkdir()
+    backend.fpga_cfg.model.filelist = ["+incdir+inc", "src/demo_top.sv"]
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    script = (Path(backend.artefact_dir) / "synth.ys").read_text()
+    assert f"read_verilog -sv -I {tmp_path / 'inc'} " in script
+
+
 def test_openxc7_chipdb_from_env_dir(tmp_path, monkeypatch):
     calls: list = []
     backend = _make_backend(tmp_path)

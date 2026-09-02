@@ -10,6 +10,7 @@ we don't want to require in CI; the subprocess is mocked. Tests pin:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from textwrap import dedent
 
@@ -154,6 +155,38 @@ def test_build_domain_map_resolves_via_model_match(tmp_path, monkeypatch):
     # SDC should be the absolute path resolved against cdc.yaml.
     sdc_idx = cmd.index("--sdc")
     assert Path(cmd[sdc_idx + 1]) == tmp_path / "demo.sdc"
+
+
+def test_build_domain_map_warns_on_filelist_incdirs(tmp_path, monkeypatch, caplog):
+    """rtl-buddy-cdc has no include-path option, so a model `+incdir+`
+    is reported rather than silently dropped (#519)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "inc").mkdir()
+    model.filelist.insert(0, "+incdir+inc")
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        out = cmd[cmd.index("--emit-domain-map") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text('{"schema_version": "1.0", "clocks": []}')
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "cdc.filelist_incdirs_unsupported"
+    ]
+    assert len(events) == 1
+    assert events[0].rtl_fields["analysis"] == "demo_cdc"
+    assert events[0].rtl_fields["incdirs"] == [str(tmp_path / "inc")]
 
 
 def test_build_domain_map_resolves_a_model_with_a_top_override(tmp_path, monkeypatch):

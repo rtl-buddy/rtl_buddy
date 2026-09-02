@@ -43,6 +43,34 @@ def _quote_filelist_path(path: str) -> str:
     return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def incdirs_from_filelist(fl_path: str) -> list[str]:
+    """``+incdir+`` directories of a generated filelist, in order, deduplicated.
+
+    Each directory resolves against the filelist that declares it, matching
+    how its source entries resolve. The flows that read a generated filelist
+    back for a tool with no ``-f`` support (synth, cdc, fpga, hub) pass these
+    through as the tool's include-path option.
+    """
+    fl_dir = os.path.dirname(os.path.abspath(fl_path))
+    incdirs: list[str] = []
+    try:
+        with open(fl_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return incdirs
+    for line in lines:
+        line = line.strip()
+        if not line.startswith("+incdir+"):
+            continue
+        for entry in line[len("+incdir+") :].split("+"):
+            if not entry:
+                continue
+            inc = os.path.normpath(os.path.join(fl_dir, entry))
+            if inc not in incdirs:
+                incdirs.append(inc)
+    return incdirs
+
+
 def apply_exclude_globs(
     files: list[str], patterns: list[str], project_root: str
 ) -> tuple[list[str], int]:

@@ -10,6 +10,10 @@ Use this page when behavior differs from the normal workflow. Each section state
 
 rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes, reports `CDC-BBX`, and drops their crossings from the report and domain map. Upgrade with `uv tool install -U rtl-buddy-cdc`. Waivers can hide the 0.3.x finding but cannot recover crossings beyond the macro.
 
+## rtl-buddy-cdc cannot take a filelist `+incdir+`
+
+rtl-buddy-cdc takes plain source paths and has no include-path option, so a filelist `+incdir+` cannot reach it from `rb cdc` or from the hub's domain-map build; every other non-simulation flow forwards them (Yosys `-I`, Vivado `-include_dirs`). The run logs `cdc.filelist_incdirs_unsupported` naming the directories, and a header that resolves only through one of them fails in the analyzer with `Cannot find include file`. Until the analyzer grows the option, spell the `` `include `` relative to the including file or run the `vivado` cdc tool.
+
 ## Coverage uses the platform builder
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Use `--builder <name>` for the run or make that builder the platform default. See [YAML Formats](reference/yaml.md).

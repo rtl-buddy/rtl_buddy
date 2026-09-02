@@ -4706,6 +4706,58 @@ def test_write_script_forwards_filelist_defines_before_the_run_defines(tmp_path)
     assert "W=8" not in read_line
 
 
+def _incdir_filelist(tmp_path):
+    """A filelist whose `+incdir+` is spelled relative to the filelist itself
+    (as `-F`-nested filelists are), so forwarding has to resolve it."""
+    gen = tmp_path / "gen"
+    gen.mkdir()
+    (tmp_path / "inc").mkdir()
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = gen / "synth.f"
+    fl.write_text(f"+incdir+../inc\n+incdir+../inc\n-v {sv}\n")
+    return fl
+
+
+@pytest.mark.parametrize("frontend", ["verilog", "slang"])
+def test_write_script_forwards_filelist_incdirs(tmp_path, frontend):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl = _incdir_filelist(tmp_path)
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend=frontend, plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(
+        tmp_path,
+        tool_cfg=SynthToolConfig(cfg_file),
+        synth_cfg=_make_synth_cfg(defines={"R": 1}),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    read_cmd = "read_verilog" if frontend == "verilog" else "read_slang"
+    read_line = next(ln for ln in script.splitlines() if ln.startswith(read_cmd))
+    sep = " " if frontend == "verilog" else ""
+    assert read_line.count(f"-I {tmp_path / 'inc'} ") == 1
+    assert f"-I {tmp_path / 'inc'} -D{sep}R=1 " in read_line
+
+
+def test_openroad_yosys_script_forwards_filelist_incdirs(tmp_path):
+    fl = _incdir_filelist(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    read_line = next(ln for ln in script.splitlines() if ln.startswith("read_verilog"))
+    assert f"read_verilog -sv -defer -I {tmp_path / 'inc'} " in read_line
+
+
 def test_openroad_yosys_script_forwards_filelist_defines(tmp_path):
     sv = tmp_path / "top.sv"
     sv.write_text("")

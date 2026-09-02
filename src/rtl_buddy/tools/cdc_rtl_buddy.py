@@ -21,7 +21,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
-from .vlog_filelist import VlogFilelist
+from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from ..config.cdc import CdcConfig, CdcToolConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
@@ -35,6 +35,26 @@ from ..runner.cdc_results import (
 
 
 _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
+
+
+def warn_unsupported_incdirs(analysis: str, fl_path: str) -> None:
+    """rtl-buddy-cdc takes plain source paths and has no include-path option,
+    so a filelist ``+incdir+`` cannot reach it. Say so rather than narrowing
+    the `` `include `` search path silently (#519); the analyzer's own
+    ``Cannot find include file`` error then has a cause on the log."""
+    incdirs = incdirs_from_filelist(fl_path)
+    if not incdirs:
+        return
+    log_event(
+        logger,
+        logging.WARNING,
+        "cdc.filelist_incdirs_unsupported",
+        analysis=analysis,
+        incdirs=incdirs,
+        count=len(incdirs),
+    )
+
+
 _FILELIST_SOURCE_PREFIX = "-v "
 
 
@@ -277,6 +297,8 @@ class RtlBuddyCdc:
                     "instructions"
                 ),
             )
+
+        warn_unsupported_incdirs(self.cdc_cfg.get_name(), fl_path)
 
         # Everything past the skip is a run of this analysis, however it ends,
         # so the previous run's reports go now rather than being left to be

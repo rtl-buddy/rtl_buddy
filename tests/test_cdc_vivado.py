@@ -182,6 +182,19 @@ def _mock_env(monkeypatch, fake):
     monkeypatch.setattr(cdc_vivado_module, "run_managed_process", fake)
 
 
+def test_vivado_cdc_forwards_filelist_incdirs(tmp_path, monkeypatch):
+    backend = _make_backend(tmp_path)
+    (tmp_path / "inc").mkdir()
+    backend.cdc_cfg.model.filelist.insert(0, f"+incdir+{tmp_path / 'inc'}")
+    _mock_env(monkeypatch, _fake_vivado("vivado_cdc_violations.rpt"))
+    backend.run()
+    script = (Path(backend.artefact_dir) / "cdc.tcl").read_text()
+    assert (
+        f"synth_design -top cdc_demo -part {PART} "
+        f"-include_dirs {{{{{tmp_path / 'inc'}}}}}" in script
+    )
+
+
 def test_vivado_cdc_fail_carries_verbatim_findings(tmp_path, monkeypatch):
     backend = _make_backend(tmp_path)
     _mock_env(monkeypatch, _fake_vivado("vivado_cdc_violations.rpt"))
