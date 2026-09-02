@@ -119,6 +119,14 @@ class ElabRegConfig:
             raise FatalRtlBuddyError(
                 f"{self.path}: elaboration regression has no named profiles"
             )
+        owners: dict[Path, str] = {}
+        for cfg in self.get_elaborations():
+            previous = owners.setdefault(cfg.artifact_dir, cfg.model.path)
+            if previous != cfg.model.path:
+                raise FatalRtlBuddyError(
+                    f"{self.path}: {cfg.name!r} in {cfg.model.path} and {previous} "
+                    f"share the artifact directory {cfg.artifact_dir}"
+                )
 
     def get_elaborations(self) -> list[ElabConfig]:
         return [

@@ -427,6 +427,27 @@ def test_regression_manifest_requires_an_explicit_profile(minimal_project: Path)
         ElabRegConfig("reg", str(minimal_project / "elab_regression.yaml"))
 
 
+def test_regression_manifest_rejects_colliding_artifact_targets(
+    minimal_project: Path,
+):
+    profile = """\
+rtl-buddy-filetype: model_config
+models:
+  - name: example
+    filelist: [src/example.sv]
+    elaborations:
+      - name: smoke
+"""
+    _write_models(minimal_project, profile)
+    (minimal_project / "models_alt.yaml").write_text(profile)
+    (minimal_project / "elab_regression.yaml").write_text(
+        "rtl-buddy-filetype: elab_reg_config\n"
+        "model-configs: [models.yaml, models_alt.yaml]\n"
+    )
+    with pytest.raises(FatalRtlBuddyError, match="share the artifact directory"):
+        ElabRegConfig("reg", str(minimal_project / "elab_regression.yaml"))
+
+
 def test_local_parallel_dispatch_uses_the_same_worker(minimal_project: Path):
     result = _cli(
         "elab",
@@ -614,5 +635,5 @@ def test_focused_tool_check_keeps_required_optional_dependency():
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert list(payload["tools"]) == ["pyslang"]
+    assert set(payload["tools"]) == {"slurm", "pyslang"}
     assert payload["subcommands"]["elab"]["status"] == "ok"

@@ -554,7 +554,13 @@ def test_slurm_gates_test_as_well_as_regression():
 
     slurm = by_name["slurm"]
     assert slurm.optional  # the default --dispatch local needs nothing
-    assert set(slurm.used_by) == {"regression", "randtest", "test"}
+    assert set(slurm.used_by) == {
+        "regression",
+        "randtest",
+        "test",
+        "elab",
+        "elab-regression",
+    }
     assert "rb test --dispatch slurm" in slurm.notes
 
 

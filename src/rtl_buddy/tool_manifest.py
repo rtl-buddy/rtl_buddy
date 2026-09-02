@@ -422,12 +422,13 @@ def _builtin_manifest() -> list[ToolSpec]:
                 "cluster/submit host is provided by your site",
                 "source": "https://slurm.schedmd.com/quickstart_admin.html",
             },
-            used_by=("regression", "randtest", "test"),
+            used_by=("regression", "randtest", "test", "elab", "elab-regression"),
             optional=True,
             description="Slurm workload manager client "
             "(sbatch/squeue/sacct/scancel; scontrol optional)",
             notes="Only needed for `regression --dispatch slurm` (and randtest, "
-            "and `rb test --dispatch slurm`). "
+            "`rb test --dispatch slurm`, `rb elab --dispatch slurm`, and "
+            "`rb elab-regression --dispatch slurm`). "
             "Requires a shared filesystem between the submit host and compute "
             "nodes; sacct (slurmdbd accounting) drives reservation right-sizing "
             "telemetry and degrades gracefully when absent. scontrol is an "
