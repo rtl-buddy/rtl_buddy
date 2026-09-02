@@ -113,15 +113,13 @@ def filelist_scan_context(
 
     `_source_files_from_filelist` drops both because Yosys is handed sources
     only. The incdirs are what the lifetime scan resolves `` `include ``
-    through. The defines are returned for *reporting* only — see
-    :func:`lifetime_scan_inputs` — because the synth flow does not pass them
-    to Yosys either. Paths resolve relative to the filelist, matching the
-    source entries.
+    through. The defines feed the Yosys read commands (see
+    :func:`elaboration_defines`) and the lifetime scan's macro table. Paths
+    resolve relative to the filelist, matching the source entries.
 
     A macro's value is ``None`` when the entry carried no ``=``: a bare
-    ``+define+X`` and ``+define+X=`` are different things, and which one it
-    was decides whether the entry matches a run ``defines:`` value -- see
-    :func:`normalise_define_value`.
+    ``+define+X`` and ``+define+X=`` are different things -- the former is
+    passed to Yosys as a valueless ``-D X``, the latter as ``-D X=``.
     """
     fl_dir = os.path.dirname(os.path.abspath(fl_path))
     incdirs: list[str] = []
@@ -208,11 +206,57 @@ def implicit_defines(frontend: str) -> dict[str, str]:
 #   read_slang   -DX      -> 1       (slang appends " 1" to a valueless predefine)
 #
 # The consumers disagree with each other, and rtl_buddy's simulation flow hands
-# the filelist to whichever builder the suite selects. So a bare entry has no
-# single meaning to compare against, and it is reported rather than resolved.
+# the filelist to whichever builder the suite selects. So a bare entry is passed
+# to Yosys valueless (the frontend decides), and a run `defines:` value paired
+# with it is always reported as an override rather than compared.
 BARE_DEFINE_MEANINGS = (
     "empty under Verilator and read_verilog, 1 under Icarus and slang"
 )
+
+
+def bare_define_value(frontend: str) -> str:
+    """What a valueless ``-D X`` expands to under `frontend`; see
+    BARE_DEFINE_MEANINGS."""
+    return "1" if frontend == "slang" else ""
+
+
+def merge_defines(
+    filelist_defines: dict[str, str | None], run_defines: dict | None
+) -> tuple[dict[str, str | None], list[str]]:
+    """Macros Yosys is given: the filelist's ``+define+`` entries, then the
+    run's ``defines:`` on top, so the synth.yaml entry wins on conflict.
+
+    Returns the merged table (filelist order first, run additions after) and
+    the filelist entries the run overrode with a different value. A bare
+    filelist entry paired with any run value counts as overridden: the run
+    spells a value the filelist did not, and the tools disagree about what a
+    valueless macro expands to (BARE_DEFINE_MEANINGS), so the pair cannot be
+    called equal.
+    """
+    merged: dict[str, str | None] = dict(filelist_defines)
+    overridden: list[str] = []
+    for k, v in (run_defines or {}).items():
+        name, value = str(k), str(v)
+        if name in filelist_defines:
+            fl_value = filelist_defines[name]
+            if fl_value is None:
+                overridden.append(f"{name} (filelist=bare, synth={value!r})")
+            elif fl_value != value:
+                overridden.append(f"{name} (filelist={fl_value!r}, synth={value!r})")
+        merged[name] = value
+    return merged, overridden
+
+
+def elaboration_defines(
+    fl_path: str, run_defines: dict | None
+) -> dict[str, str | None]:
+    """The ``-D`` table for the Yosys read commands: filelist ``+define+``
+    entries with the run's ``defines:`` layered on top. ``None`` marks a bare
+    entry, emitted without ``=``. Quiet -- the override warning is logged once
+    per run by :func:`lifetime_scan_inputs`."""
+    _incdirs, filelist_defines = filelist_scan_context(fl_path)
+    merged, _overridden = merge_defines(filelist_defines, run_defines)
+    return merged
 
 
 def lifetime_scan_inputs(
@@ -221,58 +265,31 @@ def lifetime_scan_inputs(
     """Include dirs and macros for the lifetime scan, matching what Yosys sees.
 
     The scan must model the *elaboration the flow actually performs*, not an
-    idealised one. `_write_script()` passes only the run's ``defines:`` to
-    ``read_verilog -D`` / ``read_slang -D``; a ``+define+`` in the generated
-    filelist is dropped. Seeding the scan from those filelist macros would
-    therefore make it evaluate `` `ifdef `` regions differently from Yosys and
-    silently skip a static-lifetime declaration that really is elaborated.
+    idealised one. `_write_script()` passes the filelist's ``+define+``
+    entries and then the run's ``defines:`` to ``read_verilog -D`` /
+    ``read_slang -D`` (:func:`elaboration_defines`), so the macro table is
+    the frontend's own predefines (:func:`implicit_defines`) with that same
+    merged table on top. A bare filelist entry takes the value the selected
+    frontend gives a valueless ``-D`` (:func:`bare_define_value`).
 
-    So the macro table comes from the run's ``defines:`` plus whatever the
-    selected frontend defines for itself (:func:`implicit_defines`). The
-    filelist macros the synth flow ignores are reported once per run instead:
-    that
-    divergence from the simulation flow (which does apply them) predates this
-    gate and is a separate fix — quietly starting to forward them here would
-    change existing synthesis results.
+    A filelist entry the run overrides with a different value is reported
+    once per run: `+define+WIDTH=8` in the filelist with `defines: {WIDTH:
+    16}` on the run means simulation builds an 8-bit design and synthesis a
+    16-bit one, and nothing else says so.
     """
     incdirs, filelist_defines = filelist_scan_context(fl_path)
+    merged, overridden = merge_defines(filelist_defines, run_defines)
     defines = implicit_defines(frontend)
-    defines.update({str(k): str(v) for k, v in (run_defines or {}).items()})
-
-    # A filelist macro only diverges when applying it would have changed the
-    # elaboration. Matching on the NAME alone silently swallowed the case the
-    # warning exists for: `+define+WIDTH=8` in the filelist with
-    # `defines: {WIDTH: 16}` on the run means simulation builds an 8-bit
-    # design and synthesis a 16-bit one.
-    #
-    # Only an entry carrying an explicit `=value` can be *compared*, because
-    # that value means the same thing to every tool. A bare entry cannot: see
-    # BARE_DEFINE_MEANINGS. Resolving it against the synth frontend was
-    # modelling the wrong consumer entirely -- the filelist is read by the
-    # simulator, which never hands it to synthesis -- and quietly suppressed
-    # the `+define+X` / `defines: {X: 1}` pair under slang even though
-    # Verilator gives that macro an empty body. Bare entries are reported.
-    ignored: list[str] = []
-    conflicts: list[str] = []
-    ambiguous: list[str] = []
-    for name in sorted(filelist_defines):
-        value = filelist_defines[name]
-        if name not in defines:
-            ignored.append(name)
-        elif value is None:
-            ambiguous.append(f"{name} (bare, synth={defines[name]!r})")
-        elif defines[name] != value:
-            conflicts.append(f"{name} (filelist={value!r}, synth={defines[name]!r})")
-    if ignored or conflicts or ambiguous:
+    for name, value in merged.items():
+        defines[name] = bare_define_value(frontend) if value is None else value
+    if overridden:
         log_event(
             logger,
             logging.WARNING,
-            "synth.filelist_defines_ignored",
+            "synth.filelist_defines_overridden",
             synth=synth_name,
-            defines=ignored,
-            conflicts=conflicts,
-            ambiguous=ambiguous,
-            count=len(ignored) + len(conflicts) + len(ambiguous),
+            overridden=overridden,
+            count=len(overridden),
             filelist=fl_path,
         )
     return incdirs, defines
@@ -372,11 +389,17 @@ def emit_frontend_read_cmds(
     # sources, so one bad path breaks elaboration entirely) but applied
     # uniformly so both frontends behave the same.
     cmds: list[str] = []
+
+    def _d(k, v, sep: str) -> str:
+        # A None value is a bare filelist `+define+X`: passed valueless, so
+        # each frontend gives it its own meaning (BARE_DEFINE_MEANINGS).
+        if v is None:
+            return f"-D{sep}{k}"
+        return f"-D{sep}{k}={shlex.quote(str(v))}"
+
     define_flags_v = ""
     if defines:
-        define_flags_v = " " + " ".join(
-            f"-D {k}={shlex.quote(str(v))}" for k, v in defines.items()
-        )
+        define_flags_v = " " + " ".join(_d(k, v, " ") for k, v in defines.items())
 
     if opts.frontend == "verilog":
         # Not fatal — the legacy frontend simply has no equivalent knob —
@@ -399,7 +422,7 @@ def emit_frontend_read_cmds(
         cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
         flags: list[str] = []
         if defines:
-            flags.extend(f"-D{k}={shlex.quote(str(v))}" for k, v in defines.items())
+            flags.extend(_d(k, v, "") for k, v in defines.items())
         if params:
             flags.extend(f"-G{k}={shlex.quote(str(v))}" for k, v in params.items())
         flags_str = (" " + " ".join(flags)) if flags else ""
@@ -569,11 +592,11 @@ class YosysSynth:
         The bare and ``-v`` entries of ``synth.f`` are the scan roots; headers
         they `` `include `` are followed through the filelist's ``+incdir+``
         entries. A ``-y`` library directory contributes files the filelist
-        never names, so its contents stay outside the scan. Macros come from
-        the run's ``defines:`` alone, matching the Yosys invocation exactly —
-        see :func:`lifetime_scan_inputs`.
+        never names, so its contents stay outside the scan. Macros are the
+        filelist's ``+define+`` entries plus the run's ``defines:``, matching
+        the Yosys invocation exactly — see :func:`lifetime_scan_inputs`.
         """
-        # Resolved before the mode check so the filelist-defines warning is
+        # Resolved before the mode check so the overridden-defines warning is
         # reported even when the gate itself is switched off.
         incdirs, defines = lifetime_scan_inputs(
             fl_path,
@@ -603,7 +626,7 @@ class YosysSynth:
         lib_paths = self._resolve_lib_paths()
         mapped = bool(lib_paths)
 
-        defines = self.synth_cfg.get_defines()
+        defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
 
         lines = []
         for lib in lib_paths:

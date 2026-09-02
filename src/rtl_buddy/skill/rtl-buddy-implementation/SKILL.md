@@ -40,10 +40,10 @@ count from such a run. `static_function_findings` in a passing result means the
 gate ran in `warn` mode and the netlist may still be wrong. A failed gate also
 deletes the netlist, so `rb pnr` / `rb power` cannot read it.
 
-A `synth.filelist_defines_ignored` warning means the model filelist carries
-`+define+` macros that `rb synth` does not pass to Yosys — only the synth.yaml
-entry's `defines:` reaches it. Move the macro there if synthesis needs it; the
-elaborated RTL otherwise differs from the simulation flow's.
+A `synth.filelist_defines_overridden` warning means the synth.yaml entry's
+`defines:` set a macro the model filelist also defines, with a different
+value — synthesis elaborates with the synth.yaml value, simulation with the
+filelist's. Drop one of the two if the flows are meant to agree.
 
 ## FPGA timing closure
 
