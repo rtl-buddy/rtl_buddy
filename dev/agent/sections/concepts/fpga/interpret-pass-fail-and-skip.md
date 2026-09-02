@@ -11,4 +11,4 @@ If a run fails:
 3. Confirm the executable and data paths with `rb tool-check`.
 4. Fix configuration or tool errors before interpreting incomplete metrics.
 
-Current limitation: include-directory (`+incdir+`) entries are not propagated into the generated Vivado or openXC7 synthesis command.
+Filelist `+incdir+` entries reach both backends: Vivado's `synth_design` gets them as `-include_dirs`, openXC7's `read_verilog` as `-I`. Each directory resolves against the filelist that declared it, so an `-F`-nested filelist can carry the include path its own sources need.
