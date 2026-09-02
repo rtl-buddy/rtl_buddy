@@ -244,6 +244,55 @@ def test_mut_config_rejects_unknown_operator(tmp_path):
         MutSuiteConfig(path=str(mut_path))
 
 
+@pytest.mark.parametrize(
+    "scalar",
+    ['"../../etc/leaf"', '"leaf$cfg"', "'\\leaf.top '", '"leaf\\n"'],
+)
+def test_mut_config_rejects_a_top_that_is_not_a_simple_identifier(tmp_path, scalar):
+    """The campaign `top:` wins over the model's and reaches the same
+    generated yosys / sby script lines, so it answers to the models.yaml rule.
+    """
+    mut_path = _write_project(tmp_path)
+    mut_path.write_text(
+        mut_path.read_text().replace(
+            'model: "leaf"\n', f'model: "leaf"\ntop: {scalar}\n', 1
+        )
+    )
+    with pytest.raises(FatalRtlBuddyError, match="not a simple SystemVerilog"):
+        MutSuiteConfig(path=str(mut_path))
+
+
+def test_mut_config_accepts_a_top_that_overrides_the_model(tmp_path):
+    mut_path = _write_project(tmp_path)
+    mut_path.write_text(
+        mut_path.read_text().replace(
+            'model: "leaf"\n', 'model: "leaf"\ntop: "leaf_wrapper"\n', 1
+        )
+    )
+    cfg = MutSuiteConfig(path=str(mut_path)).get_config()
+    assert cfg.top == "leaf_wrapper"
+    assert cfg.get_top_override() == "leaf_wrapper"
+
+
+def test_mut_config_without_a_top_has_no_override(tmp_path):
+    cfg = MutSuiteConfig(path=str(_write_project(tmp_path))).get_config()
+    assert cfg.top == "leaf"
+    assert cfg.get_top_override() is None
+
+
+def test_the_invalid_mut_top_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "mut_config.invalid_top",
+        {"path": "fpv/leaf/mut.yaml", "name": "leaf", "top": "a/b"},
+    )
+    assert msg != "mut config invalid_top"
+    assert "fpv/leaf/mut.yaml" in msg
+    assert "leaf" in msg
+    assert "a/b" in msg
+
+
 def test_mut_config_rejects_bad_schedule(tmp_path):
     mut_path = _write_project(tmp_path)
     text = mut_path.read_text().replace("round_robin", "fifo")
@@ -373,6 +422,98 @@ def test_run_does_not_touch_original_source(tmp_path, stub_xeno):
     with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
         runner.run()
     assert (tmp_path / "design" / "leaf" / "leaf.sv").read_text() == original
+
+
+def _recording_fpv_runner():
+    """An `_FakeFpvRunner` that records the top of every run it is handed."""
+    tops: list[str] = []
+
+    class _Recorder(_FakeFpvRunner):
+        def __init__(self, name, root_cfg, fpv_cfg, suite_dir):
+            super().__init__(name, root_cfg, fpv_cfg, suite_dir)
+            tops.append(fpv_cfg.get_top())
+
+    return _Recorder, tops
+
+
+def test_fpv_oracle_elaborates_the_verification_top_without_an_override(
+    tmp_path, stub_xeno
+):
+    mut_path = _write_project(tmp_path)
+    runner = _runner(tmp_path, mut_path)
+    recorder, tops = _recording_fpv_runner()
+    with patch("rtl_buddy.runner.mut_runner.FpvRunner", recorder):
+        runner.run()
+    # Baseline plus every scored mutant, all at the oracle's own top.
+    assert len(tops) > 1
+    assert set(tops) == {"leaf"}
+
+
+def test_fpv_oracle_elaborates_the_campaign_top_override(tmp_path, stub_xeno):
+    """A `mut.yaml` `top:` wins over the oracle verification's for the
+    baseline and every mutant — the two verdicts are only comparable when
+    both are elaborated from the same root module.
+    """
+    mut_path = _write_project(tmp_path)
+    mut_path.write_text(
+        mut_path.read_text().replace(
+            'model: "leaf"\n', 'model: "leaf"\ntop: "leaf_wrapper"\n', 1
+        )
+    )
+    runner = _runner(tmp_path, mut_path)
+    recorder, tops = _recording_fpv_runner()
+    with patch("rtl_buddy.runner.mut_runner.FpvRunner", recorder):
+        runner.run()
+    assert len(tops) > 1
+    assert set(tops) == {"leaf_wrapper"}
+
+
+def test_a_sim_only_campaign_warns_that_its_top_is_unused(tmp_path, caplog):
+    mut_path = _write_project(tmp_path)
+    mut_path.write_text(
+        mut_path.read_text()
+        .replace('model: "leaf"\n', 'model: "leaf"\ntop: "leaf_wrapper"\n', 1)
+        .replace(
+            '  fpv_config: "fpv.yaml"\n  verification: "leaf_safety"\n',
+            '  test_config: "tests.yaml"\n',
+        )
+    )
+    (tmp_path / "fpv" / "leaf" / "tests.yaml").write_text(
+        dedent(
+            """\
+            rtl-buddy-filetype: test_config
+            tests: []
+            """
+        )
+    )
+    with caplog.at_level("WARNING"):
+        cfg = MutSuiteConfig(path=str(mut_path)).get_config()
+    assert cfg.get_top_override() == "leaf_wrapper"
+    assert "no fpv oracle" in caplog.text
+
+
+def test_the_mut_top_override_events_have_human_message_cases():
+    from rtl_buddy.logging_utils import _human_message
+
+    unused = _human_message(
+        "mut_config.top_override_unused",
+        {"name": "leaf", "top": "leaf_wrapper"},
+    )
+    assert unused != "mut config top_override_unused"
+    assert "leaf_wrapper" in unused
+
+    override = _human_message(
+        "mut_runner.fpv_top_override",
+        {
+            "campaign": "leaf",
+            "verification": "leaf_safety",
+            "fpv_top": "leaf",
+            "top": "leaf_wrapper",
+        },
+    )
+    assert override != "mut runner fpv_top_override"
+    assert "leaf_safety" in override
+    assert "leaf_wrapper" in override
 
 
 def test_design_file_outside_model_dir_errors(tmp_path, stub_xeno):

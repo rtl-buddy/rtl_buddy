@@ -461,6 +461,40 @@ def test_fpv_suite_config_invalid_mode_raises(tmp_path):
         FpvSuiteConfig(str(suite_yaml))
 
 
+@pytest.mark.parametrize(
+    "scalar",
+    ['"../../etc/mod_a"', '"mod_a$cfg"', "'\\mod_a.top '", '"mod_a\\n"'],
+)
+def test_fpv_suite_config_rejects_a_top_that_is_not_a_simple_identifier(
+    tmp_path, scalar
+):
+    """A verification's own `top:` wins over the model's and is written into
+    the generated yosys / sby script, so it answers to the models.yaml rule.
+    """
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "fpv.yaml"
+    suite_yaml.write_text(
+        _SUITE_YAML.format(models_path="models.yaml").replace(
+            'top: "mod_a"', f"top: {scalar}", 1
+        )
+    )
+    with pytest.raises(FatalRtlBuddyError, match="not a simple SystemVerilog"):
+        FpvSuiteConfig(str(suite_yaml))
+
+
+def test_the_invalid_fpv_top_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "fpv_config.invalid_top",
+        {"path": "fpv/mod_a/fpv.yaml", "name": "fpv_a", "top": "a/b"},
+    )
+    assert msg != "fpv config invalid_top"
+    assert "fpv/mod_a/fpv.yaml" in msg
+    assert "fpv_a" in msg
+    assert "a/b" in msg
+
+
 # ---------------------------------------------------------------------------
 # FpvRegConfig — YAML loading + per-suite path resolution
 # ---------------------------------------------------------------------------

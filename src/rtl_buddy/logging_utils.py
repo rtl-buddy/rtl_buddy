@@ -1532,6 +1532,35 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "only letters, digits or underscore ('$' is legal SV but "
                 "substitutes in the generated Tcl)"
             )
+        case "fpv_config.invalid_top" | "mut_config.invalid_top":
+            subject = (
+                "verification" if event == "fpv_config.invalid_top" else "campaign"
+            )
+            return (
+                f"{fields.get('path')}: {subject} {fields.get('name')!r} "
+                f"declares top {fields.get('top')!r}, which is not a simple "
+                "SystemVerilog identifier — this top wins over the model's "
+                "and is written into the generated yosys and sby scripts, so "
+                "it must start with a letter or underscore and contain only "
+                "letters, digits or underscore ('$' is legal SV but "
+                "substitutes in the generated Tcl)"
+            )
+        case "mut_config.top_override_unused":
+            return (
+                f"campaign {fields.get('name')!r} declares top "
+                f"{fields.get('top')!r} but configures no fpv oracle — only "
+                "the fpv oracle elaborates a top, so the sim oracle scores "
+                "mutants through the test suite's own testbenches and this "
+                "value has no effect"
+            )
+        case "mut_runner.fpv_top_override":
+            return (
+                f"campaign {fields.get('campaign')!r} elaborates the fpv "
+                f"oracle at top {fields.get('top')!r} instead of "
+                f"{fields.get('fpv_top')!r} declared by verification "
+                f"{fields.get('verification')!r} — the campaign top wins for "
+                "the baseline and every mutant"
+            )
         case "model_config.invalid_model_name":
             return (
                 f"{fields.get('path')}: model name {fields.get('name')!r} is "
