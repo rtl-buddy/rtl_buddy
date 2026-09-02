@@ -486,6 +486,60 @@ models:
     ).is_dir()
 
 
+def test_dispatched_regression_resolves_resources_under_each_model_root(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import shutil
+
+    from rtl_buddy.dispatch.local_parallel import LocalProcessBackend
+
+    profile = """\
+rtl-buddy-filetype: model_config
+models:
+  - name: example
+    filelist: [src/example.sv]
+    elaborations:
+      - name: smoke
+"""
+    _write_models(minimal_project, profile)
+    other = minimal_project / "other"
+    shutil.copytree(minimal_project, other, ignore=shutil.ignore_patterns("other"))
+    _write_models(other, profile)
+    (other / "root_config.yaml").write_text(
+        (other / "root_config.yaml").read_text()
+        + "\ncfg-dispatch:\n  resources: {cpus: 3, mem: 7G, time: '00:07:00'}\n"
+    )
+    (minimal_project / "elab_regression.yaml").write_text(
+        "rtl-buddy-filetype: elab_reg_config\n"
+        "model-configs: [models.yaml, other/models.yaml]\n"
+    )
+
+    captured = []
+    original = LocalProcessBackend.submit_array
+
+    def capture(self, specs, **kwargs):
+        captured.extend(specs)
+        return original(self, specs, **kwargs)
+
+    monkeypatch.setattr(LocalProcessBackend, "submit_array", capture)
+    result = _cli(
+        "elab-regression",
+        "-c",
+        "elab_regression.yaml",
+        "--dispatch",
+        "local-parallel",
+        "--jobs",
+        "1",
+    )
+    assert result.exit_code == 0, result.output
+    by_root = {Path(spec.model_config_path).parent: spec for spec in captured}
+    assert set(by_root) == {minimal_project.resolve(), other.resolve()}
+    assert by_root[minimal_project.resolve()].resources == JobResources()
+    assert by_root[other.resolve()].resources == JobResources(
+        cpus=3, mem="7G", time="00:07:00"
+    )
+
+
 def test_worker_failure_cannot_reuse_a_stale_pass(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ):

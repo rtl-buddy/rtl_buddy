@@ -2946,7 +2946,6 @@ class RtlBuddy:
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
     ):
-
         if run_ids is None:
             run_ids = [None]
 
@@ -8449,20 +8448,32 @@ class RtlBuddy:
         )
         return ElabResults(cfg.name, results, result_json=result_path)
 
-    def _run_elab_local(self, cfg: ElabConfig) -> ElabResults:
-        resources = self._resolve_elab_resources(cfg)
+    def _run_elab_local(
+        self, cfg: ElabConfig, *, resources: JobResources | None = None
+    ) -> ElabResults:
+        if resources is None:
+            resources = self._resolve_elab_resources(cfg)
         return ElabRunner(
             root_cfg=self.root_cfg, elab_cfg=cfg, resources=resources
         ).run()
 
-    def _dispatch_elaborations(self, configs, backend) -> list[ElabResults]:
+    def _dispatch_elaborations(
+        self,
+        configs,
+        backend,
+        *,
+        resources: list[JobResources] | None = None,
+    ) -> list[ElabResults]:
         if not configs:
             return []
+        if resources is None:
+            resources = [self._resolve_elab_resources(cfg) for cfg in configs]
         run_token = uuid.uuid4().hex
         array_root = self.exec_ctx.artifact_root / ".dispatch" / "elab" / run_token
         groups = {}
-        for index, cfg in enumerate(configs):
-            resources = self._resolve_elab_resources(cfg)
+        for index, (cfg, job_resources) in enumerate(
+            zip(configs, resources, strict=True)
+        ):
             dispatch_dir = cfg.artifact_dir / "dispatch"
             dispatch_dir.mkdir(parents=True, exist_ok=True)
             result_json = dispatch_dir / f"result-{run_token}.json"
@@ -8472,10 +8483,10 @@ class RtlBuddy:
                 suite_dir=str(cfg.config_dir),
                 model_config_path=str(Path(cfg.model.path).resolve()),
                 result_json=result_json,
-                resources=resources,
+                resources=job_resources,
                 log_path=dispatch_dir / f"{backend.name}-{run_token}.log",
             )
-            key = (resources.cpus, resources.mem, resources.time)
+            key = (job_resources.cpus, job_resources.mem, job_resources.time)
             groups.setdefault(key, []).append((index, cfg, spec))
 
         pending = []
@@ -8710,22 +8721,34 @@ class RtlBuddy:
         )
         reg = ElabRegConfig(self.name + "/elab_regression", str(reg_path))
         configs = reg.get_elaborations()
+        resources_by_index: dict[int, JobResources] = {}
         for model_path in dict.fromkeys(cfg.model.path for cfg in configs):
             self._enter_command_context(primary_config=model_path)
+            for index, cfg in enumerate(configs):
+                if cfg.model.path == model_path:
+                    resources_by_index[index] = self._resolve_elab_resources(cfg)
         self._enter_command_context(command_root=orchestration_ctx.command_root)
         skipped = [
             self._elab_skip(cfg, reg_level) for cfg in configs if cfg.reglvl > reg_level
         ]
-        runnable = [cfg for cfg in configs if cfg.reglvl <= reg_level]
+        runnable = [
+            (cfg, resources_by_index[index])
+            for index, cfg in enumerate(configs)
+            if cfg.reglvl <= reg_level
+        ]
         backend = self._resolve_dispatch_backend(dispatch, jobs=jobs)
         if backend is None:
             executed = []
-            for cfg in runnable:
+            for cfg, resources in runnable:
                 self._enter_command_context(primary_config=cfg.model.path)
-                executed.append(self._run_elab_local(cfg))
+                executed.append(self._run_elab_local(cfg, resources=resources))
             self._enter_command_context(command_root=orchestration_ctx.command_root)
         else:
-            executed = self._dispatch_elaborations(runnable, backend)
+            executed = self._dispatch_elaborations(
+                [cfg for cfg, _ in runnable],
+                backend,
+                resources=[resources for _, resources in runnable],
+            )
         skipped_iter = iter(skipped)
         executed_iter = iter(executed)
         results = [
