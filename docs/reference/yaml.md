@@ -364,7 +364,9 @@ models:
     top: axi_xbar
 ```
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. Simulation and model elaboration act on include paths and definitions. The synthesis, CDC, and FPGA flows drop `+incdir+` entries when they read the generated filelist back, so a header those flows must see needs a search path configured for them instead (see [FPGA Implementation](../concepts/fpga.md)). `rb synth` likewise drops `+define+` entries and passes only the synth.yaml entry's `defines:`; it warns when the filelist carries macros it is not applying. `+define+NAME[=VALUE]` is passed as a preprocessor definition; renderer-only flows drop definitions. Multiple definitions may share one entry with `+` separators, so a value cannot contain `+`. Environment variables in entries are expanded.
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Environment variables in entries are expanded. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. `+define+NAME[=VALUE]` declares a preprocessor macro; several may share one entry with `+` separators, so a value cannot contain `+`.
+
+Not every flow honors `+incdir+` and `+define+`. Simulation and model elaboration apply both. Synthesis, CDC, and FPGA drop `+incdir+` when they read the generated filelist back, so a header those flows need requires a search path configured for them instead (see [FPGA Implementation](../concepts/fpga.md)). `rb synth` also drops `+define+` in favour of the synth.yaml entry's `defines:` and warns when the filelist carries macros it is not applying. Renderer-only flows drop definitions.
 
 ### Elaboration profiles
 
@@ -401,7 +403,7 @@ model-configs:
   - design/peripherals/models.yaml
 ```
 
-`model-configs` must be non-empty, paths resolve from the manifest, duplicate paths are rejected, and the selected files must contain at least one profile. `rb elab-regression` applies `--reg-level` and records higher-level profiles as `SKIP`. Discovery checks `./elab_regression.yaml` before `cfg-rtl-reg.elab-reg-cfg-path`.
+`model-configs` must be non-empty, paths resolve from the manifest, duplicate paths and profiles that would share an artifact directory are rejected, and the selected files must contain at least one profile. `rb elab-regression` applies `--reg-level` and records higher-level profiles as `SKIP`. Discovery checks `./elab_regression.yaml` before `cfg-rtl-reg.elab-reg-cfg-path`.
 
 ## tests.yaml
 

@@ -98,8 +98,6 @@ Pass `--machine` before the subcommand:
 ```bash
 rb --machine test basic
 rb --machine regression -c regression.yaml
-rb --machine elab core -c models.yaml
-rb --machine elab-regression -c elab_regression.yaml
 ```
 
 Machine mode:
