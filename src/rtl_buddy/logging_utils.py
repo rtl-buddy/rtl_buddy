@@ -681,6 +681,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')} produced no result{state_note}"
                 f"{attempt_note}{tail}"
             )
+        case "dispatch.test_artifact_collision":
+            return (
+                "dispatch: expanded tests "
+                f"{fields.get('first_test')!r} ({fields.get('first_suite')}) and "
+                f"{fields.get('second_test')!r} ({fields.get('second_suite')}) "
+                f"share {fields.get('artifact_dir')}"
+            )
         case "suite.skip":
             reason = "skip reason unavailable"
             if fields.get("reason") == "above_regression_level":

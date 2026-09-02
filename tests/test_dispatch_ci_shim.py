@@ -37,9 +37,54 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run_regression(work_dir: Path, extra_args=(), fixture=_FIXTURE, extra_env=None):
+_COLOCATED_BASES = {
+    "tests-left.yaml": ["left_alpha", "left_beta"],
+    "tests-right.yaml": ["right_alpha", "right_beta"],
+}
+_COLOCATED_EXPECTED = {
+    config: [f"{name}_planned" for name in names]
+    for config, names in _COLOCATED_BASES.items()
+}
+
+
+def _write_colocated_configs(project: Path) -> None:
+    source = (project / "verif" / "blk" / "tests.yaml").read_text()
+    for config_name, names in _COLOCATED_BASES.items():
+        (project / "verif" / "blk" / config_name).write_text(
+            source.replace("  - name: alpha\n", f"  - name: {names[0]}\n")
+            .replace("  - name: beta\n", f"  - name: {names[1]}\n")
+            .replace("    sweep:\n", "    sweep:\n      path: colocated-sweep.py\n")
+        )
+    (project / "verif" / "blk" / "colocated-sweep.py").write_text(
+        "import copy\n"
+        "import os\n"
+        "counter = os.environ.get('RB_SWEEP_COUNTER')\n"
+        "if counter:\n"
+        "    with open(counter, 'a') as stream:\n"
+        "        stream.write('1\\n')\n"
+        "cfg = copy.deepcopy(test_cfg)\n"
+        "cfg.name += '_planned'\n"
+        "out_test_cfgs = [cfg]\n"
+    )
+    (project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n"
+        "  - verif/blk/tests-left.yaml\n"
+        "  - verif/blk/tests-right.yaml\n"
+    )
+
+
+def _run_regression(
+    work_dir: Path,
+    extra_args=(),
+    fixture=_FIXTURE,
+    extra_env=None,
+    prepare_project=None,
+):
     project = work_dir / "proj"
     shutil.copytree(fixture, project)
+    if prepare_project is not None:
+        prepare_project(project)
     env = dict(os.environ)
     env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
     env["RB_SHIM_DB"] = str(work_dir / "jobs.db")
@@ -203,6 +248,51 @@ def test_shim_sweep_hook_runs_once_across_builds_and_arrays(tmp_path_factory):
     results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
     for name in ("wide_v0", "wide_v1", "wide_v2", "solo"):
         assert results.get(name) == "PASS", (name, results, diag)
+
+
+def test_shim_delays_colocated_suites_without_plan_or_array_collisions(
+    tmp_path_factory,
+):
+    """Real Slurm jobs consume both configs only after all submissions."""
+    work = tmp_path_factory.mktemp("colocated_dispatch")
+    deferred = work / "deferred"
+    counter = work / "sweep-counter.txt"
+    proc, envelope, project, diag = _run_regression(
+        work,
+        extra_env={
+            "RB_SHIM_DEFER_DIR": str(deferred),
+            "RB_SWEEP_COUNTER": str(counter),
+        },
+        prepare_project=_write_colocated_configs,
+    )
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    expected_names = {name for names in _COLOCATED_EXPECTED.values() for name in names}
+    assert {row["name"] for row in envelope["payload"]["results"]} == expected_names
+    assert all(row["result"] == "PASS" for row in envelope["payload"]["results"])
+    assert counter.read_text().splitlines() == ["1"] * 4, diag
+
+    dispatch_root = project / "verif" / "blk" / "artefacts" / ".dispatch"
+    plans = list(dispatch_root.glob("*/plan-*.json"))
+    assert len(plans) == 2, [str(path) for path in plans]
+    for plan_path in plans:
+        plan = json.loads(plan_path.read_text())
+        config_name = Path(plan["suite_config"]).name
+        assert [test["name"] for test in plan["tests"]] == _COLOCATED_EXPECTED[
+            config_name
+        ]
+
+        namespace = plan_path.parent
+        build_results = list(namespace.glob("build-result-*.json"))
+        assert len(build_results) == 1, [str(path) for path in build_results]
+        built = json.loads(build_results[0].read_text())
+        assert {entry["test"] for entry in built["builds"]} == set(
+            _COLOCATED_EXPECTED[config_name]
+        )
+        assert list(namespace.glob("*/manifest.txt"))
+        assert list(namespace.glob("*/array.sh"))
+
+    assert not list(deferred.glob("*.sh")), "the delayed queue did not drain"
 
 
 @pytest.fixture(scope="module")

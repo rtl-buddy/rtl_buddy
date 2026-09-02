@@ -38,6 +38,43 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+_COLOCATED_BASES = {
+    "tests-left.yaml": ["left_alpha", "left_beta"],
+    "tests-right.yaml": ["right_alpha", "right_beta"],
+}
+_COLOCATED_EXPECTED = {
+    config: [f"{name}_planned" for name in names]
+    for config, names in _COLOCATED_BASES.items()
+}
+
+
+def _write_colocated_configs(project: Path) -> None:
+    source = (project / "verif" / "blk" / "tests.yaml").read_text()
+    for config_name, names in _COLOCATED_BASES.items():
+        (project / "verif" / "blk" / config_name).write_text(
+            source.replace("  - name: alpha\n", f"  - name: {names[0]}\n")
+            .replace("  - name: beta\n", f"  - name: {names[1]}\n")
+            .replace("    sweep:\n", "    sweep:\n      path: colocated-sweep.py\n")
+        )
+    (project / "verif" / "blk" / "colocated-sweep.py").write_text(
+        "import copy\n"
+        "import os\n"
+        "counter = os.environ.get('RB_SWEEP_COUNTER')\n"
+        "if counter:\n"
+        "    with open(counter, 'a') as stream:\n"
+        "        stream.write('1\\n')\n"
+        "cfg = copy.deepcopy(test_cfg)\n"
+        "cfg.name += '_planned'\n"
+        "out_test_cfgs = [cfg]\n"
+    )
+    (project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n"
+        "  - verif/blk/tests-left.yaml\n"
+        "  - verif/blk/tests-right.yaml\n"
+    )
+
+
 def _run(
     work_dir: Path,
     fixture: Path,
@@ -45,9 +82,12 @@ def _run(
     extra_env=None,
     command=("regression", "-c", "regression.yaml"),
     cwd_rel=".",
+    prepare_project=None,
 ):
     project = work_dir / "proj"
     shutil.copytree(fixture, project)
+    if prepare_project is not None:
+        prepare_project(project)
     env = dict(os.environ)
     # The fake verilator lives beside the Slurm shims; RB_SHIM_DB is where
     # those shims would announce themselves if anything called them.
@@ -77,9 +117,9 @@ def _run(
             envelope = json.loads(line)
     diag = proc.stdout + proc.stderr
     # A broken job is the likely failure, and its output is in its own log.
-    for log in sorted(project.glob("verif/*/artefacts/*/dispatch/*.log")) + sorted(
-        project.glob("verif/*/artefacts/.dispatch/build-*.log")
-    ):
+    build_logs = sorted(project.glob("verif/*/artefacts/.dispatch/build-*.log"))
+    build_logs += sorted(project.glob("verif/*/artefacts/.dispatch/*/build-*.log"))
+    for log in sorted(project.glob("verif/*/artefacts/*/dispatch/*.log")) + build_logs:
         diag += f"\n--- {log.name} ---\n" + log.read_text()
     return proc, envelope, project, diag
 
@@ -157,6 +197,44 @@ def test_pool_expands_the_sweep_once_across_build_and_sim_jobs(tmp_path_factory)
     results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
     for name in ("wide_v0", "wide_v1", "wide_v2", "solo"):
         assert results.get(name) == "PASS", (name, results, diag)
+
+
+def test_pool_keeps_colocated_suite_plans_until_queued_jobs_consume_them(
+    tmp_path_factory,
+):
+    work = tmp_path_factory.mktemp("local_parallel_colocated")
+    counter = work / "sweep-counter.txt"
+    proc, envelope, project, diag = _run(
+        work,
+        _FIXTURE,
+        extra_args=("-j", "1"),
+        extra_env={"RB_SWEEP_COUNTER": str(counter)},
+        prepare_project=_write_colocated_configs,
+    )
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    expected_names = {name for names in _COLOCATED_EXPECTED.values() for name in names}
+    assert {row["name"] for row in envelope["payload"]["results"]} == expected_names
+    assert all(row["result"] == "PASS" for row in envelope["payload"]["results"])
+    # One head-side sweep per base test. Any queued worker that saw the other
+    # suite's plan would fall back to its hook and append more lines.
+    assert counter.read_text().splitlines() == ["1"] * 4, diag
+
+    dispatch_root = project / "verif" / "blk" / "artefacts" / ".dispatch"
+    plans = list(dispatch_root.glob("*/plan-*.json"))
+    assert len(plans) == 2, [str(path) for path in plans]
+    for plan_path in plans:
+        plan = json.loads(plan_path.read_text())
+        config_name = Path(plan["suite_config"]).name
+        assert [test["name"] for test in plan["tests"]] == _COLOCATED_EXPECTED[
+            config_name
+        ]
+        build_results = list(plan_path.parent.glob("build-result-*.json"))
+        assert len(build_results) == 1, [str(path) for path in build_results]
+        built = json.loads(build_results[0].read_text())
+        assert {entry["test"] for entry in built["builds"]} == set(
+            _COLOCATED_EXPECTED[config_name]
+        )
 
 
 def test_pool_runs_a_single_test_from_its_suite_dir(tmp_path_factory):
