@@ -605,7 +605,7 @@ def test_vivado_fpga_forwards_filelist_incdirs(tmp_path, monkeypatch):
     script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
     assert (
         "synth_design -top demo_top -part xczu7ev-ffvc1156-2-e "
-        f"-include_dirs {{{{{tmp_path / 'inc'}}}}}\n" in script
+        f'-include_dirs [list "{tmp_path / "inc"}"]\n' in script
     )
 
 

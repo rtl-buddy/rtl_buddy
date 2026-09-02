@@ -8,7 +8,11 @@ live beside each flow's other tests.
 """
 
 from rtl_buddy.tools.cdc_vivado import render_cdc_tcl
-from rtl_buddy.tools.fpga_vivado_flow import include_dirs_arg, render_flow_tcl
+from rtl_buddy.tools.fpga_vivado_flow import (
+    include_dirs_arg,
+    render_flow_tcl,
+    tcl_string,
+)
 from rtl_buddy.tools.vlog_filelist import incdirs_from_filelist
 
 
@@ -33,11 +37,21 @@ def test_incdirs_of_a_missing_filelist_are_empty(tmp_path):
     assert incdirs_from_filelist(str(tmp_path / "nope.f")) == []
 
 
-def test_include_dirs_arg_braces_each_directory():
+def test_include_dirs_arg_is_a_tcl_list_of_quoted_directories():
     assert include_dirs_arg([]) == ""
     assert include_dirs_arg(["/a/inc", "/b c/inc"]) == (
-        " -include_dirs {{/a/inc} {/b c/inc}}"
+        ' -include_dirs [list "/a/inc" "/b c/inc"]'
     )
+
+
+def test_tcl_string_neutralises_substitution_and_command_metacharacters():
+    hostile = '/p/}; exec rm -rf ~ ;#{$x [cmd] "q" \\e'
+    assert tcl_string(hostile) == (
+        '"/p/}; exec rm -rf ~ ;#{\\$x \\[cmd\\] \\"q\\" \\\\e"'
+    )
+    # Braces are inert inside a double-quoted Tcl word, so the path with
+    # an unbalanced brace is still one element evaluating to itself.
+    assert include_dirs_arg([hostile]) == f" -include_dirs [list {tcl_string(hostile)}]"
 
 
 def test_flow_tcl_passes_include_dirs_to_synth_design():
@@ -48,7 +62,9 @@ def test_flow_tcl_passes_include_dirs_to_synth_design():
         xdc_files=[],
         include_dirs=["/proj/inc"],
     )
-    assert "synth_design -top t -part xc7a35t -include_dirs {{/proj/inc}}\n" in script
+    assert (
+        'synth_design -top t -part xc7a35t -include_dirs [list "/proj/inc"]\n' in script
+    )
     without = render_flow_tcl(
         top="t", part="xc7a35t", verilog_sources=["a.sv"], xdc_files=[]
     )
@@ -63,4 +79,6 @@ def test_cdc_tcl_passes_include_dirs_to_synth_design():
         sdc_file="a.sdc",
         include_dirs=["/proj/inc"],
     )
-    assert "synth_design -top t -part xc7a35t -include_dirs {{/proj/inc}}" in script
+    assert (
+        'synth_design -top t -part xc7a35t -include_dirs [list "/proj/inc"]' in script
+    )

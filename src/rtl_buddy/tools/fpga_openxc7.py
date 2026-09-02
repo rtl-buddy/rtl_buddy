@@ -1,5 +1,6 @@
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -147,7 +148,7 @@ class OpenXc7Fpga(BaseFpga):
         top = self.fpga_cfg.get_top()
         lines = ["# openXC7 synthesis script -- templated by rb fpga."]
         inc_flags = "".join(
-            f" -I {inc}" for inc in self._incdirs_from_filelist(fl_path)
+            f" -I {shlex.quote(inc)}" for inc in self._incdirs_from_filelist(fl_path)
         )
         for src in self._source_files_from_filelist(fl_path):
             if src.lower().endswith(".sv"):

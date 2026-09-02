@@ -123,13 +123,22 @@ def _read_source_commands(verilog_sources: list[str]) -> list[str]:
     return commands
 
 
+def tcl_string(value: str) -> str:
+    """``value`` as a double-quoted Tcl word that evaluates to exactly
+    ``value``: backslash, double quote, ``$`` and brackets are escaped so
+    no substitution or command runs, and spaces stay inside the word."""
+    escaped = re.sub(r'([\\"$\[\]])', r"\\\1", value)
+    return f'"{escaped}"'
+
+
 def include_dirs_arg(include_dirs: list[str]) -> str:
     """``synth_design``'s ``-include_dirs`` option for the filelist's ``+incdir+``
-    directories, or the empty string when there are none. Each directory is
-    its own braced element so a path with spaces stays one list item."""
+    directories, or the empty string when there are none. Built with
+    ``[list ...]`` of :func:`tcl_string` words, so a path with spaces stays
+    one list element and a path with Tcl metacharacters stays a path."""
     if not include_dirs:
         return ""
-    return " -include_dirs {" + " ".join(f"{{{d}}}" for d in include_dirs) + "}"
+    return " -include_dirs [list " + " ".join(tcl_string(d) for d in include_dirs) + "]"
 
 
 def render_flow_tcl(

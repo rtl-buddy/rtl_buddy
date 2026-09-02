@@ -191,7 +191,7 @@ def test_vivado_cdc_forwards_filelist_incdirs(tmp_path, monkeypatch):
     script = (Path(backend.artefact_dir) / "cdc.tcl").read_text()
     assert (
         f"synth_design -top cdc_demo -part {PART} "
-        f"-include_dirs {{{{{tmp_path / 'inc'}}}}}" in script
+        f'-include_dirs [list "{tmp_path / "inc"}"]' in script
     )
 
 
