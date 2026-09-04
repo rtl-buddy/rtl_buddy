@@ -51,7 +51,12 @@ from pathlib import Path
 
 from ..artifact_lock import build_dir_lock
 from ..errors import FatalRtlBuddyError
-from ..logging_utils import log_console_event, log_event, task_status
+from ..logging_utils import (
+    DEFAULT_FILE_LOG,
+    log_console_event,
+    log_event,
+    task_status,
+)
 from ..runner.result_io import build_compile_fail_desc, load_build_result_json
 from ..process_utils import run_managed_process
 from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
@@ -404,7 +409,14 @@ _LIBRARY_DIR_OPTION = "-y"
 #
 # Dot-directories are the other half: `.git`, `.svn`, `.hg` and friends
 # hold no compile input and can be enormous.
-_PRUNED_WALK_DIRNAMES = frozenset({ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME})
+#
+# `__pycache__` is rtl_buddy's own side effect too, one level removed: a
+# `preproc` hook importing a helper module out of the suite directory makes
+# CPython write bytecode beside it, during the very phase that computes the
+# fingerprint (#537).
+_PRUNED_WALK_DIRNAMES = frozenset(
+    {ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME, "__pycache__"}
+)
 _PRUNED_WALK_DIR_PREFIXES = (BUILD_DIR_PREFIX,)
 
 # Files that are metadata rather than compile input, as fnmatch patterns.
@@ -455,6 +467,12 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
     ICARUS_SNAPSHOT_NAME,
     SHARED_BUILD_STAMP_NAME,
     RESULT_JSON_NAME,
+    # The head's own log, which lands in the SUITE directory rather than
+    # under `artefacts/`, so the directory prune above never reaches it. A
+    # `+incdir+.` puts it in the listing, and the head appends to it once a
+    # minute for the whole life of a dispatched run — through every gated
+    # job's stamp check (#537).
+    DEFAULT_FILE_LOG,
 ) + DISPATCH_OUTPUT_PATTERNS
 
 _NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PATTERNS
@@ -856,7 +874,23 @@ def _is_directory_entry(entry) -> bool:
     )
 
 
-def _entry_matches(stored, current: list) -> bool:
+def _listing_names(entries) -> list | None:
+    """The names a directory listing carries, or None if it is malformed.
+
+    The half of a listing that survives ``listing_names_only`` (#536): which
+    files exist, not what is in them.
+    """
+    if not isinstance(entries, list):
+        return None
+    names = []
+    for entry in entries:
+        if not isinstance(entry, list) or not entry or not isinstance(entry[0], str):
+            return None  # not a listing this version wrote
+        names.append(entry[0])
+    return names
+
+
+def _entry_matches(stored, current: list, *, listing_names_only: bool = False) -> bool:
     """Does a stored stamp entry still describe what ``current`` describes?
 
     The one comparison both tracked-input lists go through — the filelist
@@ -878,6 +912,20 @@ def _entry_matches(stored, current: list) -> bool:
     only when that whole listing does — so a file added to, removed from, or
     edited inside such a directory is a change for every builder, whether or
     not it emits a dependency file (#478).
+
+    ``listing_names_only`` narrows that to *which files exist*, and the
+    caller sets it exactly when the stamp carries the builder's ``deps``
+    (#536). A dependency file names every input the build actually opened,
+    headers reached through ``+incdir+`` included, so their content is
+    already decided there and hashing them a second time out of the listing
+    only adds a way to lose: an include directory that is also a working
+    directory — a suite dir under ``+incdir+.`` — collects the run's own
+    output while the run is still going, and every later fingerprint then
+    disagrees with the stamp over a file no compile ever read (#535/#537).
+    What the listing still decides is what ``deps`` structurally cannot see:
+    a file that *appears* or *vanishes*, which for ``-y`` is tomorrow's
+    module resolution (gap 2 of #478). With no dependency file the listing
+    is the only record of either, and the full comparison stands.
 
     Anything that is not an entry of this version's shape — a 3-element
     entry from a stamp written before #494, or a 4-element one where #478
@@ -902,6 +950,11 @@ def _entry_matches(stored, current: list) -> bool:
         # did not write, and fails closed.
         if not (_is_directory_entry(stored) and _is_directory_entry(current)):
             return False
+        if listing_names_only:
+            stored_names = _listing_names(stored[-1])
+            return stored_names is not None and stored_names == _listing_names(
+                current[-1]
+            )
         return _entry_lists_match(stored[-1], current[-1])
     stored_sha, current_sha = stored[-1], current[-1]
     if stored_sha is not None and current_sha is not None:
@@ -911,7 +964,7 @@ def _entry_matches(stored, current: list) -> bool:
     return stored == current
 
 
-def _entry_lists_match(stored, current) -> bool:
+def _entry_lists_match(stored, current, *, listing_names_only: bool = False) -> bool:
     """:func:`_entry_matches` over two whole lists, order-sensitive.
 
     Order matters because both lists are built deterministically (filelist
@@ -923,12 +976,14 @@ def _entry_lists_match(stored, current) -> bool:
     if len(stored) != len(current):
         return False
     return all(
-        _entry_matches(stored_entry, current_entry)
+        _entry_matches(
+            stored_entry, current_entry, listing_names_only=listing_names_only
+        )
         for stored_entry, current_entry in zip(stored, current)
     )
 
 
-def _first_listing_mismatch(stored, current):
+def _first_listing_mismatch(stored, current, *, names_only: bool = False):
     """What made two directory listings disagree, for a diagnostic.
 
     Diffed **by name**, not position: an added or removed file shifts every
@@ -956,32 +1011,40 @@ def _first_listing_mismatch(stored, current):
         return f"+{added[0]}"
     if removed:
         return f"-{removed[0]}"
-    for name in sorted(set(stored_by_name) & set(current_by_name)):
-        if not _entry_matches(stored_by_name[name], current_by_name[name]):
-            return name
+    if not names_only:
+        for name in sorted(set(stored_by_name) & set(current_by_name)):
+            if not _entry_matches(stored_by_name[name], current_by_name[name]):
+                return name
     # Nothing named differs, so the disagreement is in a shape the mapping
     # above dropped, or in the order the two lists carry.
-    return _first_entry_mismatch(stored, current)
+    return _first_entry_mismatch(stored, current, listing_names_only=names_only)
 
 
-def _first_entry_mismatch(stored, current):
+def _first_entry_mismatch(stored, current, *, listing_names_only: bool = False):
     """What made :func:`_entry_lists_match` say no, for a diagnostic.
 
     Returns the first mismatching entry's path/line, or a shape note when
     the lists themselves are not comparable. Diagnostic only — never the
-    decision, which stays with the matchers above.
+    decision, which stays with the matchers above, so it is told what the
+    decision was made on (``listing_names_only``) rather than guessing.
     """
     if not isinstance(stored, list) or not isinstance(current, list):
         return "(stamp sources are not a list)"
     if len(stored) != len(current):
         return f"(entry count {len(stored)} -> {len(current)})"
     for stored_entry, current_entry in zip(stored, current):
-        if not _entry_matches(stored_entry, current_entry):
+        if not _entry_matches(
+            stored_entry, current_entry, listing_names_only=listing_names_only
+        ):
             if _is_directory_entry(stored_entry) and _is_directory_entry(current_entry):
                 # "+incdir+/p/inc" alone does not answer "why did this
                 # recompile" when the directory is what is stamped, so the
                 # line names the file inside it as well (#478).
-                inner = _first_listing_mismatch(stored_entry[-1], current_entry[-1])
+                inner = _first_listing_mismatch(
+                    stored_entry[-1],
+                    current_entry[-1],
+                    names_only=listing_names_only,
+                )
                 return f"{current_entry[0]} :: {inner}"
             if isinstance(current_entry, list) and current_entry:
                 return current_entry[0]
@@ -1144,6 +1207,10 @@ class VlogSim:
         self.replay_run_id = replay_run_id
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
+        # Why the last stamp check said no, in one phrase, or None. Read by
+        # the gated-retry warning, which is the only place a dispatched
+        # job's INFO-level log can carry it (#536).
+        self.stamp_mismatch_reason = None
         # Opt-in: key the build dir on a hash of the compile inputs so tests
         # with identical inputs share one simv (#293). The resolved shared
         # dir is only known once compile() has written the filelist.
@@ -2229,14 +2296,18 @@ class VlogSim:
         answer to that is a rebuild, not an exception out of a build job.
         """
         if not isinstance(deps, list):
-            return False  # not a stamp this version wrote
+            return self._note_stamp_mismatch("the stamp's dependency list is corrupt")
         for entry in deps:
             if not isinstance(entry, list) or len(entry) != 4:
-                return False  # not a stamp this version wrote
+                return self._note_stamp_mismatch(
+                    "the stamp's dependency list is corrupt"
+                )
             if not isinstance(entry[0], str):
                 # `os.stat` takes a file *descriptor* for an int, so a
                 # corrupt stamp must never reach it.
-                return False
+                return self._note_stamp_mismatch(
+                    "the stamp's dependency list is corrupt"
+                )
             if not _entry_matches(entry, self._tracked_entry(entry[0], resolved=True)):
                 # The one question worth answering when a warm run
                 # unexpectedly recompiles.
@@ -2248,8 +2319,15 @@ class VlogSim:
                         test=test_name,
                         dependency=entry[0],
                     )
-                return False
+                return self._note_stamp_mismatch(
+                    f"a consumed input changed: {entry[0]}"
+                )
         return True
+
+    def _note_stamp_mismatch(self, reason: str) -> bool:
+        """Record why the stamp lost and answer False, for the caller's ``return``."""
+        self.stamp_mismatch_reason = reason
+        return False
 
     def _shared_build_is_valid(
         self, build_dir, fingerprint, *, test_name=None, quiet=False
@@ -2281,21 +2359,28 @@ class VlogSim:
         one caller that asks the question twice — :meth:`compile`'s
         unlocked reuse pre-check, whose in-lock repeat is the authority
         and owns those lines. Whether the stamp validates is not affected.
+
+        Every verdict of False also records *why* in
+        :attr:`stamp_mismatch_reason`, which is what a gated sim job's
+        `compile.prebuilt_stamp_invalid` reports: those runs log at INFO,
+        so the DEBUG lines below are the one thing a reader of a dispatched
+        job's log cannot get at (#535/#536).
         """
+        self.stamp_mismatch_reason = None
         simv_path = Path(simv_path)
         stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
         if not simv_path.is_file() or not stamp_path.is_file():
-            return False
+            return self._note_stamp_mismatch("no stamp or no simv in the build dir")
         try:
             stored = json.loads(stamp_path.read_text())
         except (OSError, json.JSONDecodeError):
-            return False
+            return self._note_stamp_mismatch("the stamp is unreadable")
         if not isinstance(stored, dict) or "deps" not in stored:
             # Written before dependency tracking existed. Its silence about
             # headers is indistinguishable from having had none, so the only
             # honest reading is one rebuild — after which the stamp says
             # which it is.
-            return False
+            return self._note_stamp_mismatch("the stamp predates dependency tracking")
         # The executable is an *output*, so the input fingerprint says
         # nothing about it. That was harmless while the output always lived
         # in a directory named after those inputs, and stops being harmless
@@ -2313,11 +2398,11 @@ class VlogSim:
                     test=test_name,
                     dependency=str(simv_path),
                 )
-            return False
+            return self._note_stamp_mismatch(f"the simv changed: {simv_path}")
         if not isinstance(fingerprint, dict):
             # A caller asserting a stamp is stale hands in no fingerprint;
             # nothing can match one.
-            return False
+            return self._note_stamp_mismatch("no fingerprint to compare against")
         stored_inputs = {
             key: value for key, value in stored.items() if key not in ("deps", "simv")
         }
@@ -2334,21 +2419,29 @@ class VlogSim:
                 _log_stale_stamp_toolchain(
                     stored_inputs, current_inputs, test_name=test_name
                 )
-            return False
-        if not _entry_lists_match(stored_sources, current_sources):
+            return self._note_stamp_mismatch("the compile line or toolchain changed")
+        # A stamp that recorded the builder's own dependency list decides
+        # every tracked file's *content* there, so the directory listings
+        # are compared by name alone (#536) — see :func:`_entry_matches`.
+        deps = stored["deps"]
+        if not _entry_lists_match(
+            stored_sources, current_sources, listing_names_only=deps is not None
+        ):
             # The deps path names what changed; the sources path answering
             # "why did this rebuild" with silence made the two halves of
             # the same question unequal (#494 review).
+            entry = _first_entry_mismatch(
+                stored_sources, current_sources, listing_names_only=deps is not None
+            )
             if not quiet:
                 log_event(
                     logger,
                     logging.DEBUG,
                     "compile.build_source_changed",
                     test=test_name,
-                    entry=_first_entry_mismatch(stored_sources, current_sources),
+                    entry=entry,
                 )
-            return False
-        deps = stored["deps"]
+            return self._note_stamp_mismatch(f"a compile input changed: {entry}")
         if deps is None:
             # The builder emitted no dependency file. That used to mean the
             # include directories were untracked for it, and reusing on "we
@@ -3210,6 +3303,11 @@ class VlogSim:
                 test=self.test_name,
                 run_id=self.run_id,
                 build_dir=build_dir,
+                # WHAT drifted, not just that something did. The check's own
+                # diagnostics are DEBUG and a dispatched job logs at INFO,
+                # so without this the reader of the job that recompiled (or
+                # was OOM-killed doing it) has nothing to act on (#536).
+                reason=self.stamp_mismatch_reason,
             )
             # Beside the build's transcript, never over it: whatever this
             # retry hits is the *sim job's* story, told under the sim job's
