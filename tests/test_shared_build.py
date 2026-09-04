@@ -1958,6 +1958,132 @@ def test_same_key_siblings_reuse_when_every_probe_precedes_every_compile(
     assert sim_b.last_compile["reused"] is True
 
 
+def _cold_tree_group_pair(tmp_path, monkeypatch, calls, *, family="verilator"):
+    """A leader that compiled and a sibling on the same key, cold-tree order.
+
+    The build job's serial phase, reproduced: PRE writes this config's
+    program directory under the stamped ``+incdir+.``, then the compile-key
+    probe fingerprints it — so the leader's stamp was taken before the
+    sibling's directory existed at all. Returns the sibling, ready to
+    adopt.
+    """
+    leader = _incdir_dot_sim(tmp_path, monkeypatch, "test_a", family=family)
+    (tmp_path / "prog_test_a").mkdir()
+    (tmp_path / "prog_test_a" / "data.txt").write_text("a\n")
+    group_a = leader.compile_group_dir()
+    assert leader.compile() == 0
+    assert len(calls) == 1
+
+    sibling = _incdir_dot_sim(tmp_path, monkeypatch, "test_b", family=family)
+    (tmp_path / "prog_test_b").mkdir()
+    (tmp_path / "prog_test_b" / "data.txt").write_text("b\n")
+    assert sibling.compile_group_dir() == group_a  # one compile key
+    return sibling
+
+
+def test_a_group_sibling_adopts_the_leaders_build_on_a_cold_tree(tmp_path, monkeypatch):
+    """A name that appeared during the job is not a reason to recompile (#535).
+
+    The sibling's own PRE created a directory the leader's stamp never
+    listed, so the stamp genuinely does not validate — and the listing is
+    the half a dependency file cannot decide, so #536's narrowing does not
+    reach it either. What the sibling checks instead is the leader's
+    ``deps``: the inputs that build actually consumed. Unchanged means the
+    binary in the shared directory is the one this config's compile would
+    have produced.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+    sibling = _cold_tree_group_pair(tmp_path, monkeypatch, calls)
+
+    plan = sibling._compile_plan()
+    assert not sibling._shared_build_is_valid(
+        plan.shared_dir, plan.fingerprint, quiet=True
+    ), "the stamp was supposed to lose; this test proves nothing otherwise"
+
+    assert sibling.adopt_group_build() == ("adopted", None)
+    assert len(calls) == 1  # nothing recompiled
+    assert sibling.last_compile["reused"] is True
+    assert sibling.last_build_stamp["fingerprint_sha"]
+
+
+def test_a_group_sibling_that_rewrote_a_consumed_input_is_reported(
+    tmp_path, monkeypatch
+):
+    """One compile key, two sets of bytes, is a misconfiguration (#535).
+
+    Recompiling would not fix it: both tests still share one shared
+    directory, so whichever compiled last would decide what both of them
+    simulate. Report it against the config that drifted, with a record
+    decisive enough that its own sim job declines the recompile too.
+    """
+    source = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+    sibling = _cold_tree_group_pair(tmp_path, monkeypatch, calls)
+
+    _touch(source, "module top; wire w; endmodule\n")
+
+    verdict, dependency = sibling.adopt_group_build()
+    assert verdict == "drift"
+    assert dependency.endswith("src/top.sv")
+    assert len(calls) == 1
+    assert "same compile key, different compiled input" in sibling.compile_fail_desc
+    # The envelope record a build job writes from this: a returncode, so the
+    # gated sim job reads a verdict rather than an invitation to retry.
+    failure = sibling.last_compile_failure
+    assert failure["returncode"] == 1
+    assert "src/top.sv" in failure["error_tail"][0]
+
+
+def test_a_group_sibling_declines_to_adopt_without_a_dependency_file(
+    tmp_path, monkeypatch
+):
+    """VCS and Icarus report nothing, so nothing here can be narrowed (#535).
+
+    With no dependency file the listing is the only record of what the
+    build might have read, and nothing separates a consumed input from a
+    bystander. The sibling hands the decision back to the leader's own full
+    stamp comparison, which is the pre-#535 path.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sibling = _cold_tree_group_pair(tmp_path, monkeypatch, calls, family="vcs")
+
+    assert sibling.adopt_group_build() == (None, None)
+    assert sibling.last_compile["reused"] is None  # nothing decided yet
+    assert sibling.compile() == 0
+    assert len(calls) == 2  # ...and the pre-#535 path recompiled, as it did
+
+
+def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeypatch):
+    """What a run reports having simulated (#535).
+
+    The digest is the one `_fingerprint_sha` takes of a live fingerprint —
+    the stamp is that dict plus deps/simv — so a build job's record and a
+    sim job's report of the same build are comparable. The `simv` entry is
+    the stamp's own, which is what makes a replaced binary visible.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    builder = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    fingerprint = builder._compile_plan().fingerprint
+    assert builder.compile() == 0
+    stamp = builder.last_build_stamp
+    assert stamp["fingerprint_sha"] == vlog_sim_module._fingerprint_sha(fingerprint)
+    assert stamp["simv"] == vlog_sim_module._stat_entry(builder._get_simv_path())
+
+    # A reuse reports the same pair, read from the same stamp.
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert reader.compile() == 0
+    assert len(calls) == 1
+    assert reader.last_build_stamp == stamp
+
+
 def test_a_gated_retry_says_what_drifted(tmp_path, monkeypatch, caplog):
     """A dispatched job logs at INFO and the stamp check's own diagnostics
     are DEBUG, so the one line a reader of an OOM-killed sim job gets has to
@@ -2885,12 +3011,20 @@ def _seed_build_transcript(sim):
     return path
 
 
-def _write_build_envelope(tmp_path, *, failed, builds=None):
+def _write_build_envelope(tmp_path, *, failed, builds=None, built=None):
+    """A build job's envelope. ``built`` defaults to "test_a, if it passed".
+
+    Pass it explicitly for the case the envelope names this test in
+    NEITHER list — a config the build job never reached, which is the one
+    thing that still earns a gated retry (#535).
+    """
     from rtl_buddy.runner.result_io import write_build_result_json
 
+    if built is None:
+        built = [name for name in ("test_a",) if name not in failed]
     return write_build_result_json(
         tmp_path / "artefacts" / ".dispatch" / "build-result-1.json",
-        built=[name for name in ("test_a",) if name not in failed],
+        built=built,
         failed=failed,
         builds=builds,
     )
@@ -3216,13 +3350,14 @@ def test_the_fingerprint_sha_agrees_with_the_stamp_comparison(tmp_path, monkeypa
 def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
     tmp_path, monkeypatch, caplog
 ):
-    """A stamp invalid for some *other* reason still earns its retry (#498).
+    """A config the build job never reached still earns its retry (#498).
 
-    Toolchain drift, a clock skew, a config the build job never reached:
-    the recompile is right. What it may not do is truncate the build job's
-    compile.log, so its transcript goes to compile.retry.log — and the
-    compile.failed event names whichever file was actually written, because
-    that is what every reader is pointed at.
+    A crash, a cancellation, a plan the job did not finish: the envelope
+    names this test in neither list, nobody built it, and the recompile is
+    the only way it runs at all. What it may not do is truncate the build
+    job's compile.log, so its transcript goes to compile.retry.log — and
+    the compile.failed event names whichever file was actually written,
+    because that is what every reader is pointed at.
     """
     import logging as _logging
 
@@ -3233,8 +3368,7 @@ def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
     compile_log = _seed_build_transcript(sim)
     sim.expect_prebuilt = True
-    # The build job says this test BUILT; the stamp simply did not validate.
-    sim.build_result_json = _write_build_envelope(tmp_path, failed=[])
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=[], built=[])
 
     with caplog.at_level(_logging.DEBUG):
         assert sim.compile() == 1
@@ -3247,6 +3381,143 @@ def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
     assert _events(caplog, "compile.prebuilt_stamp_invalid")
     assert _events(caplog, "compile.failed")[0]["transcript"] == str(retry_log)
     # No build-side verdict to report, so the generic desc still applies.
+    assert sim.compile_fail_desc is None
+
+
+def test_a_gated_job_does_not_recompile_a_build_the_build_job_made(
+    tmp_path, monkeypatch, caplog
+):
+    """A successful build record ends the retry, whatever the stamp says (#535).
+
+    The binary the whole fan-out was gated on exists. A stamp that
+    disagrees with it is worth reporting and worth fixing, but recompiling
+    is the one answer that cannot help: it runs at SIMULATION size into the
+    directory every sibling is queued on, and the memory kill that follows
+    replaces the reason with `signal 9`. So the test fails, once, with what
+    drifted — a row to read instead of N red jobs.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    own_sha = vlog_sim_module._fingerprint_sha(sim._compile_plan().fingerprint)
+    # The build job built it, from exactly these inputs.
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=[],
+        builds=[{"test": "test_a", "reused": False, "fingerprint_sha": own_sha}],
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == []  # no builder ran
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert not (compile_log.parent / "compile.retry.log").exists()
+    assert _events(caplog, "compile.prebuilt_stamp_invalid") == []
+    rejected = _events(caplog, "compile.build_stamp_rejected")
+    assert rejected and rejected[0]["inputs_differ"] is False
+    # The reason the stamp check recorded reaches the summary row, in one
+    # line, and says it is not compiling rather than that it failed to.
+    desc = sim.compile_fail_desc
+    assert "no stamp or no simv" in desc
+    assert "not recompiling" in desc
+    assert "\n" not in desc
+
+
+def test_a_gated_job_says_when_its_inputs_are_not_the_build_jobs(
+    tmp_path, monkeypatch, caplog
+):
+    """Same verdict, different diagnosis (#535).
+
+    A recorded digest that does not match the one this job just derived
+    says the two nodes are not looking at the same compile — a preproc that
+    generates different bytes here, an edit that landed mid-run. Still no
+    recompile: the shared directory holds the build the rest of the fan-out
+    is using, and rebuilding it from these inputs would hand them a binary
+    nobody asked for.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=[],
+        builds=[{"test": "test_a", "reused": False, "fingerprint_sha": "0" * 64}],
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == []
+    rejected = _events(caplog, "compile.build_stamp_rejected")
+    assert rejected[0]["inputs_differ"] is True
+    assert rejected[0]["recorded_sha"] == "0" * 64
+    assert "different compile inputs" in sim.compile_fail_desc
+
+
+def test_a_gated_job_declines_on_a_built_record_that_carries_no_digest(
+    tmp_path, monkeypatch, caplog
+):
+    """A build job too old to record a digest still says it BUILT (#535).
+
+    The digest refines the diagnosis; the `built` list is what decides.
+    Reading a record with no digest as "unknown, so recompile" would put
+    exactly the OOM back for the length of a mixed-version rollout.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=[])
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == []
+    assert _events(caplog, "compile.build_stamp_rejected")[0]["inputs_differ"] is False
+
+
+def test_a_gated_job_that_validates_the_stamp_never_asks_the_envelope(
+    tmp_path, monkeypatch, caplog
+):
+    """The normal path is untouched: reuse, silently (#535).
+
+    Every gated job in a healthy fan-out has a successful build record and
+    a stamp that validates, so the new verdict must be reachable only after
+    the stamp has already lost.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=[])
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+
+    assert len(calls) == 1
+    assert _events(caplog, "compile.build_stamp_rejected") == []
     assert sim.compile_fail_desc is None
 
 

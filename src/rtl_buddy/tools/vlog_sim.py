@@ -474,6 +474,12 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
 
 _NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PATTERNS
 
+# The stamp's own keys, as opposed to the compile fingerprint it wraps: the
+# builder's reported dependencies and the executable it produced. Removing
+# them leaves exactly the dict `_compile_fingerprint` returned, which is
+# what both the stamp comparison and `_fingerprint_sha` work on.
+_STAMP_META = frozenset({"deps", "deps_format", "simv"})
+
 # A directory-valued source entry is `[line, None, None, None, listing]`:
 # four elements of the ordinary `[path, size, mtime_ns, sha]` shape, all
 # empty because a directory has no content of its own, plus the listing of
@@ -1211,6 +1217,12 @@ class VlogSim:
         # the gated-retry warning, which is the only place a dispatched
         # job's INFO-level log can carry it (#536).
         self.stamp_mismatch_reason = None
+        # Which build this run ended up simulating: the stamp's own
+        # ``{fingerprint_sha, simv}``, recorded wherever a build is
+        # stamped, reused or adopted. It rides the result envelope so the
+        # head can check at collect that every run of one compile key named
+        # the same binary (#535).
+        self.last_build_stamp = None
         # Opt-in: key the build dir on a hash of the compile inputs so tests
         # with identical inputs share one simv (#293). The resolved shared
         # dir is only known once compile() has written the filelist.
@@ -2426,9 +2438,7 @@ class VlogSim:
             # nothing can match one.
             return self._note_stamp_mismatch("no fingerprint to compare against")
         stored_inputs = {
-            key: value
-            for key, value in stored.items()
-            if key not in ("deps", "deps_format", "simv")
+            key: value for key, value in stored.items() if key not in _STAMP_META
         }
         # `sources` is the one input list whose entries are not compared by
         # equality, so it comes out of the dict comparison and goes through
@@ -2773,8 +2783,34 @@ class VlogSim:
             # unless a `builder-simv:` points two tests at one executable.
         return plan
 
-    def _gated_build_failure(self, fingerprint=None):
-        """This test's record in the build envelope, if its COMPILE failed.
+    def _gated_build_verdict(self, fingerprint=None):
+        """What the build envelope says about THIS test, as ``(kind, record)``.
+
+        A gated job that reaches its own compile has already failed to
+        validate the build's stamp, and the envelope is the only thing that
+        can say whether compiling here is a recovery or a catastrophe
+        (#498/#535). Three answers:
+
+        ``("failed", record)`` — the builder ran for this config and exited
+        non-zero, on the same inputs. Deterministic; see below.
+
+        ``("built", record)`` — the build job recorded this config as
+        BUILT. The binary the whole fan-out was gated on exists, so the
+        stamp's disagreement is with a build that is there, and the caller
+        declines to compile: a recompile would run under the simulation
+        reservation, into the directory every sibling is queued on, and the
+        memory kill that follows hides whatever really drifted. ``record``
+        is ``{}`` for a build job too old to write per-config records — the
+        envelope still positively names this config as built, which is the
+        load-bearing half.
+
+        ``(None, None)`` — nothing decisive: no build job, no envelope
+        path, an unreadable or stale envelope, a config the build job never
+        reached (a crash, a cancellation), a test listed as failed with no
+        per-build record or with one carrying no ``returncode``, or a
+        recorded failure whose inputs have since moved. Those keep today's
+        retry, which writes ``compile.retry.log`` and leaves the build
+        job's transcript intact.
 
         The envelope's ``failed`` list is not compile-only: the build job
         also records PRE/setup failures, filelist-probe errors and worker
@@ -2796,54 +2832,112 @@ class VlogSim:
         verdict then falls through to the retry. A record without the sha
         (an older build job) keeps the verdict, exactly as before.
 
-        ``None`` therefore means "no proven compile failure", which covers
-        every case that must keep today's retry: no build job, no envelope
-        path, an unreadable or stale envelope, a test the build actually
-        built — and a test listed as failed with no per-build record (an
-        older build job) or a record without a ``returncode`` (a setup
-        failure or worker exception). The retry those take writes
-        ``compile.retry.log``, so the build job's transcript stays safe
-        either way.
-
         Best-effort by construction. A sim job that cannot read the
         envelope falls back to today's retry rather than inventing a
-        failure — declining to compile on a guess would turn a readable
-        file into a lost run.
+        verdict — deciding on a guess would turn a readable file into a
+        lost run in one direction and an OOM in the other.
         """
         if not self.expect_prebuilt or self.build_result_json is None:
-            return None
+            return None, None
         try:
             envelope = load_build_result_json(self.build_result_json)
         except Exception:  # noqa: BLE001 - advisory; never costs a run
-            return None
-        if not envelope or self.test_name not in set(envelope.get("failed") or ()):
-            return None
-        for entry in envelope.get("builds") or ():
-            if entry.get("test") != self.test_name:
-                continue
-            # Compiler evidence or nothing: a record without a returncode
-            # describes a failure that never reached a builder.
-            if entry.get("returncode") is None:
-                return None
-            recorded_sha = entry.get("fingerprint_sha")
-            if recorded_sha is not None:
-                own_sha = _fingerprint_sha(fingerprint)
-                if own_sha is not None and recorded_sha != own_sha:
-                    # The build failed a *different* compile than the one
-                    # this job would run: the inputs moved in between, so
-                    # the retry is earned rather than a repeat.
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "compile.build_failure_inputs_changed",
-                        test=self.test_name,
-                        run_id=self.run_id,
-                        recorded_sha=recorded_sha,
-                        own_sha=own_sha,
-                    )
-                    return None
-            return entry
-        return None
+            return None, None
+        if not envelope:
+            return None, None
+        record = next(
+            (
+                entry
+                for entry in envelope.get("builds") or ()
+                if entry.get("test") == self.test_name
+            ),
+            None,
+        )
+        if self.test_name not in set(envelope.get("failed") or ()):
+            if self.test_name in set(envelope.get("built") or ()):
+                return "built", (record or {})
+            return None, None
+        # Compiler evidence or nothing: no record at all, or one without a
+        # returncode, describes a failure that never reached a builder.
+        if record is None or record.get("returncode") is None:
+            return None, None
+        recorded_sha = record.get("fingerprint_sha")
+        if recorded_sha is not None:
+            own_sha = _fingerprint_sha(fingerprint)
+            if own_sha is not None and recorded_sha != own_sha:
+                # The build failed a *different* compile than the one this
+                # job would run: the inputs moved in between, so the retry
+                # is earned rather than a repeat.
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "compile.build_failure_inputs_changed",
+                    test=self.test_name,
+                    run_id=self.run_id,
+                    recorded_sha=recorded_sha,
+                    own_sha=own_sha,
+                )
+                return None, None
+        return "failed", record
+
+    def _decline_gated_recompile(self, record, fingerprint, build_dir):
+        """Fail a gated job whose build job built this test (#535).
+
+        The build job compiled this config successfully, so the binary the
+        whole fan-out was gated on is in ``build_dir``. This job's stamp
+        check disagreed with it anyway, and a recompile is the wrong answer
+        to that in every direction: it runs under the SIMULATION
+        reservation, which is what the scheduler kills for memory (#536);
+        every sibling element queues behind it on the same directory
+        (#369/#507); and the memory kill that follows replaces whatever
+        really drifted with `signal 9` in the summary (#498). Nothing here
+        is recoverable by compiling, so the test fails with the reason
+        instead — one row to read rather than N red jobs.
+
+        Which reason depends on the two fingerprints. Equal (or unknown,
+        from a build job too old to record one) says the two sides describe
+        the same compile and the disagreement is in the stamp itself — a
+        dependency the builder no longer reports the same way, a
+        replaced ``simv``, a stamp that never landed. Different says this
+        node's inputs are not the build job's: a ``preproc`` hook that
+        generates something different here, or an edit that landed
+        mid-run.
+        """
+        recorded_sha = (record or {}).get("fingerprint_sha")
+        own_sha = _fingerprint_sha(fingerprint)
+        reason = self.stamp_mismatch_reason or "the build's stamp did not validate"
+        inputs_differ = (
+            recorded_sha is not None and own_sha is not None and recorded_sha != own_sha
+        )
+        what = (
+            "from different compile inputs than this job derived"
+            if inputs_differ
+            else "and its stamp still does not validate here"
+        )
+        transcript = self._get_build_compile_transcript_path()
+        log_event(
+            logger,
+            logging.ERROR,
+            "compile.build_stamp_rejected",
+            test=self.test_name,
+            run_id=self.run_id,
+            build_dir=build_dir,
+            reason=reason,
+            inputs_differ=inputs_differ,
+            recorded_sha=recorded_sha,
+            own_sha=own_sha,
+            build_result=str(self.build_result_json),
+        )
+        # One line: `render_summary` puts it in a table cell.
+        self.compile_fail_desc = (
+            f"build job built this test {what} ({reason}); not recompiling "
+            f"under the simulation reservation (see {transcript})"
+        )
+        self.last_compile_failure = {
+            "returncode": 1,
+            "transcript": transcript,
+        }
+        return 1
 
     def _compile_plan(self):
         """The cached :class:`_CompilePlan`, deriving it on first ask."""
@@ -2975,6 +3069,123 @@ class VlogSim:
         )
         return True
 
+    def _read_build_stamp(self, stamp_dir):
+        """The stamp in ``stamp_dir`` as a dict, or ``None``.
+
+        Never raises. Its callers are recording telemetry or deciding to
+        fall back to a compile, and neither may be what fails a run.
+        """
+        try:
+            stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return stored if isinstance(stored, dict) else None
+
+    def _record_build_stamp(self, stamp_dir):
+        """Record which binary this run's stamp vouched for (#535).
+
+        ``fingerprint_sha`` over the stamp's input half — the same digest
+        :func:`_fingerprint_sha` takes of a live fingerprint, the stamp
+        being that dict plus ``deps``/``simv`` — beside the ``simv`` entry
+        it validated. The pair says "this key, that binary", which is what
+        the head compares across the runs of one key at collect: they all
+        validated one stamp, so a run naming a different binary reused
+        something nobody else did.
+        """
+        stored = self._read_build_stamp(stamp_dir)
+        if stored is None:
+            self.last_build_stamp = None
+            return
+        inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
+        self.last_build_stamp = {
+            "fingerprint_sha": _fingerprint_sha(inputs),
+            "simv": stored.get("simv"),
+        }
+
+    def adopt_group_build(self):
+        """Take the build a same-key sibling just made, or say why not (#535).
+
+        A build job groups its configs by the directory their compile will
+        WRITE, so a group's members share a compile key by construction:
+        one ``key_cmd``, one set of ``run.f`` lines, one resolved builder.
+        The only thing that can differ between the leader's stamp and this
+        member's fingerprint is a file that moved *during the job* — and on
+        a cold tree the serial PRE phase guarantees one does: this member's
+        own ``preproc`` output, created after the leader was fingerprinted,
+        under an ``+incdir+`` the stamp lists by name. Recompiling the key
+        for that is what #535 reported.
+
+        So the question here is narrower than the stamp's. Did any input
+        the leader's build actually CONSUMED change? That is the stamp's
+        ``deps``, and a "yes" is not a stale build: it is two tests on one
+        compile key compiling different bytes, whose other outcome under
+        ``--share-build`` is one test silently simulating the other's
+        binary. Nothing is served by recompiling that.
+
+        Returns ``("adopted", None)``, ``("drift", <path>)``, or
+        ``(None, None)`` for "not decidable here" — no shared build, no
+        stamp, a compile line that somehow differs, or a builder that
+        reports no dependencies. VCS and Icarus are that last case: with no
+        dependency file nothing separates a consumed input from a
+        bystander, so the leader's own full comparison decides it and this
+        member takes the pre-#535 path. ``(None, None)`` IS that path — the
+        caller compiles, and a valid stamp still short-circuits it.
+        """
+        plan = self._compile_plan()
+        fingerprint = plan.fingerprint
+        if plan.shared_dir is None or not isinstance(fingerprint, dict):
+            return None, None
+        stored = self._read_build_stamp(plan.shared_dir)
+        if stored is None or not isinstance(stored.get("deps"), list):
+            return None, None
+        simv_path = self._get_simv_path()
+        if not Path(simv_path).is_file() or stored.get("simv") != _stat_entry(
+            simv_path
+        ):
+            return None, None
+        # Everything but the tracked inputs, compared exactly. The compile
+        # key already fixes the command and the toolchain's identity, so
+        # this only catches a toolchain replaced under a running job —
+        # cheap, and the one input a group's members do not share by
+        # construction.
+        skipped = _STAMP_META | {"sources"}
+        if {key: value for key, value in stored.items() if key not in skipped} != {
+            key: value for key, value in fingerprint.items() if key != "sources"
+        }:
+            return None, None
+        for entry in stored["deps"]:
+            if not isinstance(entry, list) or len(entry) != 4:
+                return None, None
+            if not isinstance(entry[0], str):
+                # `os.stat` takes a file *descriptor* for an int.
+                return None, None
+            if not _entry_matches(entry, self._tracked_entry(entry[0], resolved=True)):
+                return "drift", self._note_group_input_drift(entry[0])
+        # Consumed like a compile: this instance has had its one build.
+        self._compile_plan_cache = None
+        self._report_build_reused(plan, stamp_dir=plan.shared_dir)
+        self._record_compile(duration_sec=0.0, reused=True)
+        return "adopted", None
+
+    def _note_group_input_drift(self, dependency):
+        """Record the drift verdict as a compile failure; return ``dependency``.
+
+        The build job reports this config failed, and the record it writes
+        has to be decisive on the sim side too: a ``returncode`` is what
+        stops the gated sim job from recompiling the key into the shared
+        directory (#498), which is the same clobber read from the other
+        end. No transcript, because no builder ran — the one line below is
+        the whole story, and it travels in the envelope's ``error_tail``.
+        """
+        line = (
+            f"same compile key, different compiled input: {dependency}; give "
+            "this test its own compile key, or fix the preproc that rewrites "
+            "that input per test"
+        )
+        self.compile_fail_desc = line
+        self.last_compile_failure = {"returncode": 1, "error_tail": [line]}
+        return dependency
+
     def _report_build_reused(self, plan, *, stamp_dir, shared=True):
         """Say — on the console, and in the test's ``compile.log`` — that
         this compile was skipped (#494).
@@ -3019,6 +3230,7 @@ class VlogSim:
         self._write_reuse_transcript(
             plan, stamp_dir=stamp_dir, stamp_mtime=stamp_mtime, toolchain=toolchain
         )
+        self._record_build_stamp(stamp_dir)
 
     def _write_reuse_transcript(self, plan, *, stamp_dir, stamp_mtime, toolchain):
         """Leave a ``compile.log`` for a compile that did not run.
@@ -3275,11 +3487,15 @@ class VlogSim:
         if self.expect_prebuilt:
             # This job was ordered after a build job precisely so it would not
             # have to compile. Reaching here means that build's stamp did not
-            # validate — but there are two reasons for that, and they want
-            # opposite answers (#498). The fingerprint rules out a third:
-            # a recorded failure of a compile whose inputs have moved since.
-            build_failure = self._gated_build_failure(fingerprint)
-            if build_failure is not None:
+            # validate — and only the build envelope can say whether
+            # compiling now is a recovery or a catastrophe (#498/#535).
+            verdict, build_record = self._gated_build_verdict(fingerprint)
+            if verdict == "built":
+                return self._decline_gated_recompile(
+                    build_record, fingerprint, build_dir
+                )
+            if verdict == "failed":
+                build_failure = build_record
                 # The build job's compile for THIS test exited non-zero. That
                 # is deterministic: the same sources, the same flags and the
                 # same toolchain will fail again here, only now under the sim
@@ -3311,7 +3527,7 @@ class VlogSim:
                 }
                 # A non-zero status is the contract with _compile_outcome;
                 # the build's own is used so the two records agree.
-                # _gated_build_failure guarantees a returncode is present,
+                # _gated_build_verdict guarantees a returncode is present,
                 # so the guard only keeps a malformed record (0, or a
                 # non-int from a hand-edited envelope) from turning this
                 # failure into a success.
@@ -3483,6 +3699,7 @@ class VlogSim:
                     # is also how the stamp itself spells the same thing.
                     tracked_deps=None if deps is None else len(deps),
                 )
+                self._record_build_stamp(stamp_dir)
         return result.returncode
 
     def execute(

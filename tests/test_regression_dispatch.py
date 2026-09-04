@@ -4188,3 +4188,65 @@ def test_a_suite_override_the_backend_never_had_makes_no_false_hint(
     # The YAML field really does govern this run, so that is what to edit.
     assert cpus["edit_hint"]["path"] == "tests[name=basic].resources.cpus"
     assert "note" not in cpus["edit_hint"]
+
+
+# ------------------- the shared-binary audit (#535)
+
+
+def _stamped_row(test_name, sha, simv):
+    results = TestPassResults(name=f"{test_name}/results")
+    results.results["build_stamp"] = {"fingerprint_sha": sha, "simv": simv}
+    return {"test_name": test_name, "randmode_i": None, "results": results}
+
+
+def test_the_collect_audit_warns_when_one_key_produced_two_binaries(caplog):
+    """One compile key is one binary; anything else is a substitution (#535).
+
+    Every run gated on a build job validated the same stamp, so agreeing
+    digests with disagreeing executables mean somebody rebuilt the shared
+    directory while its neighbours were reusing it. Reporting only — the
+    runs are already scored against whatever they ran, and the point is
+    that the substitution stops being invisible.
+    """
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1]),
+        _stamped_row("beta", "k1", ["/b/simv", 11, 2]),
+        _stamped_row("gamma", "k2", ["/c/simv", 10, 1]),
+        # Nothing to say: a run with no shared build at all.
+        {
+            "test_name": "delta",
+            "randmode_i": None,
+            "results": TestPassResults(name="delta/results"),
+        },
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+
+    events = [
+        record.rtl_fields
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "dispatch.binary_mismatch"
+    ]
+    assert len(events) == 1
+    assert events[0]["fingerprint_sha"] == "k1"
+    assert events[0]["binaries"] == 2
+    assert events[0]["tests"] == ["alpha", "beta"]
+
+
+def test_the_collect_audit_is_silent_when_every_run_named_one_binary(caplog):
+    """The healthy fan-out must say nothing, or the warning is worthless."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1]),
+        _stamped_row("beta", "k1", ["/b/simv", 10, 1]),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+    assert not [
+        record
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "dispatch.binary_mismatch"
+    ]

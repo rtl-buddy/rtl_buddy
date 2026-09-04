@@ -154,6 +154,40 @@ def test_pool_regression_runs_the_real_pipeline_to_pass(pool_run):
     assert list(project.glob("verif/blk/artefacts/.dispatch/build-*.log")) != [], diag
 
 
+def test_pool_regression_records_which_binary_each_run_simulated(pool_run):
+    """The audit trail (#535): every run says which build it validated.
+
+    A run's own envelope names the compile key its stamp was written for
+    and the executable that stamp vouched for, and the build job's envelope
+    names the same key. Without the pair, a run that quietly recompiled the
+    shared directory under its neighbours is only inferable from a warning
+    in some other job's log.
+    """
+    proc, _envelope, project, diag, _work = pool_run
+    assert proc.returncode == 0, diag
+
+    stamps = {}
+    for path in sorted(project.glob("verif/blk/artefacts/*/dispatch/result-*.json")):
+        raw = json.loads(path.read_text())
+        stamps[raw["test"]] = raw["result"]["results"]["build_stamp"]
+    assert sorted(stamps) == ["alpha", "beta"], diag
+    for stamp in stamps.values():
+        assert len(stamp["fingerprint_sha"]) == 64
+        assert len(stamp["simv"]) == 3  # [path, size, mtime_ns]
+
+    build_results = sorted(
+        project.glob("verif/blk/artefacts/.dispatch/build-result-*.json")
+    )
+    assert build_results, diag
+    recorded = {
+        entry["test"]: entry.get("fingerprint_sha")
+        for entry in json.loads(build_results[0].read_text())["builds"]
+    }
+    assert recorded == {
+        name: stamp["fingerprint_sha"] for name, stamp in stamps.items()
+    }
+
+
 def test_pool_regression_never_calls_the_scheduler(pool_run):
     proc, _envelope, _project, diag, work = pool_run
     assert proc.returncode == 0, diag
@@ -572,15 +606,21 @@ prog.mkdir(parents=True, exist_ok=True)
 """
 
 
-def _write_same_key_preproc_suite(project: Path) -> None:
+def _write_same_key_preproc_suite(project: Path, *, precreate: bool = True) -> None:
     """Two tests on one compile key whose preproc writes under the suite dir.
 
     The reported shape (#535): the model filelist puts the suite directory
     on ``+incdir+``, so each test's generated program directory is inside
     the stamped listing — and the build job runs every PRE before any
     compile, so one member's output moves between the next member's
-    fingerprint and the stamp it should be reusing. Both directories exist
-    before the run, so what changes is content and not the set of names.
+    fingerprint and the stamp it should be reusing.
+
+    ``precreate`` is which half of the listing moves. With the directories
+    already there only their *content* changes, which a stamp carrying the
+    builder's dependencies decides elsewhere (#536). On a cold tree the
+    *names* change too — member B's own PRE creates ``prog_beta`` after A's
+    fingerprint was taken — and names are the half the listing still
+    decides, so only the group adopt closes that one.
     """
     suite = project / "verif" / "blk"
     (suite / "models.yaml").write_text(
@@ -589,10 +629,11 @@ def _write_same_key_preproc_suite(project: Path) -> None:
     )
     (suite / "nonce.txt").write_text("second run\n")
     (suite / "preproc.py").write_text(_SUITE_PREPROC)
-    for name in ("alpha", "beta"):
-        prog = suite / f"prog_{name}"
-        prog.mkdir()
-        (prog / "data.txt").write_text("first run\n")
+    if precreate:
+        for name in ("alpha", "beta"):
+            prog = suite / f"prog_{name}"
+            prog.mkdir()
+            (prog / "data.txt").write_text("first run\n")
     tests = (
         (suite / "tests.yaml")
         .read_text()
@@ -601,19 +642,14 @@ def _write_same_key_preproc_suite(project: Path) -> None:
     (suite / "tests.yaml").write_text(tests)
 
 
-def test_a_build_job_compiles_one_key_once_when_a_preproc_writes_beside_it(
-    tmp_path_factory,
-):
-    """One compile key, two tests, one Verilation (#535).
+def _run_same_key_build_job(work: Path, *, precreate: bool):
+    """Run one ``_build-job`` over the two-tests-one-key suite; report it.
 
-    Before the listing narrowing, each member's fingerprint disagreed with
-    the stamp the previous member had just written — over a file the
-    verilation never opened — so a key with N tests cost N full compiles.
+    Returns ``(suite dir, compiled obj_dir basenames, job output)``.
     """
-    work = tmp_path_factory.mktemp("build_job_same_key")
     project = work / "proj"
     shutil.copytree(_FIXTURE, project)
-    _write_same_key_preproc_suite(project)
+    _write_same_key_preproc_suite(project, precreate=precreate)
     suite = project / "verif" / "blk"
     spans = work / "compiler_spans.txt"
     log = work / "build.log"
@@ -636,10 +672,24 @@ def test_a_build_job_compiles_one_key_once_when_a_preproc_writes_beside_it(
         )
     diag = log.read_text()
     assert proc.returncode == 0, diag
-
     compiles = [
         line.split()[0] for line in spans.read_text().splitlines() if line.strip()
     ]
+    return suite, compiles, diag
+
+
+def test_a_build_job_compiles_one_key_once_when_a_preproc_writes_beside_it(
+    tmp_path_factory,
+):
+    """One compile key, two tests, one Verilation (#535).
+
+    Before the listing narrowing, each member's fingerprint disagreed with
+    the stamp the previous member had just written — over a file the
+    verilation never opened — so a key with N tests cost N full compiles.
+    """
+    work = tmp_path_factory.mktemp("build_job_same_key")
+    suite, compiles, diag = _run_same_key_build_job(work, precreate=True)
+
     assert len(compiles) == 1, f"a same-key sibling recompiled\n{diag}"
     assert "reused shared build" in diag, diag
     # Both tests really were on one key, and the preproc really did write
@@ -647,3 +697,24 @@ def test_a_build_job_compiles_one_key_once_when_a_preproc_writes_beside_it(
     shared = sorted((suite / "artefacts" / ".shared-builds").glob("obj_dir_*"))
     assert [d.name for d in shared] == compiles, diag
     assert (suite / "prog_beta" / "data.txt").read_text() == "second run\n"
+
+
+def test_a_build_job_compiles_one_key_once_on_a_cold_tree(tmp_path_factory):
+    """The same key, the same one Verilation, with nothing generated yet (#535).
+
+    The cold case the listing narrowing cannot reach: member B's own PRE
+    *creates* ``prog_beta``, so B's fingerprint carries a name A's stamp
+    never listed, and a name is what a dependency file structurally cannot
+    decide. Only the group adopt — B takes the build its leader just made,
+    on the consumed inputs alone — compiles this key once.
+    """
+    work = tmp_path_factory.mktemp("build_job_same_key_cold")
+    suite, compiles, diag = _run_same_key_build_job(work, precreate=False)
+
+    assert len(compiles) == 1, f"a same-key sibling recompiled\n{diag}"
+    shared = sorted((suite / "artefacts" / ".shared-builds").glob("obj_dir_*"))
+    assert [d.name for d in shared] == compiles, diag
+    # Both PREs really ran, and B's really did create a directory that was
+    # not in the listing A's stamp recorded.
+    for name in ("alpha", "beta"):
+        assert (suite / f"prog_{name}" / "data.txt").read_text() == "second run\n"
