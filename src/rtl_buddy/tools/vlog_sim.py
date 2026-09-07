@@ -3206,7 +3206,11 @@ class VlogSim:
         if plan.shared_dir is None or not isinstance(fingerprint, dict):
             return None, None
         stored = self._read_build_stamp(plan.shared_dir)
-        if stored is None or not isinstance(stored.get("deps"), list):
+        if (
+            stored is None
+            or not isinstance(stored.get("deps"), list)
+            or stored.get("deps_format") != _DEPS_FORMAT
+        ):
             return None, None
         simv_path = self._get_simv_path()
         if not Path(simv_path).is_file() or stored.get("simv") != _stat_entry(
