@@ -176,9 +176,10 @@ class TestRunner:
     def last_build_stamp(self):
         """This runner's sim's build-stamp identity, or ``None`` (#535).
 
-        ``{fingerprint_sha, simv}`` — which compile key the build this run
-        simulated was stamped for, and which executable that stamp
-        vouched for. The build job records the digest in its envelope, and
+        ``{build_dir, fingerprint_sha, simv}`` — which shared directory
+        (the compile key) the build this run simulated was stamped in,
+        which inputs that stamp recorded, and which executable it vouched
+        for. The build job records the digest in its envelope, and
         every run carries both into its own result envelope so the head can
         check at collect that one key produced one binary. Telemetry, and
         telemetry must never raise.

@@ -483,10 +483,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "dispatch.binary_mismatch":
             return (
-                f"{fields.get('tests')}: runs of one compile key "
-                f"({fields.get('fingerprint_sha')}) did not all simulate the "
+                f"{fields.get('tests')}: runs of one shared build "
+                f"({fields.get('build_dir')}) did not all simulate the "
                 f"same binary — {fields.get('binaries')} distinct executables "
-                "were stamped for it. One of those runs recompiled the shared "
+                f"were stamped for it, over {fields.get('fingerprints')} "
+                "distinct input digests. One of those runs recompiled the shared "
                 "build instead of reusing it, so its neighbours may have "
                 "simulated a binary that was replaced under them. Look for "
                 "compile.prebuilt_stamp_invalid in those jobs' logs."

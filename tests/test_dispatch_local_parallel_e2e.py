@@ -172,6 +172,7 @@ def test_pool_regression_records_which_binary_each_run_simulated(pool_run):
         stamps[raw["test"]] = raw["result"]["results"]["build_stamp"]
     assert sorted(stamps) == ["alpha", "beta"], diag
     for stamp in stamps.values():
+        assert "/.shared-builds/obj_dir_" in stamp["build_dir"]
         assert len(stamp["fingerprint_sha"]) == 64
         assert len(stamp["simv"]) == 3  # [path, size, mtime_ns]
 

@@ -3825,15 +3825,24 @@ class RtlBuddy:
         """Warn when one compile key produced more than one binary (#535).
 
         Every run gated on a build job validates the same stamp and records
-        what it validated — the key's fingerprint digest, and the ``simv``
-        that stamp vouched for. Agreeing digests with disagreeing binaries
-        mean somebody rebuilt the shared directory instead of reusing it,
-        and its neighbours may have simulated an executable that was
-        replaced under them mid-run. That is not something a result can be
-        rescored from, so it is a warning and not a verdict: the runs are
-        already scored against whatever they ran, and the point is that the
-        substitution is *visible* rather than only inferable from a
-        `compile.prebuilt_stamp_invalid` somewhere in the fleet.
+        what it validated — the shared directory the stamp lives in, its
+        inputs' digest, and the ``simv`` that stamp vouched for. Runs of one
+        directory that name different binaries mean somebody rebuilt it
+        instead of reusing it, and its neighbours may have simulated an
+        executable that was replaced under them mid-run. That is not
+        something a result can be rescored from, so it is a warning and not
+        a verdict: the runs are already scored against whatever they ran,
+        and the point is that the substitution is *visible* rather than
+        only inferable from a `compile.prebuilt_stamp_invalid` somewhere in
+        the fleet.
+
+        Grouped by ``build_dir`` — the ``obj_dir_<key>`` directory, which
+        is the compile key — and not by the fingerprint digest: the digest
+        covers the inputs' *contents*, so the very rebuild this is looking
+        for (an input edited mid-run, then recompiled into the same
+        directory) would split the runs into two digests and hide from a
+        digest-keyed audit. A stamp written before ``build_dir`` was
+        recorded falls back to its digest, which is at least a key.
 
         Reporting only, and never raising: a missing or oddly shaped
         ``build_stamp`` is simply a run that had nothing to say.
@@ -3847,17 +3856,20 @@ class RtlBuddy:
             sha, simv = stamp.get("fingerprint_sha"), stamp.get("simv")
             if sha is None or simv is None:
                 continue
-            by_key.setdefault(sha, {}).setdefault(repr(simv), []).append(
-                row.get("test_name")
-            )
-        for sha, binaries in by_key.items():
+            key = stamp.get("build_dir") or sha
+            group = by_key.setdefault(key, {"binaries": {}, "fingerprints": set()})
+            group["binaries"].setdefault(repr(simv), []).append(row.get("test_name"))
+            group["fingerprints"].add(sha)
+        for key, group in by_key.items():
+            binaries = group["binaries"]
             if len(binaries) < 2:
                 continue
             log_console_event(
                 logger,
                 logging.WARNING,
                 "dispatch.binary_mismatch",
-                fingerprint_sha=sha,
+                build_dir=key,
+                fingerprints=len(group["fingerprints"]),
                 binaries=len(binaries),
                 tests=sorted({name for names in binaries.values() for name in names}),
             )

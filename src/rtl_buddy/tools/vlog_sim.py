@@ -1026,6 +1026,64 @@ def _first_listing_mismatch(stored, current, *, names_only: bool = False):
     return _first_entry_mismatch(stored, current, listing_names_only=names_only)
 
 
+def _first_resolution_change(stored_sources, sources, deps):
+    """A file that *appeared* in a stamped directory since the stamp and can
+    change what the compile resolves, as ``"<line> :: +<name>"``, or None.
+
+    The narrowing :meth:`VlogSim.adopt_group_build` makes — judge the
+    leader's build by what it consumed, not by the listing — is right for
+    the addition #535 is about: a member's own ``preproc`` output appearing
+    under ``+incdir+.``, which no compile of this key would read. It is
+    wrong for two other additions, and both are things a later ``preproc``
+    can do:
+
+    * any file appearing in a ``-y`` directory, because library resolution
+      is by module name on demand — a file nobody opened today is
+      tomorrow's answer, and no dependency file can say otherwise;
+    * a file appearing in an ``+incdir+`` under the same *relative name*
+      as an include the leader consumed, which the include search finds
+      first when that directory is searched first. Which directory wins is
+      the builder's business; both orders read as a change here.
+
+    Removals are already decided: a vanished consumed input fails the
+    ``deps`` comparison, and a vanished bystander changed nothing that was
+    read. Two lists that do not line up as stamps of one ``run.f`` are a
+    change too, since nothing else can be said about them.
+    """
+    if not isinstance(stored_sources, list) or not isinstance(sources, list):
+        return "(stamp sources are not a list)"
+    if len(stored_sources) != len(sources):
+        return f"(entry count {len(stored_sources)} -> {len(sources)})"
+    consumed = tuple(
+        os.path.normpath(entry[0])
+        for entry in deps
+        if isinstance(entry, list) and entry and isinstance(entry[0], str)
+    )
+    for stored_entry, entry in zip(stored_sources, sources):
+        if not (_is_directory_entry(stored_entry) and _is_directory_entry(entry)):
+            continue
+        if stored_entry[0] != entry[0]:
+            return str(entry[0])
+        stored_names, names = (
+            _listing_names(stored_entry[-1]),
+            _listing_names(entry[-1]),
+        )
+        if stored_names is None or names is None:
+            return f"{entry[0]} :: (listing is not a list)"
+        added = sorted(set(names) - set(stored_names))
+        if not added:
+            continue
+        option_match = _FILELIST_OPTION_RE.match(entry[0])
+        option = (option_match.group(1) or "").strip() if option_match else ""
+        if option == _LIBRARY_DIR_OPTION:
+            return f"{entry[0]} :: +{added[0]}"
+        for name in added:
+            suffix = os.sep + name
+            if any(path.endswith(suffix) for path in consumed):
+                return f"{entry[0]} :: +{name}"
+    return None
+
+
 def _first_entry_mismatch(stored, current, *, listing_names_only: bool = False):
     """What made :func:`_entry_lists_match` say no, for a diagnostic.
 
@@ -3084,13 +3142,16 @@ class VlogSim:
     def _record_build_stamp(self, stamp_dir):
         """Record which binary this run's stamp vouched for (#535).
 
-        ``fingerprint_sha`` over the stamp's input half — the same digest
-        :func:`_fingerprint_sha` takes of a live fingerprint, the stamp
-        being that dict plus ``deps``/``simv`` — beside the ``simv`` entry
-        it validated. The pair says "this key, that binary", which is what
-        the head compares across the runs of one key at collect: they all
-        validated one stamp, so a run naming a different binary reused
-        something nobody else did.
+        ``build_dir`` is the directory the stamp lives in, resolved — for a
+        shared build the ``obj_dir_<key>`` directory, so it *is* the compile
+        key, and the one thing every run of that key agrees on however its
+        inputs' contents fared. ``fingerprint_sha`` is the digest over the
+        stamp's input half — the same :func:`_fingerprint_sha` takes of a
+        live fingerprint, the stamp being that dict plus ``deps``/``simv`` —
+        and ``simv`` the entry the stamp vouched for. The head groups the
+        runs of one ``build_dir`` at collect: they were meant to validate
+        one stamp, so a run naming a different binary, or a different
+        digest, reused something nobody else did.
         """
         stored = self._read_build_stamp(stamp_dir)
         if stored is None:
@@ -3098,6 +3159,7 @@ class VlogSim:
             return
         inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
         self.last_build_stamp = {
+            "build_dir": os.path.realpath(str(stamp_dir)),
             "fingerprint_sha": _fingerprint_sha(inputs),
             "simv": stored.get("simv"),
         }
@@ -3122,14 +3184,22 @@ class VlogSim:
         ``--share-build`` is one test silently simulating the other's
         binary. Nothing is served by recompiling that.
 
+        The listing is not ignored outright, though: a file that appeared
+        where it can change what the compile *resolves* — anything new in a
+        ``-y`` directory, or a header shadowing a consumed include by name
+        (:func:`_first_resolution_change`) — means the leader's build is not
+        the one this member's compile would produce, and nothing here can
+        say what would be. That is handed back undecided.
+
         Returns ``("adopted", None)``, ``("drift", <path>)``, or
         ``(None, None)`` for "not decidable here" — no shared build, no
-        stamp, a compile line that somehow differs, or a builder that
-        reports no dependencies. VCS and Icarus are that last case: with no
-        dependency file nothing separates a consumed input from a
-        bystander, so the leader's own full comparison decides it and this
-        member takes the pre-#535 path. ``(None, None)`` IS that path — the
-        caller compiles, and a valid stamp still short-circuits it.
+        stamp, a compile line that somehow differs, a resolution change as
+        above, or a builder that reports no dependencies. VCS and Icarus are
+        that last case: with no dependency file nothing separates a consumed
+        input from a bystander, so the leader's own full comparison decides
+        it and this member takes the pre-#535 path. ``(None, None)`` IS that
+        path — the caller compiles, and a valid stamp still short-circuits
+        it.
         """
         plan = self._compile_plan()
         fingerprint = plan.fingerprint
@@ -3159,8 +3229,20 @@ class VlogSim:
             if not isinstance(entry[0], str):
                 # `os.stat` takes a file *descriptor* for an int.
                 return None, None
-            if not _entry_matches(entry, self._tracked_entry(entry[0], resolved=True)):
+            if not _entry_matches(entry, self._tracked_entry(entry[0])):
                 return "drift", self._note_group_input_drift(entry[0])
+        appeared = _first_resolution_change(
+            stored.get("sources"), fingerprint.get("sources"), stored["deps"]
+        )
+        if appeared is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.group_resolution_changed",
+                test=self.test_name,
+                appeared=appeared,
+            )
+            return None, None
         # Consumed like a compile: this instance has had its one build.
         self._compile_plan_cache = None
         self._report_build_reused(plan, stamp_dir=plan.shared_dir)

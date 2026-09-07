@@ -2058,22 +2058,124 @@ def test_a_group_sibling_declines_to_adopt_without_a_dependency_file(
     assert len(calls) == 2  # ...and the pre-#535 path recompiled, as it did
 
 
+def _group_pair_with_incdirs(
+    tmp_path, monkeypatch, calls, *, filelist, depends, sibling_pre
+):
+    """A leader that compiled and a same-key sibling, in build-job order:
+    ``sibling_pre`` (what this config's PRE hook writes) runs after the
+    leader's compile and before the sibling's compile-key probe."""
+    _install_fake_builder(monkeypatch, calls, depends=depends)
+
+    def _sim(test_name):
+        return _make_sim(tmp_path, monkeypatch, test_name=test_name, filelist=filelist)
+
+    leader = _sim("test_a")
+    group = leader.compile_group_dir()
+    assert leader.compile() == 0
+    assert len(calls) == 1
+    sibling_pre()
+    sibling = _sim("test_b")
+    assert sibling.compile_group_dir() == group
+    return sibling
+
+
+def test_a_group_sibling_declines_a_build_whose_include_is_now_shadowed(
+    tmp_path, monkeypatch
+):
+    """A header appearing under the same name as a consumed include, in an
+    ``+incdir+`` searched first, changes what the compile reads without
+    changing any consumed file — which is all a dependency list can see.
+    Not adoptable; the sibling hands the decision back to the stamp, whose
+    names-only listing recompiles for the new name."""
+    _write_source(tmp_path)
+    (tmp_path / "gen").mkdir()
+    header = _write_header(tmp_path)  # inc/w.svh
+    calls = []
+    sibling = _group_pair_with_incdirs(
+        tmp_path,
+        monkeypatch,
+        calls,
+        filelist=["src/top.sv", "+incdir+gen", "+incdir+inc"],
+        depends=["../../src/top.sv", "../../inc/w.svh"],
+        sibling_pre=lambda: (tmp_path / "gen" / "w.svh").write_text("`define W 16\n"),
+    )
+    assert header.exists()
+
+    assert sibling.adopt_group_build() == (None, None)
+    assert sibling.last_compile["reused"] is None
+    assert sibling.compile() == 0
+    assert len(calls) == 2, "the shadowed include was adopted as unchanged"
+
+
+def test_a_group_sibling_declines_a_build_when_a_library_file_appeared(
+    tmp_path, monkeypatch
+):
+    """A file appearing in a ``-y`` directory is tomorrow's module
+    resolution (#478 gap 2), and a dependency file cannot report a file the
+    leader's build never opened. Not adoptable either."""
+    _write_source(tmp_path)
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "keep.sv").write_text("module keep; endmodule\n")
+    calls = []
+    sibling = _group_pair_with_incdirs(
+        tmp_path,
+        monkeypatch,
+        calls,
+        filelist=["src/top.sv", "-y lib"],
+        depends=["../../src/top.sv"],
+        sibling_pre=lambda: (lib / "top.sv").write_text("module top; endmodule\n"),
+    )
+
+    assert sibling.adopt_group_build() == (None, None)
+    assert sibling.compile() == 0
+    assert len(calls) == 2, "a new library file was adopted as unchanged"
+
+
+def test_a_group_sibling_still_adopts_past_an_unrelated_new_file(tmp_path, monkeypatch):
+    """The boundary of the two tests above: a new file under ``+incdir+``
+    that shadows nothing the leader consumed is the #535 case itself, and
+    adoption goes ahead."""
+    _write_source(tmp_path)
+    (tmp_path / "gen").mkdir()
+    _write_header(tmp_path)
+    calls = []
+    sibling = _group_pair_with_incdirs(
+        tmp_path,
+        monkeypatch,
+        calls,
+        filelist=["src/top.sv", "+incdir+gen", "+incdir+inc"],
+        depends=["../../src/top.sv", "../../inc/w.svh"],
+        sibling_pre=lambda: (tmp_path / "gen" / "params_test_b.svh").write_text(
+            "`define B 1\n"
+        ),
+    )
+
+    assert sibling.adopt_group_build() == ("adopted", None)
+    assert len(calls) == 1
+
+
 def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeypatch):
     """What a run reports having simulated (#535).
 
     The digest is the one `_fingerprint_sha` takes of a live fingerprint —
     the stamp is that dict plus deps/simv — so a build job's record and a
     sim job's report of the same build are comparable. The `simv` entry is
-    the stamp's own, which is what makes a replaced binary visible.
+    the stamp's own, which is what makes a replaced binary visible. The
+    `build_dir` is the shared directory itself — the compile key, and the
+    one thing the runs of one key agree on when their inputs' digests do
+    not.
     """
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
     builder = _make_sim(tmp_path, monkeypatch, test_name="test_a")
-    fingerprint = builder._compile_plan().fingerprint
+    plan = builder._compile_plan()
+    fingerprint = plan.fingerprint
     assert builder.compile() == 0
     stamp = builder.last_build_stamp
+    assert stamp["build_dir"] == os.path.realpath(plan.shared_dir)
     assert stamp["fingerprint_sha"] == vlog_sim_module._fingerprint_sha(fingerprint)
     assert stamp["simv"] == vlog_sim_module._stat_entry(builder._get_simv_path())
 
