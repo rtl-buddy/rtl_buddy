@@ -467,13 +467,10 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
     ICARUS_SNAPSHOT_NAME,
     SHARED_BUILD_STAMP_NAME,
     RESULT_JSON_NAME,
-    # The head's own log, which lands in the SUITE directory rather than
-    # under `artefacts/`, so the directory prune above never reaches it. A
-    # `+incdir+.` puts it in the listing, and the head appends to it once a
-    # minute for the whole life of a dispatched run — through every gated
-    # job's stamp check (#537).
-    DEFAULT_FILE_LOG,
 ) + DISPATCH_OUTPUT_PATTERNS
+# The head's own `rtl_buddy.log` is deliberately not here: it is excluded
+# by PATH in `_directory_listing` (see `_is_suite_log`), because a file of
+# that name in any other include directory is an ordinary input.
 
 _NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PATTERNS
 
@@ -757,17 +754,14 @@ def _content_sha(
     too, while the *exclusion* still tests the realpath, which is what
     catches a symlink into the toolchain install.
 
-    ``resolved`` says ``path`` is already a ``realpath`` (the dependency
-    list is; the filelist's ``normpath``\\ ed entries are not), which saves
-    a second walk of one ``lstat`` per component on the NFS mount this
-    check exists for. A resolved entry has no declared path left to
-    consult, and none is stored either — :meth:`VlogSim._collect_build_deps`
-    keys on the realpath so that both sides of the comparison and the
-    ``run.f`` exclusion agree — so the record and validate sides decide
-    containment identically. What that costs is the deps-only case: a
-    *header* reached through ``+incdir+`` from a symlinked-in tree is judged
-    by where it resolves and stays stat-only, while the same tree's sources,
-    which ``run.f`` names by their in-project path, are hashed.
+    ``resolved`` says ``path`` is already a ``realpath``, which saves a
+    second walk of one ``lstat`` per component on the NFS mount this check
+    exists for; a resolved entry has no declared path left to consult.
+    Neither the filelist's nor the dependency list's entries are resolved:
+    both are stored by the ``normpath`` the build used, so a header reached
+    through ``+incdir+`` from a symlinked-in tree is hashed like the tree's
+    sources are, and a symlink retargeted between two runs is seen by the
+    stat and hash of wherever it points *now*.
 
     Only regular files are hashed: a directory or a FIFO named among the
     prerequisites would otherwise reach ``open()``, and a FIFO blocks there
@@ -777,8 +771,7 @@ def _content_sha(
         return None
     if not S_ISREG(stat.st_mode):
         return None
-    # Hash under the realpath so two spellings of one file (the filelist
-    # normpaths, the dependency file realpaths) share a memo entry.
+    # Hash under the realpath so two spellings of one file share a memo entry.
     real_path = path if resolved else os.path.realpath(path)
     under_root = _path_is_under(real_path, project_root) or (
         not resolved and _path_is_under(os.path.abspath(path), project_root)
@@ -1281,6 +1274,11 @@ class VlogSim:
             os.path.abspath(suite_dir)
             if suite_dir is not None
             else os.path.abspath(os.getcwd())
+        )
+        # Where the head writes its own log (ExecutionContext.log_path), the
+        # one path a directory listing skips by location rather than name.
+        self._suite_log_path = os.path.realpath(
+            os.path.join(self.suite_work_dir, DEFAULT_FILE_LOG)
         )
 
         # Which files this instance is allowed to content-hash for its build
@@ -1816,6 +1814,16 @@ class VlogSim:
             toolchain_prefix=self._get_toolchain_prefix(),
         )
 
+    def _is_suite_log(self, path) -> bool:
+        """Is ``path`` the head's own ``rtl_buddy.log`` in the suite directory?
+
+        By name first, so the ``realpath`` is only paid for a candidate.
+        """
+        return (
+            os.path.basename(path) == DEFAULT_FILE_LOG
+            and os.path.realpath(path) == self._suite_log_path
+        )
+
     def _directory_listing(self, dir_path, *, recursive):
         """A listing of the regular files under ``dir_path``, or ``None``.
 
@@ -1863,7 +1871,10 @@ class VlogSim:
         bookkeeping plus rtl_buddy's own per-test outputs. A dot-*file* is
         otherwise listed like any other: `` `include ".config.svh" `` is
         legal and resolves, so a blanket dot-name skip would reopen the gap
-        this stamp closes.
+        this stamp closes. One more file is skipped by *path*: the suite's
+        own ``rtl_buddy.log`` (#537), which the head appends to for the
+        whole run. Only that one — a file of the same name anywhere else
+        is an input like any other, and stays tracked.
 
         Both halves exist for one failure. Everything rtl_buddy writes into
         an artefact directory — ``run.f``, the compile transcript, the
@@ -1911,7 +1922,7 @@ class VlogSim:
                         if _is_non_input_file(name):
                             continue
                         path = os.path.join(walk_root, name)
-                        if not os.path.isfile(path):
+                        if not os.path.isfile(path) or self._is_suite_log(path):
                             # A dangling symlink is not an input; a FIFO
                             # must never reach the hasher's `open()`.
                             continue
@@ -1926,7 +1937,9 @@ class VlogSim:
                     names = sorted(
                         item.name
                         for item in scan
-                        if item.is_file() and not _is_non_input_file(item.name)
+                        if item.is_file()
+                        and not _is_non_input_file(item.name)
+                        and not self._is_suite_log(item.path)
                     )
                 entries = [(name, os.path.join(dir_path, name)) for name in names]
         except OSError as e:
@@ -2241,14 +2254,18 @@ class VlogSim:
         Paths are resolved against ``compile_cwd`` and stored absolute:
         the file is written relative to whichever test's artefact dir ran
         the compile, and a *different* test with the same compile key
-        validates the stamp from its own directory. ``realpath``, not
-        ``normpath`` as in :meth:`_fingerprint_filelist_sources`, because
-        resolving symlinks on *both* sides is what makes the ``run.f``
-        exclusion below actually match; the two lists therefore canonicalise
-        differently and are not comparable to each other. The compile's own
-        ``run.f`` is excluded — it is regenerated on every compile, so its
-        mtime would invalidate the stamp for the very test that built it,
-        and its *contents* are already fingerprinted entry by entry.
+        validates the stamp from its own directory. Stored by the name the
+        build used (``normpath``, as in :meth:`_fingerprint_filelist_sources`),
+        *not* its ``realpath``: a symlink among the prerequisites — an
+        ``+incdir+`` that is a link into a shared IP tree, or a header that
+        is itself a link — is re-resolved on every validation, so pointing
+        it at a new target invalidates the stamp even though the listing
+        the filelist fingerprint keeps still shows the same names. The
+        compile's own ``run.f`` is excluded (matched by realpath, so that a
+        symlinked suite dir cannot hide it) — it is regenerated on every
+        compile, so its mtime would invalidate the stamp for the very test
+        that built it, and its *contents* are already fingerprinted entry
+        by entry.
         """
         # Resolved against the compile cwd, not used as given: `build_dir` is
         # an absolute shared dir on one path and a bare directory *name* on
@@ -2274,12 +2291,10 @@ class VlogSim:
                 )
                 return None
             for prerequisite in parse_depend_prerequisites(text):
-                resolved = os.path.realpath(os.path.join(compile_cwd, prerequisite))
-                if resolved != filelist_path:
-                    seen.setdefault(resolved, None)
-        # Already realpath'd above, and again on the validating side out of
-        # the stamp: the containment tests can take them as canonical.
-        return [self._tracked_entry(path, resolved=True) for path in sorted(seen)]
+                declared = os.path.normpath(os.path.join(compile_cwd, prerequisite))
+                if os.path.realpath(declared) != filelist_path:
+                    seen.setdefault(declared, None)
+        return [self._tracked_entry(path) for path in sorted(seen)]
 
     def _deps_unchanged(self, test_name, deps, *, quiet=False):
         """Have any of the stamp's recorded inputs changed on disk?
@@ -2308,7 +2323,7 @@ class VlogSim:
                 return self._note_stamp_mismatch(
                     "the stamp's dependency list is corrupt"
                 )
-            if not _entry_matches(entry, self._tracked_entry(entry[0], resolved=True)):
+            if not _entry_matches(entry, self._tracked_entry(entry[0])):
                 # The one question worth answering when a warm run
                 # unexpectedly recompiles.
                 if not quiet:

@@ -1782,6 +1782,42 @@ def test_the_suite_log_is_never_listed_in_an_include_directory(tmp_path, monkeyp
     assert len(calls) == 1
 
 
+def test_a_real_input_named_like_the_suite_log_stays_tracked(tmp_path, monkeypatch):
+    """Only the suite's own `rtl_buddy.log` is skipped, by path. A file of
+    that name in some other include directory is a compile input — and on a
+    builder with no dependency file the listing is the only record of it, so
+    an edit there must still invalidate the stamp."""
+    _write_source(tmp_path)
+    (tmp_path / "rtl_buddy.log").write_text("dispatch: 4/5 jobs remaining\n")
+    image = tmp_path / "inc" / "rtl_buddy.log"
+    image.parent.mkdir()
+    image.write_text("@0000 DEADBEEF\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+.", "+incdir+inc"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    suite_listing = [e[0] for e in _dir_entry(sim_a, f"+incdir+{tmp_path}")[-1]]
+    assert "rtl_buddy.log" not in suite_listing, suite_listing
+    assert "inc/rtl_buddy.log" in suite_listing, suite_listing
+    inc_listing = [e[0] for e in _dir_entry(sim_a, f"+incdir+{tmp_path / 'inc'}")[-1]]
+    assert inc_listing == ["rtl_buddy.log"], inc_listing
+
+    _touch(image, "@0000 CAFEF00D\n")
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2
+
+
 def test_a_pycache_beside_a_preproc_helper_is_never_listed(tmp_path, monkeypatch):
     """CPython writes bytecode beside a helper module a `preproc` hook
     imports out of the suite directory, during the very phase that computes
@@ -2382,15 +2418,11 @@ def test_a_source_symlinked_in_from_outside_the_project_is_still_hashed(
     assert len(calls) == 2, "the stamp validated against a stale stat"
 
 
-def test_a_symlinked_in_dependency_is_judged_where_it_resolves(tmp_path, monkeypatch):
-    """The boundary of the rule above, stated so it is a decision and not a
-    surprise: the dependency list is keyed on realpaths — that is what makes
-    both sides of the comparison and the ``run.f`` exclusion agree — so an
-    entry that only ever appears there carries no declared path to consult.
-    A header reached through ``+incdir+`` from a symlinked-in tree is
-    therefore stat-only, while that same tree's sources, which ``run.f``
-    names, are hashed by the test above.
-    """
+def test_a_symlinked_in_dependency_is_hashed_like_a_source(tmp_path, monkeypatch):
+    """The dependency list is keyed on the path the build used, not its
+    realpath, so a header reached through ``+incdir+`` from a symlinked-in
+    tree keeps the declared in-project name that qualifies it for hashing —
+    the same rule the test above states for the tree's sources."""
     external = tmp_path.parent / f"{tmp_path.name}-inc"
     external.mkdir(exist_ok=True)
     header = external / "w.svh"
@@ -2398,9 +2430,54 @@ def test_a_symlinked_in_dependency_is_judged_where_it_resolves(tmp_path, monkeyp
     (tmp_path / "inc").mkdir(parents=True, exist_ok=True)
     (tmp_path / "inc" / "w.svh").symlink_to(header)
     _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
 
-    assert sim._tracked_entry(os.path.realpath(header), resolved=True)[3] is None
+    deps = {e[0]: e for e in json.loads(_stamp_of(sim).read_text())["deps"]}
+    assert str(tmp_path / "inc" / "w.svh") in deps, sorted(deps)
+    assert deps[str(tmp_path / "inc" / "w.svh")][3] is not None
+
+
+def test_retargeting_an_include_symlink_invalidates_the_stamp(tmp_path, monkeypatch):
+    """A retargeted symlink changes what the build reads without changing
+    any name a directory listing shows — and under names-only listing
+    (a dependency file is present) the listing is *meant* to look no
+    further. The dependency list is what has to catch it, and it can only
+    do so if it re-resolves the link on validation instead of stat'ing the
+    target the first build happened to resolve to."""
+    _write_source(tmp_path)
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    (versions / "v1.svh").write_text("`define W 8\n")
+    (versions / "v2.svh").write_text("`define W 16\n")
+    (tmp_path / "inc").mkdir()
+    link = tmp_path / "inc" / "w.svh"
+    link.symlink_to(versions / "v1.svh")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 1
+
+    link.unlink()
+    link.symlink_to(versions / "v2.svh")
+    assert _sim("test_c").compile() == 0
+    assert len(calls) == 2, "the include symlink was retargeted but the simv was reused"
 
 
 def test_an_oversized_input_stays_stat_only_and_says_which(
