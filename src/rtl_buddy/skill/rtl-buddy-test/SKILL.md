@@ -64,8 +64,8 @@ directory (flat), unfiltered by suffix. Verilator reports which files it
 consumed, so for it the listing is compared by name only: an added or removed
 file rebuilds, an edit rebuilds only if the build read that file (headers
 included, via the dependency list, which follows symlinks on every check).
-VCS/Icarus report no dependencies, so for them any edited, added, or removed
-file in a listed directory rebuilds. The walk skips dot-directories,
+VCS/Icarus report no header dependencies, so for them any edited, added, or
+removed file in a listed directory rebuilds. The walk skips dot-directories,
 `artefacts`/`obj_dir*`, editor/VCS bookkeeping, rtl_buddy's own outputs by
 name (run.f, compile.log, test.log, result.json, the stamp), and the suite's own
 `rtl_buddy.log` by path; a header generated into a test's `artifact_dir` by a

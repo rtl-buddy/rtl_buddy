@@ -105,19 +105,17 @@ of the global reservation.
 
 Any tracked compile input change invalidates a shared build; stamps compare
 content, so a byte-for-byte regeneration does not. Stamps list each
-`+incdir+`/`-y` directory's contents, so an added or removed file rebuilds on
-every builder; an edited header rebuilds on VCS/Icarus, and on Verilator only
-if the build consumed it (its dependency list decides). Runtime-only plusargs, seeds,
-and simulation timeout do not either. Batch compile-input changes before
-launching a large build.
+`+incdir+`/`-y` dir: an added or removed file rebuilds; an edited header does
+on VCS/Icarus, on Verilator only if the build read it. Runtime-only plusargs,
+seeds, and sim timeout do not. Batch edits before a large build.
 
 - An edit that seems not to take effect, or a suspicious PASS right after one:
   read the `compile.build_reused` line (run log; console once per build
-  dir) and the test's `compile.log` breadcrumb — both name the reused
-  build directory and its stamp's age.
-- `--rebuild` forces a fresh compile, once per build directory per invocation.
-  Prefer it to deleting `artefacts/.shared-builds/`; dropping `--share-build`
-  does not stop reuse.
+  dir) and the test's `compile.log` breadcrumb — both name the reused build
+  dir and its stamp's age.
+- `--rebuild` forces a fresh compile, once per build dir per invocation. Prefer
+  it to deleting `artefacts/.shared-builds/`; dropping `--share-build` does not
+  stop reuse.
 - A wait on `compile.build_lock_wait` is another process compiling into the same
   directory, not a hang.
 - `dispatch.build_job_deduped` means an earlier run's build job for this suite
