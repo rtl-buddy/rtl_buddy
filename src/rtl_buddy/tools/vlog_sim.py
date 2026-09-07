@@ -482,6 +482,13 @@ _NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PAT
 # into exactly one rebuild (the #494 precedent).
 _DIRECTORY_ENTRY_LEN = 5
 
+# How a stamp's `deps` entries name their files. 2 is the declared path the
+# build used (`normpath`); the unversioned entries before it were `realpath`s,
+# which validate a retargeted symlink's *old* target and so cannot be told
+# apart from a current entry by shape. A stamp whose `deps` is a list and
+# whose `deps_format` is not this fails closed into one rebuild.
+_DEPS_FORMAT = 2
+
 # Verilator writes a make-style dependency file naming every input the
 # verilation consumed — sources, headers reached through `+incdir+`/`-y`,
 # its own std includes, and the `verilator_bin` binary itself. It is named
@@ -2419,7 +2426,9 @@ class VlogSim:
             # nothing can match one.
             return self._note_stamp_mismatch("no fingerprint to compare against")
         stored_inputs = {
-            key: value for key, value in stored.items() if key not in ("deps", "simv")
+            key: value
+            for key, value in stored.items()
+            if key not in ("deps", "deps_format", "simv")
         }
         # `sources` is the one input list whose entries are not compared by
         # equality, so it comes out of the dict comparison and goes through
@@ -2465,6 +2474,10 @@ class VlogSim:
             # so the unknown this branch admits is bounded to what the
             # filelist never named — see docs/known-issues.md.
             return True
+        if stored.get("deps_format") != _DEPS_FORMAT:
+            return self._note_stamp_mismatch(
+                "the stamp's dependency list predates declared-path tracking"
+            )
         return self._deps_unchanged(test_name, deps, quiet=quiet)
 
     def pre(self, run_id=_UNSET):
@@ -3452,6 +3465,7 @@ class VlogSim:
                         {
                             **fingerprint,
                             "deps": deps,
+                            "deps_format": _DEPS_FORMAT,
                             "simv": _stat_entry(self._get_simv_path()),
                         },
                         sort_keys=True,

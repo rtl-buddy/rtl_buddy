@@ -2480,6 +2480,61 @@ def test_retargeting_an_include_symlink_invalidates_the_stamp(tmp_path, monkeypa
     assert len(calls) == 2, "the include symlink was retargeted but the simv was reused"
 
 
+def test_a_stamp_with_resolved_dependency_paths_is_rebuilt_once(tmp_path, monkeypatch):
+    """A stamp written before deps were keyed by declared path holds the
+    link's *old* target as a plain path. Its entries have the current shape,
+    so nothing but a format marker can tell them apart — and revalidating
+    them would keep a retargeted link's old target valid for as long as it
+    exists. Such a stamp costs one rebuild, after which the marker is
+    there."""
+    _write_source(tmp_path)
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    (versions / "v1.svh").write_text("`define W 8\n")
+    (versions / "v2.svh").write_text("`define W 16\n")
+    (tmp_path / "inc").mkdir()
+    link = tmp_path / "inc" / "w.svh"
+    link.symlink_to(versions / "v1.svh")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    stamp_path = _stamp_of(sim_a)
+    stamp = json.loads(stamp_path.read_text())
+    assert stamp["deps_format"] == vlog_sim_module._DEPS_FORMAT
+    assert any(entry[0] == str(link) for entry in stamp["deps"])
+
+    # Rewrite it the way the previous format did: no marker, realpaths.
+    del stamp["deps_format"]
+    stamp["deps"] = [
+        [os.path.realpath(entry[0]), *entry[1:]] for entry in stamp["deps"]
+    ]
+    stamp_path.write_text(json.dumps(stamp, sort_keys=True))
+    link.unlink()
+    link.symlink_to(versions / "v2.svh")
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2, (
+        "a pre-format stamp validated a retargeted link's old target"
+    )
+    assert json.loads(stamp_path.read_text())["deps_format"] == (
+        vlog_sim_module._DEPS_FORMAT
+    )
+    assert _sim("test_c").compile() == 0
+    assert len(calls) == 2
+
+
 def test_an_oversized_input_stays_stat_only_and_says_which(
     tmp_path, monkeypatch, caplog
 ):

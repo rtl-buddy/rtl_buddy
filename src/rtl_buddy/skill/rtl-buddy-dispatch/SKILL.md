@@ -105,7 +105,9 @@ of the global reservation.
 
 Any tracked compile input change invalidates a shared build; stamps compare
 content, so a byte-for-byte regeneration does not. Stamps list each
-`+incdir+`/`-y` directory's contents, so a header edit rebuilds on every builder. Runtime-only plusargs, seeds,
+`+incdir+`/`-y` directory's contents, so an added or removed file rebuilds on
+every builder; an edited header rebuilds on VCS/Icarus, and on Verilator only
+if the build consumed it (its dependency list decides). Runtime-only plusargs, seeds,
 and simulation timeout do not either. Batch compile-input changes before
 launching a large build.
 

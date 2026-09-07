@@ -59,12 +59,17 @@ not a longer simulation timeout; use the `rtl-buddy-dispatch` skill when queued.
 header inputs, filelists, plusdefines, compile options, configured extra compile
 environment, builder, or toolchain changes rebuild; runtime plusargs, seeds, and
 `sim_timeout` do not.
-VCS/Icarus report no header dependencies, but every builder's stamp lists each
-`+incdir+` tree (recursively) and `-y` directory (flat), unfiltered by suffix, so
-an edited, added, or removed file in one rebuilds. The walk skips dot-directories,
-`artefacts`/`obj_dir*`, editor/VCS bookkeeping, and rtl_buddy's own outputs by
-name (run.f, compile.log, test.log, result.json, the stamp); a header generated
-into a test's `artifact_dir` by a preproc hook is still tracked.
+Every builder's stamp lists each `+incdir+` tree (recursively) and `-y`
+directory (flat), unfiltered by suffix. Verilator reports which files it
+consumed, so for it the listing is compared by name only: an added or removed
+file rebuilds, an edit rebuilds only if the build read that file (headers
+included, via the dependency list, which follows symlinks on every check).
+VCS/Icarus report no dependencies, so for them any edited, added, or removed
+file in a listed directory rebuilds. The walk skips dot-directories,
+`artefacts`/`obj_dir*`, editor/VCS bookkeeping, rtl_buddy's own outputs by
+name (run.f, compile.log, test.log, result.json, the stamp), and the suite's own
+`rtl_buddy.log` by path; a header generated into a test's `artifact_dir` by a
+preproc hook is still tracked.
 Batch compile-input edits before
 an expensive build and use independent cheap suites while it runs.
 
