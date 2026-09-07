@@ -4188,3 +4188,107 @@ def test_a_suite_override_the_backend_never_had_makes_no_false_hint(
     # The YAML field really does govern this run, so that is what to edit.
     assert cpus["edit_hint"]["path"] == "tests[name=basic].resources.cpus"
     assert "note" not in cpus["edit_hint"]
+
+
+# ------------------- the shared-binary audit (#535)
+
+
+def _stamped_row(test_name, sha, simv, build_dir=None):
+    results = TestPassResults(name=f"{test_name}/results")
+    results.results["build_stamp"] = {"fingerprint_sha": sha, "simv": simv}
+    if build_dir is not None:
+        results.results["build_stamp"]["build_dir"] = build_dir
+    return {"test_name": test_name, "randmode_i": None, "results": results}
+
+
+def _mismatch_events(caplog):
+    return [
+        record.rtl_fields
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "dispatch.binary_mismatch"
+    ]
+
+
+def test_the_collect_audit_warns_when_one_key_produced_two_binaries(caplog):
+    """One compile key is one binary; anything else is a substitution (#535).
+
+    Every run gated on a build job validated the same stamp, so agreeing
+    digests with disagreeing executables mean somebody rebuilt the shared
+    directory while its neighbours were reusing it. Reporting only — the
+    runs are already scored against whatever they ran, and the point is
+    that the substitution stops being invisible.
+    """
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1", ["/b/simv", 11, 2], "/b"),
+        _stamped_row("gamma", "k2", ["/c/simv", 10, 1], "/c"),
+        # Nothing to say: a run with no shared build at all.
+        {
+            "test_name": "delta",
+            "randmode_i": None,
+            "results": TestPassResults(name="delta/results"),
+        },
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == "/b"
+    assert events[0]["fingerprints"] == 1
+    assert events[0]["binaries"] == 2
+    assert events[0]["tests"] == ["alpha", "beta"]
+
+
+def test_the_collect_audit_groups_by_the_shared_directory_not_the_digest(caplog):
+    """The rebuild this audit exists to catch — an input edited mid-run and
+    recompiled into the same directory — changes the inputs' digest along
+    with the binary. Keyed on the digest, the two runs would fall into two
+    groups of one and the substitution would be invisible; the directory
+    is the compile key and does not move."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1-edited", ["/b/simv", 11, 2], "/b"),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == "/b"
+    assert events[0]["fingerprints"] == 2
+    assert events[0]["binaries"] == 2
+    assert events[0]["tests"] == ["alpha", "beta"]
+
+
+def test_the_collect_audit_falls_back_to_the_digest_for_an_older_stamp(caplog):
+    """An envelope from a worker that predates ``build_dir`` still groups on
+    what it has."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1]),
+        _stamped_row("beta", "k1", ["/b/simv", 11, 2]),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == "k1"
+
+
+def test_the_collect_audit_is_silent_when_every_run_named_one_binary(caplog):
+    """The healthy fan-out must say nothing, or the warning is worthless."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1", ["/b/simv", 10, 1], "/b"),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+    assert not _mismatch_events(caplog)

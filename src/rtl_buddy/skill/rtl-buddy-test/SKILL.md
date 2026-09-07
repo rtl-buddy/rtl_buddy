@@ -69,7 +69,11 @@ removed file in a listed directory rebuilds. The walk skips dot-directories,
 `artefacts`/`obj_dir*`, editor/VCS bookkeeping, rtl_buddy's own outputs by
 name (run.f, compile.log, test.log, result.json, the stamp), and the suite's own
 `rtl_buddy.log` by path; a header generated into a test's `artifact_dir` by a
-preproc hook is still tracked.
+preproc hook is still tracked. One exception: inside a dispatch build job,
+same-key configs adopt the first one's Verilator build when its consumed inputs
+are unchanged, even if a later `preproc` added an unrelated file to a listed
+directory; a new `-y` file or shadowing header still declines adoption, and a
+consumed input that differs fails the config with `build_job.group_input_drift`.
 Batch compile-input edits before
 an expensive build and use independent cheap suites while it runs.
 

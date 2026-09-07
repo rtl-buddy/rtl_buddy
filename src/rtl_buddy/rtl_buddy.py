@@ -305,6 +305,11 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
         tail = compile_error_tail(transcript)
         if tail:
             entry["error_tail"] = tail
+    elif failure.get("error_tail"):
+        # A failure with no builder and no transcript, but with its own
+        # account of itself: the group-adopt drift verdict (#535), which
+        # never ran a compiler and so has nothing to read a tail out of.
+        entry["error_tail"] = list(failure["error_tail"])[-COMPILE_ERROR_TAIL_LINES:]
     elif worker_error:
         # No builder ran, so there is no transcript — but the exception that
         # replaced it is exactly the "why" this field exists to carry.
@@ -2309,8 +2314,28 @@ class RtlBuddy:
                 )
             return None, group_dir, (index, cfg.get_name(), runner)
 
+        # Which config compiled each group's build, once one has (#535).
+        # Keyed by group dir, and a group is one worker's whole unit of
+        # work, so no two threads ever touch one key.
+        group_leaders = {}
+
         def _compile_group(group):
             """Compile one group's configs serially; rows for the caller.
+
+            The first member compiles; the rest ADOPT what it built. A
+            group's members share a compile key by construction — one
+            ``run.f``, one command line, one builder — so the only thing
+            that can separate a sibling's fingerprint from the leader's
+            stamp is a file that moved during this job, and the serial PRE
+            phase guarantees one on a cold tree: this member's own preproc
+            output, created after the leader was fingerprinted, under an
+            ``+incdir+`` the stamp lists. Re-deriving the stamp for that
+            bought a full second Verilation of an identical design (#535).
+            What the sibling does check is the leader's ``deps``: an input
+            the build actually consumed, differing here, is not a stale
+            build but two tests compiling different bytes under one key —
+            reported, not recompiled, because a recompile makes the last
+            writer decide what both of them simulate.
 
             Re-checks the cancellation latch before every member, which is
             also the check a worker makes when the pool hands it the next
@@ -2340,6 +2365,35 @@ class RtlBuddy:
                     # cancellation story.
                     rows.append((index, name, False, None, runner, group_dir))
                     continue
+                leader = group_leaders.get(group_dir)
+                # getattr, like every other optional runner capability
+                # here: a runner class that offers no adopt keeps the
+                # pre-#535 path rather than failing the config.
+                adopt = getattr(runner, "adopt_group_build", None)
+                if leader is not None and adopt is not None:
+                    try:
+                        verdict, dependency = adopt()
+                    except Exception as exc:  # noqa: BLE001 - exit-0 contract
+                        rows.append((index, name, False, str(exc), runner, group_dir))
+                        continue
+                    if verdict == "adopted":
+                        rows.append((index, name, True, None, runner, group_dir))
+                        continue
+                    if verdict == "drift":
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "build_job.group_input_drift",
+                            test=name,
+                            leader=leader,
+                            dependency=dependency,
+                        )
+                        rows.append((index, name, False, None, runner, group_dir))
+                        continue
+                    # Undecidable — no dependency file (VCS, Icarus), no
+                    # stamp, a compile line that moved. The leader's own
+                    # full comparison decides it instead, which is the
+                    # pre-#535 path and still short-circuits a valid stamp.
                 try:
                     res = runner.compile_prepared()
                 except Exception as exc:  # noqa: BLE001 - see exit-0 contract
@@ -2351,16 +2405,14 @@ class RtlBuddy:
                     # about its siblings.
                     rows.append((index, name, False, str(exc), runner, group_dir))
                     continue
-                rows.append(
-                    (
-                        index,
-                        name,
-                        isinstance(res, EarlyStopResults),
-                        None,
-                        runner,
-                        group_dir,
-                    )
-                )
+                built = isinstance(res, EarlyStopResults)
+                if built:
+                    # This member's build is what the rest of the group
+                    # adopts, whichever loop shape ran it: streaming calls
+                    # this once per member, so the leader has to outlive
+                    # the call.
+                    group_leaders.setdefault(group_dir, name)
+                rows.append((index, name, built, None, runner, group_dir))
             return rows
 
         # ---- serial phase: construct, PRE, and probe the compile key.
@@ -2553,6 +2605,15 @@ class RtlBuddy:
                 # distinct means two.
                 "group": (os.path.relpath(group_dir, suite_dir) if group_dir else None),
             }
+            stamp = getattr(runner, "last_build_stamp", None) or {}
+            if ok and stamp.get("fingerprint_sha") is not None:
+                # WHICH inputs this build was made from (#535). A gated sim
+                # job that cannot validate the stamp compares its own
+                # fingerprint against this to say whether the disagreement
+                # is over the same inputs or different ones — and either
+                # way it declines to recompile, because the build exists.
+                # Additive; schema_version stays 1.
+                build_entry["fingerprint_sha"] = stamp["fingerprint_sha"]
             if not ok:
                 # Why it failed, carried in the envelope rather than left in
                 # this job's log for someone to find (#498). Everything here
@@ -2787,6 +2848,15 @@ class RtlBuddy:
             # instance goes out of scope with the runner.
             for res in results:
                 res.results["compile"] = dict(compile_record)
+        build_stamp = getattr(test_runner, "last_build_stamp", None)
+        if build_stamp is not None:
+            # Which build this run actually simulated (#535): the compile
+            # key its stamp was written for, and the executable that stamp
+            # vouched for. The head cross-checks the runs of one key at
+            # collect — they all validated one stamp, so a run naming
+            # another binary reused something nobody else did.
+            for res in results:
+                res.results["build_stamp"] = dict(build_stamp)
         self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
 
@@ -3750,6 +3820,60 @@ class RtlBuddy:
         Path(spec.result_json).unlink(missing_ok=True)
         return backend.submit_build(spec)
 
+    @staticmethod
+    def _audit_shared_binaries(suite_results):
+        """Warn when one compile key produced more than one binary (#535).
+
+        Every run gated on a build job validates the same stamp and records
+        what it validated — the shared directory the stamp lives in, its
+        inputs' digest, and the ``simv`` that stamp vouched for. Runs of one
+        directory that name different binaries mean somebody rebuilt it
+        instead of reusing it, and its neighbours may have simulated an
+        executable that was replaced under them mid-run. That is not
+        something a result can be rescored from, so it is a warning and not
+        a verdict: the runs are already scored against whatever they ran,
+        and the point is that the substitution is *visible* rather than
+        only inferable from a `compile.prebuilt_stamp_invalid` somewhere in
+        the fleet.
+
+        Grouped by ``build_dir`` — the ``obj_dir_<key>`` directory, which
+        is the compile key — and not by the fingerprint digest: the digest
+        covers the inputs' *contents*, so the very rebuild this is looking
+        for (an input edited mid-run, then recompiled into the same
+        directory) would split the runs into two digests and hide from a
+        digest-keyed audit. A stamp written before ``build_dir`` was
+        recorded falls back to its digest, which is at least a key.
+
+        Reporting only, and never raising: a missing or oddly shaped
+        ``build_stamp`` is simply a run that had nothing to say.
+        """
+        by_key = {}
+        for row in suite_results:
+            results = getattr(row.get("results"), "results", None)
+            stamp = results.get("build_stamp") if isinstance(results, dict) else None
+            if not isinstance(stamp, dict):
+                continue
+            sha, simv = stamp.get("fingerprint_sha"), stamp.get("simv")
+            if sha is None or simv is None:
+                continue
+            key = stamp.get("build_dir") or sha
+            group = by_key.setdefault(key, {"binaries": {}, "fingerprints": set()})
+            group["binaries"].setdefault(repr(simv), []).append(row.get("test_name"))
+            group["fingerprints"].add(sha)
+        for key, group in by_key.items():
+            binaries = group["binaries"]
+            if len(binaries) < 2:
+                continue
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.binary_mismatch",
+                build_dir=key,
+                fingerprints=len(group["fingerprints"]),
+                binaries=len(binaries),
+                tests=sorted({name for names in binaries.values() for name in names}),
+            )
+
     def _dispatch_collect(self, backend, state):
         """Collect a submitted suite, retrying what deserves it (#405).
 
@@ -3796,6 +3920,7 @@ class RtlBuddy:
                 submitted_at=submitted_at,
             )
             if not retryable:
+                self._audit_shared_binaries(suite_results)
                 return suite_results
             attempt += 1
             resubmitted_at = time.time()
@@ -3836,6 +3961,7 @@ class RtlBuddy:
                     jobs=len(retryable),
                     error=str(e),
                 )
+                self._audit_shared_binaries(suite_results)
                 return suite_results
 
     def _resubmit_retryable(

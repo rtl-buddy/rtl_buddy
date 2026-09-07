@@ -452,6 +452,46 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "simulation reservation and overwrite the build's own "
                 f"{fields.get('transcript')}, which is where the error is."
             )
+        case "compile.build_stamp_rejected":
+            run = fields.get("run_id")
+            run_note = "" if run is None else f" (run {run})"
+            reason = fields.get("reason")
+            why = "" if not reason else f" ({reason})"
+            what = (
+                "from different compile inputs than this job derived"
+                if fields.get("inputs_differ")
+                else "and its stamp still does not validate here"
+            )
+            return (
+                f"{fields.get('test')}{run_note}: not compiling — the build "
+                f"job built this test {what}{why}. Recompiling would run into "
+                f"{fields.get('build_dir')} under the SIMULATION reservation, "
+                "which the scheduler kills for memory, and that kill would "
+                "hide the reason above. Fix what drifted — a preproc "
+                "generating different bytes on this node, an edit that landed "
+                "mid-run — and re-run."
+            )
+        case "build_job.group_input_drift":
+            return (
+                f"{fields.get('test')}: shares a compile key with "
+                f"{fields.get('leader')} but compiles a different "
+                f"{fields.get('dependency')}. Under --share-build one key is "
+                "one binary, so whichever config compiled last would decide "
+                "what both of them simulate. Give this test its own compile "
+                "key, or fix the preproc that rewrites a consumed input per "
+                "test."
+            )
+        case "dispatch.binary_mismatch":
+            return (
+                f"{fields.get('tests')}: runs of one shared build "
+                f"({fields.get('build_dir')}) did not all simulate the "
+                f"same binary — {fields.get('binaries')} distinct executables "
+                f"were stamped for it, over {fields.get('fingerprints')} "
+                "distinct input digests. One of those runs recompiled the shared "
+                "build instead of reusing it, so its neighbours may have "
+                "simulated a binary that was replaced under them. Look for "
+                "compile.prebuilt_stamp_invalid in those jobs' logs."
+            )
         case "compile.prebuilt_stamp_invalid":
             run = fields.get("run_id")
             run_note = "" if run is None else f" (run {run})"

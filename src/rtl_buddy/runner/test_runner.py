@@ -173,6 +173,33 @@ class TestRunner:
             return None
 
     @property
+    def last_build_stamp(self):
+        """This runner's sim's build-stamp identity, or ``None`` (#535).
+
+        ``{build_dir, fingerprint_sha, simv}`` — which shared directory
+        (the compile key) the build this run simulated was stamped in,
+        which inputs that stamp recorded, and which executable it vouched
+        for. The build job records the digest in its envelope, and
+        every run carries both into its own result envelope so the head can
+        check at collect that one key produced one binary. Telemetry, and
+        telemetry must never raise.
+        """
+        try:
+            return getattr(self._vlog_sim, "last_build_stamp", None)
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return None
+
+    def adopt_group_build(self):
+        """Adopt a same-key sibling's build on the prepared sim (#535).
+
+        ``("adopted", None)`` / ``("drift", <path>)`` / ``(None, None)`` —
+        see :meth:`VlogSim.adopt_group_build`. Only the dispatched build
+        job asks, and only for the members of a group whose leader has
+        already compiled.
+        """
+        return self._vlog_sim.adopt_group_build()
+
+    @property
     def builder_name(self):
         """The resolved builder's name, or ``None`` (#495).
 
