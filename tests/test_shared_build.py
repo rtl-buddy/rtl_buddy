@@ -2132,6 +2132,32 @@ def test_a_group_sibling_declines_a_build_when_a_library_file_appeared(
     assert len(calls) == 2, "a new library file was adopted as unchanged"
 
 
+def _listing(*names):
+    return [[name, 1, 1, "sha"] for name in names]
+
+
+@pytest.mark.parametrize(
+    ("line", "listing", "expected"),
+    [
+        ("-y lib", _listing("keep.sv"), "-y lib :: +keep.sv"),
+        ("+incdir+gen", _listing("w.svh"), "+incdir+gen :: +w.svh"),
+        ("+incdir+gen", _listing("params_test_b.svh"), None),
+    ],
+)
+def test_a_stamped_directory_that_did_not_exist_counts_as_all_appeared(
+    line, listing, expected
+):
+    """A ``+incdir+``/``-y`` line whose directory was absent at the stamp
+    is a plain ``[line, None, None, None]`` entry there and a listing now.
+    That is every file in it appearing: a ``-y`` member or a shadowing
+    include declines adoption, and an unrelated header does not."""
+    stored = [["src/top.sv", 1, 1, "sha"], [line, None, None, None]]
+    current = [["src/top.sv", 1, 1, "sha"], [line, None, None, None, listing]]
+    deps = [["src/top.sv", 1, 1, "sha"], ["inc/w.svh", 1, 1, "sha"]]
+
+    assert vlog_sim_module._first_resolution_change(stored, current, deps) == expected
+
+
 def test_a_group_sibling_still_adopts_past_an_unrelated_new_file(tmp_path, monkeypatch):
     """The boundary of the two tests above: a new file under ``+incdir+``
     that shadows nothing the leader consumed is the #535 case itself, and

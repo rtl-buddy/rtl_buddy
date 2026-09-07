@@ -1045,6 +1045,11 @@ def _first_resolution_change(stored_sources, sources, deps):
       first when that directory is searched first. Which directory wins is
       the builder's business; both orders read as a change here.
 
+    A directory that did not exist at the stamp and does now is the same
+    question asked of every file in it: it stamped as a plain
+    ``[line, None, None, None]`` then and carries a listing now, so its
+    whole listing is the addition.
+
     Removals are already decided: a vanished consumed input fails the
     ``deps`` comparison, and a vanished bystander changed nothing that was
     read. Two lists that do not line up as stamps of one ``run.f`` are a
@@ -1060,14 +1065,17 @@ def _first_resolution_change(stored_sources, sources, deps):
         if isinstance(entry, list) and entry and isinstance(entry[0], str)
     )
     for stored_entry, entry in zip(stored_sources, sources):
-        if not (_is_directory_entry(stored_entry) and _is_directory_entry(entry)):
+        if not _is_directory_entry(entry):
             continue
+        if not isinstance(stored_entry, list) or not stored_entry:
+            return f"{entry[0]} :: (stamp entry is malformed)"
         if stored_entry[0] != entry[0]:
             return str(entry[0])
-        stored_names, names = (
-            _listing_names(stored_entry[-1]),
-            _listing_names(entry[-1]),
-        )
+        names = _listing_names(entry[-1])
+        if _is_directory_entry(stored_entry):
+            stored_names = _listing_names(stored_entry[-1])
+        else:
+            stored_names = []
         if stored_names is None or names is None:
             return f"{entry[0]} :: (listing is not a list)"
         added = sorted(set(names) - set(stored_names))
