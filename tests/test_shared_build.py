@@ -2251,6 +2251,43 @@ def test_an_adoption_validates_the_stamp_it_rewrites_under_the_lock(
     assert stamp_path.read_text() == before, "a stamp nobody validated was rewritten"
 
 
+def test_an_adoption_whose_stamp_refresh_fails_is_not_an_adoption(
+    tmp_path, monkeypatch
+):
+    """An ``adopted`` verdict puts the config in the envelope's ``built``,
+    after which its gated sim jobs fail rather than recompile. So a stamp
+    that could not be rewritten — read-only, ``ENOSPC`` — hands the config
+    back undecided, to the compile path, instead of vouching for a listing
+    that never landed."""
+    _write_source(tmp_path)
+    (tmp_path / "gen").mkdir()
+    _write_header(tmp_path)
+    calls = []
+    sibling = _group_pair_with_incdirs(
+        tmp_path,
+        monkeypatch,
+        calls,
+        filelist=["src/top.sv", "+incdir+gen", "+incdir+inc"],
+        depends=["../../src/top.sv", "../../inc/w.svh"],
+        sibling_pre=lambda: (tmp_path / "gen" / "params_test_b.svh").write_text(
+            "`define B 1\n"
+        ),
+    )
+    stamp_path = (
+        Path(sibling.compile_group_dir()) / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+    )
+    before = stamp_path.read_text()
+
+    def _no_space(self, path, text):
+        raise OSError(errno.ENOSPC, "No space left on device", str(path))
+
+    monkeypatch.setattr(vlog_sim_module.VlogSim, "_replace_text", _no_space)
+
+    assert sibling.adopt_group_build() == (None, None)
+    assert stamp_path.read_text() == before
+    assert sibling.last_compile["reused"] is None
+
+
 def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeypatch):
     """What a run reports having simulated (#535).
 

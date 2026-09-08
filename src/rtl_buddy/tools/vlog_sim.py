@@ -3270,9 +3270,10 @@ class VlogSim:
                 appeared=appeared,
             )
             return None, None
+        if not self._refresh_stamp_sources(plan.shared_dir, fingerprint["sources"]):
+            return None, None
         # Consumed like a compile: this instance has had its one build.
         self._compile_plan_cache = None
-        self._refresh_stamp_sources(plan.shared_dir, fingerprint["sources"])
         self._report_build_reused(plan, stamp_dir=plan.shared_dir)
         self._record_compile(duration_sec=0.0, reused=True)
         return "adopted", None
@@ -3282,19 +3283,34 @@ class VlogSim:
 
         Everything else — command, toolchain, ``deps``, ``simv`` — is kept
         as stamped. Called with the build directory lock held, so the stamp
-        re-read here is the one just validated. Best-effort: a stamp that
-        cannot be rewritten is the one that was adopted a moment ago.
+        re-read here is the one just validated. Written as one atomic
+        replacement, so a reader never sees a truncated stamp.
+
+        Returns whether the stamp now carries ``sources``. ``False`` means
+        the caller must not report an adoption: the gated simulation jobs
+        would validate a listing that was never updated and, the build
+        envelope saying the config was built, fail rather than recompile.
         """
         stored = self._read_build_stamp(stamp_dir)
-        if stored is None or stored.get("sources") == sources:
-            return
+        if stored is None:
+            return False
+        if stored.get("sources") == sources:
+            return True
         stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
         try:
-            stamp_path.write_text(
-                json.dumps({**stored, "sources": sources}, sort_keys=True)
+            self._replace_text(
+                stamp_path, json.dumps({**stored, "sources": sources}, sort_keys=True)
             )
-        except OSError:
-            return
+        except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.build_stamp_refresh_failed",
+                test=self.test_name,
+                stamp=str(stamp_path),
+                error=str(exc),
+            )
+            return False
         log_event(
             logger,
             logging.DEBUG,
@@ -3302,6 +3318,7 @@ class VlogSim:
             test=self.test_name,
             stamp=str(stamp_path),
         )
+        return True
 
     def _note_group_input_drift(self, dependency):
         """Record the drift verdict as a compile failure; return ``dependency``.
