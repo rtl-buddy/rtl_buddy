@@ -2858,12 +2858,13 @@ class RtlBuddy:
         build_stamp = getattr(test_runner, "last_build_stamp", None)
         if build_stamp is not None:
             # Which build this run actually simulated (#535): the compile
-            # key its stamp was written for, and the executable that stamp
-            # vouched for. The head cross-checks the runs of one key at
-            # collect — they all validated one stamp, so a run naming
-            # another binary reused something nobody else did.
+            # key its stamp was written for, and the executable it launched.
+            # The head cross-checks the runs of one key at collect — they
+            # all validated one stamp, so a run naming another binary reused
+            # something nobody else did. A multi-run runner already stamped
+            # each result with its own launch; that is kept.
             for res in results:
-                res.results["build_stamp"] = dict(build_stamp)
+                res.results.setdefault("build_stamp", dict(build_stamp))
         self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
 

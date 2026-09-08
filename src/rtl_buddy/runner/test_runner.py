@@ -417,7 +417,7 @@ class TestRunner:
                 run_id=run_id, seed_mode=self.seed_mode, replay_run_id=replay_run_id
             )
             if execute_returncode == 4444:
-                repeated_results.append(SimTimeoutResults(name=self.name + "/results"))
+                result = SimTimeoutResults(name=self.name + "/results")
             elif self.run_depth == RunDepth.SIM:
                 log_event(
                     logger,
@@ -427,12 +427,17 @@ class TestRunner:
                     run_id=run_id,
                     stage="sim",
                 )
-                repeated_results.append(
-                    EarlyStopResults(
-                        name=self.name + "/results", desc="Stopped early at sim"
-                    )
+                result = EarlyStopResults(
+                    name=self.name + "/results", desc="Stopped early at sim"
                 )
             else:
-                repeated_results.append(vlog_sim.post(run_id=run_id))
+                result = vlog_sim.post(run_id=run_id)
+            # This run's own launch, taken now: the next run's `execute()`
+            # restates the executable it launches, and a shared binary
+            # replaced between two seeds is two different launches.
+            stamp = self.last_build_stamp
+            if stamp is not None:
+                result.results["build_stamp"] = dict(stamp)
+            repeated_results.append(result)
 
         return repeated_results

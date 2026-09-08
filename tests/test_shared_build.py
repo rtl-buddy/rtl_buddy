@@ -12,6 +12,7 @@ import pytest
 
 from rtl_buddy import artifact_lock as artifact_lock_module
 from rtl_buddy.process_utils import ManagedProcessResult
+from rtl_buddy.runner.test_results import TestResults
 from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.artifact_paths import shared_build_dir
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
@@ -2408,6 +2409,50 @@ def test_a_leaders_recorded_digest_follows_the_stamp_a_sibling_refreshed(
     (Path(cold["build_dir"]) / vlog_sim_module.SHARED_BUILD_STAMP_NAME).unlink()
     leader.refresh_build_stamp()
     assert leader.last_build_stamp == sibling.last_build_stamp
+
+
+def test_each_of_a_runners_runs_keeps_the_executable_it_launched(tmp_path, monkeypatch):
+    """`run_multiple` launches one binary per seed off one sim instance, and
+    each launch restates the sim's `simv`. Every result carries the launch it
+    came from, not whatever the last seed happened to run."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+
+    launched = []
+
+    def _execute(*, run_id, **kwargs):
+        simv = Path(sim._get_simv_path())
+        simv.write_bytes(simv.read_bytes() + b"\n# rebuilt by a neighbour\n")
+        sim._record_launched_simv(str(simv))
+        launched.append(sim.last_build_stamp["simv"])
+        return 0
+
+    monkeypatch.setattr(sim, "execute", _execute)
+    monkeypatch.setattr(sim, "pre", lambda **kwargs: None)
+    monkeypatch.setattr(
+        sim, "post", lambda *, run_id: TestResults("results", {"run_id": run_id})
+    )
+    runner = RtlBuddyTestRunner(
+        name="rtl_buddy/testrunner",
+        root_cfg=sim.root_cfg,
+        test_cfg=sim.test_cfg,
+        rtl_builder_mode="sim",
+        test_runner_mode={"sim_to_stdout": True},
+        suite_dir=str(tmp_path),
+        share_build=True,
+    )
+    monkeypatch.setattr(runner, "_create_vlog_sim", lambda: sim)
+
+    results = runner.run_multiple([1, 2, 3])
+
+    assert len(calls) == 1
+    assert [res.results["build_stamp"]["simv"] for res in results] == launched
+    assert (
+        results[0].results["build_stamp"]["simv"]
+        != results[2].results["build_stamp"]["simv"]
+    )
 
 
 def test_a_gated_retry_says_what_drifted(tmp_path, monkeypatch, caplog):
