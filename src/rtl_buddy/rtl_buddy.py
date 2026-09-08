@@ -2605,6 +2605,13 @@ class RtlBuddy:
                 # distinct means two.
                 "group": (os.path.relpath(group_dir, suite_dir) if group_dir else None),
             }
+            # The stamp as it stands now that every member is done: a
+            # sibling's adoption rewrote its listing after the leader
+            # recorded, and the gated jobs validate — and compare their
+            # digest against — the final one.
+            refresh_stamp = getattr(runner, "refresh_build_stamp", None)
+            if callable(refresh_stamp):
+                refresh_stamp()
             stamp = getattr(runner, "last_build_stamp", None) or {}
             if ok and stamp.get("fingerprint_sha") is not None:
                 # WHICH inputs this build was made from (#535). A gated sim

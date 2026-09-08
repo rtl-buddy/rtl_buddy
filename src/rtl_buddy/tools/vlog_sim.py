@@ -3172,6 +3172,31 @@ class VlogSim:
             "simv": stored.get("simv"),
         }
 
+    def refresh_build_stamp(self):
+        """Re-read the stamp ``last_build_stamp`` was taken from.
+
+        A same-key sibling's adoption rewrites the shared stamp's listing
+        after the leader recorded its digest, so a record taken when the
+        group is done — the build job's envelope — must name the stamp the
+        gated jobs will validate, not the one the leader saw. Telemetry:
+        never raises.
+        """
+        stamp = self.last_build_stamp
+        if stamp is None or self._read_build_stamp(stamp["build_dir"]) is None:
+            return
+        self._record_build_stamp(stamp["build_dir"])
+
+    def _record_launched_simv(self, simv_path):
+        """Stamp the executable this run launches, not the one it validated.
+
+        The stamp check and the launch are separate moments, and another
+        process may rebuild the shared directory between them; the head's
+        binary audit is only worth its warning if each run names the binary
+        it actually ran.
+        """
+        if self.last_build_stamp is not None:
+            self.last_build_stamp["simv"] = _stat_entry(simv_path)
+
     def adopt_group_build(self):
         """Take the build a same-key sibling just made, or say why not (#535).
 
@@ -3935,6 +3960,7 @@ class VlogSim:
                 f"+verilator+coverage+file+{self._get_cov_abspath(run_id=run_id)}"
             ]
 
+        self._record_launched_simv(run_cmd[0])
         run_str = " ".join(run_cmd)
         log_event(
             logger,

@@ -189,6 +189,19 @@ class TestRunner:
         except Exception:  # noqa: BLE001 - telemetry must never raise
             return None
 
+    def refresh_build_stamp(self):
+        """Re-read the stamp behind :attr:`last_build_stamp` (#535).
+
+        The build job calls this once every group member is done, so the
+        digest it records is the stamp's final one — a sibling's adoption
+        rewrites the listing after the leader recorded. Telemetry, never
+        raises.
+        """
+        try:
+            self._vlog_sim.refresh_build_stamp()
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return
+
     def adopt_group_build(self):
         """Adopt a same-key sibling's build on the prepared sim (#535).
 

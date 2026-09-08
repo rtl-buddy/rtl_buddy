@@ -2356,6 +2356,60 @@ def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeyp
     assert reader.last_build_stamp == stamp
 
 
+def test_a_run_names_the_executable_it_launched(tmp_path, monkeypatch):
+    """The stamp check and the launch are separate moments. A neighbour that
+    rebuilt the shared directory between them replaced the binary this run
+    validated, and the head's audit can only see that if the run reports
+    the executable it ran, not the one its stamp vouched for."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    simv = Path(sim._get_simv_path())
+    vouched = sim.last_build_stamp["simv"]
+    assert vouched == vlog_sim_module._stat_entry(str(simv))
+
+    simv.write_bytes(simv.read_bytes() + b"\n# rebuilt by a neighbour\n")
+
+    # What ``execute()`` does with its command's argv[0] before launching it.
+    sim._record_launched_simv(str(simv))
+    assert sim.last_build_stamp["simv"] == vlog_sim_module._stat_entry(str(simv))
+    assert sim.last_build_stamp["simv"] != vouched
+
+
+def test_a_leaders_recorded_digest_follows_the_stamp_a_sibling_refreshed(
+    tmp_path, monkeypatch
+):
+    """An adoption rewrites the shared stamp's listing, which is part of the
+    digest. The leader recorded its digest before that, so a build job
+    writing the envelope once the group is done refreshes each member's
+    record from the stamp the gated jobs will actually compare against."""
+    _write_source(tmp_path)
+    (tmp_path / "gen").mkdir()
+    _write_header(tmp_path)
+    calls = []
+    filelist = ["src/top.sv", "+incdir+gen", "+incdir+inc"]
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+    leader = _make_sim(tmp_path, monkeypatch, test_name="test_a", filelist=filelist)
+    assert leader.compile() == 0
+    cold = dict(leader.last_build_stamp)
+    (tmp_path / "gen" / "params_test_b.svh").write_text("`define B 1\n")
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b", filelist=filelist)
+    assert sibling.adopt_group_build() == ("adopted", None)
+    assert sibling.last_build_stamp["fingerprint_sha"] != cold["fingerprint_sha"]
+
+    leader.refresh_build_stamp()
+    assert leader.last_build_stamp == sibling.last_build_stamp
+
+    # A stamp that vanished is not a reason to forget what was recorded.
+    (Path(cold["build_dir"]) / vlog_sim_module.SHARED_BUILD_STAMP_NAME).unlink()
+    leader.refresh_build_stamp()
+    assert leader.last_build_stamp == sibling.last_build_stamp
+
+
 def test_a_gated_retry_says_what_drifted(tmp_path, monkeypatch, caplog):
     """A dispatched job logs at INFO and the stamp check's own diagnostics
     are DEBUG, so the one line a reader of an OOM-killed sim job gets has to
