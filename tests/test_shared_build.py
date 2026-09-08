@@ -2181,6 +2181,37 @@ def test_a_group_sibling_still_adopts_past_an_unrelated_new_file(tmp_path, monke
     assert len(calls) == 1
 
 
+def test_an_adoption_leaves_a_stamp_the_gated_jobs_validate(tmp_path, monkeypatch):
+    """The sim jobs gated on that build job run after every member's PRE has
+    populated the tree, and validate the stamp's listing by name. A stamp
+    still listing the leader's cold view fails them all — the leader's too,
+    and a gated job whose build job built it does not recompile — so an
+    adoption rewrites the listing to what the tree now holds."""
+    _write_source(tmp_path)
+    (tmp_path / "gen").mkdir()
+    _write_header(tmp_path)
+    calls = []
+    filelist = ["src/top.sv", "+incdir+gen", "+incdir+inc"]
+    sibling = _group_pair_with_incdirs(
+        tmp_path,
+        monkeypatch,
+        calls,
+        filelist=filelist,
+        depends=["../../src/top.sv", "../../inc/w.svh"],
+        sibling_pre=lambda: (tmp_path / "gen" / "params_test_b.svh").write_text(
+            "`define B 1\n"
+        ),
+    )
+    assert sibling.adopt_group_build() == ("adopted", None)
+
+    for test_name in ("test_a", "test_b"):
+        gated = _make_sim(tmp_path, monkeypatch, test_name=test_name, filelist=filelist)
+        gated.expect_prebuilt = True
+        assert gated.compile() == 0
+        assert gated.last_compile["reused"] is True
+    assert len(calls) == 1
+
+
 def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeypatch):
     """What a run reports having simulated (#535).
 

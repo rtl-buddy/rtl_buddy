@@ -3208,6 +3208,13 @@ class VlogSim:
         it and this member takes the pre-#535 path. ``(None, None)`` IS that
         path — the caller compiles, and a valid stamp still short-circuits
         it.
+
+        An adoption also rewrites the stamp's ``sources`` to this member's
+        listing. The stamp is what every gated simulation job validates
+        against, by name for the listings, and those jobs run after every
+        member's ``preproc`` has populated the tree: a stamp still listing
+        the leader's cold view would fail them all — the leader's included —
+        and a gated job whose build job built it does not recompile.
         """
         plan = self._compile_plan()
         fingerprint = plan.fingerprint
@@ -3257,9 +3264,37 @@ class VlogSim:
             return None, None
         # Consumed like a compile: this instance has had its one build.
         self._compile_plan_cache = None
+        with build_dir_lock(plan.shared_dir, test=self.test_name):
+            self._refresh_stamp_sources(plan.shared_dir, fingerprint["sources"])
         self._report_build_reused(plan, stamp_dir=plan.shared_dir)
         self._record_compile(duration_sec=0.0, reused=True)
         return "adopted", None
+
+    def _refresh_stamp_sources(self, stamp_dir, sources):
+        """Rewrite the stamp in ``stamp_dir`` with ``sources`` as its listing.
+
+        Everything else — command, toolchain, ``deps``, ``simv`` — is kept
+        as stamped, and re-read under the lock so a concurrent writer's
+        stamp is not clobbered with a stale copy. Best-effort: a stamp that
+        cannot be rewritten is the one that was adopted a moment ago.
+        """
+        stored = self._read_build_stamp(stamp_dir)
+        if stored is None or stored.get("sources") == sources:
+            return
+        stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
+        try:
+            stamp_path.write_text(
+                json.dumps({**stored, "sources": sources}, sort_keys=True)
+            )
+        except OSError:
+            return
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.build_stamp_sources_refreshed",
+            test=self.test_name,
+            stamp=str(stamp_path),
+        )
 
     def _note_group_input_drift(self, dependency):
         """Record the drift verdict as a compile failure; return ``dependency``.
