@@ -3258,8 +3258,13 @@ class VlogSim:
                 return None, None
             if not _entry_matches(entry, self._tracked_entry(entry[0])):
                 return "drift", self._note_group_input_drift(entry[0])
+        # Listed now, under the lock: the plan's listing predates the wait
+        # for it, and a file another process added to a tracked directory
+        # meanwhile would neither be seen as a resolution change nor make
+        # it into the refreshed stamp the gated jobs validate by name.
+        sources = self._fingerprint_filelist_sources(plan.filelist_path)
         appeared = _first_resolution_change(
-            stored.get("sources"), fingerprint.get("sources"), stored["deps"]
+            stored.get("sources"), sources, stored["deps"]
         )
         if appeared is not None:
             log_event(
@@ -3270,7 +3275,7 @@ class VlogSim:
                 appeared=appeared,
             )
             return None, None
-        if not self._refresh_stamp_sources(plan.shared_dir, fingerprint["sources"]):
+        if not self._refresh_stamp_sources(plan.shared_dir, sources):
             return None, None
         # Consumed like a compile: this instance has had its one build.
         self._compile_plan_cache = None

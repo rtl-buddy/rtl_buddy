@@ -2251,6 +2251,43 @@ def test_an_adoption_validates_the_stamp_it_rewrites_under_the_lock(
     assert stamp_path.read_text() == before, "a stamp nobody validated was rewritten"
 
 
+def test_an_adoption_lists_the_tree_under_the_lock(tmp_path, monkeypatch):
+    """The plan's listing predates the wait for the lock. A header a
+    neighbour dropped in meanwhile, shadowing a consumed include, is a
+    resolution change the stale listing cannot show — and a stamp rewritten
+    from that listing would fail every gated job that lists the real tree.
+    Listed under the lock, the shadow declines the adoption."""
+    _write_source(tmp_path)
+    (tmp_path / "gen").mkdir()
+    _write_header(tmp_path)
+    calls = []
+    sibling = _group_pair_with_incdirs(
+        tmp_path,
+        monkeypatch,
+        calls,
+        filelist=["src/top.sv", "+incdir+gen", "+incdir+inc"],
+        depends=["../../src/top.sv", "../../inc/w.svh"],
+        sibling_pre=lambda: (tmp_path / "gen" / "params_test_b.svh").write_text(
+            "`define B 1\n"
+        ),
+    )
+    shared_dir = Path(sibling.compile_group_dir())
+    stamp_path = shared_dir / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+    before = stamp_path.read_text()
+    real_lock = vlog_sim_module.build_dir_lock
+
+    @contextmanager
+    def _shadowed_under_us(build_dir, **kwargs):
+        with real_lock(build_dir, **kwargs) as held:
+            (tmp_path / "gen" / "w.svh").write_text("`define W 2\n")
+            yield held
+
+    monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _shadowed_under_us)
+
+    assert sibling.adopt_group_build() == (None, None)
+    assert stamp_path.read_text() == before, "a stale listing was stamped"
+
+
 def test_an_adoption_whose_stamp_refresh_fails_is_not_an_adoption(
     tmp_path, monkeypatch
 ):
