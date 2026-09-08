@@ -471,6 +471,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "generating different bytes on this node, an edit that landed "
                 "mid-run — and re-run."
             )
+        case "compile.build_stamp_refresh_failed":
+            return (
+                f"{fields.get('test')}: could not rewrite the shared build "
+                f"stamp {fields.get('stamp')} ({fields.get('error')}), so this "
+                "config compiles instead of adopting its group's build. Check "
+                "the shared build directory's permissions and free space."
+            )
         case "build_job.group_input_drift":
             return (
                 f"{fields.get('test')}: shares a compile key with "
