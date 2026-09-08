@@ -3215,11 +3215,19 @@ class VlogSim:
         member's ``preproc`` has populated the tree: a stamp still listing
         the leader's cold view would fail them all — the leader's included —
         and a gated job whose build job built it does not recompile.
+
+        Validation and the rewrite happen under the build directory lock,
+        as a compile's stamp check does: what is validated is the stamp
+        that is rewritten, not one a concurrent process replaced between.
         """
         plan = self._compile_plan()
         fingerprint = plan.fingerprint
         if plan.shared_dir is None or not isinstance(fingerprint, dict):
             return None, None
+        with build_dir_lock(plan.shared_dir, test=self.test_name):
+            return self._adopt_group_build_locked(plan, fingerprint)
+
+    def _adopt_group_build_locked(self, plan, fingerprint):
         stored = self._read_build_stamp(plan.shared_dir)
         if (
             stored is None
@@ -3264,8 +3272,7 @@ class VlogSim:
             return None, None
         # Consumed like a compile: this instance has had its one build.
         self._compile_plan_cache = None
-        with build_dir_lock(plan.shared_dir, test=self.test_name):
-            self._refresh_stamp_sources(plan.shared_dir, fingerprint["sources"])
+        self._refresh_stamp_sources(plan.shared_dir, fingerprint["sources"])
         self._report_build_reused(plan, stamp_dir=plan.shared_dir)
         self._record_compile(duration_sec=0.0, reused=True)
         return "adopted", None
@@ -3274,8 +3281,8 @@ class VlogSim:
         """Rewrite the stamp in ``stamp_dir`` with ``sources`` as its listing.
 
         Everything else — command, toolchain, ``deps``, ``simv`` — is kept
-        as stamped, and re-read under the lock so a concurrent writer's
-        stamp is not clobbered with a stale copy. Best-effort: a stamp that
+        as stamped. Called with the build directory lock held, so the stamp
+        re-read here is the one just validated. Best-effort: a stamp that
         cannot be rewritten is the one that was adopted a moment ago.
         """
         stored = self._read_build_stamp(stamp_dir)

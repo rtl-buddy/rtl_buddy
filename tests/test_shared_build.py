@@ -5,7 +5,7 @@ import logging
 import os
 import shutil
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import pytest
@@ -2210,6 +2210,45 @@ def test_an_adoption_leaves_a_stamp_the_gated_jobs_validate(tmp_path, monkeypatc
         assert gated.compile() == 0
         assert gated.last_compile["reused"] is True
     assert len(calls) == 1
+
+
+def test_an_adoption_validates_the_stamp_it_rewrites_under_the_lock(
+    tmp_path, monkeypatch
+):
+    """Another ``rb`` process may rebuild the shared directory between an
+    unlocked stamp check and the locked rewrite. Validated under the lock,
+    the stamp that a concurrent rebuild replaced is a different binary
+    with a different ``simv`` — not adoptable, and never rewritten."""
+    _write_source(tmp_path)
+    (tmp_path / "gen").mkdir()
+    _write_header(tmp_path)
+    calls = []
+    sibling = _group_pair_with_incdirs(
+        tmp_path,
+        monkeypatch,
+        calls,
+        filelist=["src/top.sv", "+incdir+gen", "+incdir+inc"],
+        depends=["../../src/top.sv", "../../inc/w.svh"],
+        sibling_pre=lambda: (tmp_path / "gen" / "params_test_b.svh").write_text(
+            "`define B 1\n"
+        ),
+    )
+    shared_dir = Path(sibling.compile_group_dir())
+    stamp_path = shared_dir / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+    before = stamp_path.read_text()
+    real_lock = vlog_sim_module.build_dir_lock
+
+    @contextmanager
+    def _rebuilt_under_us(build_dir, **kwargs):
+        with real_lock(build_dir, **kwargs) as held:
+            simv = Path(sibling._get_simv_path())
+            simv.write_bytes(simv.read_bytes() + b"\n# rebuilt by a neighbour\n")
+            yield held
+
+    monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _rebuilt_under_us)
+
+    assert sibling.adopt_group_build() == (None, None)
+    assert stamp_path.read_text() == before, "a stamp nobody validated was rewritten"
 
 
 def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeypatch):

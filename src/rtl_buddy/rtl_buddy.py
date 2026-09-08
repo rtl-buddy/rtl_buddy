@@ -3854,9 +3854,14 @@ class RtlBuddy:
             if not isinstance(stamp, dict):
                 continue
             sha, simv = stamp.get("fingerprint_sha"), stamp.get("simv")
-            if sha is None or simv is None:
+            build_dir = stamp.get("build_dir")
+            if (
+                not isinstance(sha, str)
+                or simv is None
+                or not isinstance(build_dir, (str, type(None)))
+            ):
                 continue
-            key = stamp.get("build_dir") or sha
+            key = build_dir or sha
             group = by_key.setdefault(key, {"binaries": {}, "fingerprints": set()})
             group["binaries"].setdefault(repr(simv), []).append(row.get("test_name"))
             group["fingerprints"].add(sha)

@@ -4292,3 +4292,22 @@ def test_the_collect_audit_is_silent_when_every_run_named_one_binary(caplog):
     with caplog.at_level(_logging.WARNING):
         RtlBuddy._audit_shared_binaries(rows)
     assert not _mismatch_events(caplog)
+
+
+def test_the_collect_audit_skips_a_malformed_stamp_identity(caplog):
+    """Reporting only, so a JSON-valid but oddly shaped identity — a list
+    where a path or digest belongs — is a run with nothing to say, not a
+    ``TypeError`` after every job has already been scored."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", [], ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1", ["/b/simv", 10, 1], []),
+        _stamped_row("gamma", "k1", ["/b/simv", 11, 2], "/b"),
+        _stamped_row("delta", "k1", ["/b/simv", 12, 3], "/b"),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["tests"] == ["delta", "gamma"]
