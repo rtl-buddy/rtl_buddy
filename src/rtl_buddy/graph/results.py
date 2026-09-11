@@ -60,7 +60,11 @@ from ..config.suite import SuiteConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..runner.result_io import load_result_json
-from ..tools.artifact_paths import RESULT_JSON_NAME, sanitize_artifact_component
+from ..tools.artifact_paths import (
+    RESULT_JSON_NAME,
+    sanitize_artifact_component,
+    suite_artifact_root,
+)
 from ..tools.spec_trace import _walk_yaml_files
 from ..tools.wave_trace import TRACE_CANDIDATES
 from .config_tier import (
@@ -99,7 +103,9 @@ FROM_ARTEFACTS = "artefacts"
 
 #: Directories under ``<suite>/artefacts/`` that are not a test's workspace.
 #: ``hier``/``axi`` are other commands' per-suite roots (guidelines →
-#: Command Roots); the dot-directories are dispatch and shared-build state.
+#: Command Roots); the dot-directories — dispatch and shared-build state,
+#: and ``.runs`` (#541) — are excluded by :func:`_is_test_dir`'s leading-dot
+#: rule rather than by name.
 _NON_TEST_DIRS = frozenset({"hier", "axi", "graph", "cov", "coverage"})
 
 #: Result-envelope file names inside one run scope. ``result.json`` is the
@@ -148,10 +154,16 @@ def _iso(epoch: float) -> str:
 
 
 def results_overlay_path(
-    project_root: str | os.PathLike, out_dir: str | os.PathLike | None = None
+    project_root: str | os.PathLike,
+    out_dir: str | os.PathLike | None = None,
+    run_tag: str | None = None,
 ) -> Path:
     """``<out dir or artefacts/graph>/results-overlay.json``."""
-    base = Path(out_dir) if out_dir is not None else default_graph_dir(project_root)
+    base = (
+        Path(out_dir)
+        if out_dir is not None
+        else default_graph_dir(project_root, run_tag)
+    )
     return base / RESULTS_OVERLAY_NAME
 
 
@@ -455,6 +467,7 @@ def collect_results(
     coverage: bool | str = True,
     cov_dir: str | os.PathLike | None = None,
     cov_manifest: str | os.PathLike | None = None,
+    run_tag: str | None = None,
 ) -> ResultsOverlay:
     """Scan every suite's artefacts and build the results overlay.
 
@@ -478,6 +491,8 @@ def collect_results(
       cov_dir / cov_manifest: read coverage from here rather than from
         the newest ``cov_dir/manifest.json`` under the project. Naming
         either makes a failure to read it a reported problem.
+      run_tag: scan ``<suite>/artefacts/.runs/<tag>/`` instead of
+        ``<suite>/artefacts/`` — one concurrent run's own tree (#541).
 
     Returns:
       ResultsOverlay: the payload plus the bookkeeping the CLI reports.
@@ -494,7 +509,7 @@ def collect_results(
     for tests_yaml in _walk_yaml_files(str(search_verif), "tests.yaml"):
         suite_dir = Path(tests_yaml).parent
         suite_rel = _rel(root, suite_dir)
-        artefact_root = suite_dir / "artefacts"
+        artefact_root = suite_artifact_root(suite_dir, run_tag)
         if not artefact_root.is_dir():
             continue
         declared = _declared_test_names(tests_yaml)
@@ -775,16 +790,26 @@ def refresh_results_overlay(
     coverage: bool | str = True,
     cov_dir: str | os.PathLike | None = None,
     cov_manifest: str | os.PathLike | None = None,
+    run_tag: str | None = None,
 ) -> ResultsOverlay:
     """Collect results and write ``results-overlay.json``.
 
     The one call behind ``rb graph results``. ``graph.json`` is read (for
     the id cross-check, the fingerprint linkage and the coverage join)
     and never written.
+
+    ``run_tag`` splits the two graph directories apart (#541): the overlay
+    is written under that run's own tree, while ``graph.json`` is still read
+    from the untagged ``artefacts/graph/``. The graph describes the design,
+    not the run, so requiring one build per tag would be a trap. An explicit
+    ``out_dir`` still names both, as it does today.
     """
     root = Path(os.path.realpath(str(project_root)))
-    out = Path(out_dir) if out_dir is not None else default_graph_dir(root)
-    graph_file = Path(graph_path) if graph_path is not None else out / GRAPH_JSON_NAME
+    out = Path(out_dir) if out_dir is not None else default_graph_dir(root, run_tag)
+    graph_dir = Path(out_dir) if out_dir is not None else default_graph_dir(root)
+    graph_file = (
+        Path(graph_path) if graph_path is not None else graph_dir / GRAPH_JSON_NAME
+    )
     graph = None
     try:
         loaded = json.loads(graph_file.read_text())
@@ -797,6 +822,7 @@ def refresh_results_overlay(
         root,
         verif_dir=verif_dir,
         graph=graph,
+        run_tag=run_tag,
         coverage=coverage,
         cov_dir=cov_dir,
         cov_manifest=cov_manifest,

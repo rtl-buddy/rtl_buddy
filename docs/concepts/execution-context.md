@@ -14,7 +14,7 @@ RTL Buddy uses three anchors:
 | --- | --- |
 | `invocation_cwd` | The shell directory where `rb` was invoked |
 | `command_root` | The directory containing the command's primary config |
-| `artifact_root` | `<command_root>/artefacts/` |
+| `artifact_root` | `<command_root>/artefacts/`, or `<command_root>/artefacts/.runs/<tag>/` under `--run-tag` |
 
 Generated artefacts, builder scratch, and `rtl_buddy.log` use the command root. Explicit CLI input and output paths use normal shell semantics and are resolved from `invocation_cwd`.
 
@@ -75,6 +75,34 @@ Wait for the first process to finish or terminate that process if it is stale. T
 The lock covers the entire artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Commands using different artefact roots can run concurrently.
 
 This protection is host-local. Do not run the same suite concurrently from multiple machines on a shared filesystem unless the environment provides equivalent coordination.
+
+## Run two regressions in one checkout
+
+Two runs that have no serial dependency — a nightly gating on two simulators, say — still collide, because the artefact tree carries no run identity and the lock above covers all of it.
+
+Give each run a `--run-tag`:
+
+```bash
+rb --run-tag vcs regression -c regression.yaml --dispatch slurm &
+rb --run-tag verilator regression -c regression.yaml --dispatch slurm &
+wait
+rb --run-tag vcs graph results
+rb --run-tag verilator graph results
+```
+
+Each run writes `<suite>/artefacts/.runs/<tag>/` — its own per-test directories, its own `.shared-builds`, its own `.dispatch` envelopes, its own lock. Nothing is shared, including the compiles: a second head may legitimately rebuild a compile key the first one's dispatched jobs are gated on, and a gated job that cannot validate the build it was gated on fails rather than recompiling.
+
+The tag rides the dispatched job's command line, so scheduler jobs write back into the tree their head owns.
+
+Without `--run-tag`, every path and the lock are exactly what they were.
+
+Two bounds:
+
+- `--run-tag` is accepted by `test`, `randtest`, `regression` and `graph results` only. Every other command — `rb synth` and `rb graph build` included — builds `artefacts/<name>` directly, so honouring a tag would move its lock without moving its outputs and two tagged runs would believe they were isolated while writing one directory. It is refused there instead.
+- A tagged run locks `artefacts/.runs/<tag>/`, so it no longer excludes a concurrent `rb synth` in the same suite the way an untagged run does. Their subtrees are disjoint, but the mutual exclusion an untagged run gets is not there.
+- A tagged run writes no `<suite>/test.log`, `test.err` or `test.randseed` latest-run link. Two live runs cannot both be "latest", and per-tag link names would be fingerprinted as compile inputs by a suite reached through `+incdir+.`. Read the file inside that run's own artefact directory instead.
+
+`rb graph results --run-tag <tag>` scans that run's trees and writes its overlay to `artefacts/.runs/<tag>/graph/results-overlay.json`. `graph.json` is still read from `artefacts/graph/` — the graph describes the design, not the run, so it is built once for all tags.
 
 ## Find the log
 

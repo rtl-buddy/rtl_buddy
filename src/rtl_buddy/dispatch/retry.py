@@ -201,7 +201,12 @@ def job_output_paths(spec) -> list:
     suite_dir = getattr(spec, "suite_dir", None)
     test_name = getattr(spec, "test_name", None)
     if suite_dir is not None and test_name is not None:
-        artefacts = test_artifact_dir(suite_dir, test_name, run_id=run_id)
+        artefacts = test_artifact_dir(
+            suite_dir,
+            test_name,
+            run_id=run_id,
+            run_tag=getattr(spec, "run_tag", None),
+        )
         paths += [artefacts / "test.log", artefacts / "test.err"]
     result_json = getattr(spec, "result_json", None)
     if result_json is not None:

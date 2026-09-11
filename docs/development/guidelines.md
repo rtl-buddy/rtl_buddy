@@ -22,6 +22,7 @@ Use explicit contexts, never ambient `os.getcwd()`:
 - `command_root`: the directory containing the command's primary config file.
 - `suite_dir`: the command root for per-suite flows such as `tests.yaml`, `synth.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, and `fpga.yaml`.
 - `artifact_dir`: the generated workspace for one command item, normally `suite_dir/artefacts/<name>`.
+- `run_tag`: the `--run-tag` in force, or `None`. It namespaces the whole artefact tree to `suite_dir/artefacts/.runs/<tag>/` so concurrent runs in one checkout share no path and no lock. Derive every artefact path through `suite_artifact_root()`, `test_artifact_dir()` or `shared_build_dir()` and pass the tag; never spell `artefacts` out at a call site.
 
 Config-driven commands use their primary config's directory as `command_root`. Managed outputs go below it, external tools run from their artifact directory, and explicit CLI paths resolve from `invocation_cwd`.
 
@@ -73,6 +74,8 @@ Pass absolute paths to external tools unless a value is intentionally artifact-r
 ## Artifact Layout
 
 Write generated outputs under `artefacts/<name>/`. Keep compile outputs (`run.f`, `compile.log`, builder output) in the test root and randomized simulation output in `run-NNNN/`. Latest-run symlinks are conveniences, not durable storage.
+
+`--run-tag <tag>` relocates that whole tree to `artefacts/.runs/<tag>/`, the shared build directories and dispatch envelopes included. It is threaded through `test`, `randtest`, `regression` and `graph results`; every other command refuses it rather than moving its lock without its outputs. See [Execution Context](../concepts/execution-context.md#run-two-regressions-in-one-checkout).
 
 Every run writes `result.json` beside its durable output. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
 

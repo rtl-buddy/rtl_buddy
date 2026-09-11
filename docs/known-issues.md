@@ -78,6 +78,8 @@ Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immedi
 
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
 
+`--run-tag <tag>` moves the tree, and therefore the lock, to `artefacts/.runs/<tag>/`. Two consequences follow. A tagged run no longer excludes a concurrent untagged command in the same suite — `rb synth` writes `artefacts/<synth>`, which a tagged run's lock does not cover — so the coarse mutual exclusion above is not in force for tagged runs, even though the subtrees are disjoint. And `--run-tag` is refused by every command outside `test`, `randtest`, `regression` and `graph results`, because those build `artefacts/<name>` directly: honouring the tag there would move the lock without moving the outputs.
+
 ## Tool flows delete their previous outputs before running
 
 `rb cdc`, `rb synth`, `rb fpga`, `rb pnr`, and `rb power` remove the outputs they are about to write — reports, domain maps, synthesis netlists, DEF/ODB, GDS/PNG, bitstream — from the run's artifact directory before invoking the tool. `rb hub` does the same for the `view.json` and domain map it caches under `.rtl-buddy/cache/`, which outlive the build that filled them. An exit code cannot distinguish "produced nothing to report" from "crashed before writing" (rtl-buddy-cdc's exit 1 means rule violations were found), so a report left by an earlier run would otherwise be parsed and its counts reported as the current result. Clearing first makes an absent report absent, and the flow then says so and names its log.

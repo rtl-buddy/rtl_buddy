@@ -74,6 +74,14 @@ def _rb_argv(spec) -> list[str]:
     # allowance off. Build jobs never reach SIM and ignore it.
     if spec.extra_sim_timeout is not None:
         argv += ["--extra-sim-timeout", str(spec.extra_sim_timeout)]
+    # A global option, so it goes in this prefix rather than beside the
+    # subcommand's own flags. Omitted when unset, like -M and -B above: an
+    # argv byte-identical to a pre-#541 head's keeps plan, manifest and
+    # job-script diffs quiet for every project that never asks for a tag.
+    # ``getattr`` because this prefix is shared with the spec types whose
+    # command does not thread a run tag at all (``ElabJobSpec``).
+    if getattr(spec, "run_tag", None) is not None:
+        argv += ["--run-tag", str(spec.run_tag)]
     return argv
 
 

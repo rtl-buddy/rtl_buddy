@@ -10,9 +10,11 @@ outputs land and how relative arguments are resolved:
   logs and the artifact tree are anchored here so the same command produces
   the same layout regardless of where the user invoked it from.
 - ``artifact_root`` — the directory under which per-command-item artifact
-  trees live. Defaults to ``command_root / "artefacts"``; a future
-  ``--artifact-root`` flag can redirect this onto a separate disk without
-  affecting any downstream consumer.
+  trees live. Defaults to ``command_root / "artefacts"``; ``--run-tag``
+  moves it to ``command_root/artefacts/.runs/<tag>`` so concurrent runs in
+  one checkout get separate trees (#541), and an explicit ``artifact_root``
+  can redirect it onto a separate disk without affecting any downstream
+  consumer.
 
 See ``docs/concepts/execution-context.md`` for the user-facing description
 and ``docs/development/guidelines.md`` for the policy these fields encode.
@@ -23,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .tools.artifact_paths import sanitize_artifact_component
+from .tools.artifact_paths import sanitize_artifact_component, suite_artifact_root
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,11 @@ class ExecutionContext:
     command_root: Path
     artifact_root: Path
     primary_config: Path | None = None
+    #: The ``--run-tag`` in force, already normalized, or ``None``. Carried
+    #: so a command that builds artefact paths for a *different* suite than
+    #: its own root (a regression walking its suites, `rb graph results`
+    #: scanning them) can namespace those the same way.
+    run_tag: str | None = None
 
     @classmethod
     def for_command(
@@ -47,6 +54,7 @@ class ExecutionContext:
         primary_config: Path,
         *,
         artifact_root: Path | None = None,
+        run_tag: str | None = None,
     ) -> "ExecutionContext":
         """Build an :class:`ExecutionContext` for a command.
 
@@ -55,8 +63,10 @@ class ExecutionContext:
         ``invocation_cwd`` and made absolute, then its parent becomes the
         command root.
 
-        ``artifact_root`` is reserved for a future override flag; pass
-        ``None`` for the default ``command_root/artefacts`` layout.
+        ``run_tag`` namespaces the artefact tree so two runs in one
+        checkout do not share it (#541). ``artifact_root`` overrides the
+        layout outright and wins over ``run_tag``; pass ``None`` for both to
+        get the default ``command_root/artefacts``.
         """
         invocation_cwd = Path(invocation_cwd).resolve()
         primary_config = Path(primary_config)
@@ -65,7 +75,7 @@ class ExecutionContext:
         primary_config = primary_config.resolve()
         command_root = primary_config.parent
         if artifact_root is None:
-            artifact_root = command_root / "artefacts"
+            artifact_root = suite_artifact_root(command_root, run_tag)
         else:
             artifact_root = Path(artifact_root).resolve()
         return cls(
@@ -73,6 +83,7 @@ class ExecutionContext:
             command_root=command_root,
             artifact_root=artifact_root,
             primary_config=primary_config,
+            run_tag=run_tag,
         )
 
     @classmethod
@@ -82,6 +93,7 @@ class ExecutionContext:
         command_root: Path,
         *,
         artifact_root: Path | None = None,
+        run_tag: str | None = None,
     ) -> "ExecutionContext":
         """Build an :class:`ExecutionContext` from a directory, not a config file.
 
@@ -91,13 +103,14 @@ class ExecutionContext:
         invocation_cwd = Path(invocation_cwd).resolve()
         command_root = Path(command_root).resolve()
         if artifact_root is None:
-            artifact_root = command_root / "artefacts"
+            artifact_root = suite_artifact_root(command_root, run_tag)
         else:
             artifact_root = Path(artifact_root).resolve()
         return cls(
             invocation_cwd=invocation_cwd,
             command_root=command_root,
             artifact_root=artifact_root,
+            run_tag=run_tag,
         )
 
     def artifact_dir(self, *parts: str) -> Path:

@@ -17,6 +17,15 @@ ARTIFACT_DIRNAME = "artefacts"
 #: :data:`ARTIFACT_DIRNAME`.
 SHARED_BUILDS_DIRNAME = ".shared-builds"
 
+#: Holds one directory per ``--run-tag``, under :data:`ARTIFACT_DIRNAME`. A
+#: dot-directory for the reason :data:`SHARED_BUILDS_DIRNAME` is one: it can
+#: never collide with a per-test directory derived from a test name.
+RUNS_DIRNAME = ".runs"
+
+#: Longest accepted ``--run-tag``. Long enough to name a simulator, a CI job
+#: or a nightly tier; short enough to keep the paths below readable.
+RUN_TAG_MAX_LEN = 64
+
 #: Every simulator build directory rtl_buddy names starts with this, both
 #: the per-test ``obj_dir_<test>`` and the shared ``obj_dir_<key>``.
 BUILD_DIR_PREFIX = "obj_dir"
@@ -227,15 +236,63 @@ def sanitize_artifact_component(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
 
 
+def normalize_run_tag(tag: str) -> str:
+    """Return the directory component a ``--run-tag`` names.
+
+    Sanitized like every other artefact component, then stripped of the
+    leading and trailing ``._-`` that would make a tag read as one of this
+    module's dot-directories or hide it from an ``ls``. A tag that survives
+    none of that names no directory, so it is refused rather than quietly
+    turned into one.
+    """
+    component = sanitize_artifact_component(str(tag)).strip("._-")
+    if not component:
+        raise FatalRtlBuddyError(
+            f"--run-tag {tag!r}: no usable characters for a directory name "
+            "(letters, digits, '_', '.' and '-' are kept)"
+        )
+    if len(component) > RUN_TAG_MAX_LEN:
+        raise FatalRtlBuddyError(
+            f"--run-tag {tag!r}: longer than {RUN_TAG_MAX_LEN} characters"
+        )
+    return component
+
+
+def suite_artifact_root(suite_dir: str | Path, run_tag: str | None = None) -> Path:
+    """Return the artefact tree one run writes under, for one suite directory.
+
+    Untagged this is today's ``<suite>/artefacts``, and every path below it
+    is unchanged. A ``run_tag`` namespaces the WHOLE tree — per-test
+    directories, :data:`SHARED_BUILDS_DIRNAME`, ``.dispatch`` and the graph
+    exports alike — so two runs in one checkout share no path, and therefore
+    contend for no artefact-tree lock (#541).
+
+    Namespacing the builds too is deliberate. Letting tagged runs share
+    ``.shared-builds`` would save a compile when two of them use the same
+    simulator, but a second head may legitimately rebuild a key the first
+    one's fan-out is gated on, and since #539 a gated job that finds a build
+    it cannot validate fails rather than recompiling. Independence is worth
+    more than the compile.
+    """
+    root = Path(suite_dir) / ARTIFACT_DIRNAME
+    if run_tag:
+        root = root / RUNS_DIRNAME / normalize_run_tag(run_tag)
+    return root
+
+
 def test_artifact_dir(
-    suite_dir: str | Path, test_name: str, run_id: int | None = None
+    suite_dir: str | Path,
+    test_name: str,
+    run_id: int | None = None,
+    *,
+    run_tag: str | None = None,
 ) -> Path:
     """
     Return the per-test artifact directory rooted under the suite directory.
     """
-    artifact_dir = (
-        Path(suite_dir) / ARTIFACT_DIRNAME / sanitize_artifact_component(test_name)
-    )
+    artifact_dir = suite_artifact_root(
+        suite_dir, run_tag
+    ) / sanitize_artifact_component(test_name)
     if run_id is not None:
         artifact_dir /= f"run-{run_id:04d}"
     return artifact_dir
@@ -248,7 +305,9 @@ def test_build_dir_name(test_name: str) -> str:
     return f"{BUILD_DIR_PREFIX}_{sanitize_artifact_component(test_name)}"
 
 
-def shared_build_dir(suite_dir: str | Path, compile_key: str) -> Path:
+def shared_build_dir(
+    suite_dir: str | Path, compile_key: str, *, run_tag: str | None = None
+) -> Path:
     """
     Return the compile-input-keyed build directory shared by all tests in a
     suite whose compile inputs hash to ``compile_key``.
@@ -257,8 +316,7 @@ def shared_build_dir(suite_dir: str | Path, compile_key: str) -> Path:
     artifact directory derived from a test name.
     """
     return (
-        Path(suite_dir)
-        / ARTIFACT_DIRNAME
+        suite_artifact_root(suite_dir, run_tag)
         / SHARED_BUILDS_DIRNAME
         / f"{BUILD_DIR_PREFIX}_{compile_key}"
     )

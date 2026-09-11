@@ -41,6 +41,7 @@ from .artifact_paths import (
     RESULT_JSON_NAME,
     SHARED_BUILDS_DIRNAME,
     shared_build_dir,
+    suite_artifact_root,
     test_artifact_dir,
     test_build_dir_name,
 )
@@ -1261,6 +1262,7 @@ class VlogSim:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        run_tag=None,
     ):
         """
         compile and execute sim for given test
@@ -1301,6 +1303,10 @@ class VlogSim:
         # honoured at most ONCE per build dir per process; see
         # :func:`_claim_rebuild`.
         self.rebuild = rebuild
+        # `--run-tag`: the artefact tree this run owns, so two runs in one
+        # checkout write no common path (#541). Already normalized by the
+        # CLI; every artefact path this instance derives goes through it.
+        self.run_tag = run_tag
         self._shared_build_dir = None
         # Filled by _compile_plan() and consumed (and cleared) by compile(),
         # so a probe and the compile that follows it share one derivation
@@ -1404,7 +1410,7 @@ class VlogSim:
         # and finding it costs a PATH walk that most instances never need.
         self._toolchain_prefix = _UNSET
 
-        output_dir = Path(self.suite_work_dir) / "artefacts"
+        output_dir = suite_artifact_root(self.suite_work_dir, self.run_tag)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         self.output_dir = str(output_dir)
@@ -1488,7 +1494,12 @@ class VlogSim:
 
     def _get_artifact_dir(self, run_id=None):
         return str(
-            test_artifact_dir(self.suite_work_dir, self.test_name, run_id=run_id)
+            test_artifact_dir(
+                self.suite_work_dir,
+                self.test_name,
+                run_id=run_id,
+                run_tag=self.run_tag,
+            )
         )
 
     def _ensure_artifact_dir(self, run_id=None):
@@ -1768,6 +1779,25 @@ class VlogSim:
 
     def _get_suite_symlink_path(self, name):
         return str(Path(self.suite_work_dir) / name)
+
+    def _link_latest_run(self, target, name):
+        """Point ``<suite>/<name>`` at this run's file, where that means one.
+
+        These are the latest-run conveniences, and "latest" is not a thing a
+        tagged tree can claim: two runs in one checkout would race for one
+        link and a reader following it would get whichever finished last
+        (#541). A tag therefore writes none of them; the durable path is the
+        file inside that run's own artefact directory.
+
+        Naming them per tag instead was the alternative, and is worse: the
+        stamp's managed-output exclusions are exact names, so
+        ``test-<tag>.log`` in a suite reached through ``+incdir+.`` would be
+        fingerprinted as a compile input and each run would invalidate the
+        other's build (#537).
+        """
+        if self.run_tag is not None:
+            return
+        force_symlink(target, self._get_suite_symlink_path(name))
 
     def _append_hier_instance_seed(
         self, randseed_fp, *, artifact_dir, run_cmd, test, run_id
@@ -2818,7 +2848,9 @@ class VlogSim:
 
         if plan.unsupported_reason is None:
             shared_dir = shared_build_dir(
-                self.suite_work_dir, self._compile_config_key(plan.fingerprint)
+                self.suite_work_dir,
+                self._compile_config_key(plan.fingerprint),
+                run_tag=self.run_tag,
             )
             plan.shared_dir = shared_dir
             self._shared_build_dir = str(shared_dir)
@@ -3927,8 +3959,8 @@ class VlogSim:
                     test_err_fp.write(err_msg + "\n")
                 # Convenience latest-run links: never fail a test over one.
                 with contextlib.suppress(OSError):
-                    force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-                    force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+                    self._link_latest_run(err_path, "test.err")
+                    self._link_latest_run(log_path, "test.log")
                 return 1
 
         elif seed_mode == SeedMode.NEW:
@@ -4096,9 +4128,9 @@ class VlogSim:
         # Latest-run convenience links: a passing test must never fail over
         # one (a suite dir removed mid-run, ENOSPC, read-only/EXDEV mount).
         with contextlib.suppress(OSError):
-            force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-            force_symlink(log_path, self._get_suite_symlink_path("test.log"))
-            force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
+            self._link_latest_run(err_path, "test.err")
+            self._link_latest_run(log_path, "test.log")
+            self._link_latest_run(randseed_path, "test.randseed")
 
         if returncode != 0:
             log_event(

@@ -210,6 +210,8 @@ artefacts/graph/
 
 Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
 
+`rb graph results --run-tag <tag>` reads one tagged run's artefact trees and writes its overlay to `artefacts/.runs/<tag>/graph/results-overlay.json`, which is how two concurrent runs each convert their own results. `graph.json` is still read from `artefacts/graph/`: the graph describes the design, not the run, so it is built once and shared by every tag.
+
 ## Looking at the Graph
 
 Serve the interactive graph pane through the hub:

@@ -58,6 +58,11 @@ class BuildJobSpec:
     # directory, and its per-process memo turns one user request into
     # exactly one rebuild per build dir for the whole suite.
     rebuild: bool = False
+    # `--run-tag`: the artefact tree the head is writing under (#541). The
+    # job re-derives every artefact path itself, so without this a dispatched
+    # job writes back into the untagged tree and the namespace leaks on the
+    # first submission.
+    run_tag: str | None = None
 
 
 @dataclass
@@ -93,6 +98,11 @@ class TestJobSpec:
     # would put every element of the array into one build directory at once
     # (#369).
     rebuild: bool = False
+    # `--run-tag`: the artefact tree the head is writing under (#541). The
+    # job re-derives every artefact path itself, so without this a dispatched
+    # job writes back into the untagged tree and the namespace leaks on the
+    # first submission.
+    run_tag: str | None = None
     # That build job's result envelope, when there is one (#498). It is what
     # lets a gated job tell the two reasons a stamp fails to validate apart:
     # a compile that FAILED for this test is deterministic and must not be

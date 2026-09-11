@@ -47,6 +47,7 @@ class TestRunner:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        run_tag=None,
     ):
         """
         Run tests based on config
@@ -77,6 +78,10 @@ class TestRunner:
         # what acts on it, and this is what creates the sim instance.
         self.rebuild = rebuild
         self.build_result_json = build_result_json
+        # `--run-tag`: which artefact tree this run owns (#541). Threaded
+        # for the reason `rebuild` is — the sim instance derives every
+        # artefact path from it, and this is what creates the sim instance.
+        self.run_tag = run_tag
         # Set by prepare(); the phases after it all drive this one instance,
         # because a preproc hook may mutate test_cfg and the compile key is
         # only knowable afterwards, on the sim that saw the mutation.
@@ -107,6 +112,7 @@ class TestRunner:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            run_tag=self.run_tag,
         )
 
     def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):

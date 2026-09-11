@@ -35,6 +35,12 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │                                                               overriding the         │
 │                                                               builder's              │
 │                                                               extra-sim-timeout      │
+│ --run-tag                               TEXT                  Namespace this run's   │
+│                                                               artefact tree as       │
+│                                                               artefacts/.runs/<tag>, │
+│                                                               so concurrent runs in  │
+│                                                               one checkout do not    │
+│                                                               share it               │
 │ --early-stop          -E                [pre|comp|sim|post]   Run step to stop early │
 │                                                               at                     │
 │ --version                                                     Prints version         │

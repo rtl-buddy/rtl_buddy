@@ -148,7 +148,12 @@ from .tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileRun,
 )
 from .tools.coverage import CoverageReporter
-from .tools.artifact_paths import RESULT_JSON_NAME, test_artifact_dir
+from .tools.artifact_paths import (
+    RESULT_JSON_NAME,
+    normalize_run_tag,
+    suite_artifact_root,
+    test_artifact_dir,
+)
 from .tools.hier_rtl_buddy_view import (
     VIEW_BLOCK_DIAGRAM_MIN_VERSION,
     RtlBuddyView,
@@ -798,6 +803,10 @@ class RtlBuddy:
         # replaces it, so an envelope's identity is the same whether the
         # run happened in-process or on a compute node.
         self._run_token: str | None = None
+        # `--run-tag`, normalized, or None for today's flat artefact tree
+        # (#541). Set here as well as in `root_options` so a directly
+        # constructed CLI object (tests, embedders) has the attribute.
+        self._run_tag: str | None = None
 
     def run(self):
         try:
@@ -841,6 +850,37 @@ class RtlBuddy:
         "fpv",
         "elab",
     }
+
+    #: Commands whose artefact paths are threaded through ``--run-tag``
+    #: (#541). Every other command builds ``<suite>/artefacts/<name>``
+    #: directly, so honouring a tag would move its LOCK without moving its
+    #: outputs — two tagged runs would then believe they were isolated while
+    #: writing one directory. It is refused there instead.
+    _RUN_TAG_COMMANDS = {
+        "test",
+        "randtest",
+        "regression",
+        "graph",
+        "_test-job",
+        "_build-job",
+    }
+
+    def _refuse_run_tag(self, command: str) -> None:
+        """Refuse ``--run-tag`` inside a group that otherwise accepts it.
+
+        The root callback only knows the group it is dispatching to, so a
+        subcommand that must not take the tag says so itself. ``graph
+        results`` reads one run's trees and writes that run's overlay;
+        ``graph build`` writes ``artefacts/graph/``, which no tag moves, so
+        honouring one there would let two tagged runs believe they were
+        isolated while writing one directory.
+        """
+        if self._run_tag is None:
+            return
+        raise FatalRtlBuddyError(
+            f"--run-tag is not supported for 'rb {command}' — it is threaded "
+            "through test, randtest, regression and graph results"
+        )
 
     def _is_list_invocation(self, ctx: typer.Context) -> bool:
         return (
@@ -892,6 +932,15 @@ class RtlBuddy:
                 "overriding the builder's extra-sim-timeout",
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="Namespace this run's artefact tree as "
+                "artefacts/.runs/<tag>, so concurrent runs in one checkout "
+                "do not share it",
+            ),
+        ] = None,
         run_depth: Annotated[
             RunDepth,
             typer.Option(
@@ -920,6 +969,20 @@ class RtlBuddy:
 
         self.machine = machine
         self.invocation_cwd = Path.cwd().resolve()
+
+        # Validated and refused here, before any command root is resolved:
+        # a tag the artefact tree cannot be named after, or one on a command
+        # that does not thread it, is a mistake about where output lands, and
+        # finding that out from an empty tree afterwards is worse.
+        self._run_tag = None if run_tag is None else normalize_run_tag(run_tag)
+        if self._run_tag is not None and (
+            ctx.invoked_subcommand not in self._RUN_TAG_COMMANDS
+        ):
+            raise FatalRtlBuddyError(
+                f"--run-tag is not supported for 'rb {ctx.invoked_subcommand}' "
+                "— it is threaded through test, randtest, regression and "
+                "graph results"
+            )
 
         if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
             return
@@ -997,11 +1060,13 @@ class RtlBuddy:
             ctx = ExecutionContext.for_command(
                 invocation_cwd=self.invocation_cwd,
                 primary_config=primary_config,
+                run_tag=self._run_tag,
             )
         else:
             ctx = ExecutionContext.for_dir(
                 invocation_cwd=self.invocation_cwd,
                 command_root=command_root,
+                run_tag=self._run_tag,
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
@@ -2284,6 +2349,7 @@ class RtlBuddy:
                 # per-process memo makes the whole suite's shared build
                 # rebuild exactly once (#494/#369).
                 rebuild=rebuild,
+                run_tag=self._run_tag,
             )
             try:
                 res = runner.prepare()
@@ -2786,7 +2852,11 @@ class RtlBuddy:
                 test_cfg=test_cfg,
                 root_cfg=self.root_cfg,
                 suite_dir=suite_dir,
-                artifact_dir=str(test_artifact_dir(suite_dir, test_cfg.get_name())),
+                artifact_dir=str(
+                    test_artifact_dir(
+                        suite_dir, test_cfg.get_name(), run_tag=self._run_tag
+                    )
+                ),
                 out_test_cfgs=[],
             )
         except Exception as e:
@@ -2835,6 +2905,7 @@ class RtlBuddy:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            run_tag=self._run_tag,
         )
 
         if len(run_ids) == 1:
@@ -2895,7 +2966,14 @@ class RtlBuddy:
         token = self._invocation_run_token()
         for run_id, res in zip(run_ids, results):
             path = (
-                Path(test_artifact_dir(suite_dir, test_cfg.get_name(), run_id=run_id))
+                Path(
+                    test_artifact_dir(
+                        suite_dir,
+                        test_cfg.get_name(),
+                        run_id=run_id,
+                        run_tag=self._run_tag,
+                    )
+                )
                 / RESULT_JSON_NAME
             )
             try:
@@ -3261,7 +3339,7 @@ class RtlBuddy:
         }
 
     @staticmethod
-    def _validate_dispatch_test_artifacts(prepared_suites):
+    def _validate_dispatch_test_artifacts(prepared_suites, run_tag=None):
         """Reject cross-suite test artefact collisions before submission."""
         owners = {}
         for prepared in prepared_suites:
@@ -3272,7 +3350,7 @@ class RtlBuddy:
             suite_dir = str(Path(suite_path).parent)
             for entry in prepared["entries"]:
                 test_name = entry["cfg"].get_name()
-                artifact_dir = test_artifact_dir(suite_dir, test_name)
+                artifact_dir = test_artifact_dir(suite_dir, test_name, run_tag=run_tag)
                 key = str(artifact_dir)
                 previous = owners.get(key)
                 if previous is None:
@@ -3359,7 +3437,7 @@ class RtlBuddy:
             # iterates nothing and make wait_all block on it for zero work.
             return {"suite_results": suite_results, "pending": [], "build_handle": None}
 
-        dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
+        dispatch_root = suite_artifact_root(suite_dir, self._run_tag) / ".dispatch"
         if dispatch_namespace is not None:
             dispatch_root /= dispatch_namespace
         # ``run_token`` is the head's per-invocation nonce (one per regression
@@ -3515,15 +3593,18 @@ class RtlBuddy:
                     overrides=cpus_request_args,
                 )
             dispatch_dir = (
-                Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
+                Path(
+                    test_artifact_dir(suite_dir, cfg.get_name(), run_tag=self._run_tag)
+                )
+                / "dispatch"
             )
             # Create the log dir on the head before submit: slurmstepd opens
             # the --output path before rb _test-job (which would otherwise
             # mkdir it) runs.
             dispatch_dir.mkdir(parents=True, exist_ok=True)
             for idx, run_id in entry["rows"]:
-                run_tag = "single" if run_id is None else f"{run_id:04d}"
-                result_json = dispatch_dir / f"result-{run_tag}.json"
+                envelope_tag = "single" if run_id is None else f"{run_id:04d}"
+                result_json = dispatch_dir / f"result-{envelope_tag}.json"
                 # Deliberately do NOT pre-unlink a stale envelope here: on
                 # NFS the head's negative lookup caches a dentry that hides
                 # the job's later write for ~acdirmin, so fast jobs get
@@ -3535,6 +3616,7 @@ class RtlBuddy:
                     test_config_path=str(suite_cfg.get_path()),
                     result_json=result_json,
                     resources=resources,
+                    run_tag=self._run_tag,
                     run_id=run_id,
                     seed_mode=seed_mode,
                     replay_run_id=replay_run_id,
@@ -3568,7 +3650,7 @@ class RtlBuddy:
                     # Named after the backend that will write it: `slurm-*`
                     # from sbatch --output, `local-parallel-*` from the pool's
                     # redirected stdout.
-                    log_path=dispatch_dir / f"{backend.name}-{run_tag}.log",
+                    log_path=dispatch_dir / f"{backend.name}-{envelope_tag}.log",
                     plan_path=plan_path,
                 )
                 # Resources alone: every group now takes the same dependency,
@@ -3823,6 +3905,7 @@ class RtlBuddy:
             # Where the build job records which configs compiled; the head
             # reads it at collect for compile-fail parity.
             result_json=dispatch_root / f"build-result-{os.getpid()}.json",
+            run_tag=self._run_tag,
         )
         # A stale build-result must not annotate this run's collection.
         Path(spec.result_json).unlink(missing_ok=True)
@@ -4942,7 +5025,7 @@ class RtlBuddy:
                         "environ": dict(os.environ),
                     }
                 )
-            self._validate_dispatch_test_artifacts(prepared_suites)
+            self._validate_dispatch_test_artifacts(prepared_suites, self._run_tag)
             # Retries, collection, and analysis run from whatever the process
             # holds after every hook has run, as before pre-expansion.
             final_environ = dict(os.environ)
@@ -5652,6 +5735,7 @@ class RtlBuddy:
         extract the design, config and (optional) binding tiers and merge
         them into artefacts/graph/graph.json
         """
+        self._refuse_run_tag("graph build")
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root)
         search_design = (
@@ -5887,6 +5971,7 @@ class RtlBuddy:
             coverage=cov_source,
             cov_dir=str(ctx.resolve_input(cov_dir)) if cov_dir else None,
             cov_manifest=str(ctx.resolve_input(cov_manifest)) if cov_manifest else None,
+            run_tag=self._run_tag,
         )
 
         exit_code = 0
