@@ -1744,6 +1744,241 @@ def test_a_corrupt_directory_listing_fails_closed():
         assert not vlog_sim_module._entry_matches(good, corrupt)
 
 
+# ------------- what the run itself writes into a stamped directory (#535-537)
+
+
+def _incdir_dot_sim(tmp_path, monkeypatch, test_name, *, family="vcs"):
+    """A sim whose filelist puts the working directory itself on the include
+    path — `+incdir+.` in a tests.yaml, the shape all three reports share."""
+    return _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name=test_name,
+        exe=family,
+        family=family,
+        filelist=["src/top.sv", "+incdir+."],
+    )
+
+
+def test_the_suite_log_is_never_listed_in_an_include_directory(tmp_path, monkeypatch):
+    """rtl_buddy's own log lands in the SUITE directory, not under
+    `artefacts/`, so the directory prune never reaches it. The head appends
+    to it once a minute for the whole life of a dispatched run — through
+    every gated job's stamp check (#537)."""
+    _write_source(tmp_path)
+    log = tmp_path / "rtl_buddy.log"
+    log.write_text("dispatch: 4/5 jobs remaining\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a")
+    assert sim_a.compile() == 0
+    listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
+    assert "src/top.sv" in listing  # the walk did happen
+    assert "rtl_buddy.log" not in listing, listing
+
+    _touch(log, "dispatch: 4/5 jobs remaining\ndispatch: 3/5 jobs remaining\n")
+    assert _incdir_dot_sim(tmp_path, monkeypatch, "test_b").compile() == 0
+    assert len(calls) == 1
+
+
+def test_a_real_input_named_like_the_suite_log_stays_tracked(tmp_path, monkeypatch):
+    """Only the suite's own `rtl_buddy.log` is skipped, by path. A file of
+    that name in some other include directory is a compile input — and on a
+    builder with no dependency file the listing is the only record of it, so
+    an edit there must still invalidate the stamp."""
+    _write_source(tmp_path)
+    (tmp_path / "rtl_buddy.log").write_text("dispatch: 4/5 jobs remaining\n")
+    image = tmp_path / "inc" / "rtl_buddy.log"
+    image.parent.mkdir()
+    image.write_text("@0000 DEADBEEF\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            exe="vcs",
+            family="vcs",
+            filelist=["src/top.sv", "+incdir+.", "+incdir+inc"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    suite_listing = [e[0] for e in _dir_entry(sim_a, f"+incdir+{tmp_path}")[-1]]
+    assert "rtl_buddy.log" not in suite_listing, suite_listing
+    assert "inc/rtl_buddy.log" in suite_listing, suite_listing
+    inc_listing = [e[0] for e in _dir_entry(sim_a, f"+incdir+{tmp_path / 'inc'}")[-1]]
+    assert inc_listing == ["rtl_buddy.log"], inc_listing
+
+    _touch(image, "@0000 CAFEF00D\n")
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_pycache_beside_a_preproc_helper_is_never_listed(tmp_path, monkeypatch):
+    """CPython writes bytecode beside a helper module a `preproc` hook
+    imports out of the suite directory, during the very phase that computes
+    the fingerprint (#537)."""
+    _write_source(tmp_path)
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    (cache / "helper.cpython-313.pyc").write_bytes(b"\x00\x01")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a")
+    assert sim_a.compile() == 0
+    listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
+    assert not [name for name in listing if name.startswith("__pycache__/")], listing
+
+    (cache / "other.cpython-313.pyc").write_bytes(b"\x00\x02")
+    assert _incdir_dot_sim(tmp_path, monkeypatch, "test_b").compile() == 0
+    assert len(calls) == 1
+
+
+def test_a_regenerated_file_the_build_never_read_does_not_invalidate(
+    tmp_path, monkeypatch
+):
+    """A dependency file names every input the verilation opened, so a file
+    it never opened cannot have changed the binary. A per-test `preproc`
+    regenerating its program directory under a stamped `+incdir+` is exactly
+    that file, and hashing it out of the listing is what made a build job
+    compile one key once per test (#535/#536)."""
+    _write_source(tmp_path)
+    prog = tmp_path / "prog_a"
+    prog.mkdir()
+    (prog / "data.txt").write_text("first run\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a", family="verilator")
+    assert sim_a.compile() == 0
+    assert json.loads(_stamp_of(sim_a).read_text())["deps"]  # a .d exists
+    assert "prog_a/data.txt" in [
+        entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]
+    ]
+
+    _touch(prog / "data.txt", "second run\n")
+
+    sim_b = _incdir_dot_sim(tmp_path, monkeypatch, "test_b", family="verilator")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    assert sim_b.last_compile["reused"] is True
+
+
+def test_an_edit_inside_an_incdir_still_invalidates_when_the_build_read_it(
+    tmp_path, monkeypatch
+):
+    """The narrowing must not reach a file the build actually consumed: that
+    one is in `deps`, where content still decides (#303)."""
+    _write_source(tmp_path)
+    header = _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+
+    _touch(header, "`define W 16\n")
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_file_appearing_in_an_incdir_still_invalidates_with_a_depfile(
+    tmp_path, monkeypatch
+):
+    """What a dependency file structurally cannot see: a name that was not
+    there when the build ran, and could shadow one that was. The listing
+    keeps deciding that half (#478 gap 2)."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+
+    (tmp_path / "inc" / "extra.svh").write_text("`define X 1\n")
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2
+
+
+def test_same_key_siblings_reuse_when_every_probe_precedes_every_compile(
+    tmp_path, monkeypatch
+):
+    """The build job's own shape (#535): PRE and the compile-key probe run
+    for every config before the first compile, so a per-test `preproc`
+    writing under a stamped `+incdir+` moves the inputs between one member's
+    fingerprint and the stamp it is meant to reuse. Members of one group
+    compile once."""
+    _write_source(tmp_path)
+    for name in ("test_a", "test_b"):
+        prog = tmp_path / f"prog_{name}"
+        prog.mkdir()
+        (prog / "data.txt").write_text("first run\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a", family="verilator")
+    sim_b = _incdir_dot_sim(tmp_path, monkeypatch, "test_b", family="verilator")
+
+    # PRE, then the probe, one config at a time — then the compiles.
+    _touch(tmp_path / "prog_test_a" / "data.txt", "second run\n")
+    group_a = sim_a.compile_group_dir()
+    _touch(tmp_path / "prog_test_b" / "data.txt", "second run\n")
+    group_b = sim_b.compile_group_dir()
+    assert group_a == group_b  # one compile key, so one group
+
+    assert sim_a.compile() == 0
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    assert sim_b.last_compile["reused"] is True
+
+
+def test_a_gated_retry_says_what_drifted(tmp_path, monkeypatch, caplog):
+    """A dispatched job logs at INFO and the stamp check's own diagnostics
+    are DEBUG, so the one line a reader of an OOM-killed sim job gets has to
+    name the file (#536)."""
+    _write_source(tmp_path)
+    source = tmp_path / "src" / "top.sv"
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    _touch(source, "module top; wire w; endmodule\n")
+
+    gated = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    gated.expect_prebuilt = True
+    with caplog.at_level(logging.INFO):
+        assert gated.compile() == 0
+    invalid = _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert invalid, caplog.text
+    assert "src/top.sv" in invalid[0]["reason"]
+
+
 def test_parse_depend_prerequisites_drops_targets_and_joins_continuations():
     text = "obj/Vtop.cpp obj/Vtop.mk : \\\n  ../src/top.sv \\\n  ../inc/w.svh\n"
     assert vlog_sim_module.parse_depend_prerequisites(text) == [
@@ -2183,15 +2418,11 @@ def test_a_source_symlinked_in_from_outside_the_project_is_still_hashed(
     assert len(calls) == 2, "the stamp validated against a stale stat"
 
 
-def test_a_symlinked_in_dependency_is_judged_where_it_resolves(tmp_path, monkeypatch):
-    """The boundary of the rule above, stated so it is a decision and not a
-    surprise: the dependency list is keyed on realpaths — that is what makes
-    both sides of the comparison and the ``run.f`` exclusion agree — so an
-    entry that only ever appears there carries no declared path to consult.
-    A header reached through ``+incdir+`` from a symlinked-in tree is
-    therefore stat-only, while that same tree's sources, which ``run.f``
-    names, are hashed by the test above.
-    """
+def test_a_symlinked_in_dependency_is_hashed_like_a_source(tmp_path, monkeypatch):
+    """The dependency list is keyed on the path the build used, not its
+    realpath, so a header reached through ``+incdir+`` from a symlinked-in
+    tree keeps the declared in-project name that qualifies it for hashing —
+    the same rule the test above states for the tree's sources."""
     external = tmp_path.parent / f"{tmp_path.name}-inc"
     external.mkdir(exist_ok=True)
     header = external / "w.svh"
@@ -2199,9 +2430,109 @@ def test_a_symlinked_in_dependency_is_judged_where_it_resolves(tmp_path, monkeyp
     (tmp_path / "inc").mkdir(parents=True, exist_ok=True)
     (tmp_path / "inc" / "w.svh").symlink_to(header)
     _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
 
-    assert sim._tracked_entry(os.path.realpath(header), resolved=True)[3] is None
+    deps = {e[0]: e for e in json.loads(_stamp_of(sim).read_text())["deps"]}
+    assert str(tmp_path / "inc" / "w.svh") in deps, sorted(deps)
+    assert deps[str(tmp_path / "inc" / "w.svh")][3] is not None
+
+
+def test_retargeting_an_include_symlink_invalidates_the_stamp(tmp_path, monkeypatch):
+    """A retargeted symlink changes what the build reads without changing
+    any name a directory listing shows — and under names-only listing
+    (a dependency file is present) the listing is *meant* to look no
+    further. The dependency list is what has to catch it, and it can only
+    do so if it re-resolves the link on validation instead of stat'ing the
+    target the first build happened to resolve to."""
+    _write_source(tmp_path)
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    (versions / "v1.svh").write_text("`define W 8\n")
+    (versions / "v2.svh").write_text("`define W 16\n")
+    (tmp_path / "inc").mkdir()
+    link = tmp_path / "inc" / "w.svh"
+    link.symlink_to(versions / "v1.svh")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 1
+
+    link.unlink()
+    link.symlink_to(versions / "v2.svh")
+    assert _sim("test_c").compile() == 0
+    assert len(calls) == 2, "the include symlink was retargeted but the simv was reused"
+
+
+def test_a_stamp_with_resolved_dependency_paths_is_rebuilt_once(tmp_path, monkeypatch):
+    """A stamp written before deps were keyed by declared path holds the
+    link's *old* target as a plain path. Its entries have the current shape,
+    so nothing but a format marker can tell them apart — and revalidating
+    them would keep a retargeted link's old target valid for as long as it
+    exists. Such a stamp costs one rebuild, after which the marker is
+    there."""
+    _write_source(tmp_path)
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    (versions / "v1.svh").write_text("`define W 8\n")
+    (versions / "v2.svh").write_text("`define W 16\n")
+    (tmp_path / "inc").mkdir()
+    link = tmp_path / "inc" / "w.svh"
+    link.symlink_to(versions / "v1.svh")
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    def _sim(test_name):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            filelist=["src/top.sv", "+incdir+inc"],
+        )
+
+    sim_a = _sim("test_a")
+    assert sim_a.compile() == 0
+    stamp_path = _stamp_of(sim_a)
+    stamp = json.loads(stamp_path.read_text())
+    assert stamp["deps_format"] == vlog_sim_module._DEPS_FORMAT
+    assert any(entry[0] == str(link) for entry in stamp["deps"])
+
+    # Rewrite it the way the previous format did: no marker, realpaths.
+    del stamp["deps_format"]
+    stamp["deps"] = [
+        [os.path.realpath(entry[0]), *entry[1:]] for entry in stamp["deps"]
+    ]
+    stamp_path.write_text(json.dumps(stamp, sort_keys=True))
+    link.unlink()
+    link.symlink_to(versions / "v2.svh")
+
+    assert _sim("test_b").compile() == 0
+    assert len(calls) == 2, (
+        "a pre-format stamp validated a retargeted link's old target"
+    )
+    assert json.loads(stamp_path.read_text())["deps_format"] == (
+        vlog_sim_module._DEPS_FORMAT
+    )
+    assert _sim("test_c").compile() == 0
+    assert len(calls) == 2
 
 
 def test_an_oversized_input_stays_stat_only_and_says_which(

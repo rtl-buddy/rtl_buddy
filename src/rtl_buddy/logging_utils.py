@@ -455,14 +455,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.prebuilt_stamp_invalid":
             run = fields.get("run_id")
             run_note = "" if run is None else f" (run {run})"
+            reason = fields.get("reason")
+            why = "" if not reason else f" ({reason})"
             return (
                 f"{fields.get('test')}{run_note}: compiling despite being gated "
-                "on a build job — that build's stamp did not validate, so every "
-                "element of this fan-out is compiling into "
-                f"{fields.get('build_dir')} at once. A compile failure below is "
-                "most likely that collision, not a design error. This retry "
-                "writes compile.retry.log, leaving the build job's compile.log "
-                "intact."
+                "on a build job — that build's stamp did not validate"
+                f"{why}, so every element of this fan-out queues on "
+                f"{fields.get('build_dir')} to do the same. This compile runs "
+                "under the SIMULATION reservation, which is the usual reason "
+                "one is killed for memory. It writes compile.retry.log, "
+                "leaving the build job's compile.log intact."
             )
         case "dispatch.compile_failed_in_build":
             return (

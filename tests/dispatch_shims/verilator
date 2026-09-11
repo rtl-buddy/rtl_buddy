@@ -49,6 +49,28 @@ cat > "$mdir/simv" <<'SIMV'
 echo "PASS (nwrn=  0)"
 SIMV
 chmod +x "$mdir/simv"
+# With $RB_SHIM_DEPS set it also writes the make-style dependency file real
+# Verilator emits, naming the `.sv` lines of the filelist it was handed. The
+# stamp compares a `+incdir+` listing by name alone once a build reports its
+# dependencies (#536), so a test about that has to be run by a builder that
+# reports them. Off by default: every other shim test wants `deps: null`.
+if [ -n "${RB_SHIM_DEPS:-}" ]; then
+  filelist=""
+  prev=""
+  for a in "$@"; do
+    [ "$prev" = "-f" ] && filelist="$a"
+    prev="$a"
+  done
+  {
+    printf '%s/Vtop.cpp %s/Vtop.mk :' "$mdir" "$mdir"
+    if [ -n "$filelist" ]; then
+      while read -r line; do
+        case "$line" in *.sv) printf ' %s' "$line" ;; esac
+      done < "$filelist"
+    fi
+    printf '\n'
+  } > "$mdir/Vtop__ver.d"
+fi
 if [ -n "$start" ]; then
   end=$(python3 -c 'import time; print("%.6f" % time.time())')
   # One append per line: concurrent writers of a short line to an O_APPEND

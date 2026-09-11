@@ -558,3 +558,92 @@ def test_a_second_build_job_waits_for_the_first_and_reuses_its_build(tmp_path_fa
     shared = sorted((suite / "artefacts" / ".shared-builds").glob("obj_dir_*"))
     assert [d.name for d in shared] == compiles, diag
     assert (shared[0] / ".rb-build.lock").exists(), diag
+
+
+# ------------------- one compile key, N tests, a preproc under it (#535)
+
+
+_SUITE_PREPROC = """\
+from pathlib import Path
+
+prog = Path(suite_dir) / f"prog_{test_cfg.get_name()}"
+prog.mkdir(parents=True, exist_ok=True)
+(prog / "data.txt").write_text(open(Path(suite_dir) / "nonce.txt").read())
+"""
+
+
+def _write_same_key_preproc_suite(project: Path) -> None:
+    """Two tests on one compile key whose preproc writes under the suite dir.
+
+    The reported shape (#535): the model filelist puts the suite directory
+    on ``+incdir+``, so each test's generated program directory is inside
+    the stamped listing — and the build job runs every PRE before any
+    compile, so one member's output moves between the next member's
+    fingerprint and the stamp it should be reusing. Both directories exist
+    before the run, so what changes is content and not the set of names.
+    """
+    suite = project / "verif" / "blk"
+    (suite / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n"
+        "  - name: m\n    filelist:\n      - src.sv\n      - +incdir+.\n"
+    )
+    (suite / "nonce.txt").write_text("second run\n")
+    (suite / "preproc.py").write_text(_SUITE_PREPROC)
+    for name in ("alpha", "beta"):
+        prog = suite / f"prog_{name}"
+        prog.mkdir()
+        (prog / "data.txt").write_text("first run\n")
+    tests = (
+        (suite / "tests.yaml")
+        .read_text()
+        .replace("    preproc:\n", "    preproc:\n      path: preproc.py\n")
+    )
+    (suite / "tests.yaml").write_text(tests)
+
+
+def test_a_build_job_compiles_one_key_once_when_a_preproc_writes_beside_it(
+    tmp_path_factory,
+):
+    """One compile key, two tests, one Verilation (#535).
+
+    Before the listing narrowing, each member's fingerprint disagreed with
+    the stamp the previous member had just written — over a file the
+    verilation never opened — so a key with N tests cost N full compiles.
+    """
+    work = tmp_path_factory.mktemp("build_job_same_key")
+    project = work / "proj"
+    shutil.copytree(_FIXTURE, project)
+    _write_same_key_preproc_suite(project)
+    suite = project / "verif" / "blk"
+    spans = work / "compiler_spans.txt"
+    log = work / "build.log"
+
+    env = dict(os.environ)
+    env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
+    env["RB_SHIM_SPANS"] = str(spans)
+    # The narrowing applies to builds that report their dependencies, which
+    # is what a real Verilator does and what this suite is about.
+    env["RB_SHIM_DEPS"] = "1"
+    with open(log, "w") as out:
+        proc = subprocess.run(
+            [sys.executable, "-m", "rtl_buddy", "_build-job", "-c", "tests.yaml"],
+            cwd=suite,
+            env=env,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=180,
+        )
+    diag = log.read_text()
+    assert proc.returncode == 0, diag
+
+    compiles = [
+        line.split()[0] for line in spans.read_text().splitlines() if line.strip()
+    ]
+    assert len(compiles) == 1, f"a same-key sibling recompiled\n{diag}"
+    assert "reused shared build" in diag, diag
+    # Both tests really were on one key, and the preproc really did write
+    # into the directory the stamp lists.
+    shared = sorted((suite / "artefacts" / ".shared-builds").glob("obj_dir_*"))
+    assert [d.name for d in shared] == compiles, diag
+    assert (suite / "prog_beta" / "data.txt").read_text() == "second run\n"
