@@ -13,28 +13,27 @@ full scheduler contract and YAML fields.
 ## Choose the backend
 
 - `--dispatch local` runs in-process and sequentially.
-- `--dispatch local-parallel -j N` uses local subprocesses. It cannot enforce
-  `resources:` or produce scheduler accounting/right-sizing advice.
+- `--dispatch local-parallel -j N` uses local subprocesses; no `resources:`
+  enforcement, accounting, or right-sizing advice.
 - `--dispatch slurm` submits shared build jobs and dependent simulation jobs.
   Gate it with `rb --machine tool-check --explain slurm`.
 
 Dispatch implies shared builds. A simulation starts only after its compile-key
-build succeeds; one failed or undersized build can therefore block a whole group.
+build succeeds, so one failed or undersized build can block a whole group.
 One build job per suite compiles its distinct builds, `cfg-dispatch.compile.parallel`
 of them at a time (default 1). Above 1 the job runs every config's `preproc` before
 any builder starts, so no hook may mutate another config's inputs; at the default
 it still runs `preproc` and compile per config in turn.
-Slurm refuses an array larger than the cluster's `MaxArraySize` (`Invalid job
-array specification`). rtl_buddy reads that limit from `scontrol show config`
-and splits an oversized resource group across several arrays, each with its own
-manifest and logs under `slice-N/`. Where the submit host cannot run `scontrol`,
-set `cfg-dispatch.max-array-size` to the cluster's value (and
-`max-array-tasks` where `SchedulerParameters=max_array_tasks` caps tasks-per-array
-below it); `max-jobs-per-array` then throttles each slice, so peak concurrency is
-that cap times the slice count.
-Dispatched `test`, `randtest`, and `regression` preserve their normal aggregate
-exit codes: 0 with no real failure, 1 when a job fails or its result envelope is
-missing, stale, or invalid, and 2 for a fatal orchestration/configuration error.
+Slurm refuses an array above the cluster's `MaxArraySize` (`Invalid job array
+specification`). rtl_buddy reads the limit from `scontrol show config` and
+splits an oversized group across arrays, each with its own manifest and logs
+under `slice-N/`. If the submit host cannot run `scontrol`, set
+`cfg-dispatch.max-array-size` (and `max-array-tasks` where
+`SchedulerParameters=max_array_tasks` caps lower); `max-jobs-per-array` then
+throttles each slice, so peak concurrency is that cap times the slice count.
+Dispatched `test`, `randtest`, and `regression` keep their aggregate exit
+codes: 0 with no real failure, 1 when a job fails or its result envelope is
+missing, stale, or invalid, 2 for a fatal orchestration/configuration error.
 
 ## Size resources from evidence
 
@@ -47,10 +46,10 @@ own `compile: {mem: ...}` instead of every suite's build job inheriting a raise
 of the global reservation.
 
 - Slurm `OUT_OF_MEMORY`, or a local Verilator/compiler SIGKILL/`Killed`, means
-  raise the governing `mem`; increasing `sim_timeout` cannot fix it.
+  raise the governing `mem`; raising `sim_timeout` cannot fix it.
 - Scheduler `TIMEOUT` means raise the governing job `time`; `Sim hit timeout`
-  inside a completed job instead points at the test's `sim_timeout`.
-- Under-reservation costs failed work, so apply `raise` advice before `reduce`.
+  inside a completed job points at the test's `sim_timeout`.
+- Under-reservation costs failed work: apply `raise` advice before `reduce`.
 - Size `compile.time` for the longest build batch, not the suite's serial total:
   with `compile.parallel: N` the distinct builds run N at a time. Size
   `compile.mem` for N concurrent elaborations — only `cpus` is scaled for you —
@@ -82,24 +81,23 @@ of the global reservation.
   matching `sbatch-args` entry (command line beats environment; the
   environment is never sanitized). `SBATCH_CPUS_PER_TASK` is NOT one — every
   submit path states `--cpus-per-task`, which beats it. An env-only override
-  has `edit_hint.path` `env` and no `file`, since there is nothing to edit. Those are appended last and win — within
-  one option the last occurrence, as for sbatch. The advice then falls back to
-  `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line names the
-  arguments, and the `cpus` row's `edit_hint` points at
-  `cfg-dispatch.sbatch-args` with a note naming the field it masks — edit the
-  argument, not that field. `mem` and `time` rows are unaffected.
+  has `edit_hint.path` `env` and no `file`. Overrides are appended last and
+  win — within one option the last occurrence, as for sbatch. The advice then
+  falls back to `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line
+  names the arguments, and the `cpus` row's `edit_hint` points at
+  `cfg-dispatch.sbatch-args`, naming the field it masks — edit the argument,
+  not that field. `mem` and `time` rows are unaffected.
 - `suggested` is always the whole-job cpu count, but only ONE shape of override
   takes it: exactly one `-c`/`--cpus-per-task` — write it straight in. A lone
   task or node count (`--ntasks`, `--ntasks-per-*`, `--nodes`) is not a cpu
-  count, and several arguments combine by sbatch's own precedence, so in both
-  cases the note says the number is the whole-job figure and the decomposition
-  is yours.
+  count, and several arguments combine by sbatch's precedence, so the note
+  then says the number is the whole-job figure and the decomposition is yours.
 - A DIRECT `-c`/`--cpus-per-task` override disables the compile `cpus` floor —
   it replaces the generated flag, so that floor never reached sbatch. A task or
   node count does not: `--cpus-per-task` is still in force, so the floor stays
   and no suggestion goes below it.
-- Right-size from representative regression levels and seeds, then rerun until
-  the advice retires. rtl_buddy suggests edits; it never changes YAML itself.
+- Right-size from representative regression levels and seeds; rerun until the
+  advice retires. rtl_buddy suggests edits; it never edits YAML.
 
 ## Shared-build gotchas
 
@@ -107,24 +105,27 @@ Any tracked compile input change invalidates a shared build; stamps compare
 content, so a byte-for-byte regeneration does not. Stamps list each
 `+incdir+`/`-y` dir: an added or removed file rebuilds; an edited header does
 on VCS/Icarus, on Verilator only if the build read it. Runtime-only plusargs,
-seeds, and sim timeout do not. Batch edits before a large build.
+seeds, and sim timeout do not. Batch edits before a large build. In a build
+job, same-key configs adopt the first Verilator build if its consumed inputs
+are unchanged and no new file can alter resolution (`-y` file, shadowing
+header); a consumed input that differs is `build_job.group_input_drift`.
 
 - An edit that seems not to take effect, or a suspicious PASS right after one:
-  read the `compile.build_reused` line (run log; console once per build
-  dir) and the test's `compile.log` breadcrumb — both name the reused build
-  dir and its stamp's age.
+  read `compile.build_reused` (run log; console once per build dir) and the
+  test's `compile.log` breadcrumb — both name the reused build dir and its
+  stamp's age.
 - `--rebuild` forces a fresh compile, once per build dir per invocation. Prefer
-  it to deleting `artefacts/.shared-builds/`; dropping `--share-build` does not
-  stop reuse.
-- A wait on `compile.build_lock_wait` is another process compiling into the same
-  directory, not a hang.
-- `dispatch.build_job_deduped` means an earlier run's build job for this suite
-  (`rb-build-<hash>`, one per suite directory) is still queued or running, so
-  this one waits on it (`--dependency=singleton`), then revalidates the shared
+  it to deleting `artefacts/.shared-builds/`; dropping `--share-build` does
+  not stop reuse.
+- `compile.build_lock_wait` is another process compiling into the same
+  dir, not a hang.
+- `dispatch.build_job_deduped`: an earlier run's build job for this suite
+  (`rb-build-<hash>`, one per suite dir) is still queued or running, so this
+  one waits on it (`--dependency=singleton`), then revalidates the shared
   build: unchanged inputs reuse it; `--rebuild`, an edit or another builder
-  recompile, correctly. Expected after an interrupt. If it stays
-  PENDING, inspect the job ahead (`squeue -j <ids> -O JobID,State,Reason`);
-  `scancel` only a held or stale one — a healthy build gates the sims.
+  recompile, correctly. Expected after an interrupt. If it stays PENDING,
+  inspect the job ahead (`squeue -j <ids> -O JobID,State,Reason`); `scancel`
+  only a held or stale one — a healthy build gates the sims.
 
 For missing envelopes, retries, license queues, accounting gaps, and builders
-that compile inside simulation jobs, read `concepts/dispatch` and `known-issues`.
+that compile inside sim jobs, read `concepts/dispatch` and `known-issues`.

@@ -173,6 +173,46 @@ class TestRunner:
             return None
 
     @property
+    def last_build_stamp(self):
+        """This runner's sim's build-stamp identity, or ``None`` (#535).
+
+        ``{build_dir, fingerprint_sha, simv}`` — which shared directory
+        (the compile key) the build this run simulated was stamped in,
+        which inputs that stamp recorded, and which executable it vouched
+        for. The build job records the digest in its envelope, and
+        every run carries both into its own result envelope so the head can
+        check at collect that one key produced one binary. Telemetry, and
+        telemetry must never raise.
+        """
+        try:
+            return getattr(self._vlog_sim, "last_build_stamp", None)
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return None
+
+    def refresh_build_stamp(self):
+        """Re-read the stamp behind :attr:`last_build_stamp` (#535).
+
+        The build job calls this once every group member is done, so the
+        digest it records is the stamp's final one — a sibling's adoption
+        rewrites the listing after the leader recorded. Telemetry, never
+        raises.
+        """
+        try:
+            self._vlog_sim.refresh_build_stamp()
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return
+
+    def adopt_group_build(self):
+        """Adopt a same-key sibling's build on the prepared sim (#535).
+
+        ``("adopted", None)`` / ``("drift", <path>)`` / ``(None, None)`` —
+        see :meth:`VlogSim.adopt_group_build`. Only the dispatched build
+        job asks, and only for the members of a group whose leader has
+        already compiled.
+        """
+        return self._vlog_sim.adopt_group_build()
+
+    @property
     def builder_name(self):
         """The resolved builder's name, or ``None`` (#495).
 
@@ -377,7 +417,7 @@ class TestRunner:
                 run_id=run_id, seed_mode=self.seed_mode, replay_run_id=replay_run_id
             )
             if execute_returncode == 4444:
-                repeated_results.append(SimTimeoutResults(name=self.name + "/results"))
+                result = SimTimeoutResults(name=self.name + "/results")
             elif self.run_depth == RunDepth.SIM:
                 log_event(
                     logger,
@@ -387,12 +427,17 @@ class TestRunner:
                     run_id=run_id,
                     stage="sim",
                 )
-                repeated_results.append(
-                    EarlyStopResults(
-                        name=self.name + "/results", desc="Stopped early at sim"
-                    )
+                result = EarlyStopResults(
+                    name=self.name + "/results", desc="Stopped early at sim"
                 )
             else:
-                repeated_results.append(vlog_sim.post(run_id=run_id))
+                result = vlog_sim.post(run_id=run_id)
+            # This run's own launch, taken now: the next run's `execute()`
+            # restates the executable it launches, and a shared binary
+            # replaced between two seeds is two different launches.
+            stamp = self.last_build_stamp
+            if stamp is not None:
+                result.results["build_stamp"] = dict(stamp)
+            repeated_results.append(result)
 
         return repeated_results
