@@ -75,7 +75,7 @@ Pass absolute paths to external tools unless a value is intentionally artifact-r
 
 Write generated outputs under `artefacts/<name>/`. Keep compile outputs (`run.f`, `compile.log`, builder output) in the test root and randomized simulation output in `run-NNNN/`. Latest-run symlinks are conveniences, not durable storage.
 
-`--run-tag <tag>` relocates that whole tree to `artefacts/.runs/<tag>/`, the shared build directories and dispatch envelopes included. It is threaded through `test`, `randtest`, `regression` and `graph results`; every other command refuses it rather than moving its lock without its outputs. See [Execution Context](../concepts/execution-context.md#run-two-regressions-in-one-checkout).
+`--run-tag <tag>` relocates that whole tree to `artefacts/.runs/<tag>/`: the shared build directories, the dispatch envelopes, `cov_dir` and the head's `rtl_buddy.log`. It is threaded through `test`, `randtest`, `regression` and every `graph` subcommand except `graph build`; every other command refuses it rather than moving its lock without its outputs. See [Execution Context](../concepts/execution-context.md#run-two-regressions-in-one-checkout).
 
 Every run writes `result.json` beside its durable output. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
 

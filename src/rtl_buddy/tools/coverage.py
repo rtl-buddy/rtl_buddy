@@ -10,6 +10,7 @@ import os
 
 from ..cov import manifest as manifest_mod
 from ..cov import model as model_mod
+from .artifact_paths import suite_artifact_root
 from .coverview import CoverviewPacker
 from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
 
@@ -19,11 +20,18 @@ class CoverageReporter:
     Orchestrate per-test and merged coverage reporting for rtl-buddy summaries.
     """
 
-    def __init__(self, root_cfg):
+    def __init__(self, root_cfg, run_tag=None):
         """
         Build a coverage reporter for the currently selected builder.
+
+        ``run_tag`` is the ``--run-tag`` in force (#541). Coverage
+        post-processing publishes a manifest, a coverage model, merged LCOV
+        and HTML into one ``cov_dir``; two concurrent tagged runs would
+        overwrite each other's there even though their raw databases are
+        already separate, so the tag moves that directory too.
         """
         self.root_cfg = root_cfg
+        self.run_tag = run_tag
 
     def _get_cov_tool(self):
         """
@@ -134,8 +142,18 @@ class CoverageReporter:
     def _cov_dir(self, outdir):
         """
         Return the intermediate coverage artifact directory under the command output directory.
+
+        Under a ``--run-tag`` it moves into that run's artefact tree, so two
+        concurrent runs publish disjoint coverage (#541). ``outdir`` itself
+        is unchanged: it still anchors the source roots and the suite labels,
+        which describe the checkout rather than the run.
         """
-        cov_dir = os.path.join(outdir, "cov_dir")
+        base = (
+            outdir
+            if self.run_tag is None
+            else suite_artifact_root(outdir, self.run_tag)
+        )
+        cov_dir = os.path.join(base, "cov_dir")
         os.makedirs(cov_dir, exist_ok=True)
         return cov_dir
 

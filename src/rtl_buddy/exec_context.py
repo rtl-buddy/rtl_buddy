@@ -136,5 +136,13 @@ class ExecutionContext:
 
     @property
     def log_path(self) -> Path:
-        """Where ``rtl_buddy.log`` should be written for this command."""
-        return self.command_root / "rtl_buddy.log"
+        """Where ``rtl_buddy.log`` should be written for this command.
+
+        Under a ``--run-tag`` it follows the artefact tree (#541). Two heads
+        sharing one command root would otherwise share this file, and the
+        handler truncates a path on its first open in each process, so the
+        second run to start would erase the first one's log.
+        """
+        if self.run_tag is None:
+            return self.command_root / "rtl_buddy.log"
+        return self.artifact_root / "rtl_buddy.log"

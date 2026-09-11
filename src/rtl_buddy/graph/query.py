@@ -397,12 +397,19 @@ def load_context(
     graph_path: str | os.PathLike | None = None,
     overlay_path: str | os.PathLike | None = None,
     with_results: bool = True,
+    run_tag: str | None = None,
 ) -> GraphContext:
     """Load ``graph.json`` and, unless told not to, the overlay next to it.
 
     A missing overlay is never an error: the graph is fully queryable
     without one, and "no results known" is a state every consumer has to
     handle anyway.
+
+    ``run_tag`` selects one concurrent run's overlay (#541), the one
+    ``rb graph results --run-tag`` wrote, while still reading the graph from
+    wherever it was built. The pairing matches
+    :func:`~rtl_buddy.graph.results.refresh_results_overlay`: the graph
+    describes the design, the overlay describes a run.
     """
     root = Path(os.path.realpath(str(project_root)))
     resolved = resolve_graph_path(root, graph_path)
@@ -410,11 +417,12 @@ def load_context(
     overlay = None
     overlay_file = None
     if with_results:
-        overlay_file = (
-            Path(overlay_path)
-            if overlay_path is not None
-            else resolved.parent / RESULTS_OVERLAY_NAME
-        )
+        if overlay_path is not None:
+            overlay_file = Path(overlay_path)
+        elif run_tag is not None:
+            overlay_file = default_graph_dir(root, run_tag) / RESULTS_OVERLAY_NAME
+        else:
+            overlay_file = resolved.parent / RESULTS_OVERLAY_NAME
         overlay = load_overlay(overlay_file)
     return GraphContext(
         project_root=root,

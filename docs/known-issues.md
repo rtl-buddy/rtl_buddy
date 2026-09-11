@@ -78,7 +78,7 @@ Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immedi
 
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
 
-`--run-tag <tag>` moves the tree, and therefore the lock, to `artefacts/.runs/<tag>/`. Two consequences follow. A tagged run no longer excludes a concurrent untagged command in the same suite — `rb synth` writes `artefacts/<synth>`, which a tagged run's lock does not cover — so the coarse mutual exclusion above is not in force for tagged runs, even though the subtrees are disjoint. And `--run-tag` is refused by every command outside `test`, `randtest`, `regression` and `graph results`, because those build `artefacts/<name>` directly: honouring the tag there would move the lock without moving the outputs.
+`--run-tag <tag>` moves the tree, and therefore the lock, to `artefacts/.runs/<tag>/`. Two consequences follow. A tagged run no longer excludes a concurrent untagged command in the same suite — `rb synth` writes `artefacts/<synth>`, which a tagged run's lock does not cover — so the coarse mutual exclusion above is not in force for tagged runs, even though the subtrees are disjoint. And `--run-tag` is refused by every command outside `test`, `randtest`, `regression` and the `graph` group (`graph build` excepted), because those build `artefacts/<name>` directly: honouring the tag there would move the lock without moving the outputs. `rb cov` is one of them, so read a tagged run's coverage with `--cov-dir <suite>/artefacts/.runs/<tag>/cov_dir`.
 
 ## Tool flows delete their previous outputs before running
 

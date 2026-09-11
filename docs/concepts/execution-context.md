@@ -90,7 +90,7 @@ rb --run-tag vcs graph results
 rb --run-tag verilator graph results
 ```
 
-Each run writes `<suite>/artefacts/.runs/<tag>/` — its own per-test directories, its own `.shared-builds`, its own `.dispatch` envelopes, its own lock. Nothing is shared, including the compiles: a second head may legitimately rebuild a compile key the first one's dispatched jobs are gated on, and a gated job that cannot validate the build it was gated on fails rather than recompiling.
+Each run writes `<suite>/artefacts/.runs/<tag>/` — its own per-test directories, its own `.shared-builds`, its own `.dispatch` envelopes, its own `cov_dir`, its own `rtl_buddy.log`, its own lock. Nothing is shared, including the compiles: a second head may legitimately rebuild a compile key the first one's dispatched jobs are gated on, and a gated job that cannot validate the build it was gated on fails rather than recompiling.
 
 The tag rides the dispatched job's command line, so scheduler jobs write back into the tree their head owns.
 
@@ -98,11 +98,13 @@ Without `--run-tag`, every path and the lock are exactly what they were.
 
 Two bounds:
 
-- `--run-tag` is accepted by `test`, `randtest`, `regression` and `graph results` only. Every other command — `rb synth` and `rb graph build` included — builds `artefacts/<name>` directly, so honouring a tag would move its lock without moving its outputs and two tagged runs would believe they were isolated while writing one directory. It is refused there instead.
+- `--run-tag` is accepted by `test`, `randtest`, `regression` and every `graph` subcommand except `graph build`. Everything else refuses it: those commands build `artefacts/<name>` directly, so honouring a tag would move the lock without moving the outputs and two tagged runs would believe they were isolated while writing one directory. `rb graph build` is refused for the same reason, since `artefacts/graph/graph.json` describes the design rather than a run.
 - A tagged run locks `artefacts/.runs/<tag>/`, so it no longer excludes a concurrent `rb synth` in the same suite the way an untagged run does. Their subtrees are disjoint, but the mutual exclusion an untagged run gets is not there.
 - A tagged run writes no `<suite>/test.log`, `test.err` or `test.randseed` latest-run link. Two live runs cannot both be "latest", and per-tag link names would be fingerprinted as compile inputs by a suite reached through `+incdir+.`. Read the file inside that run's own artefact directory instead.
 
-`rb graph results --run-tag <tag>` scans that run's trees and writes its overlay to `artefacts/.runs/<tag>/graph/results-overlay.json`. `graph.json` is still read from `artefacts/graph/` — the graph describes the design, not the run, so it is built once for all tags.
+`rb graph results --run-tag <tag>` scans that run's trees and writes its overlay to `artefacts/.runs/<tag>/graph/results-overlay.json`. `rb graph query`, `graph path` and `graph explain` take the same tag and read that overlay. `graph.json` is still read from `artefacts/graph/` — the graph describes the design, not the run, so it is built once for all tags.
+
+`rb cov` does not take the tag. Point it at the run you want with `--cov-dir <suite>/artefacts/.runs/<tag>/cov_dir`.
 
 ## Find the log
 

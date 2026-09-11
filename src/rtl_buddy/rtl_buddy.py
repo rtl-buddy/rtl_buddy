@@ -865,21 +865,16 @@ class RtlBuddy:
         "_build-job",
     }
 
-    def _refuse_run_tag(self, command: str) -> None:
+    def _refuse_run_tag(self, command: str, reason: str) -> None:
         """Refuse ``--run-tag`` inside a group that otherwise accepts it.
 
         The root callback only knows the group it is dispatching to, so a
-        subcommand that must not take the tag says so itself. ``graph
-        results`` reads one run's trees and writes that run's overlay;
-        ``graph build`` writes ``artefacts/graph/``, which no tag moves, so
-        honouring one there would let two tagged runs believe they were
-        isolated while writing one directory.
+        subcommand that must not take the tag says so itself.
         """
         if self._run_tag is None:
             return
         raise FatalRtlBuddyError(
-            f"--run-tag is not supported for 'rb {command}' — it is threaded "
-            "through test, randtest, regression and graph results"
+            f"--run-tag is not supported for 'rb {command}': {reason}"
         )
 
     def _is_list_invocation(self, ctx: typer.Context) -> bool:
@@ -980,8 +975,7 @@ class RtlBuddy:
         ):
             raise FatalRtlBuddyError(
                 f"--run-tag is not supported for 'rb {ctx.invoked_subcommand}' "
-                "— it is threaded through test, randtest, regression and "
-                "graph results"
+                "— it is threaded through test, randtest, regression and graph"
             )
 
         if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
@@ -1071,6 +1065,10 @@ class RtlBuddy:
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
         if log_path is None:
+            # A tagged run logs inside its own artefact tree, which nothing
+            # has created yet at this point (the lock below is what normally
+            # does).
+            ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(ctx.log_path)
         else:
             log_path = Path(log_path)
@@ -1126,7 +1124,7 @@ class RtlBuddy:
             # values win for cross-root regressions.
             apply_env_file(self.root_cfg.get_project_rootdir())
             self.builder = self.root_cfg.get_builder_name()
-            self.coverage = CoverageReporter(self.root_cfg)
+            self.coverage = CoverageReporter(self.root_cfg, run_tag=self._run_tag)
             log_event(
                 logger,
                 logging.DEBUG,
@@ -5735,7 +5733,13 @@ class RtlBuddy:
         extract the design, config and (optional) binding tiers and merge
         them into artefacts/graph/graph.json
         """
-        self._refuse_run_tag("graph build")
+        self._refuse_run_tag(
+            "graph build",
+            "it writes artefacts/graph/, which describes the design rather "
+            "than any one run, so no tag moves it. Tag the run that produces "
+            "the results instead, then read them back with "
+            "'rb --run-tag <tag> graph results'",
+        )
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root)
         search_design = (
@@ -6079,6 +6083,7 @@ class RtlBuddy:
             graph_path=str(ctx.resolve_input(graph)) if graph else None,
             overlay_path=str(ctx.resolve_input(overlay)) if overlay else None,
             with_results=results,
+            run_tag=self._run_tag,
         )
 
     def _graph_query_candidates(self, exc: graph_query_mod.GraphQueryError) -> None:
