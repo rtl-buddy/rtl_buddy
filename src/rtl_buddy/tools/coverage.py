@@ -139,21 +139,28 @@ class CoverageReporter:
 
         return roots
 
+    def _publish_root(self, outdir):
+        """Where this run's coverage outputs are published.
+
+        ``outdir`` untagged, that run's artefact tree under a ``--run-tag``
+        (#541). Everything a coverage run writes for a human to open goes
+        through here: ``cov_dir``, the HTML trees and the Coverview zips.
+        Two concurrent tagged runs would otherwise overwrite each other's
+        published reports even though their raw databases are separate.
+
+        ``outdir`` itself keeps its other meanings. It still anchors the
+        source roots and the suite labels, which describe the checkout
+        rather than the run.
+        """
+        if self.run_tag is None:
+            return outdir
+        return str(suite_artifact_root(outdir, self.run_tag))
+
     def _cov_dir(self, outdir):
         """
         Return the intermediate coverage artifact directory under the command output directory.
-
-        Under a ``--run-tag`` it moves into that run's artefact tree, so two
-        concurrent runs publish disjoint coverage (#541). ``outdir`` itself
-        is unchanged: it still anchors the source roots and the suite labels,
-        which describe the checkout rather than the run.
         """
-        base = (
-            outdir
-            if self.run_tag is None
-            else suite_artifact_root(outdir, self.run_tag)
-        )
-        cov_dir = os.path.join(base, "cov_dir")
+        cov_dir = os.path.join(self._publish_root(outdir), "cov_dir")
         os.makedirs(cov_dir, exist_ok=True)
         return cov_dir
 
@@ -460,7 +467,7 @@ class CoverageReporter:
             source_roots=self._normalize_source_roots(
                 outdir, source_roots=source_roots
             ),
-            html_outdir=outdir,
+            html_outdir=self._publish_root(outdir),
         )
 
     def generate_unmerged_artifacts(
@@ -520,7 +527,7 @@ class CoverageReporter:
                 html_output=html_output,
                 artifact_name=f"{suite_label}__{suite_result['test_name']}",
                 source_roots=source_roots,
-                html_outdir=outdir,
+                html_outdir=self._publish_root(outdir),
             )
             if metrics is not None:
                 updated = metrics.to_dict()
@@ -536,7 +543,7 @@ class CoverageReporter:
                         dataset_name=safe_dataset,
                         zip_name=f"coverview_{safe_dataset}.zip",
                         raw_path=raw_paths[0],
-                        zip_outdir=outdir,
+                        zip_outdir=self._publish_root(outdir),
                         metadata={
                             "suite": os.path.relpath(
                                 suite_name, self.root_cfg.get_project_rootdir()
@@ -748,7 +755,7 @@ class CoverageReporter:
                 merged_lcov,
                 outdir=cov_dir,
                 html_dirname="coverage_merge.html",
-                html_outdir=outdir,
+                html_outdir=self._publish_root(outdir),
             )
 
         description_files = dict(rby_description_files)
@@ -765,7 +772,7 @@ class CoverageReporter:
                 zip_name=f"coverview_{safe_dataset}.zip",
                 description_files={"line": description_files["line"]},
                 rby_description_files=rby_description_files,
-                zip_outdir=outdir,
+                zip_outdir=self._publish_root(outdir),
                 metadata={
                     "suite": os.path.relpath(
                         suite_name, self.root_cfg.get_project_rootdir()
@@ -835,7 +842,7 @@ class CoverageReporter:
             outdir=cov_dir,
             dataset_name=safe_dataset,
             zip_name=f"coverview_{safe_dataset}_per_test.zip",
-            zip_outdir=outdir,
+            zip_outdir=self._publish_root(outdir),
             metadata={
                 "suite": os.path.relpath(
                     suite_name, self.root_cfg.get_project_rootdir()
@@ -927,7 +934,7 @@ class CoverageReporter:
                         )
                         cv = self._get_coverview_tool().package_info(
                             info_path=merged_cov.lcov_path,
-                            outdir=outdir,
+                            outdir=self._publish_root(outdir),
                             dataset_name=safe_dataset,
                             zip_name=f"coverview_{safe_dataset}.zip",
                             raw_path=merged_cov.merged_path,

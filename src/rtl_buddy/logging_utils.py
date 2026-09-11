@@ -170,12 +170,18 @@ def setup_logging(
         attach_file_log(log_path)
 
 
-def attach_file_log(log_path: str | Path) -> None:
+def attach_file_log(log_path: str | Path, *, truncate: bool = True) -> None:
     """Attach (or re-anchor) the rotating file handler at ``log_path``.
 
     Idempotent: calling twice replaces the previous file handler so the
     log file follows the command's resolved :class:`ExecutionContext`
     even if an earlier code path opened one in a different location.
+
+    ``truncate=False`` always appends. A read-only command takes no
+    artefact lock, so nothing stops it running beside a live writer, and
+    a first open in write mode would erase that writer's log mid-run
+    (#541). Nothing a listing command logs is worth another process's
+    diagnostics.
     """
     if _FILE_LOG_LEVEL is None:
         raise RuntimeError(
@@ -194,7 +200,7 @@ def attach_file_log(log_path: str | Path) -> None:
     # invocation); subsequent re-anchors to the same path append so the
     # regression orchestrator can re-anchor to dirname(regression.yaml)
     # after iterating suites without losing earlier events.
-    mode = "a" if resolved in _OPENED_LOG_PATHS else "w"
+    mode = "a" if (not truncate or resolved in _OPENED_LOG_PATHS) else "w"
     _OPENED_LOG_PATHS.add(resolved)
     file_handler = logging.FileHandler(resolved, mode=mode)
     file_handler.setLevel(_FILE_LOG_LEVEL)

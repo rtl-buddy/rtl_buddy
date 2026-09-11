@@ -516,6 +516,7 @@ def join_coverage(
     manifest: str | os.PathLike | None = None,
     required: bool = False,
     source: str = COVERAGE_SOURCE_AUTO,
+    run_tag: str | None = None,
 ) -> CoverageJoin:
     """Join a run's coverage onto the graph's ids.
 
@@ -529,6 +530,10 @@ def join_coverage(
         would emit and no declared items are known.
       cov_dir / manifest: where to read coverage from. Defaults to the
         newest ``cov_dir/manifest.json`` under the project.
+      run_tag: restrict that default to one concurrent run's own
+        coverage (#541), so a tagged overlay cannot pair its verdicts
+        with a differently tagged run's newer coverage model. An
+        explicit ``cov_dir`` or ``manifest`` still wins.
       required: when true, a missing or unreadable manifest is reported
         in ``problems`` instead of being the ordinary "this tree has no
         coverage" answer.
@@ -551,7 +556,9 @@ def join_coverage(
             required=required,
         )
     try:
-        ctx = load_cov_context(project_root, cov_dir=cov_dir, manifest=manifest)
+        ctx = load_cov_context(
+            project_root, cov_dir=cov_dir, manifest=manifest, run_tag=run_tag
+        )
     except CovQueryError as exc:
         # No manifest is where `auto` earns its name: the overlay's own
         # artefact scan already found each test's `coverage.dat`, and a

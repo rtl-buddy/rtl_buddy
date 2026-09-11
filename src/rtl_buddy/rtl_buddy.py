@@ -1064,16 +1064,19 @@ class RtlBuddy:
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
+        # A listing command takes no lock below, so it may well be running
+        # beside the writer that owns this log; it appends rather than
+        # opening in write mode.
         if log_path is None:
             # A tagged run logs inside its own artefact tree, which nothing
             # has created yet at this point (the lock below is what normally
             # does).
             ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
-            attach_file_log(ctx.log_path)
+            attach_file_log(ctx.log_path, truncate=not list_only)
         else:
             log_path = Path(log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            attach_file_log(log_path)
+            attach_file_log(log_path, truncate=not list_only)
         self.exec_ctx = ctx
 
         if list_only:

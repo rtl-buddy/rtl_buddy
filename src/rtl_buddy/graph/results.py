@@ -567,6 +567,7 @@ def collect_results(
             cov_dir=cov_dir,
             manifest=cov_manifest,
             source=source,
+            run_tag=run_tag,
         )
         problems.extend(join.problems)
         # Beside `artefacts.coverage` — the path to the raw database was

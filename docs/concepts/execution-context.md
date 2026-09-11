@@ -104,6 +104,8 @@ Two bounds:
 
 `rb graph results --run-tag <tag>` scans that run's trees and writes its overlay to `artefacts/.runs/<tag>/graph/results-overlay.json`. `rb graph query`, `graph path` and `graph explain` take the same tag and read that overlay. `graph.json` is still read from `artefacts/graph/` — the graph describes the design, not the run, so it is built once for all tags.
 
+Coverage follows the tag too: `cov_dir`, the merged HTML and the Coverview zips are published inside that run's tree, and `graph results --run-tag` joins only that run's coverage rather than whichever manifest is newest in the checkout.
+
 `rb cov` does not take the tag. Point it at the run you want with `--cov-dir <suite>/artefacts/.runs/<tag>/cov_dir`.
 
 ## Find the log

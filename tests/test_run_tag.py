@@ -14,6 +14,7 @@ exactly what they were.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -24,7 +25,9 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
+from rtl_buddy import logging_utils
 from rtl_buddy.artifact_lock import LOCK_FILENAME, ArtifactLocks
+from rtl_buddy.cov import manifest as cov_manifest
 from rtl_buddy.dispatch.argv import build_job_argv, test_job_argv as _test_job_argv
 from rtl_buddy.dispatch.base import BuildJobSpec, TestJobSpec as _TestJobSpec
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -32,6 +35,7 @@ from rtl_buddy.exec_context import ExecutionContext
 from rtl_buddy.graph import query as graph_query
 from rtl_buddy.graph import results as graph_results
 from rtl_buddy.rtl_buddy import RtlBuddy
+from rtl_buddy.tools import coverage as coverage_module
 from rtl_buddy.tools.coverage import CoverageReporter
 from rtl_buddy.tools.artifact_paths import (
     normalize_run_tag,
@@ -387,6 +391,70 @@ def test_the_graph_read_verbs_resolve_the_tagged_overlay(tmp_path):
 
     untagged = graph_query.load_context(root)
     assert untagged.overlay_path == graph_dir / "results-overlay.json"
+
+
+def test_every_published_coverage_output_follows_the_tag(tmp_path):
+    """`cov_dir` was only half of it.
+
+    `--coverage-html` and `--coverage-coverview` publish HTML trees and
+    Coverview zips through their own `html_outdir`/`zip_outdir` overrides,
+    which pointed at the command root.
+    """
+    untagged = CoverageReporter(_DummyCovRootCfg(tmp_path))
+    tagged = CoverageReporter(_DummyCovRootCfg(tmp_path), run_tag="vcs")
+
+    assert untagged._publish_root(tmp_path) == tmp_path
+    assert Path(tagged._publish_root(tmp_path)) == (
+        tmp_path / "artefacts" / ".runs" / "vcs"
+    )
+
+    source = Path(coverage_module.__file__).read_text()
+    # Every override that names a publish location goes through the root,
+    # or a tagged run leaks that output back to the command root.
+    assert "html_outdir=outdir" not in source
+    assert "zip_outdir=outdir" not in source
+
+
+def test_coverage_discovery_will_not_cross_tags(tmp_path):
+    """Two tagged runs leave two manifests; the newest is not the answer.
+
+    Joining one run's verdicts to another run's coverage model is a wrong
+    overlay rather than a missing one.
+    """
+    root = tmp_path / "proj"
+    paths = {}
+    for tag in ("vcs", "verilator"):
+        cov = root / "verif" / "blk" / "artefacts" / ".runs" / tag / "cov_dir"
+        cov.mkdir(parents=True)
+        (cov / "manifest.json").write_text("{}")
+        paths[tag] = str(cov / "manifest.json")
+    flat = root / "verif" / "blk" / "cov_dir"
+    flat.mkdir(parents=True)
+    (flat / "manifest.json").write_text("{}")
+
+    for tag in ("vcs", "verilator"):
+        assert cov_manifest.discover_manifests(root, tag) == [paths[tag]]
+    # And an untagged caller keeps to the untagged tree.
+    assert cov_manifest.discover_manifests(root) == [str(flat / "manifest.json")]
+    assert len(cov_manifest.discover_manifests(root, None)) == 1
+
+
+def test_a_listing_command_appends_to_a_live_log(tmp_path, monkeypatch):
+    """`--list` and the graph read verbs take no artefact lock, so they can
+    run beside the writer that owns the log they are about to open."""
+    log = tmp_path / "rtl_buddy.log"
+    log.write_text("a running head wrote this\n")
+
+    logging_utils.setup_logging()
+    monkeypatch.setattr(logging_utils, "_OPENED_LOG_PATHS", set())
+    logging_utils.attach_file_log(log, truncate=False)
+    logging.getLogger(__name__).warning("reader")
+    for handler in list(logging.getLogger().handlers):
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
+            logging.getLogger().removeHandler(handler)
+
+    assert "a running head wrote this" in log.read_text()
 
 
 # ---------------------------------------------------------------------------

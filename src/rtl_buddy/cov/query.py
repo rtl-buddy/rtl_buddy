@@ -62,7 +62,9 @@ class CovContext:
     model_path: str | None
 
 
-def resolve_manifest_path(project_root, *, cov_dir=None, manifest=None) -> str:
+def resolve_manifest_path(
+    project_root, *, cov_dir=None, manifest=None, run_tag=None
+) -> str:
     """Locate the manifest to read, most explicit request first."""
     if manifest is not None:
         candidate = Path(manifest)
@@ -81,7 +83,7 @@ def resolve_manifest_path(project_root, *, cov_dir=None, manifest=None) -> str:
             )
         return str(candidate)
 
-    found = manifest_mod.discover_manifests(project_root)
+    found = manifest_mod.discover_manifests(project_root, run_tag)
     if not found:
         raise CovQueryError(
             f"cov: no {manifest_mod.COV_DIR_NAME}/"
@@ -91,7 +93,9 @@ def resolve_manifest_path(project_root, *, cov_dir=None, manifest=None) -> str:
     return found[0]
 
 
-def load_context(project_root, *, cov_dir=None, manifest=None) -> CovContext:
+def load_context(
+    project_root, *, cov_dir=None, manifest=None, run_tag=None
+) -> CovContext:
     """Load the manifest and its model.
 
     A manifest with no model is an error rather than an empty answer:
@@ -100,7 +104,7 @@ def load_context(project_root, *, cov_dir=None, manifest=None) -> CovContext:
     was covered.
     """
     manifest_path = resolve_manifest_path(
-        project_root, cov_dir=cov_dir, manifest=manifest
+        project_root, cov_dir=cov_dir, manifest=manifest, run_tag=run_tag
     )
     try:
         document = manifest_mod.load_manifest(manifest_path)

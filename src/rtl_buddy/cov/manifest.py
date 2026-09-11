@@ -62,6 +62,8 @@ MANIFEST_SCHEMA_VERSION = 1
 # suffix clear (#469). Re-exported here, where consumers already look.
 from ..tools.artifact_paths import (  # noqa: E402
     COV_MANIFEST_NAME as MANIFEST_FILENAME,
+    RUNS_DIRNAME,
+    normalize_run_tag,
 )
 
 #: Name of the coverage artefact directory a run writes.
@@ -209,13 +211,36 @@ def project_root_for(manifest_path) -> str | None:
     return str(root)
 
 
-def discover_manifests(project_root) -> list[str]:
+def _belongs_to_run(path: str, run_tag: str | None) -> bool:
+    """Was ``path`` written by the run ``run_tag`` names? (#541)
+
+    A tagged run's coverage lives under ``artefacts/.runs/<tag>/``, so
+    discovery has to take sides: picking the newest manifest anywhere
+    would let one run's verdicts be joined with another run's coverage,
+    which is a wrong answer rather than a missing one. A tag therefore
+    accepts only its own subtree, and an untagged caller accepts only
+    manifests outside every tagged subtree.
+    """
+    parts = Path(path).parts
+    try:
+        idx = parts.index(RUNS_DIRNAME)
+    except ValueError:
+        return run_tag is None
+    if run_tag is None:
+        return False
+    return idx + 1 < len(parts) and parts[idx + 1] == normalize_run_tag(run_tag)
+
+
+def discover_manifests(project_root, run_tag: str | None = None) -> list[str]:
     """Every ``cov_dir/manifest.json`` under a project, newest first.
 
     Coverage artefacts land wherever the command ran, so discovery is a
     bounded walk rather than one fixed path. Version-control and build
     directories are skipped; ties break on the path so the order is
     deterministic on a tree with identical timestamps.
+
+    ``run_tag`` narrows the result to one concurrent run's own coverage;
+    see :func:`_belongs_to_run`.
     """
     root = Path(project_root)
     found: list[tuple[float, str]] = []
@@ -232,6 +257,8 @@ def discover_manifests(project_root) -> list[str]:
         try:
             mtime = os.path.getmtime(path)
         except OSError:  # pragma: no cover - raced deletion
+            continue
+        if not _belongs_to_run(path, run_tag):
             continue
         found.append((mtime, path))
     found.sort(key=lambda item: (-item[0], item[1]))
