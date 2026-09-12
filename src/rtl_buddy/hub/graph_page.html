@@ -1690,11 +1690,25 @@
   // `rootComponent` de-qualifies, for the same reason the ranking does:
   // a root-scope instance carries `@<suite>` on its only component, and
   // the two halves of one identity must agree about it.
+  //
+  // The CACHED model never decides anything on its own. Only a hub with
+  // no active model at all short-circuits; every real selection asks for
+  // a `state_snapshot` first and judges against the answer. The cache is
+  // there for the synchronous ranking, which cannot go ask mid-click, and
+  // it can be behind — the schematic may have switched while this socket
+  // was disconnected, or before its `view_changed` was applied. Letting a
+  // cached-root match suppress the warning would be a silent failure in
+  // exactly that window: the schematic is showing another model, the
+  // click highlights nothing there, and the pane says nothing and offers
+  // no switch. Suppression is the outcome that has to be earned, so it is
+  // the one that must never run on stale state.
   function maybeWarnCrossModel(ip) {
     var root = rootComponent(ip);
-    if (!activeModel || currentModelRoots()[root]) { setCrossModel(null); return; }
+    if (!activeModel) { setCrossModel(null); return; }
     request('state_snapshot', {}, function (reply) {
-      if (reply.kind !== 'response') { return; }
+      // Unconfirmable: neither accuse the click nor leave the PREVIOUS
+      // selection's switch target armed under this one.
+      if (reply.kind !== 'response') { setCrossModel(null); return; }
       activeModel = reply.payload.active_model;
       // Re-read after the refresh: `currentModelRoots` is memoised on the
       // active model, so this is the freshly confirmed model's roots.
