@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # ref is a git tag (or branch) accepted by ``git clone --branch``. Keep it in
 # lockstep with hub/protocol.py::PROTOCOL_VERSION — see the module docstring.
 RTL_BUDDY_NVIM_REPO = "https://github.com/rtl-buddy/rtl-buddy-nvim"
-RTL_BUDDY_NVIM_REF = "v0.2.0"
+RTL_BUDDY_NVIM_REF = "v0.2.1"
 
 # The hub wire-protocol version the pinned plugin speaks. The hub enforces it
 # on the wire (``hub/protocol.py::decode`` rejects a mismatched ``v``), so a
