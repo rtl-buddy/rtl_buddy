@@ -632,16 +632,25 @@ def heaviest_modules(model: dict, limit: int | None = None) -> list[dict]:
     return truncate(sorted(_module_rows(model), key=key), limit)
 
 
+def hottest_key(row) -> tuple:
+    """The order every list of instance rows is presented in.
+
+    Total power descending with nulls last, path breaking the tie. Named
+    once because three payloads sort by it — the ranking
+    :func:`hottest_instances` is, the instances of a module, and the
+    children of a subtree — and a list that quietly used a different one
+    would head to a different set of rows under ``limit`` than the
+    surface above it says it is heading (#563 review).
+    """
+    return (
+        _sort_key_desc(row.get("total_uw")),
+        str(row.get("instance_path") or ""),
+    )
+
+
 def hottest_instances(model: dict, limit: int | None = None) -> list[dict]:
     """Instance rows ranked by total power, then path."""
-
-    def key(row):
-        return (
-            _sort_key_desc(row.get("total_uw")),
-            str(row.get("instance_path") or ""),
-        )
-
-    return truncate(sorted(_instance_rows(model), key=key), limit)
+    return truncate(sorted(_instance_rows(model), key=hottest_key), limit)
 
 
 def _power_sum(rows) -> dict:
@@ -843,10 +852,7 @@ def module_payload(ctx: PhysContext, module: str, *, limit: int | None = None) -
     if model.get("instances") is not None:
         instances = sorted(
             (r for r in _instance_rows(model) if str(r.get("module")) == resolved),
-            key=lambda r: (
-                _sort_key_desc(r.get("total_uw")),
-                str(r.get("instance_path") or ""),
-            ),
+            key=hottest_key,
         )
 
     namespaces = namespaces_of(model, resolved)
@@ -959,6 +965,14 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
     themselves are returned with the model's own spelling, and
     ``instance_path`` echoes what the user asked.
 
+    ``children`` is ordered by total power descending, nulls last, with
+    the path breaking the tie — :func:`hottest_key`, the same ranking the
+    other two instance lists use. It was lexicographic, which read the
+    same as long as nothing was cut off it but headed the wrong rows the
+    moment something was: ``limit`` truncates *after* the sort, and every
+    surface that heads this list describes it as the heaviest children
+    (#563 review).
+
     ``limit`` heads the ``children`` list and defaults to the complete
     one, exactly as :func:`module_payload`'s does and for the same
     reason. ``child_count`` is how many children there are and ``rollup``
@@ -980,7 +994,7 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
     )
     children = sorted(
         (r for r in rows if is_descendant(str(r.get("instance_path") or ""), path)),
-        key=lambda r: str(r.get("instance_path") or ""),
+        key=hottest_key,
     )
     if exact is None and not children:
         known = instance_paths(model)

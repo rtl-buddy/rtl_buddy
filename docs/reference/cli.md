@@ -1036,8 +1036,8 @@ Usage: rtl-buddy phys instance [OPTIONS] PATH
 │ *    path      TEXT  instance path, exact or the root of a subtree [required]        │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER RANGE [x>=0]  children to list (0 for all); truncates the  │
-│                                         --machine payload too                        │
+│ --limit           INTEGER RANGE [x>=0]  hottest children to list (0 for all);        │
+│                                         truncates the --machine payload too          │
 │                                         [default: 10]                                │
 │ --phys-dir        TEXT                  artefact directory holding                   │
 │                                         phys-manifest.json                           │

@@ -867,6 +867,50 @@ def test_instance_payload_heads_its_children_at_the_limit(project):
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
 
 
+#: A subtree whose hottest leaf is last alphabetically, so the two
+#: orderings disagree — which is the only way to tell them apart, and why
+#: the fixture above could not.
+_UNORDERED_CHILDREN = [
+    {"instance_path": "u_top/a_cold", "module": "INV_X1", "total_uw": 0.1},
+    {"instance_path": "u_top/m_unmeasured", "module": "INV_X1", "total_uw": None},
+    {"instance_path": "u_top/z_hot", "module": "DFF_X1", "total_uw": 9.0},
+]
+
+
+def _unordered_children_context(project):
+    return load_context(
+        project,
+        phys_dir=_write_run(
+            project, "unordered", instances=_UNORDERED_CHILDREN, mtime=3_100_000
+        ),
+    )
+
+
+def test_children_are_ranked_by_power_not_by_path(project):
+    """The finding (#563 review, Codex P2). The children were sorted
+    lexicographically while every surface that heads the list — the console
+    note, the `--limit` help, the MCP tool's description — calls them the
+    hottest, so a truncated list was a head of the wrong ranking. Nulls sink
+    for the reason they do everywhere else: unmeasured is not small."""
+    payload = instance_payload(_unordered_children_context(project), "u_top")
+
+    assert [row["instance_path"] for row in payload["children"]] == [
+        "u_top/z_hot",
+        "u_top/a_cold",
+        "u_top/m_unmeasured",
+    ]
+
+
+def test_a_headed_child_list_keeps_the_hottest(project):
+    """Which is the whole point of the order: `--limit 1` answers with the
+    leaf that dominates the subtree, not with whichever sorts first."""
+    payload = instance_payload(_unordered_children_context(project), "u_top", limit=1)
+
+    assert [row["instance_path"] for row in payload["children"]] == ["u_top/z_hot"]
+    assert payload["child_count"] == 3
+    assert payload["rollup"]["total_uw"] == pytest.approx(9.1)
+
+
 def test_a_zero_instance_limit_means_every_child(project):
     payload = instance_payload(load_context(project), "u_sub", limit=0)
 
