@@ -41,22 +41,31 @@ forward from it rather than being clobbered to null
 run configured into one artefact directory add up to a complete
 document, in either order.
 
-The two directions are not symmetric, because the two flows are not. A
-power analysis runs *against* the synthesis output, so the ``modules``
-half it inherits is by construction the one its own netlist came from,
-and it travels unconditionally. A synthesis inherits the other way — the
-``instances`` half was measured before this run existed, on a netlist
-this run has just overwritten — so it travels only when the netlist the
-synthesis just wrote is byte-identical to the one the power run read.
-Both sides record that netlist's sha256 in ``provenance``
-(:data:`PROVENANCE_KEYS`), and the comparison is of recorded hashes, not
-of timestamps or of the fact that the rows happen to be there: editing
-the RTL and re-running `rb synth` in the same directory must not carry
-per-instance watts forward onto a netlist that no longer exists. Missing
-provenance on either side is not a match — an old document, an
-unreadable netlist, or a power run whose ``netlist-source`` was the
-routed database rather than a netlist all drop the half, which is the
-safe direction (:func:`may_inherit_instances`).
+**One rule, in both directions.** A half is inherited only when the
+netlist it was measured on is the netlist this run measured. Both sides
+record that netlist's sha256 in ``provenance`` (:data:`PROVENANCE_KEYS`)
+and the comparison is of recorded hashes — not of timestamps, and not of
+the fact that the rows happen to be sitting in the directory
+(:func:`may_inherit_other_half`). Editing the RTL and re-running
+`rb synth` must not carry per-instance watts forward onto a netlist that
+no longer exists; and, the other way round, a `rb power` run measuring a
+netlist some other build has since replaced must not republish module
+rows that were counted off a netlist it never read. Missing provenance
+on either side is not a match — an old document, an unreadable netlist,
+or a power run whose ``netlist-source`` was the routed database rather
+than a netlist all drop the half, which is the safe direction.
+
+The two *flows* stay asymmetric even though the check no longer is, and
+that asymmetry is now an argument about how often the check passes, not
+about whether it is made. A power analysis runs *against* the synthesis
+output, so in the ordinary `rb synth` then `rb power` pair the two
+hashes are of one file and the ``modules`` half travels; a synthesis
+inherits the other way, against a netlist it has just overwritten, so
+that is the direction where the check routinely refuses. Making it
+unconditional there would have been a shortcut on the usual case: a
+power run whose recorded hash does not match the synthesis provenance
+beside it measured a *different* netlist, and republishing the local
+module rows under it would describe a design that run never saw.
 
 The half the run does own is never inherited, even when this run failed
 to produce it: a synthesis whose ``stat -json`` was unreadable writes
@@ -140,6 +149,19 @@ _HALVES = (
     ("modules", _SYNTH_TOTALS, "synth"),
     ("instances", _POWER_TOTALS, "power"),
 )
+
+
+#: The provenance block each half's producer fills, and the one the
+#: *other* producer fills — the two ends of the hash comparison
+#: :func:`may_inherit_other_half` makes. Derived from :data:`_HALVES` so
+#: the pairing cannot be re-spelled and drift.
+_PROVENANCE_BLOCK = {half: block for half, _totals, block in _HALVES}
+_OTHER_PROVENANCE_BLOCK = {
+    half: block
+    for half, _totals, _block in _HALVES
+    for other, _t, block in _HALVES
+    if other != half
+}
 
 #: Watts in, microwatts out — see :data:`UNITS`.
 _W_TO_UW = 1e6
@@ -298,18 +320,15 @@ def merge_model(existing: dict | None, new: dict, *, own_half: str | None) -> di
     combined after the fact); then any half ``new`` left null is
     inheritable.
 
-    A synthesis inheriting ``instances`` has one more condition to meet:
-    the rows must have been measured on the netlist it just wrote
-    (:func:`may_inherit_instances`). They were produced by an earlier
-    command against a netlist this run has since overwritten, and nothing
-    about their being in the directory says the two are the same file.
-    When the hashes do not match — or either side recorded none — the
-    half is dropped along with its totals, and the document says
-    ``instances: null``: this publication has no per-instance breakdown,
-    which is true, where the alternative is a breakdown of a design that
-    is gone. The other direction has nothing to check, because a power
-    analysis runs against the synthesis output: the ``modules`` half it
-    inherits is the one its own netlist came from.
+    The other half has one more condition to meet, whichever half it is:
+    it must have been measured on the netlist this run measured
+    (:func:`may_inherit_other_half`). It was produced by an earlier
+    command, and nothing about its being in the same directory says the
+    two runs were looking at the same file. When the hashes do not match
+    — or either side recorded none — the half is dropped along with its
+    totals, and the document says ``instances: null`` (or
+    ``modules: null``): this publication has no such breakdown, which is
+    true, where the alternative is a breakdown of a design that is gone.
 
     ``existing`` is ignored entirely when it is missing, unreadable, of a
     different ``schema_version``, or describes a different top. The last
@@ -327,13 +346,13 @@ def merge_model(existing: dict | None, new: dict, *, own_half: str | None) -> di
     merged = dict(new)
     merged["totals"] = dict(new["totals"])
     merged["provenance"] = provenance_of(new)
-    bound = may_inherit_instances(existing, new, own_half=own_half)
+    bound = may_inherit_other_half(existing, new, own_half=own_half)
     for half, totals_keys, block in _HALVES:
         if half == own_half:
             continue
         if merged.get(half) is not None or existing.get(half) is None:
             continue
-        if half == "instances" and not bound:
+        if not bound:
             continue
         merged[half] = existing[half]
         merged["provenance"][block] = provenance_of(existing)[block]
@@ -343,35 +362,48 @@ def merge_model(existing: dict | None, new: dict, *, own_half: str | None) -> di
     return merged
 
 
-def may_inherit_instances(existing: dict | None, new: dict, *, own_half) -> bool:
-    """Do ``existing``'s per-instance rows describe ``new``'s netlist?
+def may_inherit_other_half(existing: dict | None, new: dict, *, own_half) -> bool:
+    """Does ``existing``'s other half describe the netlist ``new`` measured?
 
-    Asked only of a synthesis publication (``own_half == "modules"``),
-    which is the one that overwrites the netlist under a power half it
-    did not produce; every other fold answers ``True`` and inherits on
-    the rules :func:`merge_model` documents.
+    The one gate both directions go through. A publication owns one half
+    and may carry the other forward; this asks whether the run that
+    produced that other half was looking at the same netlist this run
+    was. A fold with no producer behind it (``own_half`` naming neither
+    half) has no netlist of its own to compare and answers ``True``,
+    inheriting on the rules :func:`merge_model` documents.
 
     The evidence is the pair of hashes in ``provenance``: the netlist the
-    power run read against the netlist this synthesis just wrote. Equal
-    means the rows are still about this design, whatever has happened to
-    the RTL in between — a re-synthesis that changed nothing publishes
-    the same bytes. Anything else is not a match, ``None`` included: a
-    model written before this build, a netlist that could not be hashed,
-    and a power run whose ``netlist-source`` was a routed database all
-    leave nothing to compare, and a half whose binding cannot be shown
-    is dropped rather than assumed. That is the strict direction, and
-    the cost of being wrong the other way is a power breakdown
-    attributed to a netlist that never produced it.
+    *other* half's producer recorded against the netlist this run
+    recorded. Equal means the rows are still about this design, whatever
+    has happened to the RTL in between — a re-synthesis that changed
+    nothing publishes the same bytes. Anything else is not a match,
+    ``None`` included: a model written before this build, a netlist that
+    could not be hashed, and a power run whose ``netlist-source`` was a
+    routed database all leave nothing to compare, and a half whose
+    binding cannot be shown is dropped rather than assumed. That is the
+    strict direction, and the cost of being wrong the other way is a
+    breakdown attributed to a netlist that never produced it.
+
+    Symmetric because the failure is. The synthesis direction is the
+    obvious one — it overwrites the netlist under a power half it did not
+    produce — but the power direction fails too: a `rb power` run whose
+    netlist does not hash equal to the synthesis provenance in the
+    directory read something the local ``modules`` rows do not describe,
+    and inheriting them would publish per-module areas for a netlist this
+    publication did not measure. What is asymmetric is how often each
+    side refuses, not whether it is asked (see the module docstring).
 
     Exposed rather than folded into the loop because the manifest merge
     has to make the same call about the same publication — see
     :func:`rtl_buddy.phys.publish._publish`.
     """
-    if own_half != "modules":
+    mine = _PROVENANCE_BLOCK.get(own_half)
+    if mine is None:
         return True
-    measured_on = provenance_of(existing)["power"]["netlist_sha256"]
-    just_written = provenance_of(new)["synth"]["netlist_sha256"]
-    return measured_on is not None and measured_on == just_written
+    theirs = _OTHER_PROVENANCE_BLOCK[own_half]
+    measured_on = provenance_of(existing)[theirs]["netlist_sha256"]
+    just_measured = provenance_of(new)[mine]["netlist_sha256"]
+    return measured_on is not None and measured_on == just_measured
 
 
 def provenance_of(model) -> dict:
@@ -380,7 +412,7 @@ def provenance_of(model) -> dict:
     Normalising on read rather than trusting the document, because the
     documents this is asked about include ones written by an rtl_buddy
     that had no provenance block at all. A missing entry reads as
-    ``None``, which :func:`may_inherit_instances` treats as "no evidence"
+    ``None``, which :func:`may_inherit_other_half` treats as "no evidence"
     — the same answer it gives a hash that does not match.
     """
     recorded = model.get("provenance") if isinstance(model, dict) else None

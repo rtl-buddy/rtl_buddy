@@ -922,6 +922,44 @@ def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
     assert manifest["synth"]["backend"] is None
 
 
+def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
+    tmp_path, monkeypatch
+):
+    """The finding (#560 round-9 review, Codex P1). The hash is captured
+    where the run hands the netlist to OpenROAD, not at publish time minutes
+    later — otherwise a `rb synth` that rewrites the upstream netlist while
+    the analysis works records as "measured" bytes this run never saw, and
+    the merge reads the mismatch it exists to catch as a match."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    netlist = tmp_path / "synth_netlist.v"
+    handed_to_openroad = hashlib.sha256(netlist.read_bytes()).hexdigest()
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+        # A `rb synth` into the upstream artefact directory, landing while
+        # OpenROAD is still reading the netlist it was given.
+        netlist.write_text("module demo_top(); // resynthesised\nendmodule\n")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    result = backend.run()
+
+    recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+    assert recorded["netlist_sha256"] == handed_to_openroad
+    assert (
+        recorded["netlist_sha256"] != hashlib.sha256(netlist.read_bytes()).hexdigest()
+    )
+
+
 def test_a_power_run_without_the_per_instance_report_still_passes(
     tmp_path, monkeypatch
 ):
