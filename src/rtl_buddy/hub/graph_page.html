@@ -693,9 +693,10 @@
   // >>> origin-labels
   // Wire origin -> the name a user sees. The hub's `Origin` enum is the
   // WIRE vocabulary and it does not move for a rebrand: the schematic
-  // app registers as `view` and the graph pane as `graph`, and both
-  // keep doing so until protocol v2. Their DISPLAY names are `sch` and
-  // `gph` (rtl-buddy-sch, rtl-buddy-gph), so this map is the seam, and
+  // app registers as `view`, the graph pane as `graph` and the phys
+  // pane as `phys`, and all three keep doing so until protocol v2.
+  // Their DISPLAY names are `sch`, `gph` and `phy` (rtl-buddy-sch,
+  // rtl-buddy-gph, rtl-buddy-phys), so this map is the seam, and
   // every place an origin reaches a user goes through it -- the peer
   // strip below, the header switcher's sibling labels, the `send -> X`
   // buttons and the cross-model button. An origin with no entry is
@@ -706,13 +707,13 @@
   // every graph label in this file follows.
   //
   // A pane is a self-contained single file by design, so this helper is
-  // hand-duplicated into cov_page.html and landing_page.html beside it,
-  // and the SPA keeps its own copy under the same contract
-  // (rtl-buddy-sch, viewer/src/displayNames.js). Change the map in one
-  // and change it in all four, or the tabs start calling the same peer
-  // different things. The cross-repo checklist is rtl-buddy-sch
-  // docs/hub-protocol.md section 13.
-  var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
+  // hand-duplicated into cov_page.html, phys_page.html and
+  // landing_page.html beside it, and the SPA keeps its own copy under
+  // the same contract (rtl-buddy-sch, viewer/src/displayNames.js).
+  // Change the map in one and change it in all five, or the tabs start
+  // calling the same peer different things. The cross-repo checklist is
+  // rtl-buddy-sch docs/hub-protocol.md section 13.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };
 
   function originLabel(origin) {
     var key = String(origin == null ? '' : origin);

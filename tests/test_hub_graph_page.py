@@ -2086,7 +2086,7 @@ def test_the_origin_label_map_renames_only_the_display():
     out = _node_eval(
         _marked_js("origin-labels")
         + """
-        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+        var origins = ['view', 'graph', 'cov', 'phys', 'wave', 'src', 'cli',
                        'notebook', 'quantum'];
         console.log(JSON.stringify(origins.map(originLabel)));
         console.log(JSON.stringify([originLabel(null), originLabel(undefined),
@@ -2099,6 +2099,7 @@ def test_the_origin_label_map_renames_only_the_display():
         "sch",
         "gph",
         "cov",
+        "phy",
         "wave",
         "src",
         "cli",
@@ -2113,7 +2114,7 @@ def test_the_origin_label_map_renames_only_the_display():
 
 def test_every_rendered_origin_goes_through_the_map():
     js = _page_js()
-    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };" in js
     # the peer strip
     assert "list.map(originLabel).join(', ')" in js
     # the header switcher's sibling links

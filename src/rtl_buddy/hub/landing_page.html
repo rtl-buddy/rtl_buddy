@@ -241,10 +241,11 @@
   // >>> origin-labels
   // Wire origin -> the name a user sees. The hub's `Origin` enum is the
   // WIRE vocabulary and it does not move for a rebrand: the schematic
-  // app registers as `view` and the graph pane as `graph`, and both
-  // keep doing so until protocol v2. Their DISPLAY names are `sch` and
-  // `gph`, so this map is the seam wherever a raw origin reaches a user
-  // — here that is the peer list, in both strips. An origin with no
+  // app registers as `view`, the graph pane as `graph` and the phys
+  // pane as `phys`, and all three keep doing so until protocol v2.
+  // Their DISPLAY names are `sch`, `gph` and `phy`, so this map is the
+  // seam wherever a raw origin reaches a user — here that is the peer
+  // list, in both strips. An origin with no
   // entry is shown verbatim, which keeps `wave`, `src` and a peer from
   // a newer hub legible instead of blank.
   //
@@ -253,13 +254,13 @@
   // hub/landing_page.py's APPS table. That table and this map are the
   // two places a family rename touches on this page.
   //
-  // Hand-duplicated into graph_page.html and cov_page.html beside this
-  // file (a pane is a self-contained single file by design), and the
-  // SPA keeps its own copy under the same contract (rtl-buddy-sch,
-  // viewer/src/displayNames.js). Change the map in one and change it in
-  // all four. The cross-repo checklist is rtl-buddy-sch
-  // docs/hub-protocol.md section 13.
-  var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
+  // Hand-duplicated into graph_page.html, cov_page.html and
+  // phys_page.html beside this file (a pane is a self-contained single
+  // file by design), and the SPA keeps its own copy under the same
+  // contract (rtl-buddy-sch, viewer/src/displayNames.js). Change the
+  // map in one and change it in all five. The cross-repo checklist is
+  // rtl-buddy-sch docs/hub-protocol.md section 13.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };
 
   function originLabel(origin) {
     var key = String(origin == null ? '' : origin);

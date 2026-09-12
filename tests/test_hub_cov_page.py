@@ -2112,7 +2112,7 @@ def test_the_origin_label_map_renames_only_the_display():
     out = _node(
         _marked_js("origin-labels")
         + """
-        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+        var origins = ['view', 'graph', 'cov', 'phys', 'wave', 'src', 'cli',
                        'notebook', 'quantum'];
         console.log(JSON.stringify(origins.map(originLabel)));
         console.log(JSON.stringify([originLabel(null), originLabel(undefined),
@@ -2125,6 +2125,7 @@ def test_the_origin_label_map_renames_only_the_display():
         "sch",
         "gph",
         "cov",
+        "phy",
         "wave",
         "src",
         "cli",
@@ -2138,7 +2139,7 @@ def test_the_origin_label_map_renames_only_the_display():
 def test_every_rendered_origin_goes_through_the_map():
     js = _page_js()
     # The same map, word for word, as the graph pane's and the landing's.
-    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };" in js
     assert "list.map(originLabel).join(', ')" in js
     assert "originLabel(links[i].getAttribute('data-origin'))" in js
     assert "'send → ' + originLabel(app.origin)," in js

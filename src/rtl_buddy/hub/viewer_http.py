@@ -41,7 +41,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..logging_utils import log_event
-from . import cov_page, graph_page, landing_page, theme
+from . import cov_page, graph_page, landing_page, phys_page, theme
 from .event_broker import EventBroker
 
 
@@ -183,6 +183,7 @@ def render_index_html(
     view_url: str | None = None,
     graph_url: str | None = None,
     cov_url: str | None = None,
+    phys_url: str | None = None,
 ) -> bytes:
     """Return the HTML body served at ``/view`` with hub address injected.
 
@@ -201,7 +202,11 @@ def render_index_html(
     an SPA overlay can advertise the graph pane on presence of the
     global instead of probing the endpoint and handling a 404.
     ``cov_url`` is the identical arrangement for the coverage pane
-    (rtl-buddy/rtl_buddy#400), keyed on a discovered coverage manifest.
+    (rtl-buddy/rtl_buddy#400), keyed on a discovered coverage manifest,
+    and ``phys_url`` for the synth+power pane (rtl-buddy/rtl_buddy#558),
+    keyed on a discovered physical manifest. The SPA pre-landed its
+    ``/phy`` app-switcher entry gated on that global, so the hub setting
+    it is what makes the entry appear.
     """
 
     if bundle_index is not None and bundle_index.is_file():
@@ -216,6 +221,8 @@ def render_index_html(
         parts.append(f"window.__RTL_BUDDY_GRAPH_URL__ = {graph_url!r};")
     if cov_url is not None:
         parts.append(f"window.__RTL_BUDDY_COV_URL__ = {cov_url!r};")
+    if phys_url is not None:
+        parts.append(f"window.__RTL_BUDDY_PHY_URL__ = {phys_url!r};")
     preamble = "\n".join(parts)
 
     if "%HUB_INJECTION%" in html:
@@ -370,6 +377,21 @@ class ViewerServer:
             return False
         return await asyncio.to_thread(cov_page.cov_data_present, self.project_root)
 
+    async def _has_phys_data(self) -> bool:
+        """Whether any run under this root left a physical manifest.
+
+        The coverage rule verbatim, and for a stronger version of the
+        same reason: a physical manifest lands in whatever
+        ``artefacts/<run>/`` the run was named into, so discovery cannot
+        even shortcut on a directory name — the filename is the only
+        marker and the walk is the whole search. Cached for a few
+        seconds by ``phys_page`` and awaited in a thread here, or a
+        landing poll would stall the ``/ws`` fan-out behind it.
+        """
+        if self.project_root is None:
+            return False
+        return await asyncio.to_thread(phys_page.phys_data_present, self.project_root)
+
     async def start(self) -> tuple[str, int]:
         """Bind the HTTP+WS listener; return ``(host, port)``."""
 
@@ -489,6 +511,7 @@ class ViewerServer:
         # WITHOUT the hub injection — an SPA that cannot find its hub.
         if path in (landing_page.VIEW_PAGE_ROUTE, "/index.html"):
             cov_available = await self._has_cov_data()
+            phys_available = await self._has_phys_data()
             body = render_index_html(
                 bundle_index=self._bundle_index,
                 hub_addr=self.hub_address,
@@ -497,6 +520,7 @@ class ViewerServer:
                     graph_page.GRAPH_JSON_ROUTE if self._has_graph_json() else None
                 ),
                 cov_url=(cov_page.COV_JSON_ROUTE if cov_available else None),
+                phys_url=(phys_page.PHYS_JSON_ROUTE if phys_available else None),
             )
             return _http_response(
                 connection, 200, body, content_type="text/html; charset=utf-8"
@@ -519,6 +543,12 @@ class ViewerServer:
 
         if path == cov_page.COV_SOURCE_ROUTE:
             return await self._handle_cov_source(connection, query)
+
+        if path == phys_page.PHYS_PAGE_ROUTE:
+            return self._handle_phys_page(connection)
+
+        if path == phys_page.PHYS_JSON_ROUTE:
+            return await self._handle_phys_json(connection)
 
         if path == "/models":
             return await self._handle_models(connection)
@@ -642,6 +672,7 @@ class ViewerServer:
             graph_path=graph_path,
             graph_mtime=graph_mtime,
             cov_available=await self._has_cov_data(),
+            phys_available=await self._has_phys_data(),
         )
         return _http_response(
             connection,
@@ -778,6 +809,47 @@ class ViewerServer:
         requested = query.get("path", [""])[0]
         status, body = await asyncio.to_thread(
             cov_page.read_source_lines, self.project_root, requested
+        )
+        return _http_response(connection, status, body, content_type="application/json")
+
+    # ------------------------------------------------------------------
+    # /phy + /phy.json (issue #558)
+    # ------------------------------------------------------------------
+
+    def _handle_phys_page(self, connection: ServerConnection) -> Response:
+        """``GET /phy`` — the interactive synth+power pane.
+
+        Always 200, even with no physical artefacts: the page's own
+        empty state names the two commands that produce some, which is
+        more useful than a 404 body the browser renders as a blank tab.
+        """
+
+        return _http_response(
+            connection,
+            200,
+            phys_page.render_phys_html(hub_addr=self.hub_address),
+            content_type="text/html; charset=utf-8",
+        )
+
+    async def _handle_phys_json(self, connection: ServerConnection) -> Response:
+        """``GET /phy.json`` — the newest run's physical model.
+
+        Read off disk on every request, like ``/cov.json``: the point of
+        the reload button is that a synthesis finishing in another
+        terminal shows up here.
+        """
+
+        if self.project_root is None:
+            return _http_response(
+                connection,
+                400,
+                json.dumps(
+                    {"error": "hub started without project_root; /phy.json requires it"}
+                ).encode("utf-8"),
+                content_type="application/json",
+            )
+        status, body = await asyncio.to_thread(
+            phys_page.phys_payload_bytes, self.project_root
         )
         return _http_response(connection, status, body, content_type="application/json")
 
@@ -1754,12 +1826,14 @@ _CANONICAL_PAGE_ROUTES = frozenset(
         landing_page.VIEW_PAGE_ROUTE,
         graph_page.GRAPH_PAGE_ROUTE,
         cov_page.COV_PAGE_ROUTE,
+        phys_page.PHYS_PAGE_ROUTE,
     }
 )
 
 # Pre-#423 page spellings → their canonical replacement. Page routes
-# only: the ``view`` hub-protocol origin, ``/view.json``, ``/graph.json``
-# and ``/cov.json`` are wire and data contracts and are NOT in here.
+# only: the ``view`` hub-protocol origin, ``/view.json``, ``/graph.json``,
+# ``/cov.json`` and ``/phy.json`` are wire and data contracts and are NOT
+# in here.
 _LEGACY_PAGE_ROUTES = {
     landing_page.LEGACY_VIEW_PAGE_ROUTE: landing_page.VIEW_PAGE_ROUTE,
     graph_page.LEGACY_GRAPH_PAGE_ROUTE: graph_page.GRAPH_PAGE_ROUTE,
