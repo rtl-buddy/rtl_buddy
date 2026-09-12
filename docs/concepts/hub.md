@@ -4,7 +4,7 @@ description: Start and operate the rtl_buddy hub, connect browser and editor pee
 
 # Hub (`rb hub`)
 
-The hub coordinates the schematic, waveform viewer, source editor, graph pane, and coverage pane. It translates between their view, wave, and source coordinates and routes live events among connected peers.
+The hub coordinates the schematic, waveform viewer, source editor, graph pane, coverage pane, and synth+power pane. It translates between their view, wave, and source coordinates and routes live events among connected peers.
 
 ## Quick start
 
@@ -21,6 +21,7 @@ Open the printed `http://127.0.0.1:<http_port>/` URL. The landing page links the
 | `/sch` | Interactive schematic. |
 | `/gph` | Design knowledge graph. |
 | `/cov` | Coverage browser. |
+| `/phy` | Synthesis area and power browser. |
 
 Use a second shell to inspect or stop the process:
 
@@ -110,13 +111,14 @@ The hub accepts inbound connections only; every adapter is responsible for conne
 | Schematic SPA | `view` | WebSocket `/ws`. |
 | Graph pane | `graph` | WebSocket `/ws`. |
 | Coverage pane | `cov` | WebSocket `/ws`. |
+| Synth+power pane | `phys` | WebSocket `/ws`. |
 | `rb wave` bridge | `wave` | Line-delimited JSON over TCP. |
 | Editor adapter | `src` | Line-delimited JSON over TCP. |
 | `rb hub send` | `cli` | One-shot TCP client. |
 
 The hub permits one client per origin. A second browser tab can take over and disconnect the prior tab; the prior tab stops reconnecting until the user explicitly takes the connection back. The landing page does not register an origin and therefore cannot evict an app.
 
-`rb hub status` shows the live origins. It intentionally reports protocol origin names such as `view` and `graph`, while the browser labels those apps `sch` and `gph`.
+`rb hub status` shows the live origins. It intentionally reports protocol origin names such as `view`, `graph`, and `phys`, while the browser labels those apps `sch`, `gph`, and `phy`.
 
 ## Driving the hub from the CLI
 
@@ -128,14 +130,15 @@ rb hub send select demo_top.u_dma
 rb hub send open-source design/dma.sv:84
 rb hub send graph-focus module:dma_engine
 rb hub send cov-focus file:design/dma.sv --line 84
+rb hub send phys-focus module:dma_engine --metric area
 rb hub send wave-add tb.dut.req tb.dut.ready
 rb hub send wave-zoom 1000 2000
 rb hub send capture --out schematic.png --format png
 ```
 
-The command groups cover state broadcasts, waveform control and item management, schematic pan/overlay/capture, source opening, diagnostics, graph or coverage focus, and coordinate resolution. See the [CLI reference](../reference/cli.md#hub-send) for all verbs and arguments.
+The command groups cover state broadcasts, waveform control and item management, schematic pan/overlay/capture, source opening, diagnostics, graph, coverage or physical focus, and coordinate resolution. See the [CLI reference](../reference/cli.md#hub-send) for all verbs and arguments.
 
-The hub caches the latest selection, graph focus, and coverage focus. You can send a focus before its app opens; it is replayed when the peer registers. Surfer-side rejection, an unknown id, or an unavailable target peer returns a real hub error and a non-zero exit.
+The hub caches the latest selection, graph focus, coverage focus, and physical focus. You can send a focus before its app opens; it is replayed when the peer registers. Each cache is one slot, latest writer wins: a late-joining pane opens on the most recent target rather than replaying a backlog. Surfer-side rejection, an unknown id, or an unavailable target peer returns a real hub error and a non-zero exit.
 
 ## Design knowledge graph pane
 
@@ -166,6 +169,18 @@ Open `/cov` after a coverage-producing run. `GET /cov.json` uses the same covera
 The pane supports metric filtering, coldest-file ordering, a per-test lens, annotated source, and per-point attribution. Clicking source can send `source_focused` and `open_source`; clicking a module can send `graph_focus`. The hub resolves source locations into schematic selections where possible.
 
 Coverage discovery is cached briefly. Reload after a run finishes if the landing page has not yet updated. See [Coverage](coverage.md) for collection and metric definitions.
+
+## Synth+power pane
+
+Open `/phy` after `rb synth` or `rb power`. `GET /phy.json` uses the same builder as `rb phys summary`, so CLI and browser numbers agree; unlike the CLI it truncates nothing, because the pane sorts and filters the whole model client-side. It returns 404 with a command hint when the project has no `phys-manifest.json`.
+
+The pane switches between `cells`, `area`, `leakage`, `dynamic`, and `total`. `dynamic` is internal plus switching, summed in the browser: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows and flags a disagreement rather than reconciling it, because the two numbers come from different scrapes.
+
+A model with only one half keeps working. The pane names the command that fills the other one, and `rb hub send phys-focus` still drives whichever half is present.
+
+Clicking a module sends `graph_focus`; clicking an instance sends `selection_changed`, since an instance path is already the schematic's coordinate. Instance-path separators are levelled onto the wire's dots on the way out. An inbound `selection_changed` highlights the matching instance row.
+
+Physical discovery is cached briefly, like coverage. See [Physical Metrics](phys.md) for the model and the CLI verbs.
 
 ## AXI-perf overlay and notebook spawning
 
