@@ -173,7 +173,7 @@
               "target": {
                 "type": "string",
                 "minLength": 1,
-                "description": "What to focus. `instance:<hierarchical path>` — an instance path rooted at `view.json.top`, as `/phy.json` keys its per-instance power rows. `module:<name>` — a design module, focusing its synthesis row (cells, area) and the instances of it. Unprefixed strings are treated as `instance:`."
+                "description": "What to focus. `instance:<hierarchical path>` — an instance path in the physical model's own spelling (rootless, relative to the top, as `/phy.json` keys its per-instance power rows); a path carrying a leading `view.json.top` segment is also accepted and resolved by the pane. `module:<name>` — a design module, focusing its synthesis row (cells, area) and the instances of it. Unprefixed strings are treated as `instance:`."
               },
               "metric": {
                 "enum": ["cells", "area", "leakage", "dynamic", "total"],

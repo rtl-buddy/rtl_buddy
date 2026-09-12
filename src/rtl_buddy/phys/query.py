@@ -45,6 +45,16 @@ so: ``module_payload`` sets :data:`INSTANCE_JOIN_LIBERTY_ONLY` on
 Real RTL-module↔instance attribution needs the hierarchy join, which is
 tracked as its own phase on the epic (rtl-buddy/rtl_buddy#558).
 
+**A version this build does not know is an error, not a guess.** Both
+documents carry a ``schema_version`` that their producers bump when the
+shape changes incompatibly, and every payload here reads their blocks by
+name. A document from a future rtl_buddy would be read with today's key
+names and answered from whatever happened to still be spelled the same —
+a summary that is wrong rather than absent. :func:`_read_publication`
+refuses both documents outright, naming the version it found and the one
+this build reads, which is the same class of answer as a document that
+cannot be parsed at all.
+
 **Reading a publication.** The model and the manifest that names it are
 two files, written one after the other, so a reader can arrive between
 the two writes and pair a new model with the old manifest. Both carry
@@ -65,7 +75,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from . import manifest as manifest_mod
-from .model import load_model
+from .model import MODEL_SCHEMA_VERSION, load_model
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +277,9 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         document = manifest_mod.load_manifest(manifest_path)
     except (OSError, ValueError) as exc:
         raise PhysQueryError(f"phys: cannot read {manifest_path}: {exc}")
+    _require_schema(
+        document, manifest_mod.MANIFEST_SCHEMA_VERSION, manifest_path, "manifest"
+    )
 
     root = manifest_mod.project_root_for(manifest_path) or str(project_root)
     model_path = manifest_mod.resolve(manifest_path, document.get("model"))
@@ -279,6 +292,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         model = load_model(model_path)
     except (OSError, ValueError) as exc:
         raise PhysQueryError(f"phys: cannot read {model_path}: {exc}")
+    _require_schema(model, MODEL_SCHEMA_VERSION, model_path, "model")
 
     return PhysContext(
         project_root=root,
@@ -286,6 +300,34 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         manifest=document,
         model=model,
         model_path=model_path,
+    )
+
+
+def _require_schema(document: dict, supported: int, path, what: str) -> None:
+    """Refuse a document whose ``schema_version`` this build cannot read.
+
+    The producers bump the version when the shape changes incompatibly,
+    so a value other than the one compiled in here means the blocks the
+    payloads index into are not the blocks that were written. Both
+    directions are refused rather than only the newer one: an older
+    document is missing keys this build treats as guaranteed, and a
+    newer one has moved them. The message names both versions, because
+    which of the two is bigger is what tells a user whether to re-run
+    the flow or upgrade rtl_buddy.
+
+    A document with no ``schema_version`` at all is refused the same
+    way, and reported as such — the producers have written the key since
+    the first version of both documents, so its absence says this is not
+    one of these documents rather than that it is an early one.
+    """
+    found = document.get("schema_version")
+    if found == supported:
+        return
+    raise PhysQueryError(
+        f"phys: {path} is a {what} of schema_version "
+        f"{'(absent)' if found is None else found}, and this rtl-buddy reads "
+        f"{supported}; re-run `rb synth` or `rb power` to rewrite it, or "
+        "upgrade rtl-buddy to the version that wrote it"
     )
 
 

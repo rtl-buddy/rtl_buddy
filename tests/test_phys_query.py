@@ -10,16 +10,19 @@ passing after the producers stopped writing that shape.
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
 from rtl_buddy.phys import query as query_mod
 from rtl_buddy.phys.manifest import (
     MANIFEST_FILENAME,
+    MANIFEST_SCHEMA_VERSION,
     build_manifest,
     write_manifest,
 )
 from rtl_buddy.phys.model import (
+    MODEL_SCHEMA_VERSION,
     build_power_model,
     build_synth_model,
     merge_model,
@@ -293,6 +296,72 @@ def test_a_manifest_naming_a_vanished_model_is_an_error(project):
         load_context(project)
 
     assert "names no physical model" in str(excinfo.value)
+
+
+def _restamp(path, schema_version):
+    """Rewrite one document's ``schema_version`` in place."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if schema_version is None:
+        document.pop("schema_version", None)
+    else:
+        document["schema_version"] = schema_version
+    Path(path).write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_a_manifest_from_a_future_rtl_buddy_is_refused(project):
+    """Every payload reads the manifest's blocks by name, so a document whose
+    shape this build does not know would be answered from whatever keys
+    happened to survive the change — wrong rather than absent."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _restamp(phys_dir / MANIFEST_FILENAME, MANIFEST_SCHEMA_VERSION + 1)
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        load_context(project)
+
+    message = str(excinfo.value)
+    assert f"schema_version {MANIFEST_SCHEMA_VERSION + 1}" in message
+    assert f"reads {MANIFEST_SCHEMA_VERSION}" in message
+    assert "upgrade rtl-buddy" in message
+
+
+def test_a_model_from_a_future_rtl_buddy_is_refused(project):
+    """The manifest is only half the read; the model carries its own version
+    and the payloads index into its blocks just as directly."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _restamp(phys_dir / "phys-model.json", MODEL_SCHEMA_VERSION + 1)
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        load_context(project)
+
+    message = str(excinfo.value)
+    assert "phys-model.json" in message
+    assert f"schema_version {MODEL_SCHEMA_VERSION + 1}" in message
+    assert f"reads {MODEL_SCHEMA_VERSION}" in message
+
+
+def test_a_document_older_than_this_build_is_refused_too(project):
+    """Not only the newer direction: an older document is missing keys this
+    build treats as guaranteed, and the message names both versions so the
+    user can tell which way to move."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _restamp(phys_dir / MANIFEST_FILENAME, MANIFEST_SCHEMA_VERSION - 1)
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        load_context(project)
+
+    assert "re-run `rb synth` or `rb power`" in str(excinfo.value)
+
+
+def test_a_document_with_no_schema_version_is_refused(project):
+    """Both producers have written the key since version 1, so its absence
+    says this is not one of these documents rather than that it is early."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _restamp(phys_dir / "phys-model.json", None)
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        load_context(project)
+
+    assert "schema_version (absent)" in str(excinfo.value)
 
 
 # --- summary ----------------------------------------------------------------
