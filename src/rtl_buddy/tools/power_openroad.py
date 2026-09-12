@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
+from ..phys.publish import publish_power
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
@@ -60,6 +61,20 @@ class OpenRoadPower(BasePower):
 
     def _report_path(self) -> str:
         return os.path.join(self.artefact_dir, "power.rpt")
+
+    def _instances_report_path(self) -> str:
+        """`report_power -instances`' output: one line per leaf cell (#558)."""
+        return os.path.join(self.artefact_dir, "power_instances.rpt")
+
+    def _instances_cells_path(self) -> str:
+        """The `<instance path> <liberty cell>` sidecar (#558).
+
+        `report_power` prints the path and the four powers, never the master
+        the instance is an instance *of* — so the hierarchy walk that feeds
+        it writes the mapping out alongside. Without this the model's power
+        rows have no module column and cannot be joined to the synth half.
+        """
+        return os.path.join(self.artefact_dir, "power_instances.cells")
 
     # ------------------------------------------------------------------
     # Inputs resolution
@@ -145,6 +160,48 @@ class OpenRoadPower(BasePower):
             ]
         return []  # "default" → static, no activity commands
 
+    def _emit_per_instance_cmds(self) -> list[str]:
+        """Tcl that attributes the run's power to individual leaf instances.
+
+        This is rtl-buddy/rtl_buddy#114 delivered where the OpenROAD session
+        already lives, rather than as the stand-alone `emit_phys.tcl` that
+        issue predates `rb power` by (#558).
+
+        Three properties the shape is chosen for:
+
+        **One analysis, not one per instance.** `report_power` takes a *list*
+        of instances and prints one line each, so the whole design costs a
+        single extra call on top of the design-total report above it. The
+        obvious `foreach ... {report_power -instances $inst}` spelling reruns
+        the propagation per cell and turns a minute into an afternoon on
+        anything real.
+
+        **Leaf cells only.** `get_cells -hierarchical *` returns the leaves —
+        the instances that have a Liberty cell and therefore a power number.
+        Roll-up to the enclosing modules is the model consumer's job.
+
+        **It cannot fail the run.** Everything here is inside a `catch`: the
+        design totals have already been written by the time this executes, so
+        a `get_cells` that finds nothing, or an OpenSTA without the
+        `-instances` form, must cost the run its per-instance detail and
+        nothing else. A Tcl error escaping to the top level would abort the
+        script and take the exit code with it.
+        """
+        return [
+            "catch {",
+            "  set rb_insts [get_cells -hierarchical *]",
+            "  if {[llength $rb_insts] > 0} {",
+            f"    set rb_fh [open {self._instances_cells_path()} w]",
+            "    foreach rb_inst $rb_insts {",
+            '      puts $rb_fh "[get_full_name $rb_inst] '
+            '[get_property $rb_inst ref_name]"',
+            "    }",
+            "    close $rb_fh",
+            f"    report_power -instances $rb_insts > {self._instances_report_path()}",
+            "  }",
+            "}",
+        ]
+
     def _write_script(self) -> str:
         platform = self._resolve_platform()
         pdk = platform.get_pdk()
@@ -208,6 +265,7 @@ class OpenRoadPower(BasePower):
             )
         lines.extend(self._emit_activity_cmds())
         lines.append(f"report_power > {self._report_path()}")
+        lines.extend(self._emit_per_instance_cmds())
         lines.append("exit")
         lines.append("")
 
@@ -249,9 +307,21 @@ class OpenRoadPower(BasePower):
     # ------------------------------------------------------------------
 
     def _clear_stale_report(self) -> None:
-        """Remove the previous run's `power.rpt`."""
+        """Remove the previous run's `power.rpt` and its per-instance half.
+
+        The per-instance report and its cell sidecar are read back inside
+        this same `run()` to build the phys model, so they take the same
+        treatment as the report they accompany: an OpenROAD that exits 0
+        without reaching the `catch` block must not have the last run's
+        per-instance watts published as this one's (#469, #558).
+        """
         stale = clear_stale_artefacts(
-            [self._report_path()], owner=self.power_cfg.get_name()
+            [
+                self._report_path(),
+                self._instances_report_path(),
+                self._instances_cells_path(),
+            ],
+            owner=self.power_cfg.get_name(),
         )
         if stale:
             log_event(
@@ -413,6 +483,7 @@ class OpenRoadPower(BasePower):
             log=log_path,
             report=report_path,
         )
+        phys_model = self._publish_phys_model(parsed)
         return PowerPassResults(
             name=self.name + "/results",
             mode=self.power_cfg.get_mode(),
@@ -422,4 +493,48 @@ class OpenRoadPower(BasePower):
             switching_w=parsed["switching_w"],
             leakage_w=parsed["leakage_w"],
             activity_source=activity_source,
+            phys_model=phys_model,
         )
+
+    def _publish_phys_model(self, parsed: dict) -> str | None:
+        """Write `phys-model.json` + its manifest for a run that passed (#558).
+
+        Never fails the power analysis. The design totals are already parsed
+        and already reported by the time this runs; the per-instance rows are
+        the by-product, and an OpenSTA that skipped or garbled them costs the
+        model its `instances` half and earns a warning.
+
+        The top comes from `_resolve_inputs` rather than the run name because
+        the model is keyed on the *design*: it is what decides whether a
+        synthesis' module rows already in this directory describe the same
+        thing and may be merged forward.
+        """
+        try:
+            top = self._resolve_inputs()["top"]
+        except Exception:  # noqa: BLE001 - resolution already succeeded once
+            top = None
+        published = publish_power(
+            artefact_dir=self.artefact_dir,
+            top=top,
+            backend="openroad",
+            run=self.power_cfg.get_name(),
+            netlist_source=self.power_cfg.get_netlist_source(),
+            report_path=self._report_path(),
+            instances_path=self._instances_report_path(),
+            cells_path=self._instances_cells_path(),
+            log_path=self._log_path(),
+            internal_w=parsed["internal_w"],
+            switching_w=parsed["switching_w"],
+            leakage_w=parsed["leakage_w"],
+            total_w=parsed["total_w"],
+        )
+        if published["error"] is not None or published["rows"] is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.phys_model_incomplete",
+                power=self.power_cfg.get_name(),
+                instances=self._instances_report_path(),
+                error=published["error"],
+            )
+        return published["model"]

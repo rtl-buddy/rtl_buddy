@@ -801,3 +801,146 @@ def test_power_valid_config_without_openroad_keeps_the_report(tmp_path, monkeypa
     assert isinstance(res, PowerFailResults)
     assert "not found" in res.results["desc"]
     assert kept.exists()
+
+
+# ---------------------------------------------------------------------------
+# Per-instance power -> phys-model.json (#558, delivering #114)
+# ---------------------------------------------------------------------------
+
+
+_TOTAL_RPT = (
+    "Group                  Internal  Switching    Leakage      Total\n"
+    "Total                  2.53e-05   1.52e-06   1.41e-06   2.83e-05 100.0%\n"
+)
+
+_INSTANCE_RPT = (
+    "   Internal  Switching    Leakage      Total\n"
+    "      Power      Power      Power      Power (Watts)\n"
+    "--------------------------------------------\n"
+    "   2.28e-06   6.75e-08   7.91e-08   2.42e-06 u_sub/_64_\n"
+    "   1.52e-07   7.79e-08   3.62e-08   2.66e-07 _18_\n"
+)
+
+_INSTANCE_CELLS = "_18_ XOR2_X1\nu_sub/_64_ DFF_X1\n"
+
+
+def test_power_script_walks_the_hierarchy_for_per_instance_numbers(tmp_path):
+    """One `report_power -instances` call over the whole cell list, not one
+    call per cell: the per-cell spelling reruns propagation every time."""
+    backend = _make_power_backend(tmp_path)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert "set rb_insts [get_cells -hierarchical *]" in script
+    assert (
+        f"report_power -instances $rb_insts > {backend._instances_report_path()}"
+        in (script)
+    )
+    # The design-total report is written first, so a failure in the walk
+    # cannot cost the run its headline numbers.
+    assert script.index("report_power >") < script.index("report_power -instances")
+
+
+def test_power_script_wraps_the_walk_in_a_catch(tmp_path):
+    """A Tcl error escaping to the top level would abort the script and take
+    the exit code with it, failing a run whose totals are already on disk."""
+    backend = _make_power_backend(tmp_path)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+    walk = lines.index("  set rb_insts [get_cells -hierarchical *]")
+
+    assert lines[walk - 1] == "catch {"
+    assert "}" in lines[walk:]
+
+
+def test_power_script_records_the_liberty_cell_of_each_instance(tmp_path):
+    """`report_power` prints the path and the powers, never the master — so
+    the walk writes the mapping the model's module column needs."""
+    backend = _make_power_backend(tmp_path)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert f"open {backend._instances_cells_path()} w" in script
+    assert "get_property $rb_inst ref_name" in script
+
+
+def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None):
+    """Run an OpenRoadPower whose fake OpenROAD writes the given reports."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        if instances is not None:
+            Path(backend._instances_report_path()).write_text(instances)
+        if cells is not None:
+            Path(backend._instances_cells_path()).write_text(cells)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    return backend, backend.run()
+
+
+def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
+    from rtl_buddy.phys.manifest import load_manifest
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    backend, result = _run_power_with(
+        tmp_path, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    assert isinstance(result, PowerPassResults)
+    model = load_model(result.results["phys_model"])
+    assert model["design"]["top"] == "demo_top"
+    assert model["modules"] is None
+    assert [row["instance_path"] for row in model["instances"]] == [
+        "_18_",
+        "u_sub/_64_",
+    ]
+    assert model["instances"][1]["module"] == "DFF_X1"
+    assert model["instances"][1]["total_uw"] == pytest.approx(2.42)
+    # Watts on the way in, microwatts in the document.
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+    manifest = load_manifest(Path(backend.artefact_dir) / "phys-manifest.json")
+    assert manifest["command"] == "power"
+    assert manifest["power"]["backend"] == "openroad"
+    assert manifest["power"]["netlist_source"] == "synth"
+    assert manifest["synth"]["backend"] is None
+
+
+def test_a_power_run_without_the_per_instance_report_still_passes(
+    tmp_path, monkeypatch
+):
+    """Same resilience rule as the synth half: the design totals are already
+    parsed and reported by the time the model is built (#558)."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    _backend, result = _run_power_with(tmp_path, monkeypatch)
+
+    assert isinstance(result, PowerPassResults)
+    model = load_model(result.results["phys_model"])
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+
+def test_power_ignores_a_previous_runs_per_instance_report(tmp_path, monkeypatch):
+    """The per-instance half is read back inside the same `run()`, so it
+    takes the same stale-artefact treatment as `power.rpt` (#469)."""
+    from rtl_buddy.phys.model import load_model
+
+    backend = _make_power_backend(tmp_path)
+    Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+    Path(backend._instances_cells_path()).write_text(_INSTANCE_CELLS)
+
+    backend, result = _run_power_with(tmp_path, monkeypatch)
+
+    assert not Path(backend._instances_report_path()).exists()
+    assert load_model(result.results["phys_model"])["instances"] is None

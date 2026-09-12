@@ -21,6 +21,7 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.publish import publish_synth
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
@@ -509,6 +510,10 @@ class YosysSynth:
             return os.path.join(self.artefact_dir, "synth_netlist.v")
         return os.path.join(self.artefact_dir, "synth.rtlil")
 
+    def _stats_path(self) -> str:
+        """Yosys' machine-readable per-module `stat -json` dump (#558)."""
+        return os.path.join(self.artefact_dir, "synth_stat.json")
+
     def _write_filelist(self) -> str:
         fl_path = self._filelist_path()
         vlog_fl = VlogFilelist(
@@ -648,6 +653,23 @@ class YosysSynth:
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
+    def _stat_json_cmd(self, liberty: str | None) -> str:
+        """The `stat -json` line that feeds the phys model's module rows (#558).
+
+        `stat -json` prints to the console rather than to a file, so it is
+        wrapped in `tee -o` — the pattern Yosys' own help points at. `-q`
+        keeps the JSON out of `synth.log`, which is scraped line by line for
+        the design totals and for `ERROR:` lines; a JSON document in there
+        would be noise at best.
+
+        The `-liberty` copy of the human-readable `stat` above it is passed
+        again here because that is what puts an `area` field on each module.
+        Without a Liberty the dump still carries `num_cells`, so an unmapped
+        run gets module rows with a null area rather than no rows at all.
+        """
+        liberty_arg = f" -liberty {liberty}" if liberty else ""
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+
     def _write_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
         opts = self._resolve_opts()
@@ -731,10 +753,12 @@ class YosysSynth:
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._netlist_path(mapped=True)}")
             lines.append(f"stat -liberty {lib_paths[0]}")
+            lines.append(self._stat_json_cmd(lib_paths[0]))
         else:
             if opts.abc_args:
                 lines.append(f"abc {opts.abc_args}")
             lines.append(f"write_rtlil {self._netlist_path()}")
+            lines.append(self._stat_json_cmd(None))
 
         script = "\n".join(lines) + "\n"
         script_path = self._script_path()
@@ -758,9 +782,21 @@ class YosysSynth:
         a filelist error, and the static-lifetime and conflicting-driver
         gates, which fail before or without reading the netlist -- leaves no
         stale product behind.
+
+        `synth_stat.json` goes with them for the same reason one step in: it
+        is read back inside this same `run()` to build the phys model, and a
+        Yosys that exits 0 without reaching its trailing `tee ... stat -json`
+        would otherwise have the previous run's per-module areas published as
+        this one's (#558). The model and its manifest are deliberately *not*
+        cleared here -- they are rewritten whole by the next successful run,
+        and a run of the *other* flow may have merged its own half into them.
         """
         stale = clear_stale_artefacts(
-            [self._netlist_path(mapped=True), self._netlist_path()],
+            [
+                self._netlist_path(mapped=True),
+                self._netlist_path(),
+                self._stats_path(),
+            ],
             owner=self.synth_cfg.get_name(),
         )
         if stale:
@@ -953,10 +989,50 @@ class YosysSynth:
             wns_ps=wns_ps,
             log=log_path,
         )
+        phys_model = self._publish_phys_model(
+            area_um2=area_um2,
+            gate_count=gate_count,
+            mapped=bool(self._resolve_lib_paths()),
+        )
         return SynthPassResults(
             name=self.name + "/results",
             area_um2=area_um2,
             gate_count=gate_count,
             wns_ps=wns_ps,
             static_function_findings=len(findings) or None,
+            phys_model=phys_model,
         )
+
+    def _publish_phys_model(
+        self, *, area_um2: float | None, gate_count: int | None, mapped: bool
+    ) -> str | None:
+        """Write `phys-model.json` + its manifest for a run that passed (#558).
+
+        Never fails the synthesis: the per-module breakdown is a by-product
+        of a run whose product -- the netlist -- is already on disk and
+        already judged. A Yosys that skipped its `stat -json` line, or wrote
+        something this cannot read, costs the model its `modules` rows and
+        earns a warning; the totals scraped from the log are written either
+        way, so the document still says what the design came to.
+        """
+        published = publish_synth(
+            artefact_dir=self.artefact_dir,
+            top=self.synth_cfg.get_top(),
+            backend="yosys",
+            run=self.synth_cfg.get_name(),
+            stats_path=self._stats_path(),
+            netlist_path=self._netlist_path(mapped=mapped),
+            log_path=self._log_path(),
+            area_um2=area_um2,
+            gate_count=gate_count,
+        )
+        if published["error"] is not None or published["rows"] is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_model_incomplete",
+                synth=self.synth_cfg.get_name(),
+                stats=self._stats_path(),
+                error=published["error"],
+            )
+        return published["model"]

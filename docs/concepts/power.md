@@ -116,6 +116,12 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | `power.tcl` | Generated OpenROAD script |
 | `power.log` | OpenROAD output |
 | `power.rpt` | Raw `report_power` report |
+| `power_instances.rpt` | Raw `report_power -instances` report, one line per leaf instance |
+| `power_instances.cells` | Instance path to Liberty cell, the module column that report lacks |
+| `phys-model.json` | Physical model — per-instance rows plus the design totals |
+| `phys-manifest.json` | Which physical artefacts this run produced, and where |
+
+The per-instance half is a by-product, never a gate: the design totals are parsed and reported before it is read, and the hierarchy walk that produces it runs inside a Tcl `catch`. An OpenSTA that cannot produce it costs the model its `instances` block — `null`, with a warning — and the run still reports `PASS`. A `rb synth` run writing into the same artefact directory for the same top fills the model's per-module half rather than replacing it.
 
 An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names.
 

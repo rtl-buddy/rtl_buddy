@@ -4945,3 +4945,182 @@ def test_a_module_scope_type_reference_function_fails_with_its_own_name(
     result = ys.run()
     assert isinstance(result, SynthFailResults)
     assert "function free_fn" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Per-module `stat -json` -> phys-model.json (#558)
+# ---------------------------------------------------------------------------
+
+
+_STAT_JSON = """{
+   "modules": {
+      "\\\\my_module": {"num_cells": 3, "area": 12.5},
+      "\\\\sub": {"num_cells": 1, "area": 4.0}
+   },
+      "design": {"num_cells": 4, "area": 12.5}
+}
+"""
+
+
+def test_write_script_emits_the_stat_json_dump(tmp_path):
+    """`stat -json` prints to the console, so it needs `tee -o`; `-q` keeps
+    the document out of `synth.log`, which is scraped line by line."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    ys = _make_yosys(tmp_path)
+
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert f"tee -q -o {ys._stats_path()} stat -json\n" in script
+
+
+def test_write_script_stat_json_takes_the_liberty_that_gives_it_areas(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    class _RootCfg:
+        def get_synth_platform_cfg(self, name):
+            class _P:
+                def get_path(self_inner):
+                    return str(lib)
+
+            return _P()
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(platform="mylib"),
+        root_cfg=_RootCfg(),
+    )
+
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert f"tee -q -o {ys._stats_path()} stat -json -liberty {lib}" in script
+
+
+def test_openroad_stage1_script_emits_the_stat_json_dump(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert f"tee -q -o {or_synth._stats_path()} stat -json -liberty {lib}" in script
+
+
+def _run_yosys_with(tmp_path, monkeypatch, *, stats_text=None, log_text=""):
+    """Run a YosysSynth whose fake Yosys writes `stats_text` and a log."""
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+
+    def _run_managed_process(cmd, stdout, stderr, **kwargs):
+        stdout.write(log_text)
+        if stats_text is not None:
+            Path(ys._stats_path()).write_text(stats_text)
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(synth_yosys_module, "run_managed_process", _run_managed_process)
+    return ys, ys.run()
+
+
+def test_a_passing_synth_publishes_the_phys_model(tmp_path, monkeypatch):
+    from rtl_buddy.phys.manifest import load_manifest
+    from rtl_buddy.phys.model import load_model
+
+    ys, result = _run_yosys_with(
+        tmp_path,
+        monkeypatch,
+        stats_text=_STAT_JSON,
+        log_text="Chip area for module '\\my_module': 12.500000\n",
+    )
+
+    assert isinstance(result, SynthPassResults)
+    model_path = result.results["phys_model"]
+    model = load_model(model_path)
+    assert model["design"]["top"] == "my_module"
+    assert [row["module"] for row in model["modules"]] == ["my_module", "sub"]
+    assert model["modules"][0]["area_um2"] == 12.5
+    # The totals come from the log scrape, not from the stat dump, so the two
+    # can be compared.
+    assert model["totals"]["area_um2"] == 12.5
+
+    manifest = load_manifest(Path(ys.artefact_dir) / "phys-manifest.json")
+    assert manifest["command"] == "synth"
+    assert manifest["synth"]["backend"] == "yosys"
+    assert manifest["power"]["backend"] is None
+    assert manifest["synth"]["stats"].endswith("synth_stat.json")
+
+
+def test_a_synth_without_a_readable_stat_dump_still_passes(tmp_path, monkeypatch):
+    """The model is a by-product: a Yosys that never reached its `stat -json`
+    line costs the document its module rows and nothing else (#558)."""
+    from rtl_buddy.phys.model import load_model
+
+    _ys, result = _run_yosys_with(tmp_path, monkeypatch, stats_text=None)
+
+    assert isinstance(result, SynthPassResults)
+    assert load_model(result.results["phys_model"])["modules"] is None
+
+
+def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch):
+    """`synth_stat.json` is read back inside the same `run()`, so a rerun that
+    dies must not have the last run's per-module areas published (#469)."""
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        platform=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+    stale = Path(ys._stats_path())
+    stale.write_text(_STAT_JSON)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _fake_managed_process(returncode=1)
+    )
+
+    assert isinstance(ys.run(), SynthFailResults)
+    assert not stale.exists()
