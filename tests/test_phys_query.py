@@ -390,6 +390,35 @@ def test_a_document_with_no_schema_version_is_refused(project):
     assert "schema_version (absent)" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "root_json, described",
+    [
+        ("null", "null"),
+        ("[]", "an array"),
+        ('"a string"', "a string"),
+        ("7", "a number"),
+    ],
+)
+@pytest.mark.parametrize("document", [MANIFEST_FILENAME, "phys-model.json"])
+def test_a_document_whose_json_root_is_not_an_object_is_refused(
+    project, document, root_json, described
+):
+    """The finding (#561 review, Codex P2). Every payload indexes the root by
+    key, so a list or a `null` would raise `AttributeError` straight past
+    `PhysQueryError` — and past the machine envelope that is the only thing
+    an agent sees. Both documents, every non-object root."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    (phys_dir / document).write_text(root_json, encoding="utf-8")
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        load_context(project)
+
+    message = str(excinfo.value)
+    assert document in message
+    assert described in message
+    assert "is an object" in message
+
+
 # --- summary ----------------------------------------------------------------
 
 

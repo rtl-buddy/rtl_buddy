@@ -38,6 +38,7 @@ from rtl_buddy.phys.model import (
 from rtl_buddy.phys.query import (
     INSTANCE_JOIN_LIBERTY_ONLY,
     INSTANCE_JOIN_NAME_COLLISION,
+    PhysQueryError,
 )
 from rtl_buddy.rtl_buddy import RtlBuddy
 
@@ -290,6 +291,36 @@ def test_phys_verbs_fail_loudly_with_no_artefacts(tmp_path, monkeypatch):
     error = envelope["payload"]["error"]
     assert MANIFEST_FILENAME in error
     assert "rb synth" in error and "rb power" in error
+
+
+@pytest.mark.parametrize("document", [MANIFEST_FILENAME, "phys-model.json"])
+def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
+    phys_project, document
+):
+    """The finding (#561 review, Codex P2). A JSON root that is not an object
+    used to raise `AttributeError` out of the query layer, so `--machine`
+    emitted a traceback and no envelope — the one thing an agent surface
+    cannot read. It is a refusal like any other now."""
+    (phys_project / "verif" / "blk" / "artefacts" / "both" / document).write_text(
+        "[]", encoding="utf-8"
+    )
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "summary"])
+
+    envelope = _machine(result)
+    assert envelope["exit_code"] == 2
+    error = envelope["payload"]["error"]
+    assert document in error and "an array" in error
+
+    # Without machine mode it is the same refusal the other unanswerable
+    # reads make: a `FatalRtlBuddyError` carrying the path, not a traceback
+    # from somewhere inside the reader.
+    runner, rb = _runner()
+    rendered = runner.invoke(rb.app, ["phys", "summary"])
+    assert rendered.exit_code != 0
+    assert isinstance(rendered.exception, PhysQueryError)
+    assert document in str(rendered.exception)
 
 
 # --- module -----------------------------------------------------------------

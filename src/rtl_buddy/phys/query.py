@@ -51,6 +51,16 @@ module's cells and area beside the cell type's power as one row. Nothing here at
 Real RTL-module↔instance attribution needs the hierarchy join, which is
 tracked as its own phase on the epic (rtl-buddy/rtl_buddy#558).
 
+**A document that is not an object is refused where it is read.** Both
+files are JSON, and JSON's root may be a list, a string, a number, or
+``null`` — an empty artefact directory rebuilt by hand, a truncated
+write, a path pointed at the wrong file. Every payload here indexes into
+the root by key, so an unchecked non-object would raise ``AttributeError``
+out of the query layer, past :class:`PhysQueryError` and past the
+machine-mode envelope that turns a refusal into a result an agent can
+read. :func:`_require_mapping` makes it the same kind of refusal as an
+unreadable file, naming the path and what was found there.
+
 **A version this build does not know is an error, not a guess.** Both
 documents carry a ``schema_version`` that their producers bump when the
 shape changes incompatibly, and every payload here reads their blocks by
@@ -308,6 +318,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         document = manifest_mod.load_manifest(manifest_path)
     except (OSError, ValueError) as exc:
         raise PhysQueryError(f"phys: cannot read {manifest_path}: {exc}")
+    _require_mapping(document, manifest_path, "manifest")
     _require_schema(
         document, manifest_mod.MANIFEST_SCHEMA_VERSION, manifest_path, "manifest"
     )
@@ -323,6 +334,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         model = load_model(model_path)
     except (OSError, ValueError) as exc:
         raise PhysQueryError(f"phys: cannot read {model_path}: {exc}")
+    _require_mapping(model, model_path, "model")
     _require_schema(model, MODEL_SCHEMA_VERSION, model_path, "model")
 
     return PhysContext(
@@ -331,6 +343,40 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         manifest=document,
         model=model,
         model_path=model_path,
+    )
+
+
+#: JSON's own names for the roots a document can have instead of an
+#: object, so the refusal below says what the file is in the vocabulary
+#: of the format it is written in rather than in Python's.
+_JSON_ROOTS = {
+    type(None): "null",
+    bool: "a boolean",
+    int: "a number",
+    float: "a number",
+    str: "a string",
+    list: "an array",
+}
+
+
+def _require_mapping(document, path, what: str) -> None:
+    """Refuse a document whose JSON root is not an object.
+
+    Read before the ``schema_version`` check, because that check is
+    itself a key lookup: everything downstream — the version, the
+    blocks, the halves — assumes a mapping, and the first thing to touch
+    a list or a ``null`` would raise ``AttributeError`` rather than
+    :class:`PhysQueryError`. That distinction is the whole point: a
+    ``PhysQueryError`` reaches ``--machine`` as an error envelope with a
+    message in it, and an ``AttributeError`` reaches it as a traceback
+    and no envelope at all.
+    """
+    if isinstance(document, dict):
+        return
+    raise PhysQueryError(
+        f"phys: {path} is not a {what} document: its JSON root is "
+        f"{_JSON_ROOTS.get(type(document), 'not an object')}, and a {what} "
+        "is an object; re-run `rb synth` or `rb power` to rewrite it"
     )
 
 
