@@ -327,6 +327,10 @@ def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
     "document, field, malformed, described",
     [
         (MANIFEST_FILENAME, "synth", [], "an array"),
+        # A list-valued `phys_dir` passed the block check until #563
+        # round 7 and then raised `TypeError` out of `project_root_for`,
+        # which is a traceback and no envelope.
+        (MANIFEST_FILENAME, "phys_dir", ["artefacts"], "an array"),
         ("phys-model.json", "modules", 7, "a number"),
         ("phys-model.json", "totals", "x", "a string"),
         (

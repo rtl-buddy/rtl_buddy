@@ -379,16 +379,29 @@ _SHAPE_MAPPING = "an object"
 _SHAPE_ROWS = "an array of objects"
 _SHAPE_TEXT = "a string"
 
-#: Every nested field the readers in this module index into, and the
-#: shape each one is indexed as. Named once, as data, because the check
-#: belongs at the read and not in whichever payload builder happens to
-#: touch a block first: one malformed document must be one refusal,
-#: whichever verb was asked. ``null`` is admitted everywhere — a
-#: half-filled model and a manifest with no power block are the ordinary
-#: states these payloads report rather than refuse.
+#: Every nested field a read here dereferences, and the shape each one
+#: is dereferenced as. Named once, as data, because the check belongs at
+#: the read and not in whichever payload builder happens to touch a block
+#: first: one malformed document must be one refusal, whichever verb was
+#: asked. ``null`` is admitted everywhere — a half-filled model and a
+#: manifest with no power block are the ordinary states these payloads
+#: report rather than refuse.
+#:
+#: "A read here" includes the manifest helpers this module reads
+#: *through*: ``phys_dir`` is never indexed by a payload, but
+#: :func:`~rtl_buddy.phys.manifest.project_root_for` calls
+#: ``os.path.isabs`` on it and walks its ``parts`` on the way to every
+#: artefact path, which a list or a number fails with a ``TypeError``
+#: past the envelope. The header fields a payload only *echoes*
+#: (``run``, ``top``, ``generated_at``, ``command``, ``publication``) are
+#: deliberately absent: nothing dereferences them, so nothing here can
+#: fail on their shape, and refusing a whole document over a field that
+#: is passed through untouched would be strictness with no failure behind
+#: it.
 _NESTED_SHAPES = {
     "manifest": (
         ("model", _SHAPE_TEXT),
+        ("phys_dir", _SHAPE_TEXT),
         ("synth", _SHAPE_MAPPING),
         ("power", _SHAPE_MAPPING),
         ("totals", _SHAPE_MAPPING),

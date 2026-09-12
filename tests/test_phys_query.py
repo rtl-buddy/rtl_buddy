@@ -438,6 +438,12 @@ def _rewrite_field(path, field, value):
         (MANIFEST_FILENAME, "power", "openroad", "a string"),
         (MANIFEST_FILENAME, "totals", 7, "a number"),
         (MANIFEST_FILENAME, "model", ["phys-model.json"], "an array"),
+        # `phys_dir` is not indexed by any payload — it is dereferenced
+        # one level down, by `project_root_for`, which calls
+        # `os.path.isabs` on it and then walks its `parts`. A list
+        # reached both and raised `TypeError` past the envelope.
+        (MANIFEST_FILENAME, "phys_dir", ["artefacts"], "an array"),
+        (MANIFEST_FILENAME, "phys_dir", 7, "a number"),
         # The model's two halves and the totals beside them.
         ("phys-model.json", "modules", 7, "a number"),
         ("phys-model.json", "modules", {"blk": 120}, "an object"),
