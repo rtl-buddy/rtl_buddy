@@ -34,7 +34,7 @@ from rtl_buddy.phys.model import (
     merge_model,
     write_model,
 )
-from rtl_buddy.phys.publish import publish_power, publish_synth
+from rtl_buddy.phys.publish import invalidate_half, publish_power, publish_synth
 from rtl_buddy.phys.reports import (
     parse_instance_cells,
     parse_instance_power,
@@ -808,6 +808,10 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
     assert "demo_synth" in synth
     assert "artefacts/demo_synth/synth_stat.json" in synth
     assert "per-module breakdown" in synth
+    # The message points at the artefact, not at a read verb: `rb phys`
+    # does not exist on this branch.
+    assert "phys-model.json" in synth
+    assert "rb phys" not in synth
 
     power = _human_message(
         "power.phys_model_incomplete",
@@ -821,3 +825,243 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
     assert "artefacts/demo_power/power_instances.rpt" in power
     assert "per-instance breakdown" in power
     assert "disk full" in power
+    assert "phys-model.json" in power
+    assert "rb phys" not in power
+
+
+# ---------------------------------------------------------------------------
+# The failing rerun — a half whose artefacts have gone must not stay published
+# ---------------------------------------------------------------------------
+
+
+def _publish_both_halves(artefacts):
+    """One artefact directory holding a complete, freshly published model."""
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    (artefacts / "power_instances.cells").write_text(INSTANCE_CELLS)
+    publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        area_um2=5.586,
+        gate_count=2,
+    )
+    return publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        cells_path=artefacts / "power_instances.cells",
+        total_w=2.83e-05,
+        leakage_w=1.0e-06,
+    )
+
+
+def _publish_both_halves_dir(tmp_path):
+    """A project whose artefact directory already holds a complete model."""
+    root, artefacts = _project(tmp_path)
+    _publish_both_halves(artefacts)
+    return root, artefacts
+
+
+def test_a_failed_power_rerun_withdraws_its_own_half_and_keeps_the_synth_one(
+    tmp_path,
+):
+    """The rerun cleared `power_instances.rpt` and then failed before it could
+    publish. Leaving the previous run's watts in the model would leave a
+    measurement discoverable whose evidence has just been deleted."""
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+
+    result = invalidate_half(artefacts, "instances")
+
+    assert result["error"] is None
+    model = load_model(result["model"])
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] is None and model["totals"]["leakage_uw"] is None
+    # The other half is another command's measurement, still backed by its
+    # own artefacts on disk.
+    assert [row["module"] for row in model["modules"]] == ["sub", "top"]
+    assert model["totals"]["area_um2"] == 5.586
+    assert model["totals"]["cell_count"] == 2
+
+    manifest = load_manifest(result["manifest"])
+    assert set(manifest["power"]) == set(POWER_KEYS)
+    assert all(manifest["power"][key] is None for key in POWER_KEYS)
+    assert manifest["synth"]["backend"] == "yosys"
+    assert manifest["totals"]["area_um2"] == 5.586
+    assert manifest["totals"]["total_uw"] is None
+
+
+def test_a_failed_synth_rerun_withdraws_its_own_half_and_keeps_the_power_one(
+    tmp_path,
+):
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+
+    result = invalidate_half(artefacts, "modules")
+
+    model = load_model(result["model"])
+    assert model["modules"] is None
+    assert model["totals"]["area_um2"] is None and model["totals"]["cell_count"] is None
+    assert len(model["instances"]) == 3
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+    manifest = load_manifest(result["manifest"])
+    assert all(manifest["synth"][key] is None for key in SYNTH_KEYS)
+    assert manifest["power"]["backend"] == "openroad"
+
+
+def test_invalidation_survives_the_crash_that_never_reached_publish(tmp_path):
+    """The crash case: the clear ran, the tool died, `_publish_phys_model` was
+    never called. Same outcome as the orderly failure above — invalidation
+    happens where the clear happens, not where the publish would have."""
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+    (artefacts / "power_instances.rpt").unlink()
+    (artefacts / "power_instances.cells").unlink()
+
+    invalidate_half(artefacts, "instances")
+
+    model = load_model(artefacts / "phys-model.json")
+    assert model["instances"] is None
+    assert [row["module"] for row in model["modules"]] == ["sub", "top"]
+
+
+def test_invalidating_a_directory_with_nothing_published_is_a_no_op(tmp_path):
+    _root, artefacts = _project(tmp_path)
+
+    result = invalidate_half(artefacts, "modules")
+
+    assert result == {"model": None, "manifest": None, "error": None}
+    assert not list(artefacts.iterdir())
+
+
+def test_invalidation_never_raises_out_of_a_flow(tmp_path):
+    """Same resilience rule as the publish path: the caller has already
+    decided whether the run passed, and a by-product may not change that."""
+    _root, artefacts = _project(tmp_path)
+    blocked = artefacts / "not_a_dir"
+    blocked.write_text("")
+
+    result = invalidate_half(blocked, "modules")
+
+    assert result["model"] is None and result["manifest"] is None
+
+
+def test_a_successful_publish_after_an_invalidation_restores_the_half(tmp_path):
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+    invalidate_half(artefacts, "instances")
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        cells_path=artefacts / "power_instances.cells",
+        total_w=2.83e-05,
+    )
+
+    model = load_model(published["model"])
+    assert len(model["instances"]) == 3
+    assert len(model["modules"]) == 2
+    assert load_manifest(published["manifest"])["power"]["backend"] == "openroad"
+
+
+# ---------------------------------------------------------------------------
+# The publication token — the model and its manifest are two files
+# ---------------------------------------------------------------------------
+
+
+def test_a_publish_stamps_one_publication_token_into_both_documents(tmp_path):
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+
+    published = publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+    )
+
+    model = load_model(published["model"])
+    manifest = load_manifest(published["manifest"])
+    assert model["publication"]
+    assert model["publication"] == manifest["publication"]
+
+
+def test_each_publication_mints_a_new_token(tmp_path):
+    """The token identifies one write of the pair, so a reader that saw the
+    old model and the new manifest can tell."""
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    args = dict(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+    )
+
+    first = load_model(publish_synth(**args)["model"])["publication"]
+    second = load_model(publish_synth(**args)["model"])["publication"]
+
+    assert first != second
+
+
+def test_an_invalidation_republishes_the_pair_under_one_token(tmp_path):
+    """Invalidation rewrites both documents, so it is a publication too and
+    must not leave the two disagreeing about which write they came from."""
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+    before = load_model(artefacts / "phys-model.json")["publication"]
+
+    result = invalidate_half(artefacts, "instances")
+
+    model = load_model(result["model"])
+    manifest = load_manifest(result["manifest"])
+    assert model["publication"] == manifest["publication"] != before
+
+
+def test_a_merge_keeps_the_new_documents_token(tmp_path):
+    """The token names the write in progress, not the run whose half was
+    inherited into it."""
+    synth = build_synth_model(top="demo_top", modules=parse_stat_json(STAT_JSON))
+    synth["publication"] = "old"
+    power = build_power_model(
+        top="demo_top", instances=parse_instance_power(INSTANCE_RPT)
+    )
+    power["publication"] = "new"
+
+    merged = merge_model(synth, power, own_half="instances")
+
+    assert merged["publication"] == "new"
+    assert len(merged["modules"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# An empty parse is an unreadable report, not a design without cells
+# ---------------------------------------------------------------------------
+
+
+def test_publish_power_reads_an_unparsable_report_as_no_breakdown(tmp_path):
+    """The generated Tcl writes `power_instances.rpt` only once `get_cells`
+    has come back non-empty, so a report that parses to zero rows is garbled
+    — the same reading `publish_synth` makes of an empty `stat -json`."""
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "power_instances.rpt").write_text("garbled output, no rows here\n")
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=2.83e-05,
+    )
+
+    assert published["rows"] is None  # the caller's cue to warn
+    model = load_model(published["model"])
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
