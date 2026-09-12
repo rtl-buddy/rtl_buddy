@@ -752,6 +752,11 @@ def test_pnr_missing_openroad_still_clears_the_odb(tmp_path, monkeypatch):
     stale_odb.write_bytes(b"\x00stale odb\x00")
     stale_drc = artefacts / "route.drc.rpt"
     stale_drc.write_text("violation\n")
+    # The generated flow script goes with them: a run that never reaches
+    # `_write_script` must not leave the previous script beside its absent
+    # outputs, where it reads as the script this run used (#527).
+    stale_script = Path(backend._script_path())
+    stale_script.write_text("# previous run's flow\n")
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
 
@@ -762,6 +767,7 @@ def test_pnr_missing_openroad_still_clears_the_odb(tmp_path, monkeypatch):
     # ...but nothing is left for `rb power` to pick up.
     assert not stale_odb.exists()
     assert not stale_drc.exists()
+    assert not stale_script.exists()
 
 
 def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
@@ -874,6 +880,81 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
     assert "exited with code 1" in res.results["desc"]
     assert not odb.exists()
     assert not routed_v.exists()
+
+
+def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
+    """A FAIL past OpenROAD publishes no outputs but keeps `pnr.tcl`.
+
+    The script on disk at that point is the one OpenROAD really ran, so it is
+    what someone reading `pnr.log` needs; only the up-front clear touches it
+    (#527). The outputs still go — that contract is unchanged.
+    """
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    script = Path(backend._script_path())
+
+    def _fake_write_script(*_args, **_kwargs):
+        script.write_text("# this run's flow\n")
+        return str(script)
+
+    monkeypatch.setattr(backend, "_write_script", _fake_write_script)
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    artefacts = Path(backend.artefact_dir)
+    odb = artefacts / "demo_top.routed.odb"
+    # A leftover script from the previous run is replaced, not merely kept.
+    script.write_text("# previous run's flow\n")
+
+    def _writes_then_dies(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        odb.write_bytes(b"\x00partial odb\x00")
+        result = MagicMock()
+        result.returncode = 1
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_dies)
+
+    res = backend.run()
+
+    assert "exited with code 1" in res.results["desc"]
+    assert not odb.exists()
+    assert script.read_text() == "# this run's flow\n"
 
 
 def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):

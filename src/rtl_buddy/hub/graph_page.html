@@ -1396,6 +1396,44 @@
     return roots;
   }
 
+  // The inverse stitch, for the ONE thing that needs it: naming the model
+  // the schematic should switch to.
+  //
+  // A root is a MODULE name and `GET /view.json?model=` takes a MODEL
+  // name. While a model was always named after its top the two were the
+  // same string, so the cross-model warning could offer the root
+  // verbatim; since a models.yaml `top:` decoupled them (rtl_buddy 6.44)
+  // a root is frequently a name no models.yaml declares, and the switch
+  // would ask the hub to build a model that does not exist. The same
+  // `maps_to` stitch `activeModelRoots` reads forwards answers it
+  // backwards: whoever maps to this module declares it.
+  //
+  // The module name itself is the fallback, for exactly the payload shape
+  // `activeModelRoots` falls back on — a design-tier-only graph has no
+  // `model:` node to read a stitch off, and there the naming convention
+  // is all there is. Offering a name the hub may reject beats offering
+  // nothing: the failure is reported, a disabled button is not.
+  //
+  // Two models topped at the same module cannot both be the answer; the
+  // first stitch wins, which is link order — the same rule
+  // `shallowestInstancePath` breaks its ties with.
+  function modelForRoot(links, root) {
+    if (typeof root !== 'string' || !root) { return null; }
+    var found = null;
+    (links || []).forEach(function (l) {
+      if (found || !l || l.type !== 'maps_to') { return; }
+      var source = String(l.source == null ? '' : l.source);
+      var target = String(l.target == null ? '' : l.target);
+      if (source.indexOf('model:') !== 0 || target.indexOf('module:') !== 0) { return; }
+      if (target.slice('module:'.length).split('@')[0] !== root) { return; }
+      var hash = source.indexOf('#');
+      if (hash < 0) { return; }
+      var name = source.slice(hash + 1);
+      if (name) { found = name; }
+    });
+    return found || root;
+  }
+
   // The instance a person means by "show me this module": the shallowest
   // one, PREFERRING the active model's own elaboration (#414).
   //
@@ -1637,16 +1675,34 @@
     }
   }
 
+  // The root is compared against the active model's ROOTS, not its name,
+  // and the switch target is translated back through the same stitch.
+  //
+  // Comparing the root with the name was right only while the two were
+  // the same string. With a models.yaml `top:`, an active model `foo`
+  // topped at `bar` makes `bar` the root `shallowestInstancePath` just
+  // *preferred* — so every one of those selections was reported as
+  // cross-model, and the button then offered `?model=bar`, a module name
+  // the hub cannot activate. Both halves come off `activeModelRoots` /
+  // `modelForRoot` instead, so there is one answer to "whose elaboration
+  // is this" and one to "what is that called as a model".
+  //
+  // `rootComponent` de-qualifies, for the same reason the ranking does:
+  // a root-scope instance carries `@<suite>` on its only component, and
+  // the two halves of one identity must agree about it.
   function maybeWarnCrossModel(ip) {
-    var root = ip.split('.')[0];
-    if (!activeModel || root === activeModel) { setCrossModel(null); return; }
+    var root = rootComponent(ip);
+    if (!activeModel || currentModelRoots()[root]) { setCrossModel(null); return; }
     request('state_snapshot', {}, function (reply) {
       if (reply.kind !== 'response') { return; }
       activeModel = reply.payload.active_model;
-      if (activeModel && root !== activeModel) {
-        setCrossModel({ model: root, ip: ip });
+      // Re-read after the refresh: `currentModelRoots` is memoised on the
+      // active model, so this is the freshly confirmed model's roots.
+      if (activeModel && !currentModelRoots()[root]) {
+        var target = modelForRoot(state.links, root);
+        setCrossModel({ model: target, ip: ip });
         note('selected ' + ip + " — not in the schematic's active model (" + activeModel +
-             '); click “' + originLabel('view') + ' → ' + root +
+             '); click “' + originLabel('view') + ' → ' + target +
              '” above to switch', 'warn');
       } else {
         setCrossModel(null);

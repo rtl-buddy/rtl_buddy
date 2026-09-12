@@ -58,6 +58,13 @@ _FIXED_OUTPUT_NAMES = tuple(
     name for name in _FLOW_OUTPUT_NAMES if "{design}" not in name
 )
 
+# The generated OpenROAD flow script. Not an output — it is the *input*
+# `_write_script` builds — but it is written into the artefact dir and is
+# read by a user debugging a run, so a rerun that fails before
+# `_write_script` must not leave the previous run's script describing it
+# (#527). Cleared up front only; see `_clear_stale_outputs`.
+_SCRIPT_NAME = "pnr.tcl"
+
 
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     """Absolute paths of every non-log artefact one pnr run produces."""
@@ -133,7 +140,7 @@ class OpenRoadPnr:
     # ------------------------------------------------------------------
 
     def _script_path(self) -> str:
-        return os.path.join(self.artefact_dir, "pnr.tcl")
+        return os.path.join(self.artefact_dir, _SCRIPT_NAME)
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "pnr.log")
@@ -444,7 +451,7 @@ class OpenRoadPnr:
     # Entry point
     # ------------------------------------------------------------------
 
-    def _clear_stale_outputs(self) -> None:
+    def _clear_stale_outputs(self, *, include_script: bool = False) -> None:
         """Drop the previous run's outputs. The FIRST thing `run` does.
 
         `_count_drcs` reads the routing DRC report off a fixed path and scores
@@ -463,9 +470,24 @@ class OpenRoadPnr:
         `<top>.routed.odb` behind for `rb power` to accept by existence.
         Matching on the suffix also means editing a run's design does not
         strand the previous design's ODB in the same directory.
+
+        `include_script` additionally clears the generated `pnr.tcl`, and is
+        set only by `run`. A rerun that dies before `_write_script` — no
+        OpenROAD on the box, an unresolvable platform — would otherwise leave
+        the *previous* run's flow script sitting beside this run's absent
+        outputs, where it reads as the script this run used (#527). It is
+        deliberately not cleared by `_fail_after_openroad`: past that point
+        the script on disk is the one OpenROAD really ran, which is exactly
+        what someone reading `pnr.log` needs.
         """
         stale = clear_stale_artefacts(
-            [os.path.join(self.artefact_dir, name) for name in _FIXED_OUTPUT_NAMES],
+            [
+                os.path.join(self.artefact_dir, name)
+                for name in (
+                    *_FIXED_OUTPUT_NAMES,
+                    *((_SCRIPT_NAME,) if include_script else ()),
+                )
+            ],
             owner=self.pnr_cfg.get_name(),
         )
         # This run's own design-named outputs, cleared whatever they are
@@ -520,7 +542,7 @@ class OpenRoadPnr:
             tool=self.openroad_executable,
         )
 
-        self._clear_stale_outputs()
+        self._clear_stale_outputs(include_script=True)
 
         if not shutil.which(self.openroad_executable):
             log_event(

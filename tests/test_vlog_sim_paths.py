@@ -972,6 +972,37 @@ def test_clear_managed_outputs_missing_dir_is_not_an_error(tmp_path):
     assert clear_managed_outputs(tmp_path / "never-made", (".bit",), owner="d") == []
 
 
+def test_clear_managed_outputs_unlistable_dir_is_fatal(tmp_path):
+    """An unlistable directory is not an empty one.
+
+    Swallowing the ``PermissionError`` would report "nothing to clear" while
+    the previous run's bitstream sat there waiting to be read back as this
+    run's result — and the bare exception escapes the CLI's
+    ``FatalRtlBuddyError`` handler, so machine mode emits no error envelope
+    and the exit code is not the documented 2.
+    """
+    if os.geteuid() == 0:  # pragma: no cover - depends on the runner
+        pytest.skip("root ignores directory permissions")
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.artifact_paths import clear_managed_outputs
+
+    locked = tmp_path / "artefacts"
+    locked.mkdir()
+    (locked / "top.bit").write_text("stale\n")
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(FatalRtlBuddyError) as excinfo:
+            clear_managed_outputs(locked, (".bit",), owner="demo")
+    finally:
+        locked.chmod(0o755)
+
+    message = str(excinfo.value)
+    assert "demo" in message
+    assert str(locked) in message
+    # The stale output is still there — which is exactly why this is fatal.
+    assert (locked / "top.bit").exists()
+
+
 def test_clear_managed_outputs_directory_at_an_output_path_is_fatal(tmp_path):
     """A directory sitting where an output belongs must not be silently
     skipped: something has to be removed before the tool can write there, so
