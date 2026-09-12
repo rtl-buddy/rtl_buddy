@@ -601,6 +601,39 @@ def test_module_payload_sums_the_power_of_a_liberty_cells_instances(project):
     assert payload["power"]["leakage_uw"] == pytest.approx(0.579)
 
 
+def test_module_payload_lists_every_instance_by_default(project):
+    """The finding (#561 review, Codex P2). No limit means the complete
+    list, which is what the MCP tools -- who pass none -- were registered
+    with, and `limit` says so rather than leaving it to be inferred."""
+    payload = module_payload(load_context(project), "DFF_X1")
+
+    assert payload["limit"] is None
+    assert len(payload["instances"]) == payload["instance_count"] == 2
+
+
+def test_module_payload_heads_its_instances_at_the_limit(project):
+    """The finding (#561 review, Codex P2). `--limit 1` used to head the
+    console table while the machine payload carried every row, so the flag
+    was silently ignored by the only surface that cannot re-count."""
+    payload = module_payload(load_context(project), "DFF_X1", limit=1)
+
+    assert [row["instance_path"] for row in payload["instances"]] == ["u_other/_9_"]
+    assert payload["limit"] == 1
+    # Self-describing: the count is how many there are, not how many are
+    # listed, and the power is still the whole cell type's.
+    assert payload["instance_count"] == 2
+    assert payload["power"]["total_uw"] == pytest.approx(12.42)
+
+
+def test_a_zero_module_limit_means_every_instance(project):
+    """`0` is what the flag documents as "all", so the builder reads it
+    the way the rankings already do rather than as an empty list."""
+    payload = module_payload(load_context(project), "DFF_X1", limit=0)
+
+    assert len(payload["instances"]) == 2
+    assert payload["limit"] == 0
+
+
 def test_module_payload_reports_an_rtl_modules_own_row(project):
     payload = module_payload(load_context(project), "sub")
 
@@ -735,6 +768,34 @@ def test_instance_payload_rolls_up_a_subtree_prefix(project):
     ]
     assert payload["rollup"]["instances"] == 2
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
+
+
+def test_instance_payload_lists_every_child_by_default(project):
+    """The finding (#561 review, Codex P2), the subtree half of it."""
+    payload = instance_payload(load_context(project), "u_sub")
+
+    assert payload["limit"] is None
+    assert len(payload["children"]) == payload["child_count"] == 2
+
+
+def test_instance_payload_heads_its_children_at_the_limit(project):
+    """The finding (#561 review, Codex P2). The rollup is the subtree's,
+    not the listed rows': a total that changed with `--limit` would be a
+    different number for the same question."""
+    payload = instance_payload(load_context(project), "u_sub", limit=1)
+
+    assert [row["instance_path"] for row in payload["children"]] == ["u_sub/_64_"]
+    assert payload["limit"] == 1
+    assert payload["child_count"] == 2
+    assert payload["rollup"]["instances"] == 2
+    assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
+
+
+def test_a_zero_instance_limit_means_every_child(project):
+    payload = instance_payload(load_context(project), "u_sub", limit=0)
+
+    assert len(payload["children"]) == 2
+    assert payload["limit"] == 0
 
 
 def test_a_prefix_must_end_on_a_separator(project):

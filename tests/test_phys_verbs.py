@@ -35,6 +35,7 @@ from rtl_buddy.phys.model import (
     merge_model,
     write_model,
 )
+from rtl_buddy.phys import query as phys_query_mod
 from rtl_buddy.phys.query import (
     INSTANCE_JOIN_LIBERTY_ONLY,
     INSTANCE_JOIN_NAME_COLLISION,
@@ -483,6 +484,85 @@ def test_a_negative_limit_is_rejected_rather_than_silently_meaning_all(phys_proj
         runner, rb = _runner()
         result = runner.invoke(rb.app, ["phys", verb, *extra, "--limit", "-1"])
         assert result.exit_code == 2, result.output
+
+
+def test_phys_module_machine_payload_honours_the_limit(phys_project):
+    """The finding (#561 review, Codex P2). Under `--machine` the payload
+    *is* the output, so a `--limit` the console honoured and the payload
+    ignored was the flag lying to the one consumer that cannot re-count."""
+    runner, rb = _runner()
+    complete = _machine(
+        runner.invoke(rb.app, ["--machine", "phys", "module", "DFF_X1"])
+    )["payload"]
+    assert len(complete["instances"]) == 2
+    assert complete["limit"] == phys_query_mod.DEFAULT_RANK_LIMIT
+
+    runner, rb = _runner()
+    headed = _machine(
+        runner.invoke(rb.app, ["--machine", "phys", "module", "DFF_X1", "--limit", "1"])
+    )["payload"]
+    assert [row["instance_path"] for row in headed["instances"]] == ["u_sub/_64_"]
+    assert headed["limit"] == 1
+    # A headed list is self-describing, and the total is the whole cell
+    # type's rather than the listed rows'.
+    assert headed["instance_count"] == 2
+    assert headed["power"] == complete["power"]
+
+    runner, rb = _runner()
+    everything = _machine(
+        runner.invoke(rb.app, ["--machine", "phys", "module", "DFF_X1", "--limit", "0"])
+    )["payload"]
+    assert len(everything["instances"]) == 2
+
+
+def test_phys_module_console_counts_the_instances_it_did_not_list(phys_project):
+    """The table is now the payload's own list, so the `n/total` line has
+    to come from `instance_count` rather than from what it was handed."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "module", "DFF_X1", "--limit", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert "instances of DFF_X1: 1/2" in result.output
+
+
+def test_phys_instance_machine_payload_honours_the_limit(phys_project):
+    """The finding (#561 review, Codex P2), the subtree half of it."""
+    runner, rb = _runner()
+    complete = _machine(
+        runner.invoke(rb.app, ["--machine", "phys", "instance", "u_sub"])
+    )["payload"]
+    assert len(complete["children"]) == complete["child_count"] == 2
+    assert complete["limit"] == phys_query_mod.DEFAULT_RANK_LIMIT
+
+    runner, rb = _runner()
+    headed = _machine(
+        runner.invoke(
+            rb.app, ["--machine", "phys", "instance", "u_sub", "--limit", "1"]
+        )
+    )["payload"]
+    assert [row["instance_path"] for row in headed["children"]] == ["u_sub/_64_"]
+    assert headed["limit"] == 1
+    assert headed["child_count"] == 2
+    # The rollup is the subtree's, listed or not.
+    assert headed["rollup"] == complete["rollup"]
+
+    runner, rb = _runner()
+    everything = _machine(
+        runner.invoke(
+            rb.app, ["--machine", "phys", "instance", "u_sub", "--limit", "0"]
+        )
+    )["payload"]
+    assert len(everything["children"]) == 2
+
+
+def test_phys_instance_console_says_how_many_children_it_left_out(phys_project):
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "instance", "u_sub", "--limit", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert "1/2 children shown; --limit 0 for all" in result.output
 
 
 def test_phys_module_unknown_name_exits_two_with_candidates(phys_project):

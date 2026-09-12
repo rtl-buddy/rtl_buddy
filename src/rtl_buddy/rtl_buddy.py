@@ -6835,7 +6835,10 @@ class RtlBuddy:
             typer.Option(
                 "--limit",
                 min=0,
-                help="rows per ranking, heaviest/hottest first (0 for all)",
+                help=(
+                    "rows per ranking, heaviest/hottest first "
+                    "(0 for all); truncates the --machine payload too"
+                ),
             ),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
         phys_dir: Annotated[
@@ -6922,7 +6925,10 @@ class RtlBuddy:
             typer.Option(
                 "--limit",
                 min=0,
-                help="instances to list, hottest first (0 for all)",
+                help=(
+                    "instances to list, hottest first "
+                    "(0 for all); truncates the --machine payload too"
+                ),
             ),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
         phys_dir: Annotated[
@@ -6944,7 +6950,7 @@ class RtlBuddy:
         """
         ctx = self._phys_context("phys module", phys_dir=phys_dir, manifest=manifest)
         try:
-            payload = phys_query_mod.module_payload(ctx, module)
+            payload = phys_query_mod.module_payload(ctx, module, limit=limit)
         except phys_query_mod.PhysQueryError as exc:
             self._read_query_failed("phys module", exc)
 
@@ -6973,11 +6979,15 @@ class RtlBuddy:
         )
         self._phys_missing_half_notes(payload)
         self._phys_instance_join_note(payload)
-        instances = payload["instances"] or []
-        if instances:
-            shown = instances if limit <= 0 else instances[:limit]
+        # The payload is already headed to `--limit`, so the table renders
+        # what it holds rather than truncating a second time: one flag,
+        # one truncation, and the console and the machine payload cannot
+        # disagree about how many rows the user asked for.
+        shown = payload["instances"] or []
+        if shown:
             emit_console_text(
-                f"\ninstances of {payload['module']}: {len(shown)}/{len(instances)}",
+                f"\ninstances of {payload['module']}: "
+                f"{len(shown)}/{payload['instance_count']}",
                 style="bold",
                 stream="stdout",
                 markup=False,
@@ -7009,7 +7019,13 @@ class RtlBuddy:
         ],
         limit: Annotated[
             int,
-            typer.Option("--limit", min=0, help="children to list (0 for all)"),
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "children to list (0 for all); truncates the --machine payload too"
+                ),
+            ),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
         phys_dir: Annotated[
             str | None,
@@ -7030,7 +7046,7 @@ class RtlBuddy:
         """
         ctx = self._phys_context("phys instance", phys_dir=phys_dir, manifest=manifest)
         try:
-            payload = phys_query_mod.instance_payload(ctx, path)
+            payload = phys_query_mod.instance_payload(ctx, path, limit=limit)
         except phys_query_mod.PhysQueryError as exc:
             self._read_query_failed("phys instance", exc)
 
@@ -7049,10 +7065,10 @@ class RtlBuddy:
         rows = []
         if payload["instance"] is not None:
             rows += self._phys_instance_rows([payload["instance"]])
+        # Headed by the builder, as `phys module`'s list is.
         children = payload["children"]
         if children:
-            shown = children if limit <= 0 else children[:limit]
-            rows += self._phys_instance_rows(shown)
+            rows += self._phys_instance_rows(children)
         rows.append(
             {
                 "instance": f"rollup ({rollup['instances']})",
@@ -7069,9 +7085,10 @@ class RtlBuddy:
             rows=rows,
             logger=logger,
         )
-        if children and limit > 0 and len(children) > limit:
+        if children and len(children) < payload["child_count"]:
             emit_console_text(
-                f"{limit}/{len(children)} children shown; --limit 0 for all",
+                f"{len(children)}/{payload['child_count']} children shown; "
+                "--limit 0 for all",
                 stream="stdout",
                 markup=False,
             )
