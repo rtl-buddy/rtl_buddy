@@ -128,12 +128,14 @@ _PROTOTYPE_QUALIFIERS = frozenset({"extern", "pure", "import", "export"})
 _STATEMENT_RESET = frozenset({"begin"})
 
 # Runaway guard only: a real `include cycle is already stopped by the active
-# path check in _expand_file, so anything that reaches this limit is a chain
+# path check in _open_frame, so anything that reaches this limit is a chain
 # deeper than any compiler would accept. Matched to slang's own
 # PreprocessorOptions::maxIncludeDepth so the scan does not give up on
-# anything slang would still preprocess. Exceeding it raises rather than
-# silently dropping the header: a skipped file is a missed finding, and this
-# gate exists because missed findings are invisible.
+# anything slang would still preprocess, and reachable in fact and not only on
+# paper: the include walk is iterative (_drive), so the limit is not shadowed
+# by Python's own recursion limit. Exceeding it raises rather than silently
+# dropping the header: a skipped file is a missed finding, and this gate exists
+# because missed findings are invisible.
 MAX_INCLUDE_DEPTH = 1024
 
 
@@ -265,14 +267,48 @@ def _read(path: str) -> str | None:
         return None
 
 
-def _expand_file(path: str, state: _ScanState, depth: int = 0) -> list[_Token]:
-    """Tokens for `path` and everything it includes, with inactive
-    `` `ifdef `` regions and macro bodies removed."""
+@dataclass
+class _Frame:
+    """One source mid-expansion: its tokens, its lines, and where the walk is.
+
+    The `` `ifdef `` chain is per-frame, because that is what the recursive
+    expansion did: a conditional left open by a header does not continue into
+    its includer.
+    """
+
+    path: str
+    tokens: list[_Token]
+    lines: list[str]
+    depth: int
+    # Whether this frame pushed its realpath onto `_ScanState.active` and so
+    # owes it a pop. The text handed to `scan_text` does not: its caller owns
+    # that entry.
+    opened: bool = False
+    index: int = 0
+    conds: list[_Cond] = field(default_factory=list)
+
+
+def _new_frame(text: str, path: str, depth: int, *, opened: bool = False) -> _Frame:
+    return _Frame(
+        path=path,
+        tokens=_tokenize(text, path),
+        lines=text.splitlines(),
+        depth=depth,
+        opened=opened,
+    )
+
+
+def _open_frame(path: str, state: _ScanState, depth: int) -> _Frame | None:
+    """Frame for `path`, or None when it is a cycle or cannot be read.
+
+    Marks the file open in `state.active`; the driver pops it when the frame
+    is finished.
+    """
     real = os.path.realpath(path)
     # A cycle is not an error: `\`include` of a file already on the path is
     # how include guards behave, and the guarded body is empty the second time.
     if real in state.active:
-        return []
+        return None
     if depth > MAX_INCLUDE_DEPTH:
         chain = " -> ".join(state.active[-5:] + [path])
         raise FatalRtlBuddyError(
@@ -281,22 +317,71 @@ def _expand_file(path: str, state: _ScanState, depth: int = 0) -> list[_Token]:
         )
     text = _read(path)
     if text is None:
-        return []
+        return None
     state.active.append(real)
-    try:
-        return _expand_text(text, path, state, depth)
-    finally:
-        state.active.pop()
+    return _new_frame(text, path, depth, opened=True)
+
+
+def _expand_file(path: str, state: _ScanState, depth: int = 0) -> list[_Token]:
+    """Tokens for `path` and everything it includes, with inactive
+    `` `ifdef `` regions and macro bodies removed."""
+    root = _open_frame(path, state, depth)
+    if root is None:
+        return []
+    return _drive(root, state)
 
 
 def _expand_text(
     text: str, path: str, state: _ScanState, depth: int = 0
 ) -> list[_Token]:
-    lines = text.splitlines()
-    tokens = _tokenize(text, path)
+    """Tokens for already-read `text` and everything it includes."""
+    return _drive(_new_frame(text, path, depth), state)
+
+
+def _drive(root: _Frame, state: _ScanState) -> list[_Token]:
+    """Expand `root` and every file it reaches, over an explicit stack.
+
+    The include walk is iterative, not recursive, so that
+    :data:`MAX_INCLUDE_DEPTH` is reachable at all: recursion spent two Python
+    frames per header and raised an uncaught `RecursionError` — neither a
+    structured failure nor the fatal machine envelope, because the CLI catches
+    only `FatalRtlBuddyError` and `FilelistError` — at roughly 500 headers,
+    well short of the 1024 this scan advertises and slang preprocesses
+    (rtl-buddy/rtl_buddy#527).
+    """
     out: list[_Token] = []
-    conds: list[_Cond] = []
-    i = 0
+    stack = [root]
+    try:
+        while stack:
+            frame = stack[-1]
+            child = _advance(frame, state, out)
+            if child is not None:
+                stack.append(child)
+                continue
+            stack.pop()
+            if frame.opened:
+                state.active.pop()
+    finally:
+        # A completed walk empties the stack. A depth overflow abandons it
+        # mid-chain, and the files it left open still have to be released, or a
+        # shared state would carry phantom entries into the next source.
+        for frame in stack:
+            if frame.opened:
+                state.active.pop()
+    return out
+
+
+def _advance(frame: _Frame, state: _ScanState, out: list[_Token]) -> _Frame | None:
+    """Consume `frame`'s tokens into `out` until it reaches an `` `include ``
+    worth descending into, or runs out.
+
+    Returns the frame for that include, or None when `frame` is finished.
+    """
+    tokens = frame.tokens
+    lines = frame.lines
+    path = frame.path
+    conds = frame.conds
+    i = frame.index
 
     def active() -> bool:
         return all(c.active for c in conds)
@@ -326,20 +411,20 @@ def _expand_text(
         if name == "elsif":
             macro = tokens[i + 1].text if i + 1 < len(tokens) else ""
             if conds:
-                frame = conds[-1]
+                cond = conds[-1]
                 outer = all(c.active for c in conds[:-1])
-                live = outer and not frame.taken and macro in state.defined
-                frame.active = live
-                frame.taken = frame.taken or live
+                live = outer and not cond.taken and macro in state.defined
+                cond.active = live
+                cond.taken = cond.taken or live
             i += 2 if i + 1 < len(tokens) else 1
             continue
         if name == "else":
             if conds:
-                frame = conds[-1]
+                cond = conds[-1]
                 outer = all(c.active for c in conds[:-1])
-                live = outer and not frame.taken
-                frame.active = live
-                frame.taken = frame.taken or live
+                live = outer and not cond.taken
+                cond.active = live
+                cond.taken = cond.taken or live
             i += 1
             continue
         if name == "endif":
@@ -348,19 +433,27 @@ def _expand_text(
             i += 1
             continue
 
-        if not active():
-            i += 1
-            continue
-
         if name == "define":
-            # Register the macro name, then skip its whole body: a macro is
-            # scanned where it expands, and rtl_buddy does not expand macros.
-            if i + 1 < len(tokens):
+            # Skip the macro's whole body -- inside an inactive branch too, and
+            # before the inactive-branch skip below gets it. Replacement text
+            # may itself hold directives, and stepping over the `define token
+            # alone let the scan read a body's `ifdef as a real conditional,
+            # which leaves the enclosing chain open past its own `endif and
+            # silently drops every declaration after it
+            # (rtl-buddy/rtl_buddy#527). The name is registered only where the
+            # branch is live, and the body is never scanned either way: a
+            # macro is scanned where it expands, and rtl_buddy does not expand
+            # macros.
+            if active() and i + 1 < len(tokens):
                 state.defined.add(tokens[i + 1].text)
             end_line = _define_body_end(lines, tok.line - 1)
             i += 1
             while i < len(tokens) and tokens[i].line <= end_line:
                 i += 1
+            continue
+
+        if not active():
+            i += 1
             continue
 
         if name == "undef":
@@ -396,7 +489,11 @@ def _expand_text(
                         include=target,
                     )
                 else:
-                    out.extend(_expand_file(resolved, state, depth + 1))
+                    frame.index = i
+                    child = _open_frame(resolved, state, frame.depth + 1)
+                    if child is not None:
+                        return child
+                    continue
             # An `include of a macro or an angle-bracket path is left alone.
             continue
 
@@ -404,7 +501,8 @@ def _expand_text(
         # declaration and carries no scope.
         i += 1
 
-    return out
+    frame.index = i
+    return None
 
 
 def _skip_parens(tokens: list[_Token], open_index: int) -> int:
