@@ -581,6 +581,36 @@
   }
   // <<< instance-counts
 
+  // >>> namespace-split
+  // Which halves' `module` column spells a name: `rtl` for a synthesis
+  // row, `liberty` for the cell a leaf is an instance of, and BOTH when
+  // one word is in both columns.
+  //
+  // The pane's copy of `phys.query.namespaces_of`, and it has to answer
+  // the same way: the summary payload this pane reads carries no
+  // per-module note, so a collision the CLI reports as
+  // `instance_join` is one the pane can only report if it makes the
+  // test itself. Both are real — nothing stops a design from having a
+  // module called `DFF_X1`, or a library from naming a cell after a
+  // block — and the two halves are then measuring two different things
+  // under one word.
+  //
+  // Ordered `rtl` then `liberty`, as the query layer orders it, so the
+  // two can be compared field for field.
+  function namespacesOf(moduleRows, instanceRows, name) {
+    var wanted = String(name);
+    var spaces = [];
+    var carries = function (rows) {
+      return (rows || []).some(function (row) {
+        return row.module != null && String(row.module) === wanted;
+      });
+    };
+    if (carries(moduleRows)) { spaces.push('rtl'); }
+    if (carries(instanceRows)) { spaces.push('liberty'); }
+    return spaces;
+  }
+  // <<< namespace-split
+
   // >>> path-normalise
   // The instance-path separator is the TOOL's choice: OpenSTA prints
   // `/` for a netlist it read from Verilog, and every RTL-side
@@ -1458,6 +1488,8 @@
     });
     if (state.module !== null) {
       els.instances.appendChild(modulePill());
+      var collision = collisionNote();
+      if (collision) { els.instances.appendChild(collision); }
     }
     if (!rows.length) {
       els.instances.appendChild(joinMissNote() ||
@@ -1586,16 +1618,46 @@
     if (state.module === null || state.filter) { return null; }
     var instances = rowsOf('instances');
     if (!halfPresent('instances') || !instances.length) { return null; }
-    var matched = false;
-    instances.forEach(function (row) {
-      if (String(row.module) === String(state.module)) { matched = true; }
-    });
-    if (matched) { return null; }
+    // One membership rule for both notes: a name the leaves DO carry is
+    // in the liberty namespace, which is `collisionNote`'s test read the
+    // other way round.
+    var spaces = namespacesOf(rowsOf('modules'), instances, state.module);
+    if (spaces.indexOf('liberty') >= 0) { return null; }
     return elem('p', 'muted join-miss',
       'no instance rows carry ' + state.module + ' — the module column ' +
       'above holds Liberty cell names, not RTL module names, so power ' +
       'cannot be attributed to an RTL module until the hierarchy join ' +
       'lands. Liberty cells (DFF_X1, NAND2_X1) do resolve here.');
+  }
+
+  // The opposite failure, and the one that looks fine.
+  //
+  // `joinMissNote` covers the lens that matches nothing. This covers the
+  // lens whose name is in BOTH namespaces: the modules table above has
+  // an RTL module row under that word and the leaves below have rows
+  // under it too, so the pane lists a Liberty cell type's instances
+  // beneath an RTL module's cells and area and nothing says they are two
+  // measurements of two things. Every number on screen is real, which is
+  // why it needs saying — an empty table invites a question and a full
+  // one does not.
+  //
+  // The same call `rb phys module` makes on its payload
+  // (`INSTANCE_JOIN_NAME_COLLISION`), made here because the summary
+  // payload the pane reads carries no per-module note to relay. Nothing
+  // is hidden and nothing is summed across the two: the note is what
+  // stops the pairing from being read as one block's totals.
+  function collisionNote() {
+    if (state.module === null) { return null; }
+    var spaces = namespacesOf(rowsOf('modules'), rowsOf('instances'),
+      state.module);
+    if (spaces.length < 2) { return null; }
+    return elem('p', 'muted join-collision',
+      'name collision: ' + state.module + ' is an RTL module in the ' +
+      'synthesis half and a Liberty cell in the power half. The rows ' +
+      'below are that cell type\'s instances — the power is the cell ' +
+      'type\'s, the cells and area above are the module\'s, and they ' +
+      'are two measurements of two things. This module\'s own power ' +
+      'needs the hierarchy join.');
   }
 
   // Filtering to one module is a lens, and a lens you cannot take off is
