@@ -1191,16 +1191,16 @@ def build_toolset(
             description=(
                 "Power for one instance path, or — when the path names a "
                 "subtree rather than a leaf — the leaves under it and their "
-                "rolled-up total, with area joined in through each leaf's "
-                "module (read 'area_um2' against 'modules_matched': the join "
-                "is on Liberty cell names and routinely covers none of a "
-                "mapped hierarchical subtree). Reads artefacts already on "
-                "disk; no EDA tool runs. "
-                "The model stores leaf values only, so this is where a "
-                "hierarchy question is actually answered. Instance rows come "
-                "from the power half alone: a synthesis-only model comes back "
-                "as ok: false naming `rb power`, and an unknown path comes "
-                "back with 'candidates'."
+                "rolled-up total. Reads artefacts already on disk; no EDA "
+                "tool runs. The model stores leaf values only, so this is "
+                "where a hierarchy question is actually answered. "
+                "POWER ONLY: the rollup carries the four power columns and a "
+                "leaf count, and no area — the model has no per-cell area, so "
+                "there is nothing to sum, and area per instance or per "
+                "subtree is not a question this can answer yet. Instance rows "
+                "come from the power half alone: a synthesis-only model comes "
+                "back as ok: false naming `rb power`, and an unknown path "
+                "comes back with 'candidates'."
             ),
             input_schema=_obj(
                 {
