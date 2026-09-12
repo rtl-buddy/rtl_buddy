@@ -37,12 +37,19 @@ convention to key on.
 That layout also means a synth run and a power run *can* land in one
 directory when they share a name, so the manifest merges the same way
 the model does: a run rewrites its own block and carries the other's
-forward when the model kept the other half (:func:`merge_manifest`).
+forward when the model kept the other half (:func:`merge_manifest`). A
+rerun that never gets as far as publishing withdraws its own block the
+same way (:func:`blank_block`), so the manifest never points at reports
+a stale-clear has since deleted.
+
+Every write carries the ``publication`` token of the model it was
+written with — see :func:`rtl_buddy.phys.model.new_publication`.
 
 Schema (``schema_version`` 1)::
 
     {
       "schema_version": 1,
+      "publication": "9f2c…",           # shared with the model of this write
       "generator": "rtl-buddy 6.44.0",
       "generated_at": "2026-09-12T11:04:12+08:00",
       "command": "synth",               # or "power" — this write's producer
@@ -92,6 +99,16 @@ POWER_KEYS = ("backend", "run", "netlist_source", "report", "instances", "cells"
 #: Which block keys hold a path and so need making project-relative. The
 #: rest are plain strings a `rel()` would mangle into a filename.
 PATH_KEYS = frozenset({"stats", "netlist", "log", "report", "instances", "cells"})
+
+#: Each producer block, its keys, and the totals it owns — the manifest
+#: side of the model's :data:`~rtl_buddy.phys.model._HALVES`. Named once
+#: because :func:`merge_manifest` and :func:`blank_block` both walk it,
+#: and a second spelling is how the two would come to disagree about
+#: which numbers belong to which block.
+_BLOCKS = (
+    ("synth", SYNTH_KEYS, _SYNTH_TOTALS),
+    ("power", POWER_KEYS, _POWER_TOTALS),
+)
 
 
 def _generator() -> str:
@@ -176,6 +193,10 @@ def build_manifest(
 
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
+        # Stamped by `phys.publish._publish` with the token it also puts
+        # on the model this manifest names, so a reader can tell the two
+        # were written together; see `phys.model.new_publication`.
+        "publication": None,
         "generator": _generator(),
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "command": command,
@@ -213,6 +234,10 @@ def merge_manifest(existing: dict | None, new: dict, *, own_block: str | None) -
     about this one. Totals travel with their half: a block this run
     re-produced keeps the totals it wrote, nulls included — a scrape
     that failed this time must not republish last run's number.
+
+    The merged document keeps ``new``'s ``publication`` token, for the
+    reason :func:`rtl_buddy.phys.model.merge_model` gives: the token
+    names the write in progress, not the run whose block was inherited.
     """
     if not isinstance(existing, dict):
         return new
@@ -222,11 +247,7 @@ def merge_manifest(existing: dict | None, new: dict, *, own_block: str | None) -
         return new
     merged = dict(new)
     merged["totals"] = dict(new.get("totals") or {})
-    halves = (
-        ("synth", SYNTH_KEYS, _SYNTH_TOTALS),
-        ("power", POWER_KEYS, _POWER_TOTALS),
-    )
-    for half, keys, totals_keys in halves:
+    for half, keys, totals_keys in _BLOCKS:
         if half == own_block:
             continue
         block = merged.get(half) or {}
@@ -241,6 +262,30 @@ def merge_manifest(existing: dict | None, new: dict, *, own_block: str | None) -
             if value is not None and merged["totals"].get(key) is None:
                 merged["totals"][key] = value
     return merged
+
+
+def blank_block(manifest: dict, own_block: str) -> dict:
+    """``manifest`` with ``own_block``'s keys and totals nulled out.
+
+    The manifest side of :func:`rtl_buddy.phys.model.blank_half`, walking
+    the same :data:`_BLOCKS` pairing :func:`merge_manifest` does. Every
+    key of the block goes ``null`` — ``backend`` included, which is the
+    one a consumer reads first to tell a half that ran here from one that
+    did not, and the one :func:`merge_manifest` keys inheritance on.
+
+    The document's own header (``command``, ``run``, ``generated_at``)
+    is left as the last publication wrote it: this is not a new
+    measurement, it is the withdrawal of one.
+    """
+    blanked = dict(manifest)
+    blanked["totals"] = dict(manifest.get("totals") or {})
+    for block, keys, totals_keys in _BLOCKS:
+        if block != own_block:
+            continue
+        blanked[block] = {key: None for key in keys}
+        for key in totals_keys:
+            blanked["totals"][key] = None
+    return blanked
 
 
 def write_manifest(manifest: dict, phys_dir) -> str:

@@ -151,6 +151,7 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root.mkdir()
     shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", root)
     _write_run(root, "old_synth", modules=_MODULES, mtime=1_000_000)
+    _write_run(root, "power_only", instances=_INSTANCES, mtime=1_500_000)
     _write_run(root, "both", modules=_MODULES, instances=_INSTANCES, mtime=2_000_000)
     monkeypatch.chdir(root)
     return root
@@ -399,7 +400,11 @@ def test_phys_instance_rolls_up_a_subtree(phys_project):
     ]
     assert payload["rollup"]["instances"] == 2
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
-    assert payload["rollup"]["area_um2"] == pytest.approx(192.0)
+    # No area: the model has no per-cell area to sum, and joining the
+    # module's total in once per leaf would multiply it (Phase 5 owns the
+    # hierarchy join that can answer this).
+    assert "area_um2" not in payload["rollup"]
+    assert "modules_matched" not in payload["rollup"]
 
 
 def test_phys_instance_renders_the_rollup(phys_project):
@@ -410,7 +415,7 @@ def test_phys_instance_renders_the_rollup(phys_project):
     assert result.exit_code == 0, result.output
     assert "prefix match, 2 leaf instance(s)" in result.output
     assert "rollup (2)" in result.output
-    assert "subtree area:" in result.output
+    assert "subtree area" not in result.output
 
 
 def test_phys_instance_unknown_path_exits_two_with_candidates(phys_project):
@@ -441,3 +446,19 @@ def test_phys_instance_on_a_synth_only_model_names_the_power_command(phys_projec
     envelope = _machine(result)
     assert envelope["exit_code"] == 2
     assert "rb power" in envelope["payload"]["error"]
+
+
+def test_phys_instance_says_which_half_is_missing(phys_project):
+    """The verb reads a power-only model perfectly well, and the reader still
+    needs telling that `area` and the module rows are one command away — the
+    same note `summary` and `module` print."""
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        ["phys", "instance", "u_sub", "--phys-dir", "verif/blk/artefacts/power_only"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "no per-module rows in this model" in result.output
+    assert "rb synth" in result.output

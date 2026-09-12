@@ -24,6 +24,13 @@ A half whose raw artefact is missing or unreadable is written as
 stable keys make: this run did not produce it. The totals the flow
 scraped from its log are still recorded, so a model always says
 something even when the breakdown is gone.
+
+**The failing rerun.** Those six steps run only when the flow gets far
+enough to pass, so a rerun that fails earlier would leave the previous
+run's half published over artefacts its own stale-clear has just
+deleted. :func:`invalidate_half` is the other half of the contract: the
+flows call it where they clear, and it nulls the producer's own half of
+whatever is already in the directory.
 """
 
 from __future__ import annotations
@@ -33,6 +40,68 @@ from pathlib import Path
 from . import manifest as manifest_mod
 from . import model as model_mod
 from . import reports
+
+
+#: Which manifest block each model half is published from, so
+#: :func:`invalidate_half` withdraws both sides of one producer's
+#: contribution from one argument. Same pairing the two merges keep,
+#: spelled here because this is the only place that crosses between the
+#: model's vocabulary and the manifest's.
+_HALF_BLOCK = {"modules": "synth", "instances": "power"}
+
+
+def invalidate_half(artefact_dir, own_half: str) -> dict:
+    """Withdraw this producer's half from a model+manifest already here.
+
+    Publication happens only on a pass, which leaves a hole: a rerun
+    that *fails* has already cleared the raw artefacts behind its half
+    (see :func:`rtl_buddy.tools.artifact_paths.clear_stale_artefacts`)
+    but publishes nothing, so the previous run's rows stay discoverable
+    with nothing left on disk to back them — a breakdown of a design
+    that has since changed, pointing at reports that no longer exist.
+    Called from the same place the clear happens, this nulls the half
+    and the manifest block that go with those artefacts.
+
+    Only this producer's side moves. ``modules`` and the ``synth`` block
+    for a synthesis, ``instances`` and ``power`` for a power run; the
+    other half is another command's measurement, its artefacts are still
+    on disk, and a failure here says nothing about it. A subsequent
+    successful publish rewrites the half exactly as before, so this is
+    invisible to every run that gets that far.
+
+    Deliberately unconditional on the ``top`` the model records, unlike
+    the merges: whatever design the half described, the clear that
+    precedes this deleted the fixed-path artefacts it was read from.
+
+    Never raises, for the reason the whole module gives — a by-product
+    does not get to fail a run; the caller logs ``error`` at DEBUG.
+
+    :returns: ``{"model", "manifest", "error"}``; a path is ``None``
+        when that document was not there to rewrite (nothing published
+        into this directory yet, which is the common case).
+    """
+    try:
+        model = model_mod.load_model_or_none(artefact_dir)
+        manifest = manifest_mod.load_manifest_or_none(artefact_dir)
+        if model is None and manifest is None:
+            return {"model": None, "manifest": None, "error": None}
+        # One token across both, as a publish does: what is being written
+        # here is a pair, and a reader must be able to tell it caught the
+        # two mid-rewrite.
+        publication = model_mod.new_publication()
+        model_path = None
+        manifest_path = None
+        if model is not None:
+            blanked = model_mod.blank_half(model, own_half)
+            blanked["publication"] = publication
+            model_path = model_mod.write_model(blanked, artefact_dir)
+        if manifest is not None:
+            blanked = manifest_mod.blank_block(manifest, _HALF_BLOCK[own_half])
+            blanked["publication"] = publication
+            manifest_path = manifest_mod.write_manifest(blanked, artefact_dir)
+    except Exception as e:  # noqa: BLE001 - a by-product never fails a run
+        return {"model": None, "manifest": None, "error": str(e)}
+    return {"model": model_path, "manifest": manifest_path, "error": None}
 
 
 def publish_synth(
@@ -118,8 +187,15 @@ def publish_power(
 
     def _build():
         cells = _rows(cells_path, reports.parse_instance_cells) or {}
-        instances = _rows(
-            instances_path, lambda text: reports.parse_instance_power(text, cells)
+        # An empty parse collapses to `None`, exactly as the synthesis
+        # half does: the generated Tcl writes `power_instances.rpt` only
+        # after `get_cells` came back non-empty, so a report that yields
+        # no rows is one this could not read, not a design without cells.
+        instances = (
+            _rows(
+                instances_path, lambda text: reports.parse_instance_power(text, cells)
+            )
+            or None
         )
         return model_mod.build_power_model(
             top=top,
@@ -153,13 +229,21 @@ def publish_power(
 
 
 def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict:
-    """The shared six steps, with the resilience rule around all of them."""
+    """The shared six steps, with the resilience rule around all of them.
+
+    One ``publication`` token is minted per call and stamped into both
+    documents, because they are written one after the other and a reader
+    can arrive in between; see
+    :func:`rtl_buddy.phys.model.new_publication`.
+    """
     try:
+        publication = model_mod.new_publication()
         fresh = build()
         rows = fresh[half_key]
         model = model_mod.merge_model(
             model_mod.load_model_or_none(artefact_dir), fresh, own_half=half_key
         )
+        model["publication"] = publication
         model_path = model_mod.write_model(model, artefact_dir)
         project_root = manifest_mod.project_root_for_dir(artefact_dir)
         half, values = block
@@ -177,6 +261,7 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
             ),
             own_block=half,
         )
+        manifest["publication"] = publication
         manifest_path = manifest_mod.write_manifest(manifest, artefact_dir)
     except Exception as e:  # noqa: BLE001 - a by-product never fails a run
         return {"model": None, "manifest": None, "rows": None, "error": str(e)}
@@ -219,11 +304,16 @@ def _only_produced(values: dict) -> dict:
 def _rows(path, parse):
     """Parse ``path`` with ``parse``, or return ``None`` if it is not there.
 
-    ``None`` and an empty result are different answers and both are
-    reachable: no file at all means "this run did not produce it", while
-    a file whose rows all failed to parse means "produced, and it said
-    nothing" — which is the honest reading of, say, a design with no
-    cells.
+    A missing or unreadable file is ``None``: this run did not produce
+    it. An empty parse is returned as it comes — both callers above then
+    collapse it to ``None`` themselves, because for both of them a
+    report that exists and yields nothing means the file is garbled
+    rather than that the design is empty (a synthesis has at least its
+    top module, and the power Tcl writes its report only once
+    ``get_cells`` has come back non-empty). The distinction is kept
+    *here* rather than decided here so the reason lives with the flow
+    that knows it, and the ``cells`` sidecar — whose empty parse really
+    does just mean "no cell names to join on" — keeps it.
     """
     if path is None:
         return None

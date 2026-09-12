@@ -8,10 +8,12 @@ hand: a payload test that invented its own document shape would keep
 passing after the producers stopped writing that shape.
 """
 
+import json
 import os
 
 import pytest
 
+from rtl_buddy.phys import query as query_mod
 from rtl_buddy.phys.manifest import (
     MANIFEST_FILENAME,
     build_manifest,
@@ -26,6 +28,7 @@ from rtl_buddy.phys.model import (
 from rtl_buddy.phys.query import (
     INSTANCE_JOIN_LIBERTY_ONLY,
     PHYS_QUERY_SCHEMA_VERSION,
+    PUBLICATION_ATTEMPTS,
     PhysQueryError,
     heaviest_modules,
     hottest_instances,
@@ -188,6 +191,79 @@ def test_a_manifest_option_naming_a_directory_is_accepted(project):
     )
 
     assert ctx.manifest["run"] == "old_synth"
+
+
+def _stamp(path, token):
+    """Set one document's `publication` token in place."""
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["publication"] = token
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_a_matched_pair_is_read_once(project, monkeypatch):
+    """The ordinary case: the two documents agree, so nothing re-reads."""
+    for run in ("old_synth", "both"):
+        phys_dir = project / "verif" / "blk" / "artefacts" / run
+        _stamp(phys_dir / "phys-model.json", "pub-1")
+        _stamp(phys_dir / MANIFEST_FILENAME, "pub-1")
+    monkeypatch.setattr(
+        query_mod.time, "sleep", lambda _s: pytest.fail("a matched pair never sleeps")
+    )
+
+    ctx = load_context(project)
+
+    assert ctx.model["publication"] == ctx.manifest["publication"] == "pub-1"
+
+
+def test_a_pair_caught_mid_publication_is_read_again(project, monkeypatch):
+    """A publish replaces the model and then the manifest, so a read can land
+    between the two and pair a new manifest with the old model. The tokens
+    make that visible; the retry is what resolves it."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    model_path = phys_dir / "phys-model.json"
+    manifest_path = phys_dir / MANIFEST_FILENAME
+    _stamp(model_path, "pub-1")
+    _stamp(manifest_path, "pub-2")
+
+    slept = []
+
+    def _the_publish_finishes(seconds):
+        slept.append(seconds)
+        _stamp(model_path, "pub-2")
+
+    monkeypatch.setattr(query_mod.time, "sleep", _the_publish_finishes)
+
+    ctx = load_context(project)
+
+    assert len(slept) == 1
+    assert ctx.model["publication"] == ctx.manifest["publication"] == "pub-2"
+    # And the answer is a real one, not a half-loaded document.
+    assert len(ctx.model["instances"]) == 3
+
+
+def test_a_pair_that_never_matches_is_still_answered(project, monkeypatch):
+    """An advisory read: nothing here holds a lock, so two documents that
+    genuinely disagree are answered from the freshest read of each rather
+    than refused."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _stamp(phys_dir / "phys-model.json", "pub-1")
+    _stamp(phys_dir / MANIFEST_FILENAME, "pub-2")
+    reads = []
+    real_load_model = query_mod.load_model
+
+    def _counted(path):
+        reads.append(str(path))
+        return real_load_model(path)
+
+    monkeypatch.setattr(query_mod, "load_model", _counted)
+    monkeypatch.setattr(query_mod.time, "sleep", lambda _s: None)
+
+    ctx = load_context(project)
+
+    assert len(reads) == PUBLICATION_ATTEMPTS
+    assert ctx.model["publication"] == "pub-1"
+    assert ctx.manifest["publication"] == "pub-2"
+    assert summary_payload(ctx)["run"] == "both"
 
 
 def test_missing_manifest_names_the_commands_that_write_one(tmp_path):
@@ -397,9 +473,6 @@ def test_instance_payload_answers_an_exact_leaf(project):
     assert payload["children"] == []
     assert payload["rollup"]["instances"] == 1
     assert payload["rollup"]["total_uw"] == pytest.approx(2.42)
-    # Area is joined from the synth half through the row's module.
-    assert payload["rollup"]["area_um2"] == pytest.approx(96.0)
-    assert payload["rollup"]["modules_matched"] == 1
 
 
 def test_instance_payload_rolls_up_a_subtree_prefix(project):
@@ -413,9 +486,6 @@ def test_instance_payload_rolls_up_a_subtree_prefix(project):
     ]
     assert payload["rollup"]["instances"] == 2
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
-    # `tiny` has no area, so only `sub` joins — reported, not hidden.
-    assert payload["rollup"]["area_um2"] == pytest.approx(96.0)
-    assert payload["rollup"]["modules_matched"] == 1
 
 
 def test_a_prefix_must_end_on_a_separator(project):
