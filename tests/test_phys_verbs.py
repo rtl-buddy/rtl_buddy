@@ -77,6 +77,13 @@ _INSTANCES = [
 _COLLIDING_INSTANCES = [{**row, "module": "sub"} for row in _INSTANCES]
 
 
+#: Both halves of a fixture run record the same netlist hash, because
+#: that is what a `rb synth` then `rb power` pair records and what the
+#: merge requires before either half inherits the other (see
+#: :func:`rtl_buddy.phys.model.may_inherit_other_half`).
+_FIXTURE_NETLIST_SHA256 = "0" * 64
+
+
 def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None):
     """One run's artefacts, written by the phase-1 producers."""
     phys_dir = root / "verif" / "blk" / "artefacts" / run
@@ -85,7 +92,11 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
     model = None
     if modules is not None:
         model = build_synth_model(
-            top="blk", modules=modules, area_um2=576.5, gate_count=160
+            top="blk",
+            modules=modules,
+            area_um2=576.5,
+            gate_count=160,
+            netlist_sha256=_FIXTURE_NETLIST_SHA256,
         )
     if instances is not None:
         power = build_power_model(
@@ -95,6 +106,7 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
             switching_w=0.3175e-6,
             leakage_w=0.08e-6,
             total_w=3.171e-6,
+            netlist_sha256=_FIXTURE_NETLIST_SHA256,
         )
         model = (
             merge_model(model, power, own_half="instances")
