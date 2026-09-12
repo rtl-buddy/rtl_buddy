@@ -157,7 +157,9 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
     try:
         fresh = build()
         rows = fresh[half_key]
-        model = model_mod.merge_model(model_mod.load_model_or_none(artefact_dir), fresh)
+        model = model_mod.merge_model(
+            model_mod.load_model_or_none(artefact_dir), fresh, own_half=half_key
+        )
         model_path = model_mod.write_model(model, artefact_dir)
         project_root = manifest_mod.project_root_for_dir(artefact_dir)
         half, values = block
@@ -171,8 +173,9 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
                 top=top,
                 model_path=model_path,
                 totals=model["totals"],
-                **{half: values},
+                **{half: _only_produced(values)},
             ),
+            own_block=half,
         )
         manifest_path = manifest_mod.write_manifest(manifest, artefact_dir)
     except Exception as e:  # noqa: BLE001 - a by-product never fails a run
@@ -182,6 +185,34 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
         "manifest": manifest_path,
         "rows": None if rows is None else len(rows),
         "error": None,
+    }
+
+
+def _only_produced(values: dict) -> dict:
+    """Null out the block's path values whose file is not on disk.
+
+    The flows name their artefacts before they know whether the tool
+    wrote them: Yosys' generated script tees ``stat -json`` to a path it
+    may skip entirely, and the power Tcl wraps each report in a ``catch``
+    that leaves the intended filename with nothing behind it. Naming a
+    path the manifest's own contract says exists — ``null`` means "not
+    produced", never absent — would send every consumer that joins on it
+    to a missing file.
+
+    Applied uniformly to every path key rather than only the ones known
+    to be optional, so a flow that grows a new artefact cannot reopen the
+    hole. Non-path values (``backend``, ``run``, ``netlist_source``) are
+    plain strings and pass through.
+    """
+    return {
+        key: (
+            None
+            if key in manifest_mod.PATH_KEYS
+            and value is not None
+            and not Path(value).exists()
+            else value
+        )
+        for key, value in values.items()
     }
 
 
