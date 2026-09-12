@@ -1052,7 +1052,47 @@
     });
   }
 
+  // Everything the pane derived from a payload, dropped.
+  //
+  // The empty state is a claim that there is nothing to show, and the
+  // pane used to make that claim while still holding the last model: a
+  // reload after the run was deleted — or a `/phy.json` that came back
+  // malformed — hid the tables but left `state.payload` standing, so
+  // the header went on printing the old top and its totals, the metric
+  // picker went on labelling halves from a run that is gone, and an
+  // inbound `phys_focus` was answered out of a model nobody could see
+  // (reporting a selection, and broadcasting one, off invisible rows).
+  //
+  // Clearing it makes the empty panel true, and it puts a focus back on
+  // the PENDING path the pane already has for the replay that beats the
+  // fetch: with no payload, `applyFocus` and `focusInstanceFromWire`
+  // hold their target for the next successful load instead of acting on
+  // the previous one.
+  //
+  // What is not payload state stays: the hub socket, the peer list and
+  // the takeover flags outlive any number of failed reloads, and so do
+  // the reader's own controls — the metric pick and the per-table sort,
+  // which the next successful load renders back.
+  function forgetModel() {
+    state.payload = null;
+    state.instanceCounts = null;
+    state.module = null;
+    state.instance = null;
+    resetInstanceWindow();
+    els.counts.textContent = '';
+    els.counts.title = '';
+    clear(els.metric);
+    clear(els.banner);
+    clear(els.totals);
+    clear(els.modules);
+    clear(els.modulesNote);
+    clear(els.instances);
+    clear(els.instancesNote);
+    clear(els.run);
+  }
+
   function showEmpty(message) {
+    forgetModel();
     els.empty.classList.add('show');
     els.dash.hidden = true;
     clear(els.emptyMsg);

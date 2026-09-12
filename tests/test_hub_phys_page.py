@@ -826,9 +826,56 @@ def test_the_module_instance_counts_are_counted_once_per_payload():
     # cache dies with the payload that made it.
     assert "state.instanceCounts = countByModule(rowsOf('instances'));" in js
     assert "state.instanceCounts = null;" in js
-    # And it is a fact about the payload, not about the view: nothing in
-    # the lens/filter/sort path touches it.
-    assert js.count("state.instanceCounts = null;") == 1
+    # And it is a fact about the payload, not about the view: the only
+    # two places that drop it are the two that change which payload
+    # there is — ingesting a new one, and forgetting one on a failed
+    # load. Nothing in the lens/filter/sort path touches it.
+    assert js.count("state.instanceCounts = null;") == 2
+
+
+def test_a_failed_load_forgets_the_model_it_was_showing():
+    """The empty panel is a claim that there is nothing to show, and the
+    pane used to make it while still holding the last model: the header
+    kept printing a run that is gone, and an inbound focus was answered
+    out of rows nobody could see."""
+
+    js = _page_js()
+    body = js.split("function forgetModel() {")[1].split("\n  }")[0]
+    for cleared in (
+        "state.payload = null;",
+        "state.instanceCounts = null;",
+        "state.module = null;",
+        "state.instance = null;",
+        "resetInstanceWindow();",
+        "els.counts.textContent = '';",
+        "clear(els.metric);",
+        "clear(els.banner);",
+        "clear(els.totals);",
+        "clear(els.modules);",
+        "clear(els.instances);",
+        "clear(els.run);",
+    ):
+        assert cleared in body, cleared
+    # The hub connection is not payload state, and neither is the
+    # reader's own metric pick — a failed reload must not drop the
+    # socket or undo a choice the next load can render back.
+    for kept in ("ws", "peers", "state.metric", "state.sort", "state.filter"):
+        assert kept not in body, kept
+    # A focus held for the load that has not landed is still held.
+    assert "state.pending" not in body
+
+    # One caller, and it forgets before it paints.
+    empty = js.split("function showEmpty(message) {")[1]
+    assert empty.strip().splitlines()[0].strip() == "forgetModel();"
+    assert js.count("forgetModel()") == 2
+    # Both failure paths reach it: the error status and the body that
+    # would not parse (or an ingest that threw on it).
+    assert "if (!res.ok) { showEmpty(res.body && res.body.error); return; }" in js
+    assert "showEmpty('could not read ' + PHY_URL" in js
+    # And with no payload, the replay paths pend instead of acting —
+    # the mechanism that already exists for the fetch they beat.
+    assert "state.pending = payload;" in js
+    assert "state.pendingSelection = ip;" in js
 
 
 def test_the_instances_column_is_a_dash_outside_the_liberty_namespace():
@@ -907,8 +954,9 @@ def test_the_window_resets_when_the_row_set_changes():
     js = _page_js()
     assert "var INSTANCE_WINDOW = 500;" in js
     assert "function resetInstanceWindow() { state.shown = INSTANCE_WINDOW; }" in js
-    # Every state change that alters WHICH rows are in the table.
-    assert js.count("resetInstanceWindow();") == 7
+    # Every state change that alters WHICH rows are in the table —
+    # including dropping the model altogether on a failed load.
+    assert js.count("resetInstanceWindow();") == 8
     # The heat maxima are over every matching row, not over the window, so
     # a tint does not rescale itself as the reader presses "show more".
     assert "maxes[column.key] = maxOf(rows, column.key);" in js
