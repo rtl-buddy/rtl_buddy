@@ -294,7 +294,18 @@ def test_origin_enum_matches_vendored_schema():
     # Guard the guard: a schema refactor that moved the enum would make
     # the comparison below pass against nothing.
     assert isinstance(enum, list) and enum, "schema has no origin enum"
-    assert [o.value for o in Origin] == enum
+    # Order-sensitive on purpose. The owner repo pins its own enum in
+    # order too (rtl-buddy-sch
+    # tests/test_hub_protocol_schema.py::test_origin_enum_is_the_full_vocabulary),
+    # so a reordering there is already a deliberate, reviewed act — and
+    # this enum is declared to mirror it. Making the comparison a set
+    # would leave the one place the two orders can silently diverge
+    # unchecked, for no gain: the fix is reordering the members.
+    assert [o.value for o in Origin] == enum, (
+        "Origin does not match the vendored schema's origin enum. Add the "
+        "missing member (or drop the extra one) and keep the declaration "
+        "order identical to the schema's."
+    )
 
 
 def test_vendored_schema_has_expected_types():
