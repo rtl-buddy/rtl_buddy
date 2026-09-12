@@ -1,5 +1,6 @@
 """Tests for the power-analysis config schema."""
 
+import hashlib
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -907,6 +908,12 @@ def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
     assert model["instances"][1]["total_uw"] == pytest.approx(2.42)
     # Watts on the way in, microwatts in the document.
     assert model["totals"]["total_uw"] == pytest.approx(28.3)
+    # Bound to the netlist this run read, which is what a later `rb synth`
+    # into the same directory tests its own output against (#560 review).
+    assert (
+        model["provenance"]["power"]["netlist_sha256"]
+        == hashlib.sha256((tmp_path / "synth_netlist.v").read_bytes()).hexdigest()
+    )
 
     manifest = load_manifest(Path(backend.artefact_dir) / "phys-manifest.json")
     assert manifest["command"] == "power"

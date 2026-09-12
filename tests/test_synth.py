@@ -1,5 +1,6 @@
 """Tests for synthesis flow: config, Yosys backend, and filelist strip fix."""
 
+import hashlib
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -5022,7 +5023,9 @@ def test_openroad_stage1_script_emits_the_stat_json_dump(tmp_path):
     assert f"tee -q -o {or_synth._stats_path()} stat -json -liberty {lib}" in script
 
 
-def _run_yosys_with(tmp_path, monkeypatch, *, stats_text=None, log_text=""):
+def _run_yosys_with(
+    tmp_path, monkeypatch, *, stats_text=None, log_text="", netlist_text=None
+):
     """Run a YosysSynth whose fake Yosys writes `stats_text` and a log."""
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
@@ -5045,6 +5048,8 @@ def _run_yosys_with(tmp_path, monkeypatch, *, stats_text=None, log_text=""):
         stdout.write(log_text)
         if stats_text is not None:
             Path(ys._stats_path()).write_text(stats_text)
+        if netlist_text is not None:
+            Path(ys._netlist_path()).write_text(netlist_text)
         return ManagedProcessResult(returncode=0)
 
     monkeypatch.setattr(
@@ -5080,6 +5085,25 @@ def test_a_passing_synth_publishes_the_phys_model(tmp_path, monkeypatch):
     assert manifest["synth"]["backend"] == "yosys"
     assert manifest["power"]["backend"] is None
     assert manifest["synth"]["stats"].endswith("synth_stat.json")
+
+
+def test_a_passing_synth_binds_the_model_to_the_netlist_it_wrote(tmp_path, monkeypatch):
+    """The hash a power half already in this directory has to have been
+    measured on before a re-synthesis will carry it forward (#558, #560
+    review)."""
+    from rtl_buddy.phys.model import load_model
+
+    netlist = "module my_module(); endmodule\n"
+    _ys, result = _run_yosys_with(
+        tmp_path, monkeypatch, stats_text=_STAT_JSON, netlist_text=netlist
+    )
+
+    model = load_model(result.results["phys_model"])
+    assert (
+        model["provenance"]["synth"]["netlist_sha256"]
+        == hashlib.sha256(netlist.encode()).hexdigest()
+    )
+    assert model["provenance"]["power"]["netlist_sha256"] is None
 
 
 def test_a_synth_without_a_readable_stat_dump_still_passes(tmp_path, monkeypatch):
