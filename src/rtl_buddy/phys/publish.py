@@ -25,6 +25,20 @@ stable keys make: this run did not produce it. The totals the flow
 scraped from its log are still recorded, so a model always says
 something even when the breakdown is gone.
 
+**Only a whole publication is merged onto.** Both merges read what is
+already in the directory, and what is already there is a *pair* — a
+model and the manifest that names it, written one after the other under
+one ``publication`` token. A previous publish killed between those two
+writes leaves the two documents disagreeing about which write they came
+from, and folding each onto its own fresh half independently would
+re-stamp both with this write's token and hand every later reader a
+model and a manifest that say they were written together when they were
+not. So :func:`_existing_pair` hands the merges ``(None, None)`` unless
+both documents are there, both read, and both carry the same token: the
+directory holds no publication to inherit from, this run writes its own
+half under a fresh token, and the next run of the other flow fills the
+other half back in.
+
 **The failing rerun.** Those six steps run only when the flow gets far
 enough to pass, so a rerun that fails earlier would leave the previous
 run's half published over artefacts its own stale-clear has just
@@ -73,6 +87,14 @@ def invalidate_half(artefact_dir, own_half: str) -> dict:
     the merges: whatever design the half described, the clear that
     precedes this deleted the fixed-path artefacts it was read from.
 
+    Both documents are rewritten under one fresh ``publication`` token,
+    as a publish does — but only when the two that are here *are* a
+    publication. An unpaired pair (see :func:`_existing_pair`) is still
+    blanked, because the artefacts behind the half really have gone,
+    and each document keeps the token it came with: a withdrawal must
+    not be what makes two documents that were never written together
+    start claiming they were.
+
     Never raises, for the reason the whole module gives — a by-product
     does not get to fail a run; the caller logs ``error`` at DEBUG.
 
@@ -87,17 +109,22 @@ def invalidate_half(artefact_dir, own_half: str) -> dict:
             return {"model": None, "manifest": None, "error": None}
         # One token across both, as a publish does: what is being written
         # here is a pair, and a reader must be able to tell it caught the
-        # two mid-rewrite.
-        publication = model_mod.new_publication()
+        # two mid-rewrite. `None` when these two were not a pair to begin
+        # with — then each keeps its own token and stays unpaired.
+        publication = (
+            model_mod.new_publication() if _is_publication(model, manifest) else None
+        )
         model_path = None
         manifest_path = None
         if model is not None:
             blanked = model_mod.blank_half(model, own_half)
-            blanked["publication"] = publication
+            if publication is not None:
+                blanked["publication"] = publication
             model_path = model_mod.write_model(blanked, artefact_dir)
         if manifest is not None:
             blanked = manifest_mod.blank_block(manifest, _HALF_BLOCK[own_half])
-            blanked["publication"] = publication
+            if publication is not None:
+                blanked["publication"] = publication
             manifest_path = manifest_mod.write_manifest(blanked, artefact_dir)
     except Exception as e:  # noqa: BLE001 - a by-product never fails a run
         return {"model": None, "manifest": None, "error": str(e)}
@@ -234,21 +261,22 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
     One ``publication`` token is minted per call and stamped into both
     documents, because they are written one after the other and a reader
     can arrive in between; see
-    :func:`rtl_buddy.phys.model.new_publication`.
+    :func:`rtl_buddy.phys.model.new_publication`. What is merged onto is
+    the pair the last publish left, or nothing at all —
+    :func:`_existing_pair`.
     """
     try:
         publication = model_mod.new_publication()
         fresh = build()
         rows = fresh[half_key]
-        model = model_mod.merge_model(
-            model_mod.load_model_or_none(artefact_dir), fresh, own_half=half_key
-        )
+        existing_model, existing_manifest = _existing_pair(artefact_dir)
+        model = model_mod.merge_model(existing_model, fresh, own_half=half_key)
         model["publication"] = publication
         model_path = model_mod.write_model(model, artefact_dir)
         project_root = manifest_mod.project_root_for_dir(artefact_dir)
         half, values = block
         manifest = manifest_mod.merge_manifest(
-            manifest_mod.load_manifest_or_none(artefact_dir),
+            existing_manifest,
             manifest_mod.build_manifest(
                 project_root=project_root,
                 phys_dir=artefact_dir,
@@ -271,6 +299,48 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
         "rows": None if rows is None else len(rows),
         "error": None,
     }
+
+
+def _existing_pair(artefact_dir) -> tuple[dict | None, dict | None]:
+    """The publication already in ``artefact_dir``, or ``(None, None)``.
+
+    The merges' read side, and it reads the two documents as one thing.
+    Either both are inherited from or neither is: a model paired with a
+    manifest from a different write is not a smaller publication to
+    merge half of, it is a directory whose last publish did not finish,
+    and inheriting the half that happens to be readable would put this
+    run's fresh token on the inconsistency and make it indistinguishable
+    from a pair that was written together.
+
+    Nothing-to-merge is the normal case anyway — the first run into a
+    directory finds nothing — so an unfinished publish takes the path
+    that is already the common one, and the run after it republishes a
+    consistent pair. Never raises: each half is loaded through the
+    ``_or_none`` reader that already treats an absent or truncated
+    document as nothing to merge.
+    """
+    model = model_mod.load_model_or_none(artefact_dir)
+    manifest = manifest_mod.load_manifest_or_none(artefact_dir)
+    if not _is_publication(model, manifest):
+        return None, None
+    return model, manifest
+
+
+def _is_publication(model, manifest) -> bool:
+    """Were these two documents written by the same publish?
+
+    Both must be here and carry the same non-null ``publication`` token.
+    A missing token is not a match with another missing token: it is a
+    document nothing stamped, so there is no evidence the two belong
+    together, and this side of the contract is a *write* — it decides
+    what gets republished under a fresh token, where
+    :func:`rtl_buddy.phys.query.load_context` only decides whether to
+    read again and can afford to take the freshest read of each.
+    """
+    if not isinstance(model, dict) or not isinstance(manifest, dict):
+        return False
+    token = model.get("publication")
+    return token is not None and token == manifest.get("publication")
 
 
 def _only_produced(values: dict) -> dict:

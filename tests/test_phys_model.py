@@ -832,36 +832,53 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
 # ---------------------------------------------------------------------------
 
 
-def _publish_both_halves(artefacts):
-    """One artefact directory holding a complete, freshly published model."""
+def _project_with_both_inputs(tmp_path):
+    """A project whose artefact directory holds both flows' raw output."""
+    root, artefacts = _project(tmp_path)
     (artefacts / "synth_stat.json").write_text(STAT_JSON)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
     (artefacts / "power_instances.cells").write_text(INSTANCE_CELLS)
-    publish_synth(
-        artefact_dir=artefacts,
-        top="demo_top",
-        backend="yosys",
-        run="demo",
-        stats_path=artefacts / "synth_stat.json",
-        area_um2=5.586,
-        gate_count=2,
+    return root, artefacts
+
+
+def _publish_synth_half(artefacts, **overrides):
+    """A synthesis publication into ``artefacts``, rows and totals filled."""
+    return publish_synth(
+        **{
+            "artefact_dir": artefacts,
+            "top": "demo_top",
+            "backend": "yosys",
+            "run": "demo",
+            "stats_path": artefacts / "synth_stat.json",
+            "area_um2": 5.586,
+            "gate_count": 2,
+            **overrides,
+        }
     )
+
+
+def _publish_power_half(artefacts, **overrides):
+    """A power publication into ``artefacts``, rows and totals filled."""
     return publish_power(
-        artefact_dir=artefacts,
-        top="demo_top",
-        backend="openroad",
-        run="demo",
-        instances_path=artefacts / "power_instances.rpt",
-        cells_path=artefacts / "power_instances.cells",
-        total_w=2.83e-05,
-        leakage_w=1.0e-06,
+        **{
+            "artefact_dir": artefacts,
+            "top": "demo_top",
+            "backend": "openroad",
+            "run": "demo",
+            "instances_path": artefacts / "power_instances.rpt",
+            "cells_path": artefacts / "power_instances.cells",
+            "total_w": 2.83e-05,
+            "leakage_w": 1.0e-06,
+            **overrides,
+        }
     )
 
 
 def _publish_both_halves_dir(tmp_path):
     """A project whose artefact directory already holds a complete model."""
-    root, artefacts = _project(tmp_path)
-    _publish_both_halves(artefacts)
+    root, artefacts = _project_with_both_inputs(tmp_path)
+    _publish_synth_half(artefacts)
+    _publish_power_half(artefacts)
     return root, artefacts
 
 
@@ -1020,6 +1037,107 @@ def test_an_invalidation_republishes_the_pair_under_one_token(tmp_path):
     model = load_model(result["model"])
     manifest = load_manifest(result["manifest"])
     assert model["publication"] == manifest["publication"] != before
+
+
+def test_a_publish_merges_onto_a_pair_that_was_written_together(tmp_path):
+    """The control for the two tests below: an intact publication is merged
+    onto exactly as before, both halves and both blocks."""
+    _root, artefacts = _project_with_both_inputs(tmp_path)
+    _publish_synth_half(artefacts)
+
+    published = _publish_power_half(artefacts)
+
+    model = load_model(published["model"])
+    manifest = load_manifest(published["manifest"])
+    assert len(model["modules"]) == 2 and len(model["instances"]) == 3
+    assert model["totals"]["area_um2"] == 5.586
+    assert manifest["synth"]["backend"] == "yosys"
+
+
+def test_a_publish_inherits_nothing_from_an_unpaired_model_and_manifest(tmp_path):
+    """The interrupted publish (#560 review, Codex P1).
+
+    A publish writes the model and then the manifest, so a kill between the
+    two leaves the pair disagreeing about which write it came from. Merging
+    each document onto its own fresh half would re-stamp both with this
+    write's token and hand every later reader an inconsistency that looks
+    exactly like a pair written together. Neither half is inherited — the
+    directory holds no publication to merge onto."""
+    _root, artefacts = _project_with_both_inputs(tmp_path)
+    _publish_synth_half(artefacts)
+    # The manifest is the second write, so it is the one left behind.
+    stale = load_manifest(artefacts / MANIFEST_FILENAME)
+    stale["publication"] = "a token from a write that finished"
+    write_manifest(stale, artefacts)
+
+    published = _publish_power_half(artefacts)
+
+    model = load_model(published["model"])
+    manifest = load_manifest(published["manifest"])
+    assert model["modules"] is None
+    assert model["totals"]["area_um2"] is None and model["totals"]["cell_count"] is None
+    assert manifest["synth"]["backend"] is None
+    assert all(manifest["synth"][key] is None for key in SYNTH_KEYS)
+    # This run's own half is published in full, under a token the pair shares.
+    assert len(model["instances"]) == 3
+    assert model["publication"] == manifest["publication"]
+    assert model["publication"] not in (None, "a token from a write that finished")
+
+
+def test_a_publish_inherits_nothing_when_only_one_document_is_there(tmp_path):
+    """Same rule, one document short: a model with no manifest beside it (the
+    kill landed before the second write ever ran) is not half a publication
+    to inherit from either."""
+    _root, artefacts = _project_with_both_inputs(tmp_path)
+    _publish_synth_half(artefacts)
+    (artefacts / MANIFEST_FILENAME).unlink()
+
+    published = _publish_power_half(artefacts)
+
+    model = load_model(published["model"])
+    assert model["modules"] is None
+    assert model["totals"]["area_um2"] is None
+    assert len(model["instances"]) == 3
+
+
+def test_a_publish_inherits_nothing_from_a_model_that_carries_no_token(tmp_path):
+    """A missing token is not a match with another missing token: nothing
+    stamped either document, so there is no evidence they were written
+    together and no basis for putting this write's token on them."""
+    _root, artefacts = _project_with_both_inputs(tmp_path)
+    _publish_synth_half(artefacts)
+    for path, load, write in (
+        (artefacts / "phys-model.json", load_model, write_model),
+        (artefacts / MANIFEST_FILENAME, load_manifest, write_manifest),
+    ):
+        document = load(path)
+        document["publication"] = None
+        write(document, artefacts)
+
+    published = _publish_power_half(artefacts)
+
+    assert load_model(published["model"])["modules"] is None
+
+
+def test_an_invalidation_leaves_an_unpaired_pair_unpaired(tmp_path):
+    """Withdrawal still happens — the artefacts behind the half really have
+    gone — but it is not a publication of the two documents, so it must not
+    be what makes a mismatched pair start claiming it was written together."""
+    _root, artefacts = _project_with_both_inputs(tmp_path)
+    _publish_synth_half(artefacts)
+    _publish_power_half(artefacts)
+    stale = load_manifest(artefacts / MANIFEST_FILENAME)
+    stale["publication"] = "a token from a write that finished"
+    write_manifest(stale, artefacts)
+
+    result = invalidate_half(artefacts, "instances")
+
+    model = load_model(result["model"])
+    manifest = load_manifest(result["manifest"])
+    assert model["instances"] is None
+    assert all(manifest["power"][key] is None for key in POWER_KEYS)
+    assert model["publication"] != manifest["publication"]
+    assert manifest["publication"] == "a token from a write that finished"
 
 
 def test_a_merge_keeps_the_new_documents_token(tmp_path):

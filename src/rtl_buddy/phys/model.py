@@ -59,7 +59,11 @@ is gone — :func:`rtl_buddy.phys.publish.invalidate_half` nulls it
 one after the other, so a reader can pair a fresh model with a stale
 manifest. Both carry the same ``publication`` token
 (:func:`new_publication`), which is how a reader tells a pair it caught
-mid-rewrite from one written together.
+mid-rewrite from one written together — and, on the *writing* side, how
+the next publish tells a directory it may merge onto from one whose last
+publish did not finish: an unpaired model and manifest are inherited
+from neither half, and the run rewrites its own half under a fresh token
+(:func:`rtl_buddy.phys.publish._existing_pair`).
 
 The model is written to ``<artefact dir>/phys-model.json`` and pointed
 at by ``<artefact dir>/phys-manifest.json``.
@@ -136,7 +140,14 @@ def new_publication() -> str:
     mid-rewrite and read again.
 
     Opaque and never compared for order: it answers "were these two
-    written together", not "which is newer".
+    written together", not "which is newer". Both readers ask exactly
+    that and act on the answer differently:
+    :func:`rtl_buddy.phys.query.load_context` re-reads and, still
+    mismatched, answers from the freshest read of each, because it holds
+    no lock and refusing would be worse; the publish path
+    (:func:`rtl_buddy.phys.publish._existing_pair`) merges onto neither
+    document, because it is about to write both and would otherwise
+    stamp its own token on a pair that was never written together.
     """
     return uuid.uuid4().hex
 
