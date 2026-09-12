@@ -47,7 +47,7 @@ It does not attribute power to an RTL module on a hierarchical design: no leaf r
 
 The model records leaf values only, because a subtree sum depends on the hierarchy the consumer projects onto. `rb phys instance <path>` is that consumer: it sums the leaves under the path at query time and leaves the document unchanged.
 
-The rollup adds the four power columns directly. Area is joined in through each leaf's module, so it covers only the leaves whose module has a synthesis row; the reported `modules_matched` count says how many that was. On a mapped hierarchical design that count is routinely `0` for the namespace reason above — read `area_um2` against it, not on its own.
+The rollup adds the four power columns directly, and reports nothing else. It carries no area: the model has no per-cell area to sum, and the only substitute available — joining each leaf's module to the synthesis half — would add the whole module's area once per leaf, on a name that may belong to the other namespace entirely. Attributing area to an instance or a subtree arrives with the hierarchy join, Phase 5 of the physical-metrics epic ([rtl-buddy/rtl_buddy#558](https://github.com/rtl-buddy/rtl_buddy/issues/558)).
 
 ## Machine payloads
 

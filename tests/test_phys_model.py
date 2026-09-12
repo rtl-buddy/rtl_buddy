@@ -808,10 +808,9 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
     assert "demo_synth" in synth
     assert "artefacts/demo_synth/synth_stat.json" in synth
     assert "per-module breakdown" in synth
-    # The message points at the artefact, not at a read verb: `rb phys`
-    # does not exist on this branch.
-    assert "phys-model.json" in synth
-    assert "rb phys" not in synth
+    # The verbs exist as of this branch, so the message names the one that
+    # would have reported the missing rows.
+    assert "`rb phys module`" in synth
 
     power = _human_message(
         "power.phys_model_incomplete",
@@ -825,8 +824,7 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
     assert "artefacts/demo_power/power_instances.rpt" in power
     assert "per-instance breakdown" in power
     assert "disk full" in power
-    assert "phys-model.json" in power
-    assert "rb phys" not in power
+    assert "`rb phys instance`" in power
 
 
 # ---------------------------------------------------------------------------

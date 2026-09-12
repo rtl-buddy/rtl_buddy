@@ -7075,13 +7075,7 @@ class RtlBuddy:
                 stream="stdout",
                 markup=False,
             )
-        emit_console_text(
-            f"subtree area: {self._phys_num(rollup['area_um2'])} um2 "
-            f"({rollup['modules_matched']}/{rollup['instances']} joined to a "
-            "module row)",
-            stream="stdout",
-            markup=False,
-        )
+        self._phys_missing_half_notes(payload)
         self._phys_artefact_lines(payload["artefacts"])
         raise typer.Exit(0)
 
