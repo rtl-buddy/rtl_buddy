@@ -35,6 +35,7 @@ from rtl_buddy.phys.model import (
     merge_model,
     write_model,
 )
+from rtl_buddy.phys.query import INSTANCE_JOIN_LIBERTY_ONLY
 from rtl_buddy.rtl_buddy import RtlBuddy
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -83,7 +84,11 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
             leakage_w=0.08e-6,
             total_w=3.171e-6,
         )
-        model = merge_model(model, power) if model is not None else power
+        model = (
+            merge_model(model, power, own_half="instances")
+            if model is not None
+            else power
+        )
     model_path = write_model(model, phys_dir)
 
     manifest_path = write_manifest(
@@ -293,6 +298,58 @@ def test_phys_module_renders_its_instances(phys_project):
     # The table ellipsizes a path too long for the column, as the coverage
     # tables do; the prefix is what a reader matches on.
     assert "u_sub/u_leaf" in result.output
+
+
+def test_phys_module_prints_the_join_note_instead_of_a_bare_empty_table(phys_project):
+    """`blk` is an RTL module; every instance row names a Liberty cell, so
+    the join misses and the user must be told that rather than shown an
+    empty instances section."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "module", "blk"])
+
+    assert result.exit_code == 0, result.output
+    assert "liberty-cell names only" in result.output
+    assert "hierarchy join" in result.output
+
+
+def test_phys_module_carries_the_join_note_in_its_machine_payload(phys_project):
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "module", "blk"])
+
+    payload = _machine(result)["payload"]
+    assert payload["instance_count"] == 0
+    assert payload["instance_join"] == INSTANCE_JOIN_LIBERTY_ONLY
+    # A cell name the join does reach carries no note at all.
+    runner, rb = _runner()
+    reached = _machine(runner.invoke(rb.app, ["--machine", "phys", "module", "sub"]))
+    assert reached["payload"]["instance_join"] is None
+
+
+def test_phys_instance_accepts_the_dotted_spelling_of_a_stored_path(phys_project):
+    """OpenSTA stores `/`; the hub pane and the RTL side spell the same
+    path with `.`, and pasting one into the other must still resolve."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "instance", "u_sub._64_"])
+
+    payload = _machine(result)["payload"]
+    assert payload["match"] == "exact"
+    assert payload["instance"]["instance_path"] == "u_sub/_64_"
+
+
+def test_a_negative_limit_is_rejected_rather_than_silently_meaning_all(phys_project):
+    """`0` means every row, so a negative value is a typo, not a request —
+    and the help says `min=0`, which the parser now agrees with."""
+    for verb, extra in (
+        ("summary", []),
+        ("module", ["sub"]),
+        ("instance", ["u_sub"]),
+    ):
+        runner, rb = _runner()
+        result = runner.invoke(rb.app, ["phys", verb, *extra, "--limit", "-1"])
+        assert result.exit_code == 2, result.output
 
 
 def test_phys_module_unknown_name_exits_two_with_candidates(phys_project):
