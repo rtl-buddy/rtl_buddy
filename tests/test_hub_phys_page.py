@@ -799,7 +799,9 @@ def test_the_module_instance_counts_are_counted_once_per_payload():
           { module: 'DFF_X1' },
           { module: 'NAND2_X1' },
           { module: 'DFF_X1' },
-          { module: 'constructor' }
+          { module: 'constructor' },
+          { module: null },
+          {}
         ]);
         console.log(JSON.stringify([
           counts['DFF_X1'],
@@ -808,22 +810,50 @@ def test_the_module_instance_counts_are_counted_once_per_payload():
           counts['toString'],
           counts['absent'] || 0
         ]));
+        // The key set IS the liberty namespace, so a row with no module
+        // column must not put a name in it.
+        console.log(JSON.stringify(Object.keys(counts).sort()));
         console.log(JSON.stringify(countByModule(null)));
         """
     )
-    counts, empty = out.strip().splitlines()
+    counts, keys, empty = out.strip().splitlines()
     assert json.loads(counts) == [2, 1, 1, None, 0]
+    assert json.loads(keys) == ["DFF_X1", "NAND2_X1", "constructor"]
     assert json.loads(empty) == {}
 
     js = _page_js()
     # Built once for the payload and read from the cache per row; the
     # cache dies with the payload that made it.
     assert "state.instanceCounts = countByModule(rowsOf('instances'));" in js
-    assert "return String(instanceCounts()[String(module)] || 0);" in js
     assert "state.instanceCounts = null;" in js
     # And it is a fact about the payload, not about the view: nothing in
     # the lens/filter/sort path touches it.
     assert js.count("state.instanceCounts = null;") == 1
+
+
+def test_the_instances_column_is_a_dash_outside_the_liberty_namespace():
+    """`0` in the instances column is a claim about the design, and on a
+    mapped hierarchical run it was a false one for nearly every row: the
+    leaves carry the Liberty cell they instantiate, so an RTL module name
+    is not in that column at all. Unmeasurable-by-this-join reads as the
+    pane's null dash; a name the leaves DO carry keeps its number."""
+
+    js = _page_js()
+    counted = js.split("function instanceCount(module) {")[1].split("\n  }")[0]
+    # No power half at all is already a dash, and stays one.
+    assert "if (!halfPresent('instances')) { return '\u2014'; }" in counted
+    # Membership, not a falsy count: `namespacesOf`'s liberty test asked
+    # of the map whose key set is that namespace.
+    assert "Object.prototype.hasOwnProperty.call(counts, key)" in counted
+    assert "return '\u2014';" in counted.split("hasOwnProperty")[1]
+    # A name the leaves carry — a Liberty cell, or a collision — is
+    # measured, and prints the count it measured.
+    assert "return String(counts[key]);" in counted
+    assert "|| 0" not in counted
+    # The header says what the dash means, so the column is readable
+    # without the lens note.
+    assert "instancesHead.title" in js
+    assert "Em dash where the join cannot measure it" in js
 
 
 def test_the_instance_window_is_bounded_and_moves_to_hold_the_selection():

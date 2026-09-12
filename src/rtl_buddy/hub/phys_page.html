@@ -571,9 +571,15 @@
   //
   // A null-prototype map, so a module named `constructor` or
   // `__proto__` counts as itself rather than inheriting an answer.
+  //
+  // A row with no `module` at all is counted under no name — the same
+  // rule `namespacesOf` applies, so the map's KEY SET is exactly the
+  // liberty namespace and membership in it can be asked of the map
+  // rather than re-scanned per module row.
   function countByModule(rows) {
     var counts = Object.create(null);
     (rows || []).forEach(function (row) {
+      if (row.module == null) { return; }
       var key = String(row.module);
       counts[key] = (counts[key] || 0) + 1;
     });
@@ -1410,7 +1416,12 @@
       'Cells the synthesis mapped for this module.'));
     htr.appendChild(headerCell('area µm²', 'area_um2', sort, 'modules',
       'Null for an unmapped run: Yosys reports no area without a Liberty.'));
-    htr.appendChild(elem('th', null, 'instances'));
+    var instancesHead = elem('th', null, 'instances');
+    instancesHead.title = 'Leaf instances the power half recorded under ' +
+      'this name. Em dash where the join cannot measure it: with no power ' +
+      'half, or for an RTL module name the leaves — which carry Liberty ' +
+      'cell names — never spell.';
+    htr.appendChild(instancesHead);
     thead.appendChild(htr); table.appendChild(thead);
 
     var tbody = document.createElement('tbody');
@@ -1462,9 +1473,25 @@
     return state.instanceCounts;
   }
 
+  // `0` is a claim, and on a mapped hierarchical design it was a false
+  // one for nearly every row: the leaves carry the LIBERTY cell they
+  // instantiate, so an ordinary RTL module name is not in that column
+  // at all and the join cannot see it — which is not the same fact as
+  // "this module has no instances", and the column said the second.
+  //
+  // So the count is printed only for a name the leaves actually carry —
+  // `namespacesOf`'s liberty test, asked of the count map, whose key set
+  // is that namespace — and every other name reads `—`: unmeasurable by
+  // this join, the pane's spelling for a number it does not have. A
+  // Liberty cell type is measured and keeps its number, and so does a
+  // name in BOTH namespaces (a design's `DFF_X1`), where the count is
+  // that cell type's and the lens carries `collisionNote` to say so.
   function instanceCount(module) {
     if (!halfPresent('instances')) { return '—'; }
-    return String(instanceCounts()[String(module)] || 0);
+    var counts = instanceCounts();
+    var key = String(module);
+    if (!Object.prototype.hasOwnProperty.call(counts, key)) { return '—'; }
+    return String(counts[key]);
   }
 
   function renderInstances() {
