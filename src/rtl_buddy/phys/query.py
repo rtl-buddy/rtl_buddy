@@ -39,11 +39,27 @@ attribute power to an RTL module on a hierarchical design: no leaf row
 carries ``u_cpu``'s name, so the join simply misses.
 
 Rather than invent an instance→RTL-module mapping here, the surfaces say
-so: ``module_payload`` sets :data:`INSTANCE_JOIN_LIBERTY_ONLY` on
-``instance_join`` when it can see that shape. Nothing here attributes
+so: every module payload carries the ``namespaces`` the name it resolved
+was found in, and ``module_payload`` sets :data:`INSTANCE_JOIN_LIBERTY_ONLY`
+on ``instance_join`` when it can see that shape. One name can be in
+*both* — a design with an RTL module called ``DFF_X1``, or a cell named
+after a block — and then the two halves are answering about two
+different things under one word; that payload says so
+(:data:`INSTANCE_JOIN_NAME_COLLISION`) rather than presenting the
+module's cells and area beside the cell type's power as one row. Nothing here attributes
 *area* to an instance or a subtree at all — see :func:`subtree_rollup`.
 Real RTL-module↔instance attribution needs the hierarchy join, which is
 tracked as its own phase on the epic (rtl-buddy/rtl_buddy#558).
+
+**A document that is not an object is refused where it is read.** Both
+files are JSON, and JSON's root may be a list, a string, a number, or
+``null`` — an empty artefact directory rebuilt by hand, a truncated
+write, a path pointed at the wrong file. Every payload here indexes into
+the root by key, so an unchecked non-object would raise ``AttributeError``
+out of the query layer, past :class:`PhysQueryError` and past the
+machine-mode envelope that turns a refusal into a result an agent can
+read. :func:`_require_mapping` makes it the same kind of refusal as an
+unreadable file, naming the path and what was found there.
 
 **A version this build does not know is an error, not a guess.** Both
 documents carry a ``schema_version`` that their producers bump when the
@@ -136,6 +152,31 @@ _CANONICAL_SEPARATOR = "/"
 INSTANCE_JOIN_LIBERTY_ONLY = (
     "liberty-cell names only: no instance row carries this RTL module, so "
     "power cannot be attributed to it until the hierarchy join lands"
+)
+
+#: The namespace of the synthesis half's ``module`` column: an RTL module
+#: name, as Yosys' ``stat`` saw it after elaboration.
+NAMESPACE_RTL = "rtl"
+
+#: The namespace of the power half's ``module`` column: the Liberty cell
+#: a leaf instance is an instance of.
+NAMESPACE_LIBERTY = "liberty"
+
+#: Both namespaces, in the order a payload lists them.
+NAMESPACES = (NAMESPACE_RTL, NAMESPACE_LIBERTY)
+
+#: What ``module_payload`` puts on ``instance_join`` when the name it
+#: resolved exists in *both* namespaces. The two halves are then about
+#: two different things — an RTL module's cells and area, an unrelated
+#: cell type's power — and combining them into one answer silently is
+#: precisely the failure the namespace split exists to prevent. Said
+#: rather than guessed at, because which of the two the user meant is
+#: not knowable from the name they typed, and both halves are real.
+INSTANCE_JOIN_NAME_COLLISION = (
+    "name collision: this name is an RTL module in the synthesis half *and* "
+    "a liberty cell in the power half, so the cells and area below are the "
+    "module's while the power is that cell type's - they are two "
+    "measurements of two things, not one module's totals"
 )
 
 
@@ -277,6 +318,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         document = manifest_mod.load_manifest(manifest_path)
     except (OSError, ValueError) as exc:
         raise PhysQueryError(f"phys: cannot read {manifest_path}: {exc}")
+    _require_mapping(document, manifest_path, "manifest")
     _require_schema(
         document, manifest_mod.MANIFEST_SCHEMA_VERSION, manifest_path, "manifest"
     )
@@ -292,6 +334,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         model = load_model(model_path)
     except (OSError, ValueError) as exc:
         raise PhysQueryError(f"phys: cannot read {model_path}: {exc}")
+    _require_mapping(model, model_path, "model")
     _require_schema(model, MODEL_SCHEMA_VERSION, model_path, "model")
 
     return PhysContext(
@@ -300,6 +343,40 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         manifest=document,
         model=model,
         model_path=model_path,
+    )
+
+
+#: JSON's own names for the roots a document can have instead of an
+#: object, so the refusal below says what the file is in the vocabulary
+#: of the format it is written in rather than in Python's.
+_JSON_ROOTS = {
+    type(None): "null",
+    bool: "a boolean",
+    int: "a number",
+    float: "a number",
+    str: "a string",
+    list: "an array",
+}
+
+
+def _require_mapping(document, path, what: str) -> None:
+    """Refuse a document whose JSON root is not an object.
+
+    Read before the ``schema_version`` check, because that check is
+    itself a key lookup: everything downstream — the version, the
+    blocks, the halves — assumes a mapping, and the first thing to touch
+    a list or a ``null`` would raise ``AttributeError`` rather than
+    :class:`PhysQueryError`. That distinction is the whole point: a
+    ``PhysQueryError`` reaches ``--machine`` as an error envelope with a
+    message in it, and an ``AttributeError`` reaches it as a traceback
+    and no envelope at all.
+    """
+    if isinstance(document, dict):
+        return
+    raise PhysQueryError(
+        f"phys: {path} is not a {what} document: its JSON root is "
+        f"{_JSON_ROOTS.get(type(document), 'not an object')}, and a {what} "
+        "is an object; re-run `rb synth` or `rb power` to rewrite it"
     )
 
 
@@ -507,6 +584,31 @@ def summary_payload(ctx: PhysContext, *, limit: int = DEFAULT_RANK_LIMIT) -> dic
     return payload
 
 
+def _names_in(rows) -> set[str]:
+    return {str(row["module"]) for row in rows if row.get("module")}
+
+
+def namespaces_of(model: dict, name: str) -> list[str]:
+    """Which halves' ``module`` column spells ``name``.
+
+    ``["rtl"]`` for a synthesis row, ``["liberty"]`` for the cell a leaf
+    is an instance of, and *both* when one word is in both columns —
+    which is a real shape, not a corner case: nothing stops a design
+    from having a module called ``DFF_X1``, and a cell library from
+    naming a cell after a block. The two halves then measure two
+    different things under one name, and a payload that reported only
+    the union of their rows would read as one.
+
+    Ordered by :data:`NAMESPACES` rather than by which half was looked at
+    first, so a consumer can compare the field for equality.
+    """
+    found = {
+        NAMESPACE_RTL: _names_in(_module_rows(model)),
+        NAMESPACE_LIBERTY: _names_in(_instance_rows(model)),
+    }
+    return [space for space in NAMESPACES if name in found[space]]
+
+
 def module_names(model: dict) -> list[str]:
     """Every module name the model can be asked about.
 
@@ -563,6 +665,10 @@ def module_payload(ctx: PhysContext, module: str) -> dict:
     the payload reports what it has and names the command that would
     supply the rest.
 
+    ``namespaces`` says which halves' ``module`` column the resolved name
+    was found in (:func:`namespaces_of`), so a reader knows what kind of
+    name it is holding before it reads either half.
+
     ``instance_join`` is the honest signal about the join itself. It is
     ``null`` when there is nothing to qualify, and
     :data:`INSTANCE_JOIN_LIBERTY_ONLY` when the name resolved out of the
@@ -572,6 +678,15 @@ def module_payload(ctx: PhysContext, module: str) -> dict:
     match it. Without it a consumer cannot tell "this module has no
     instances" from "the join cannot see this module's instances", and
     the two call for opposite reactions.
+
+    When ``namespaces`` holds both, it is :data:`INSTANCE_JOIN_NAME_COLLISION`
+    instead: the row and the instances are then measurements of two
+    unrelated things — an RTL module and a Liberty cell that happen to
+    share a name — and the payload puts them side by side only because
+    the user named one word. Nothing here picks a winner (both halves
+    really do have rows under that name), and nothing sums across them;
+    the note is what stops the pairing from being read as a module's
+    own power.
     """
     resolved = resolve_module_name(ctx.model, module, where=ctx.model_path)
     model = ctx.model
@@ -588,15 +703,17 @@ def module_payload(ctx: PhysContext, module: str) -> dict:
             ),
         )
 
+    namespaces = namespaces_of(model, resolved)
     payload = _run_block(ctx)
     payload.update(
         {
             "module": resolved,
+            "namespaces": namespaces,
             "row": row,
             "instances": instances,
             "instance_count": None if instances is None else len(instances),
             "power": None if instances is None else _power_sum(instances),
-            "instance_join": _instance_join_note(model, row, instances),
+            "instance_join": _instance_join_note(model, row, instances, namespaces),
             "halves": halves_block(model),
             "missing_halves": missing_halves(model),
             "artefacts": artefacts_block(ctx),
@@ -605,16 +722,23 @@ def module_payload(ctx: PhysContext, module: str) -> dict:
     return payload
 
 
-def _instance_join_note(model: dict, row, instances) -> str | None:
-    """Is this module's empty instance list a miss rather than a fact?
+def _instance_join_note(model: dict, row, instances, namespaces) -> str | None:
+    """What, if anything, the reader would otherwise misread about the join.
 
-    Only when all three hold: the name came out of the synthesis half
-    (so it is an RTL module name), the power half exists and has rows (so
-    "no instances" is not simply "no power run"), and nothing matched.
-    A Liberty cell that *did* match, or a genuinely instance-free design,
-    gets no note — the point is to mark the one case the reader would
-    otherwise misread.
+    Two things can go wrong under one name, and they are opposites. A
+    name in *both* namespaces joins rows that should never have been put
+    together, and the note says so first, because that payload looks
+    complete — a row, instances, a power total — and is the one nobody
+    would think to question.
+
+    Otherwise the note marks the empty join, and only when all three
+    hold: the name came out of the synthesis half (so it is an RTL module
+    name), the power half exists and has rows (so "no instances" is not
+    simply "no power run"), and nothing matched. A Liberty cell that
+    *did* match, or a genuinely instance-free design, gets no note.
     """
+    if len(namespaces) > 1:
+        return INSTANCE_JOIN_NAME_COLLISION
     if row is None or instances is None or instances:
         return None
     if not _instance_rows(model):

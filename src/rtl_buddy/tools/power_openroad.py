@@ -570,17 +570,26 @@ class OpenRoadPower(BasePower):
         the model is keyed on the *design*: it is what decides whether a
         synthesis' module rows already in this directory describe the same
         thing and may be merged forward.
+
+        The same resolution supplies the netlist this run read, which the
+        publish hashes into the model's provenance: it is what a later
+        synthesis into this directory tests its own output against before
+        carrying these per-instance rows forward (#558). A
+        `netlist-source: pnr` run resolves no netlist at all -- it reads the
+        routed ODB -- so it records none, and its rows are never inherited
+        by a synthesis.
         """
         try:
-            top = self._resolve_inputs()["top"]
+            inputs = self._resolve_inputs()
         except Exception:  # noqa: BLE001 - resolution already succeeded once
-            top = None
+            inputs = {}
         published = publish_power(
             artefact_dir=self.artefact_dir,
-            top=top,
+            top=inputs.get("top"),
             backend="openroad",
             run=self.power_cfg.get_name(),
             netlist_source=self.power_cfg.get_netlist_source(),
+            netlist_path=inputs.get("netlist"),
             report_path=self._report_path(),
             instances_path=self._instances_report_path(),
             cells_path=self._instances_cells_path(),

@@ -8,6 +8,7 @@ the reader looks at, with Yosys' RTLIL backslash prefix and its
 inconsistent spacing preserved — those are the parts that break.
 """
 
+import hashlib
 import json
 import os
 
@@ -91,6 +92,14 @@ INSTANCE_RPT = """   Internal  Switching    Leakage      Total
    1.52e-07   7.79e-08   3.62e-08   2.66e-07 _18_
    7.14e-08   0.00e+00   1.74e-08   8.88e-08 u_sub/_45_
 """
+
+NETLIST = """module demo_top (clk);
+  input clk;
+  DFF_X1 _64_ (.CK(clk));
+endmodule
+"""
+
+NETLIST_AFTER_AN_RTL_EDIT = NETLIST.replace("DFF_X1", "DFF_X2")
 
 INSTANCE_CELLS = """_18_ XOR2_X1
 u_sub/_45_ NAND2_X1
@@ -248,8 +257,15 @@ def test_merging_a_power_run_onto_a_synth_model_keeps_both_halves():
 
 
 def test_merging_is_order_independent():
-    synth = build_synth_model(top="demo_top", modules=[], area_um2=1.0, gate_count=2)
-    power = build_power_model(top="demo_top", instances=[], total_w=2.0e-06)
+    """For a matched pair — the power run read the netlist the synthesis
+    wrote, which is what the recorded hash says and what the synthesis
+    direction requires before it will inherit anything."""
+    synth = build_synth_model(
+        top="demo_top", modules=[], area_um2=1.0, gate_count=2, netlist_sha256="abc"
+    )
+    power = build_power_model(
+        top="demo_top", instances=[], total_w=2.0e-06, netlist_sha256="abc"
+    )
 
     forwards = merge_model(synth, power, own_half="instances")
     backwards = merge_model(power, synth, own_half="modules")
@@ -314,6 +330,109 @@ def test_a_power_rerun_that_lost_its_breakdown_keeps_the_synth_half():
     assert merged["instances"] is None
     assert merged["totals"]["total_uw"] == pytest.approx(11.0)
     assert [row["module"] for row in merged["modules"]] == ["top"]
+    assert merged["totals"]["area_um2"] == 5.586
+
+
+def test_a_synthesis_inherits_the_power_half_it_measured_the_netlist_of():
+    """The bind (#560 review, Codex P1). A re-synthesis that produced the
+    very netlist the power run read carries its rows forward — that is the
+    ordinary two-command directory, and nothing about it has changed."""
+    power = build_power_model(
+        top="demo_top",
+        instances=parse_instance_power(INSTANCE_RPT),
+        total_w=2.83e-05,
+        netlist_sha256="deadbeef",
+    )
+    resynth = build_synth_model(
+        top="demo_top",
+        modules=parse_stat_json(STAT_JSON),
+        area_um2=5.586,
+        netlist_sha256="deadbeef",
+    )
+
+    merged = merge_model(power, resynth, own_half="modules")
+
+    assert len(merged["instances"]) == 3
+    assert merged["totals"]["total_uw"] == pytest.approx(28.3)
+    assert merged["provenance"]["power"]["netlist_sha256"] == "deadbeef"
+
+
+def test_a_synthesis_that_replaced_the_netlist_drops_the_power_half():
+    """Editing the RTL and re-running `rb synth` writes a different netlist,
+    and the watts measured on the old one are not a breakdown of it. They go,
+    with their totals — `instances: null` is true where the rows are not."""
+    power = build_power_model(
+        top="demo_top",
+        instances=parse_instance_power(INSTANCE_RPT),
+        total_w=2.83e-05,
+        leakage_w=1.0e-06,
+        netlist_sha256="the netlist that was measured",
+    )
+    resynth = build_synth_model(
+        top="demo_top",
+        modules=parse_stat_json(STAT_JSON),
+        area_um2=7.0,
+        netlist_sha256="the netlist this run just wrote",
+    )
+
+    merged = merge_model(power, resynth, own_half="modules")
+
+    assert merged["instances"] is None
+    assert merged["totals"]["total_uw"] is None
+    assert merged["totals"]["leakage_uw"] is None
+    assert merged["totals"]["area_um2"] == 7.0
+    assert merged["provenance"]["power"]["netlist_sha256"] is None
+
+
+@pytest.mark.parametrize(
+    "measured_on, just_written",
+    [
+        (None, "a hash"),  # a pnr-sourced power run, or an older document
+        ("a hash", None),  # a synthesis whose netlist could not be hashed
+        (None, None),  # both predate the provenance block
+    ],
+)
+def test_a_synthesis_without_the_provenance_to_bind_them_drops_the_rows(
+    measured_on, just_written
+):
+    """Strict: a half whose binding cannot be *shown* is not inherited. The
+    alternative reading — absent provenance means "probably still fine" —
+    is the one that publishes watts against a netlist nothing measured."""
+    power = build_power_model(
+        top="demo_top",
+        instances=parse_instance_power(INSTANCE_RPT),
+        total_w=2.83e-05,
+        netlist_sha256=measured_on,
+    )
+    resynth = build_synth_model(
+        top="demo_top", modules=[], area_um2=7.0, netlist_sha256=just_written
+    )
+
+    assert merge_model(power, resynth, own_half="modules")["instances"] is None
+
+
+def test_a_power_run_inherits_the_synth_half_whatever_the_netlist_hash_says():
+    """The documented asymmetry. A power analysis runs *against* the
+    synthesis output, so the module rows it finds are the ones its own
+    netlist came from; there is nothing for a hash to add, and requiring one
+    would break the ordinary `rb synth` then `rb power` pair on any flow
+    whose netlist this cannot read."""
+    synth = build_synth_model(
+        top="demo_top",
+        modules=parse_stat_json(STAT_JSON),
+        area_um2=5.586,
+        netlist_sha256="one hash",
+    )
+    power = build_power_model(
+        top="demo_top",
+        instances=parse_instance_power(INSTANCE_RPT),
+        total_w=2.83e-05,
+        netlist_sha256="a different one",
+    )
+
+    merged = merge_model(synth, power, own_half="instances")
+
+    assert len(merged["modules"]) == 2
     assert merged["totals"]["area_um2"] == 5.586
 
 
@@ -637,9 +756,12 @@ def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp
     A first synthesis records its modules; a power run lands beside it;
     then a synthesis rerun whose `stat -json` never appeared must publish
     `modules: null` rather than the first run's rows — while the power
-    half, which it does not own, is still carried forward.
+    half, which it does not own and whose netlist the rerun reproduced
+    unchanged, is still carried forward.
     """
     _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
     (artefacts / "synth_stat.json").write_text(STAT_JSON)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
     publish_synth(
@@ -648,6 +770,7 @@ def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp
         backend="yosys",
         run="demo",
         stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
         area_um2=5.586,
         gate_count=2,
     )
@@ -656,6 +779,7 @@ def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp
         top="demo_top",
         backend="openroad",
         run="demo",
+        netlist_path=netlist,
         instances_path=artefacts / "power_instances.rpt",
         total_w=2.83e-05,
     )
@@ -667,6 +791,7 @@ def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp
         backend="yosys",
         run="demo",
         stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
         area_um2=7.0,
         gate_count=3,
     )
@@ -678,6 +803,147 @@ def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp
     # The other half is untouched by a synthesis, so it still travels.
     assert len(model["instances"]) == 3
     assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+
+def _publish_the_pair_against(artefacts, netlist):
+    """A synthesis and then a power run, both bound to ``netlist``."""
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+        area_um2=5.586,
+        gate_count=2,
+    )
+    publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        netlist_source="synth",
+        netlist_path=netlist,
+        report_path=artefacts / "power.rpt",
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=2.83e-05,
+        leakage_w=1.0e-06,
+    )
+
+
+def test_a_resynthesis_of_the_same_netlist_keeps_the_power_half(tmp_path):
+    """On disk, the ordinary case: `rb synth` re-run over an unchanged design
+    writes the same netlist, so the watts beside it still describe it."""
+    _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
+    _publish_the_pair_against(artefacts, netlist)
+    netlist.write_text(NETLIST)  # the same bytes, written again
+
+    published = publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+        area_um2=5.586,
+        gate_count=2,
+    )
+
+    model = load_model(published["model"])
+    assert len(model["instances"]) == 3
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+    assert load_manifest(published["manifest"])["power"]["backend"] == "openroad"
+
+
+def test_a_resynthesis_of_a_changed_netlist_drops_the_power_half(tmp_path):
+    """The finding (#560 review, Codex P1). The RTL was edited and `rb synth`
+    re-run into the same directory: the per-instance watts were measured on
+    the netlist that run has just replaced, so they are withdrawn — from the
+    model, from the totals, and from the manifest that would otherwise go on
+    naming the reports behind them."""
+    _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
+    _publish_the_pair_against(artefacts, netlist)
+    netlist.write_text(NETLIST_AFTER_AN_RTL_EDIT)
+
+    published = publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+        area_um2=7.0,
+        gate_count=3,
+    )
+
+    model = load_model(published["model"])
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] is None
+    assert model["totals"]["leakage_uw"] is None
+    assert len(model["modules"]) == 2 and model["totals"]["area_um2"] == 7.0
+    # The manifest is told the same thing, so the publication does not
+    # contradict itself about whether a power measurement is here.
+    manifest = load_manifest(published["manifest"])
+    assert all(manifest["power"][key] is None for key in POWER_KEYS)
+    assert manifest["totals"]["total_uw"] is None
+    assert manifest["synth"]["backend"] == "yosys"
+
+
+def test_a_resynthesis_drops_a_power_half_that_recorded_no_netlist(tmp_path):
+    """A `netlist-source: pnr` run reads the routed database, not a netlist,
+    and records no hash — as does any model written before provenance
+    existed. Nothing binds those rows to what this synthesis wrote, so they
+    are dropped rather than assumed."""
+    _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        netlist_source="pnr",
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=2.83e-05,
+    )
+
+    published = publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+        area_um2=5.586,
+        gate_count=2,
+    )
+
+    model = load_model(published["model"])
+    assert model["provenance"]["power"]["netlist_sha256"] is None
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] is None
+    assert load_manifest(published["manifest"])["power"]["backend"] is None
+
+
+def test_a_publish_records_the_hash_of_the_netlist_it_touched(tmp_path):
+    """Both halves record it, and they agree when they are about one file."""
+    _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
+    expected = hashlib.sha256(NETLIST.encode()).hexdigest()
+    _publish_the_pair_against(artefacts, netlist)
+
+    provenance = load_model(artefacts / "phys-model.json")["provenance"]
+    assert provenance["synth"]["netlist_sha256"] == expected
+    assert provenance["power"]["netlist_sha256"] == expected
 
 
 def test_a_power_rerun_that_cannot_read_its_report_publishes_a_null_breakdown(tmp_path):
@@ -835,6 +1101,7 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
 def _project_with_both_inputs(tmp_path):
     """A project whose artefact directory holds both flows' raw output."""
     root, artefacts = _project(tmp_path)
+    (artefacts / "synth_netlist.v").write_text(NETLIST)
     (artefacts / "synth_stat.json").write_text(STAT_JSON)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
     (artefacts / "power_instances.cells").write_text(INSTANCE_CELLS)
@@ -850,6 +1117,7 @@ def _publish_synth_half(artefacts, **overrides):
             "backend": "yosys",
             "run": "demo",
             "stats_path": artefacts / "synth_stat.json",
+            "netlist_path": artefacts / "synth_netlist.v",
             "area_um2": 5.586,
             "gate_count": 2,
             **overrides,
@@ -865,6 +1133,7 @@ def _publish_power_half(artefacts, **overrides):
             "top": "demo_top",
             "backend": "openroad",
             "run": "demo",
+            "netlist_path": artefacts / "synth_netlist.v",
             "instances_path": artefacts / "power_instances.rpt",
             "cells_path": artefacts / "power_instances.cells",
             "total_w": 2.83e-05,
@@ -896,6 +1165,10 @@ def test_a_failed_power_rerun_withdraws_its_own_half_and_keeps_the_synth_one(
     model = load_model(result["model"])
     assert model["instances"] is None
     assert model["totals"]["total_uw"] is None and model["totals"]["leakage_uw"] is None
+    # Including what the withdrawn half was measured on: there is no half
+    # left for that hash to bind, and a synthesis must not read it as one.
+    assert model["provenance"]["power"]["netlist_sha256"] is None
+    assert model["provenance"]["synth"]["netlist_sha256"] is not None
     # The other half is another command's measurement, still backed by its
     # own artefacts on disk.
     assert [row["module"] for row in model["modules"]] == ["sub", "top"]
