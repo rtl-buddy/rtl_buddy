@@ -124,7 +124,11 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
             leakage_w=0.08e-6,
             total_w=3.171e-6,
         )
-        model = merge_model(model, power) if model is not None else power
+        model = (
+            merge_model(model, power, own_half="instances")
+            if model is not None
+            else power
+        )
     model_path = write_model(model, phys_dir)
 
     manifest = build_manifest(
@@ -593,6 +597,101 @@ def test_the_separator_is_levelled_only_on_the_way_to_the_wire():
         False,
         False,
     ]
+
+
+def test_the_design_top_is_added_on_the_way_out_and_ignored_on_the_way_in():
+    """A schematic `instance_path` is rooted at the design top; an
+    OpenSTA row is not. Neither producer is wrong, so the pane roots what
+    it sends and un-roots what it compares — and never rewrites a row."""
+
+    out = _node(
+        _marked_js("path-normalise")
+        + """
+        console.log(JSON.stringify([
+          withTop('u_sub/u_leaf', 'blk'),
+          withTop('blk.u_sub.u_leaf', 'blk'),   // already rooted: unchanged
+          withTop('blk', 'blk'),                // the top itself
+          withTop('u_sub/u_leaf', ''),          // no top known: plain levelling
+          stripTop('blk.u_sub.u_leaf', 'blk'),
+          stripTop('u_sub/u_leaf', 'blk'),
+          stripTop('blkish.u_sub', 'blk'),      // a prefix is not a level
+          samePath('u_sub/u_leaf', 'blk.u_sub.u_leaf', 'blk'),
+          samePath('blk/u_sub', 'u_sub', 'blk'),
+          samePath('u_sub', 'u_other', 'blk')
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        "blk.u_sub.u_leaf",
+        "blk.u_sub.u_leaf",
+        "blk",
+        "u_sub.u_leaf",
+        "u_sub.u_leaf",
+        "u_sub.u_leaf",
+        "blkish.u_sub",
+        True,
+        True,
+        False,
+    ]
+
+
+def test_the_module_column_sorts_by_name_rather_than_by_null():
+    """`module` is a string column of the instance table. Routing it
+    through the numeric reader made every value null, so clicking the
+    header did nothing."""
+
+    out = _node(
+        _marked_js("derived-metrics")
+        + _marked_js("row-ordering")
+        + """
+        var rows = [
+          { instance_path: 'c', module: 'NAND2_X1' },
+          { instance_path: 'a', module: 'DFF_X1' },
+          { instance_path: 'b', module: 'XOR2_X1' }
+        ];
+        function cells(list) { return list.map(function (r) { return r.module; }); }
+        console.log(JSON.stringify(cellValue(rows[0], 'module')));
+        console.log(JSON.stringify(cells(rankRows(rows, 'module', 'asc',
+          function (r) { return r.instance_path; }))));
+        console.log(JSON.stringify(cells(rankRows(rows, 'module', 'desc',
+          function (r) { return r.instance_path; }))));
+        """
+    )
+    value, ascending, descending = out.strip().splitlines()
+    assert json.loads(value) == "NAND2_X1"
+    assert json.loads(ascending) == ["DFF_X1", "NAND2_X1", "XOR2_X1"]
+    assert json.loads(descending) == ["XOR2_X1", "NAND2_X1", "DFF_X1"]
+
+
+def test_the_module_lens_says_when_the_join_cannot_see_the_rows():
+    """An RTL module clicked on a mapped hierarchical design matches no
+    leaf, because the leaves carry Liberty cell names. A bare "no
+    instances match" would read as "this block burns no power"."""
+
+    js = _page_js()
+    assert "function joinMissNote()" in js
+    # The empty branch consults it before falling back to the plain state.
+    assert "joinMissNote() ||" in js
+    assert "elem('p', 'muted', 'no instances match.')" in js
+    # What it says, and the three cases it declines to say it in.
+    assert "Liberty cell names, not RTL module names" in js
+    assert "hierarchy join" in js
+    assert "if (state.module === null || state.filter) { return null; }" in js
+    assert "if (matched) { return null; }" in js
+
+
+def test_an_early_selection_is_held_until_the_model_arrives():
+    """The hub replays the cached selection right after `welcome`, which
+    routinely beats the `/phy.json` fetch. `phys_focus` was already held
+    for that race; a `selection_changed` was dropped."""
+
+    js = _page_js()
+    assert "pendingSelection: null" in js
+    assert "state.pendingSelection = ip;" in js
+    # Applied at ingest, and an explicit focus outranks a passive one.
+    assert "var focus = state.pending, selection = state.pendingSelection;" in js
+    assert "} else if (selection) {" in js
+    assert "focusInstanceFromWire(selection);" in js
 
 
 def test_the_first_hello_is_polite():

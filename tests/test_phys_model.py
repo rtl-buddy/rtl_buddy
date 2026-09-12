@@ -9,6 +9,7 @@ inconsistent spacing preserved — those are the parts that break.
 """
 
 import json
+import os
 
 import pytest
 
@@ -238,7 +239,7 @@ def test_merging_a_power_run_onto_a_synth_model_keeps_both_halves():
         top="demo_top", instances=parse_instance_power(INSTANCE_RPT), total_w=2.83e-05
     )
 
-    merged = merge_model(synth, power)
+    merged = merge_model(synth, power, own_half="instances")
 
     assert len(merged["modules"]) == 2
     assert len(merged["instances"]) == 3
@@ -250,8 +251,8 @@ def test_merging_is_order_independent():
     synth = build_synth_model(top="demo_top", modules=[], area_um2=1.0, gate_count=2)
     power = build_power_model(top="demo_top", instances=[], total_w=2.0e-06)
 
-    forwards = merge_model(synth, power)
-    backwards = merge_model(power, synth)
+    forwards = merge_model(synth, power, own_half="instances")
+    backwards = merge_model(power, synth, own_half="modules")
 
     assert forwards["totals"] == backwards["totals"]
     assert forwards["modules"] == backwards["modules"] == []
@@ -268,9 +269,52 @@ def test_a_rerun_of_the_same_half_replaces_its_rows():
         top="demo_top", modules=[{"module": "kept", "cell_count": 2, "area_um2": 2.0}]
     )
 
-    merged = merge_model(first, second)
+    merged = merge_model(first, second, own_half="modules")
 
     assert [row["module"] for row in merged["modules"]] == ["kept"]
+
+
+def test_a_rerun_that_lost_its_own_breakdown_does_not_inherit_the_old_rows():
+    """The half a command owns is never carried forward.
+
+    A synthesis whose `stat -json` was unreadable produces
+    `modules = None`, which by shape alone is indistinguishable from a
+    power run's empty synth half — inheriting there would publish the
+    *previous* run's module rows underneath this run's fresh totals.
+    """
+    good = build_synth_model(
+        top="demo_top",
+        modules=[{"module": "stale", "cell_count": 1, "area_um2": 1.0}],
+        area_um2=1.0,
+        gate_count=1,
+    )
+    blind = build_synth_model(top="demo_top", modules=None, area_um2=2.0, gate_count=2)
+
+    merged = merge_model(good, blind, own_half="modules")
+
+    assert merged["modules"] is None
+    assert merged["totals"]["area_um2"] == 2.0
+    assert merged["totals"]["cell_count"] == 2
+
+
+def test_a_power_rerun_that_lost_its_breakdown_keeps_the_synth_half():
+    """The mirror, and the half the rerun does *not* own still travels."""
+    existing = build_synth_model(
+        top="demo_top",
+        modules=[{"module": "top", "cell_count": 2, "area_um2": 5.586}],
+        area_um2=5.586,
+        gate_count=2,
+    )
+    existing["instances"] = [{"instance": "u_dff", "total_uw": 9.0}]
+    existing["totals"]["total_uw"] = 9.0
+    blind = build_power_model(top="demo_top", instances=None, total_w=1.1e-05)
+
+    merged = merge_model(existing, blind, own_half="instances")
+
+    assert merged["instances"] is None
+    assert merged["totals"]["total_uw"] == pytest.approx(11.0)
+    assert [row["module"] for row in merged["modules"]] == ["top"]
+    assert merged["totals"]["area_um2"] == 5.586
 
 
 def test_a_model_for_a_different_top_is_replaced_not_merged():
@@ -279,7 +323,7 @@ def test_a_model_for_a_different_top_is_replaced_not_merged():
     other = build_synth_model(top="other_top", modules=[], area_um2=99.0)
     power = build_power_model(top="demo_top", instances=[], total_w=1.0e-06)
 
-    merged = merge_model(other, power)
+    merged = merge_model(other, power, own_half="instances")
 
     assert merged["modules"] is None
     assert merged["totals"]["area_um2"] is None
@@ -289,7 +333,12 @@ def test_merging_ignores_a_document_from_an_incompatible_schema():
     stale = build_synth_model(top="demo_top", modules=[], area_um2=1.0)
     stale["schema_version"] = MODEL_SCHEMA_VERSION + 1
 
-    assert merge_model(stale, build_power_model(top="demo_top"))["modules"] is None
+    assert (
+        merge_model(stale, build_power_model(top="demo_top"), own_half="instances")[
+            "modules"
+        ]
+        is None
+    )
 
 
 def test_model_round_trips_through_disk(tmp_path):
@@ -384,7 +433,7 @@ def test_manifest_merge_carries_the_other_halfs_block_forward(tmp_path):
         power={"backend": "openroad", "report": str(artefacts / "power.rpt")},
     )
 
-    merged = merge_manifest(synth, power)
+    merged = merge_manifest(synth, power, own_block="power")
 
     assert merged["command"] == "power"
     assert merged["synth"]["backend"] == "yosys"
@@ -401,12 +450,38 @@ def test_manifest_merge_keeps_a_reproduced_halfs_totals_as_written(tmp_path):
         root, artefacts, None, totals={"area_um2": None, "cell_count": 9}
     )
 
-    merged = merge_manifest(old, rerun)
+    merged = merge_manifest(old, rerun, own_block="synth")
 
     # The rerun re-produced the synth half, so its totals stand as
     # written: a scrape that failed this time is null, not last run's
     # number — the manifest mirror of the model's shrinking rerun rule.
     assert merged["totals"] == {"area_um2": None, "cell_count": 9}
+
+
+def test_manifest_merge_never_inherits_the_producing_commands_own_block(tmp_path):
+    """`own_block` is the rule, not the `backend` test's side effect.
+
+    A producer always names its own backend today, so the null-backend
+    test already excludes its block; this pins the behaviour for a caller
+    whose backend name went missing, which must not resurrect the
+    previous run's report paths under this run's totals.
+    """
+    root, artefacts = _project(tmp_path)
+    old = _synth_manifest(root, artefacts, None, totals={"area_um2": 5.586})
+    rerun = build_manifest(
+        project_root=root,
+        phys_dir=artefacts,
+        command="synth",
+        run="demo_synth",
+        top="demo_top",
+        totals={"area_um2": None},
+        synth={"backend": None},
+    )
+
+    merged = merge_manifest(old, rerun, own_block="synth")
+
+    assert merged["synth"] == {key: None for key in SYNTH_KEYS}
+    assert merged["totals"] == {"area_um2": None}
 
 
 def test_manifest_merge_ignores_a_manifest_for_a_different_top(tmp_path):
@@ -421,7 +496,7 @@ def test_manifest_merge_ignores_a_manifest_for_a_different_top(tmp_path):
         power={"backend": "openroad"},
     )
 
-    assert merge_manifest(other, power)["synth"]["backend"] is None
+    assert merge_manifest(other, power, own_block="power")["synth"]["backend"] is None
 
 
 def test_manifest_discovery_and_project_root_inference(tmp_path):
@@ -554,3 +629,195 @@ def test_publishing_a_power_run_over_a_synth_run_merges_on_disk(tmp_path):
     manifest = load_manifest(published["manifest"])
     assert manifest["synth"]["backend"] == "yosys"
     assert manifest["power"]["instances"].endswith("power_instances.rpt")
+
+
+def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp_path):
+    """The on-disk shape of the own-half rule (#560 review).
+
+    A first synthesis records its modules; a power run lands beside it;
+    then a synthesis rerun whose `stat -json` never appeared must publish
+    `modules: null` rather than the first run's rows — while the power
+    half, which it does not own, is still carried forward.
+    """
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        area_um2=5.586,
+        gate_count=2,
+    )
+    publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=2.83e-05,
+    )
+    (artefacts / "synth_stat.json").unlink()
+
+    published = publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        area_um2=7.0,
+        gate_count=3,
+    )
+
+    model = load_model(published["model"])
+    assert model["modules"] is None
+    assert model["totals"]["area_um2"] == 7.0
+    assert model["totals"]["cell_count"] == 3
+    # The other half is untouched by a synthesis, so it still travels.
+    assert len(model["instances"]) == 3
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+
+def test_a_power_rerun_that_cannot_read_its_report_publishes_a_null_breakdown(tmp_path):
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        area_um2=5.586,
+        gate_count=2,
+    )
+    publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=2.83e-05,
+    )
+    (artefacts / "power_instances.rpt").unlink()
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=1.0e-05,
+    )
+
+    model = load_model(published["model"])
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] == pytest.approx(10.0)
+    assert [row["module"] for row in model["modules"]] == ["sub", "top"]
+    assert model["totals"]["area_um2"] == 5.586
+
+
+def test_the_manifest_does_not_name_an_artefact_that_was_never_written(tmp_path):
+    """`null` means "not produced" — so a filename the flow intended but
+    the tool skipped must not appear as though it were on disk."""
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "synth.log").write_text("Chip area: 5.586\n")
+
+    published = publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo_synth",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=artefacts / "synth_netlist.v",
+        log_path=artefacts / "synth.log",
+        area_um2=5.586,
+    )
+
+    block = load_manifest(published["manifest"])["synth"]
+    assert block["stats"] is None
+    assert block["netlist"] is None
+    assert block["log"] == "verif/demo/artefacts/demo_synth/synth.log"
+    assert block["backend"] == "yosys"
+
+
+def test_the_power_manifest_nulls_the_reports_the_tcl_catch_skipped(tmp_path):
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo_power",
+        netlist_source="synth",
+        report_path=artefacts / "power.rpt",
+        instances_path=artefacts / "power_instances.rpt",
+        cells_path=artefacts / "power_instances.cells",
+        total_w=2.83e-05,
+    )
+
+    block = load_manifest(published["manifest"])["power"]
+    assert block["report"] is None
+    assert block["cells"] is None
+    assert block["instances"].endswith("power_instances.rpt")
+    assert block["netlist_source"] == "synth"
+
+
+def test_the_model_and_manifest_are_replaced_atomically(tmp_path, monkeypatch):
+    """A `rb phys` read racing a rerun must never see a torn document.
+
+    Both writers go temp-then-`os.replace`, so an overwrite is one
+    rename: a concurrent reader gets the old bytes or the new ones, and
+    no `.tmp` is left behind for discovery to trip over.
+    """
+    root, artefacts = _project(tmp_path)
+    renamed = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        renamed.append(str(dst))
+        return real_replace(src, dst)
+
+    # `os` is one shared module object, so one patch covers both writers.
+    monkeypatch.setattr(os, "replace", spy)
+
+    write_model(build_synth_model(top="demo_top", modules=[]), artefacts)
+    model_path = write_model(build_synth_model(top="demo_top"), artefacts)
+    manifest_path = write_manifest(
+        _synth_manifest(root, artefacts, model_path), artefacts
+    )
+
+    assert renamed == [model_path, model_path, manifest_path]
+    assert not list(artefacts.glob("*.tmp"))
+    assert load_model(model_path)["design"]["top"] == "demo_top"
+    assert load_manifest(manifest_path)["command"] == "synth"
+
+
+def test_the_incomplete_model_warnings_have_dedicated_human_messages():
+    """Both events are logged at WARNING, so neither may fall through to
+    the "foo bar" fallback."""
+    from rtl_buddy.logging_utils import _human_message
+
+    synth = _human_message(
+        "synth.phys_model_incomplete",
+        {"synth": "demo_synth", "stats": "artefacts/demo_synth/synth_stat.json"},
+    )
+    assert "demo_synth" in synth
+    assert "artefacts/demo_synth/synth_stat.json" in synth
+    assert "per-module breakdown" in synth
+
+    power = _human_message(
+        "power.phys_model_incomplete",
+        {
+            "power": "demo_power",
+            "instances": "artefacts/demo_power/power_instances.rpt",
+            "error": "disk full",
+        },
+    )
+    assert "demo_power" in power
+    assert "artefacts/demo_power/power_instances.rpt" in power
+    assert "per-instance breakdown" in power
+    assert "disk full" in power

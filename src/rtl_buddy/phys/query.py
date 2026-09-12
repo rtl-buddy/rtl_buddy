@@ -25,6 +25,25 @@ know it. ``rb phys instance`` *is* a consumer, and the hierarchy it
 projects onto is the instance path it was asked about — so it sums the
 rows under that path at query time and the document on disk stays leaf
 values only.
+
+**The two ``module`` columns are two namespaces, and this module does
+not pretend otherwise.** ``modules[].module`` is an *RTL module* name,
+as Yosys' ``stat`` saw it after elaboration. ``instances[].module`` is
+the *Liberty cell* each leaf is an instance of — ``DFF_X1``,
+``NAND2_X1`` — because that is what ``report_power`` and the cell
+sidecar name, and a mapped netlist's leaves are cells, not RTL modules.
+So the join these verbs make on that column answers Liberty-cell
+questions ("how much do all the DFFs burn") and, on a flat netlist whose
+one RTL module is also its top, the top's question. It does *not*
+attribute power to an RTL module on a hierarchical design: no leaf row
+carries ``u_cpu``'s name, so the join simply misses.
+
+Rather than invent an instance→RTL-module mapping here, the surfaces say
+so. ``module_payload`` sets :data:`INSTANCE_JOIN_LIBERTY_ONLY` on
+``instance_join`` when it can see that shape, and ``subtree_rollup``
+reports ``modules_matched`` so a caller can tell a joined area from an
+unjoined one. Real RTL-module↔instance attribution needs the hierarchy
+join, which is tracked as its own phase on the epic.
 """
 
 from __future__ import annotations
@@ -63,6 +82,40 @@ HALF_PRODUCER = {"modules": "rb synth", "instances": "rb power"}
 #: RTL-side consumer spells the same path with — and a user typing the
 #: parent of a path they read elsewhere should not have to know which.
 _PATH_SEPARATORS = ("/", ".")
+
+#: The one separator every path comparison here is made in. Which of the
+#: two a path is spelled with is the *producer's* choice, so a comparison
+#: that kept it would make ``u_top.u_sub`` and ``u_top/u_sub`` different
+#: instances; levelling both sides first is the only way a query typed in
+#: one spelling can find rows stored in the other. Output rows keep the
+#: model's own spelling — this is a comparison rule, not a rewrite.
+_CANONICAL_SEPARATOR = "/"
+
+#: What ``module_payload`` puts on ``instance_join`` when the module it
+#: was asked about lives only in the synthesis half and the power half,
+#: though populated, carries no row for it. The two halves spell
+#: ``module`` in different namespaces (see this module's docstring), so
+#: "no instances" and "the join cannot see them" are different answers and
+#: a consumer must be able to tell them apart. The value is the sentence
+#: rather than a code, so a machine reader gates on ``is not None`` and
+#: every surface — CLI, hub pane, MCP client — reports the same reason.
+INSTANCE_JOIN_LIBERTY_ONLY = (
+    "liberty-cell names only: no instance row carries this RTL module, so "
+    "power cannot be attributed to it until the hierarchy join lands"
+)
+
+
+def level_path(path: str) -> str:
+    """One instance path in the separator every comparison here uses.
+
+    Every ``/`` and every ``.`` is a level, whichever the tool wrote —
+    the same rule the hub's `/phy` pane levels a schematic path with
+    before it puts one on the wire.
+    """
+    levelled = str(path)
+    for separator in _PATH_SEPARATORS:
+        levelled = levelled.replace(separator, _CANONICAL_SEPARATOR)
+    return levelled
 
 
 class PhysQueryError(FatalRtlBuddyError):
@@ -399,11 +452,21 @@ def _missing_half_hint(model: dict) -> str:
 def module_payload(ctx: PhysContext, module: str) -> dict:
     """One module's synthesis row and the instances of it, with power.
 
-    The join the two halves exist to make: ``modules`` says how many
-    cells and how much area the block is, ``instances`` says what the
-    leaves named after it burn. Either side may be ``null`` — the
-    payload reports what it has and names the command that would supply
-    the rest.
+    The join the two halves make where they can: ``modules`` says how
+    many cells and how much area the block is, ``instances`` says what
+    the leaves *of that Liberty cell* burn. Either side may be ``null`` —
+    the payload reports what it has and names the command that would
+    supply the rest.
+
+    ``instance_join`` is the honest signal about the join itself. It is
+    ``null`` when there is nothing to qualify, and
+    :data:`INSTANCE_JOIN_LIBERTY_ONLY` when the name resolved out of the
+    synthesis half alone, matched no instance row, and the power half is
+    populated — the shape of an RTL module on a mapped hierarchical
+    design, whose leaves are named after Liberty cells and so can never
+    match it. Without it a consumer cannot tell "this module has no
+    instances" from "the join cannot see this module's instances", and
+    the two call for opposite reactions.
     """
     resolved = resolve_module_name(ctx.model, module, where=ctx.model_path)
     model = ctx.model
@@ -428,12 +491,30 @@ def module_payload(ctx: PhysContext, module: str) -> dict:
             "instances": instances,
             "instance_count": None if instances is None else len(instances),
             "power": None if instances is None else _power_sum(instances),
+            "instance_join": _instance_join_note(model, row, instances),
             "halves": halves_block(model),
             "missing_halves": missing_halves(model),
             "artefacts": artefacts_block(ctx),
         }
     )
     return payload
+
+
+def _instance_join_note(model: dict, row, instances) -> str | None:
+    """Is this module's empty instance list a miss rather than a fact?
+
+    Only when all three hold: the name came out of the synthesis half
+    (so it is an RTL module name), the power half exists and has rows (so
+    "no instances" is not simply "no power run"), and nothing matched.
+    A Liberty cell that *did* match, or a genuinely instance-free design,
+    gets no note — the point is to mark the one case the reader would
+    otherwise misread.
+    """
+    if row is None or instances is None or instances:
+        return None
+    if not _instance_rows(model):
+        return None
+    return INSTANCE_JOIN_LIBERTY_ONLY
 
 
 def instance_paths(model: dict) -> list[str]:
@@ -448,13 +529,21 @@ def instance_paths(model: dict) -> list[str]:
 def is_descendant(path: str, prefix: str) -> bool:
     """Is ``path`` strictly below ``prefix`` in the instance hierarchy?
 
+    Both sides are levelled first (:func:`level_path`): OpenSTA writes
+    ``/`` for a netlist read from Verilog while every RTL-side surface
+    spells the same path with ``.``, and a user asking for the subtree
+    under a path they read in the schematic must not miss the rows
+    because of the separator.
+
     A separator has to follow the prefix, or ``u_cpu`` would claim
     ``u_cpu_regs`` — a different block whose name merely starts the
     same way, and the kind of miscount a rollup must never make.
     """
+    path = level_path(path)
+    prefix = level_path(prefix)
     if not path.startswith(prefix) or len(path) <= len(prefix):
         return False
-    return path[len(prefix)] in _PATH_SEPARATORS
+    return path[len(prefix)] == _CANONICAL_SEPARATOR
 
 
 def subtree_rollup(model: dict, rows: list[dict]) -> dict:
@@ -467,6 +556,15 @@ def subtree_rollup(model: dict, rows: list[dict]) -> dict:
     ``modules_matched`` reports how much of the subtree that join
     actually covered. A join that matched nothing yields ``null`` rather
     than ``0.0``: an unjoined subtree has unknown area, not no area.
+
+    ``modules_matched`` is the honesty mechanism here, and on a mapped
+    hierarchical design it is routinely ``0``. The two halves spell
+    ``module`` in different namespaces — Liberty cells on the leaves, RTL
+    modules on the synthesis rows (see this module's docstring) — so the
+    join lands only where the two coincide: a Liberty cell that Yosys
+    also emitted a ``stat`` row for, or a flat netlist. A caller must read
+    ``area_um2`` against ``modules_matched`` and not as the subtree's
+    area; the real attribution arrives with the hierarchy join.
     """
     rollup = {"instances": len(rows), **_power_sum(rows)}
     areas = {
@@ -494,6 +592,11 @@ def instance_payload(ctx: PhysContext, path: str) -> dict:
     user named is the answer they asked for. The subtree case lists the
     leaves under the path and rolls them up at query time; the model on
     disk stays leaf-only.
+
+    Both comparisons are made on levelled paths (:func:`level_path`), so
+    a dotted query finds slash-stored rows and the reverse. The rows
+    themselves are returned with the model's own spelling, and
+    ``instance_path`` echoes what the user asked.
     """
     model = ctx.model
     if model.get("instances") is None:
@@ -503,7 +606,10 @@ def instance_payload(ctx: PhysContext, path: str) -> dict:
         )
 
     rows = _instance_rows(model)
-    exact = next((r for r in rows if str(r.get("instance_path")) == path), None)
+    wanted = level_path(path)
+    exact = next(
+        (r for r in rows if level_path(str(r.get("instance_path"))) == wanted), None
+    )
     children = sorted(
         (r for r in rows if is_descendant(str(r.get("instance_path") or ""), path)),
         key=lambda r: str(r.get("instance_path") or ""),

@@ -989,13 +989,15 @@ Usage: rtl-buddy phys summary [OPTIONS]
  the run's totals, its heaviest modules and its hottest instances
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER  rows per ranking, heaviest/hottest first (0 for all)      │
-│                            [default: 10]                                             │
-│ --phys-dir        TEXT     artefact directory holding phys-manifest.json             │
-│                            [default: (newest phys-manifest.json under the project    │
-│                            root)]                                                    │
-│ --manifest        TEXT     phys-manifest.json to read directly                       │
-│ --help                     Show this message and exit.                               │
+│ --limit           INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest first (0  │
+│                                         for all)                                     │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1010,13 +1012,14 @@ Usage: rtl-buddy phys module [OPTIONS] MODULE
 │ *    module      TEXT  module or liberty cell as the model records it [required]     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER  instances to list, hottest first (0 for all)              │
-│                            [default: 10]                                             │
-│ --phys-dir        TEXT     artefact directory holding phys-manifest.json             │
-│                            [default: (newest phys-manifest.json under the project    │
-│                            root)]                                                    │
-│ --manifest        TEXT     phys-manifest.json to read directly                       │
-│ --help                     Show this message and exit.                               │
+│ --limit           INTEGER RANGE [x>=0]  instances to list, hottest first (0 for all) │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1031,12 +1034,13 @@ Usage: rtl-buddy phys instance [OPTIONS] PATH
 │ *    path      TEXT  instance path, exact or the root of a subtree [required]        │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER  children to list (0 for all) [default: 10]                │
-│ --phys-dir        TEXT     artefact directory holding phys-manifest.json             │
-│                            [default: (newest phys-manifest.json under the project    │
-│                            root)]                                                    │
-│ --manifest        TEXT     phys-manifest.json to read directly                       │
-│ --help                     Show this message and exit.                               │
+│ --limit           INTEGER RANGE [x>=0]  children to list (0 for all) [default: 10]   │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

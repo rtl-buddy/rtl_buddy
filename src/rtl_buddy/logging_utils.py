@@ -1322,6 +1322,27 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
                 "entry pointing at a cfg-pdks corner"
             )
+        case "synth.phys_model_incomplete":
+            reason = fields.get("error")
+            why = f" ({reason})" if reason else ""
+            return (
+                f'synthesis "{fields.get("synth")}": phys-model.json has no '
+                "per-module breakdown — the stat -json dump "
+                f"{fields.get('stats')} was not produced or could not be read"
+                f"{why}. The design totals scraped from the log are still "
+                "recorded; `rb phys module` has nothing to report for this run"
+            )
+        case "power.phys_model_incomplete":
+            reason = fields.get("error")
+            why = f" ({reason})" if reason else ""
+            return (
+                f'power run "{fields.get("power")}": phys-model.json has no '
+                "per-instance breakdown — the per-instance report "
+                f"{fields.get('instances')} was not produced or could not be "
+                f"read{why}. The design totals from the report_power Total row "
+                "are still recorded; `rb phys instance` has nothing to report "
+                "for this run"
+            )
         case "synth_tool_config.unknown_override":
             unknown = fields.get("unknown") or []
             accepted = fields.get("accepted") or []
