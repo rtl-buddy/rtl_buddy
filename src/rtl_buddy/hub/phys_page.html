@@ -404,6 +404,7 @@
 
   var state = {
     payload: null,
+    identity: null,     // which model the payload is of — see modelIdentity
     metric: null,       // chosen on the first ingest, the user's pick after
     filter: '',
     module: null,       // selected module name — also filters the instances
@@ -1075,6 +1076,7 @@
   // which the next successful load renders back.
   function forgetModel() {
     state.payload = null;
+    state.identity = null;
     state.instanceCounts = null;
     state.module = null;
     state.instance = null;
@@ -1123,9 +1125,48 @@
     return String((state.payload && state.payload.top) || '');
   }
 
+  // >>> model-identity
+  // Which model a payload is of, as a string to compare reloads by.
+  //
+  // The publication token when the payload carries one — that is the
+  // model's own answer to "were these bytes written by one publish", and
+  // two reads of one publication share it. Otherwise the manifest path
+  // and the design top, which is what distinguishes one run's document
+  // from another's: discovery follows the newest manifest, so a `rb power`
+  // in a second suite, a `--phys-dir` typed into the URL, or a rebuild
+  // under a different top all move it.
+  //
+  // Not the counts, the totals or the rows: a re-read of the same run
+  // after a rerun legitimately changes all of those, and treating that as
+  // a different model would throw away a lens on every reload of a
+  // directory being worked in.
+  function modelIdentity(payload) {
+    if (!payload) { return null; }
+    var token = payload.publication || (payload.hub && payload.hub.publication);
+    if (token) { return 'publication:' + token; }
+    return 'document:' + String(payload.manifest || '') +
+           '\u0000' + String(payload.top || '');
+  }
+  // <<< model-identity
+
   function ingest(payload) {
     els.empty.classList.remove('show');
     els.dash.hidden = false;
+    // A reload can land on a different model — another run became the
+    // newest, the URL was pointed elsewhere, the design was re-topped —
+    // and a name is not unique across designs: `u_sub/_64_` and `blk`
+    // are the kind of rootless spellings two unrelated models both
+    // carry. The lens and the selection were the reader's statements
+    // about the model that is gone, so they do not survive it, and the
+    // row-still-exists checks below cannot catch this on their own —
+    // they pass precisely when the coincidence happens (#562 review).
+    var identity = modelIdentity(payload);
+    var replaced = state.identity !== null && state.identity !== identity;
+    state.identity = identity;
+    if (replaced) {
+      state.module = null;
+      state.instance = null;
+    }
     state.payload = payload;
     state.instanceCounts = null;
     var hub = payload.hub || {};

@@ -632,16 +632,25 @@ def heaviest_modules(model: dict, limit: int | None = None) -> list[dict]:
     return truncate(sorted(_module_rows(model), key=key), limit)
 
 
+def hottest_key(row) -> tuple:
+    """The order every list of instance rows is presented in.
+
+    Total power descending with nulls last, path breaking the tie. Named
+    once because three payloads sort by it — the ranking
+    :func:`hottest_instances` is, the instances of a module, and the
+    children of a subtree — and a list that quietly used a different one
+    would head to a different set of rows under ``limit`` than the
+    surface above it says it is heading (#563 review).
+    """
+    return (
+        _sort_key_desc(row.get("total_uw")),
+        str(row.get("instance_path") or ""),
+    )
+
+
 def hottest_instances(model: dict, limit: int | None = None) -> list[dict]:
     """Instance rows ranked by total power, then path."""
-
-    def key(row):
-        return (
-            _sort_key_desc(row.get("total_uw")),
-            str(row.get("instance_path") or ""),
-        )
-
-    return truncate(sorted(_instance_rows(model), key=key), limit)
+    return truncate(sorted(_instance_rows(model), key=hottest_key), limit)
 
 
 def _power_sum(rows) -> dict:
@@ -744,13 +753,32 @@ def resolve_module_name(model: dict, module: str, *, where=None) -> str:
     block, and the near-miss list is the cheaper fix. When the model is
     half-filled the message says which command would add the missing
     half, since that is the other way a name goes missing.
+
+    An exact match is taken first and case is only a fallback, and that
+    fallback applies only where it is unambiguous. Verilog is
+    case-sensitive and a Liberty library need not agree with the RTL
+    about case, so ``CPU`` and ``cpu`` can both be real names in one
+    model — in one half, or one in each (see :func:`namespaces_of`). A
+    single lowercase key cannot hold both, and the old lookup silently
+    answered with whichever the dict had kept, reporting one block's
+    cells and area under the other's name. Two or more case-variants is
+    therefore a refusal that lists them as candidates: the user knows
+    which they meant and spelling it exactly gets it, where a guess here
+    is wrong half the time and says nothing about being a guess
+    (#561 review).
     """
     known = module_names(model)
     if module in known:
         return module
-    lowered = {name.lower(): name for name in known}
-    if module.lower() in lowered:
-        return lowered[module.lower()]
+    variants = [name for name in known if name.lower() == module.lower()]
+    if len(variants) == 1:
+        return variants[0]
+    if variants:
+        raise PhysQueryError(
+            f"phys: {module!r} is ambiguous in {where or 'the physical model'}: "
+            f"{len(variants)} modules differ from it only by case",
+            candidates=variants,
+        )
     raise PhysQueryError(
         f"phys: no module {module!r} in {where or 'the physical model'}"
         f"{_missing_half_hint(model)}",
@@ -824,10 +852,7 @@ def module_payload(ctx: PhysContext, module: str, *, limit: int | None = None) -
     if model.get("instances") is not None:
         instances = sorted(
             (r for r in _instance_rows(model) if str(r.get("module")) == resolved),
-            key=lambda r: (
-                _sort_key_desc(r.get("total_uw")),
-                str(r.get("instance_path") or ""),
-            ),
+            key=hottest_key,
         )
 
     namespaces = namespaces_of(model, resolved)
@@ -940,6 +965,14 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
     themselves are returned with the model's own spelling, and
     ``instance_path`` echoes what the user asked.
 
+    ``children`` is ordered by total power descending, nulls last, with
+    the path breaking the tie — :func:`hottest_key`, the same ranking the
+    other two instance lists use. It was lexicographic, which read the
+    same as long as nothing was cut off it but headed the wrong rows the
+    moment something was: ``limit`` truncates *after* the sort, and every
+    surface that heads this list describes it as the heaviest children
+    (#563 review).
+
     ``limit`` heads the ``children`` list and defaults to the complete
     one, exactly as :func:`module_payload`'s does and for the same
     reason. ``child_count`` is how many children there are and ``rollup``
@@ -961,7 +994,7 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
     )
     children = sorted(
         (r for r in rows if is_descendant(str(r.get("instance_path") or ""), path)),
-        key=lambda r: str(r.get("instance_path") or ""),
+        key=hottest_key,
     )
     if exact is None and not children:
         known = instance_paths(model)

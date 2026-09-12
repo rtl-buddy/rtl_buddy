@@ -226,9 +226,17 @@ def phys_project(mcp_project: Path) -> Path:
 
     phys_dir = mcp_project / "verif" / "blk_a" / "artefacts" / "nightly"
     phys_dir.mkdir(parents=True)
+    # Both halves record the same netlist hash, as a `rb synth` then
+    # `rb power` pair does: neither inherits the other's rows without it
+    # (`rtl_buddy.phys.model.may_inherit_other_half`).
+    netlist_sha256 = "0" * 64
     model = merge_model(
         build_synth_model(
-            top="blk_a", modules=_PHYS_MODULES, area_um2=576.5, gate_count=160
+            top="blk_a",
+            modules=_PHYS_MODULES,
+            area_um2=576.5,
+            gate_count=160,
+            netlist_sha256=netlist_sha256,
         ),
         build_power_model(
             top="blk_a",
@@ -237,6 +245,7 @@ def phys_project(mcp_project: Path) -> Path:
             switching_w=0.3175e-6,
             leakage_w=0.08e-6,
             total_w=3.171e-6,
+            netlist_sha256=netlist_sha256,
         ),
         own_half="instances",
     )

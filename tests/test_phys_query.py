@@ -42,6 +42,7 @@ from rtl_buddy.phys.query import (
     module_names,
     module_payload,
     resolve_manifest_path,
+    resolve_module_name,
     summary_payload,
 )
 
@@ -91,6 +92,13 @@ COLLIDING_INSTANCE_ROWS = [
 ]
 
 
+#: Both halves of a fixture run record the same netlist hash, because
+#: that is what a `rb synth` then `rb power` pair records and what the
+#: merge requires before either half inherits the other (see
+#: :func:`rtl_buddy.phys.model.may_inherit_other_half`).
+_FIXTURE_NETLIST_SHA256 = "0" * 64
+
+
 def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None):
     """One run's artefact directory, written the way the producers do."""
     phys_dir = root / "verif" / "blk" / "artefacts" / run
@@ -99,7 +107,11 @@ def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None
     model = None
     if modules is not None:
         model = build_synth_model(
-            top=top, modules=modules, area_um2=576.5, gate_count=162
+            top=top,
+            modules=modules,
+            area_um2=576.5,
+            gate_count=162,
+            netlist_sha256=_FIXTURE_NETLIST_SHA256,
         )
     if instances is not None:
         power = build_power_model(
@@ -109,6 +121,7 @@ def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None
             switching_w=1.8175e-6,
             leakage_w=0.58e-6,
             total_w=13.171e-6,
+            netlist_sha256=_FIXTURE_NETLIST_SHA256,
         )
         model = (
             merge_model(model, power, own_half="instances")
@@ -683,6 +696,69 @@ def test_module_name_matching_is_case_insensitive(project):
     assert module_payload(load_context(project), "SUB")["module"] == "sub"
 
 
+def _two_case_variants() -> dict:
+    """A model that spells one word two ways.
+
+    Verilog is case-sensitive and a Liberty library need not agree with
+    the RTL about case, so an RTL module `CPU` and a cell `cpu` are both
+    ordinary names — here one in each namespace, which is the shape that
+    hides the collision best.
+    """
+    return {
+        "modules": [{"module": "CPU", "cell_count": 120, "area_um2": 480.5}],
+        "instances": [{"instance_path": "u_cpu/_1_", "module": "cpu", "total_uw": 2.0}],
+    }
+
+
+@pytest.mark.parametrize("asked", ["CPU", "cpu"])
+def test_an_exact_module_name_beats_a_case_variant(asked):
+    """Exact first, always: the case fallback exists for the name the user
+    mistyped the case of, not to reinterpret one they spelled correctly."""
+    assert resolve_module_name(_two_case_variants(), asked) == asked
+
+
+def test_an_ambiguous_case_insensitive_module_name_is_refused():
+    """The finding (#561 review, Codex P2). The variants collapsed into one
+    lowercase key and the lookup answered with whichever the dict had kept
+    — one block's cells and area reported under another's name, silently."""
+    with pytest.raises(PhysQueryError) as excinfo:
+        resolve_module_name(_two_case_variants(), "Cpu")
+
+    assert excinfo.value.candidates == ["CPU", "cpu"]
+    assert "ambiguous" in str(excinfo.value)
+
+
+def test_case_variants_within_one_half_are_refused_too(project):
+    """Nothing about the split across namespaces is load-bearing: two RTL
+    modules differing only in case collapse the same way."""
+    model = {
+        "modules": [{"module": "Blk", "cell_count": 1}, {"module": "blk"}],
+        "instances": None,
+    }
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        resolve_module_name(model, "BLK", where="phys-model.json")
+
+    assert excinfo.value.candidates == ["Blk", "blk"]
+    assert "phys-model.json" in str(excinfo.value)
+
+
+def test_an_ambiguous_name_is_refused_through_the_payload(project):
+    """And it reaches the surfaces as a query error, not as an answer."""
+    phys_dir = _write_run(
+        project,
+        "case_clash",
+        modules=[{"module": "CPU", "cell_count": 120, "area_um2": 480.5}],
+        instances=[{"instance_path": "u_cpu/_1_", "module": "cpu", "total_uw": 2.0}],
+        mtime=3_000_000,
+    )
+    ctx = load_context(project, phys_dir=phys_dir)
+
+    with pytest.raises(PhysQueryError):
+        module_payload(ctx, "Cpu")
+    assert module_payload(ctx, "cpu")["namespaces"] == ["liberty"]
+
+
 def test_module_payload_over_a_synth_only_model_has_no_instances(project):
     ctx = load_context(
         project, phys_dir=project / "verif" / "blk" / "artefacts" / "old_synth"
@@ -789,6 +865,50 @@ def test_instance_payload_heads_its_children_at_the_limit(project):
     assert payload["child_count"] == 2
     assert payload["rollup"]["instances"] == 2
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
+
+
+#: A subtree whose hottest leaf is last alphabetically, so the two
+#: orderings disagree — which is the only way to tell them apart, and why
+#: the fixture above could not.
+_UNORDERED_CHILDREN = [
+    {"instance_path": "u_top/a_cold", "module": "INV_X1", "total_uw": 0.1},
+    {"instance_path": "u_top/m_unmeasured", "module": "INV_X1", "total_uw": None},
+    {"instance_path": "u_top/z_hot", "module": "DFF_X1", "total_uw": 9.0},
+]
+
+
+def _unordered_children_context(project):
+    return load_context(
+        project,
+        phys_dir=_write_run(
+            project, "unordered", instances=_UNORDERED_CHILDREN, mtime=3_100_000
+        ),
+    )
+
+
+def test_children_are_ranked_by_power_not_by_path(project):
+    """The finding (#563 review, Codex P2). The children were sorted
+    lexicographically while every surface that heads the list — the console
+    note, the `--limit` help, the MCP tool's description — calls them the
+    hottest, so a truncated list was a head of the wrong ranking. Nulls sink
+    for the reason they do everywhere else: unmeasured is not small."""
+    payload = instance_payload(_unordered_children_context(project), "u_top")
+
+    assert [row["instance_path"] for row in payload["children"]] == [
+        "u_top/z_hot",
+        "u_top/a_cold",
+        "u_top/m_unmeasured",
+    ]
+
+
+def test_a_headed_child_list_keeps_the_hottest(project):
+    """Which is the whole point of the order: `--limit 1` answers with the
+    leaf that dominates the subtree, not with whichever sorts first."""
+    payload = instance_payload(_unordered_children_context(project), "u_top", limit=1)
+
+    assert [row["instance_path"] for row in payload["children"]] == ["u_top/z_hot"]
+    assert payload["child_count"] == 3
+    assert payload["rollup"]["total_uw"] == pytest.approx(9.1)
 
 
 def test_a_zero_instance_limit_means_every_child(project):

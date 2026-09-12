@@ -7025,7 +7025,8 @@ class RtlBuddy:
                 "--limit",
                 min=0,
                 help=(
-                    "children to list (0 for all); truncates the --machine payload too"
+                    "hottest children to list (0 for all); "
+                    "truncates the --machine payload too"
                 ),
             ),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
