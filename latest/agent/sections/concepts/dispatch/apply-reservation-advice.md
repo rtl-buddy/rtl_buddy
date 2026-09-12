@@ -54,7 +54,7 @@ The set is deliberately narrow, because a false positive is not free — it disc
 
 Where such an argument or variable is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names what was responsible.
 
-The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at `root_config.yaml`) and its `note` says which field was superseded, for example:
+The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at the `root_config.yaml` the **backend** was built from — the same file those arguments were read from, which in a regression spanning project roots is the orchestration config rather than the suite's own root) and its `note` says which field was superseded, for example:
 
 ```
 sbatch-args `--cpus-per-task=4` sets this job's cpu request, superseding
