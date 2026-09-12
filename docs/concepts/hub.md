@@ -178,6 +178,8 @@ The pane switches between `cells`, `area`, `leakage`, `dynamic`, and `total`. `d
 
 A model with only one half keeps working. The pane names the command that fills the other one, and `rb hub send phys-focus` still drives whichever half is present.
 
+Reload re-reads whichever model discovery now points at. A reload that lands on the same model keeps your metric, sort, filter, module lens and selected instance; one that lands on a *different* model — another run became the newest, the design was re-topped — keeps the controls but drops the lens and the selection, which were statements about rows that are gone. A `phys-focus` sent while the pane was loading still applies to whatever model arrives.
+
 Clicking a module sends `graph_focus`; clicking an instance sends `selection_changed`, since an instance path is already the schematic's coordinate. Instance-path separators are levelled onto the wire's dots on the way out. An inbound `selection_changed` highlights the matching instance row.
 
 Physical discovery is cached briefly, like coverage. See [Physical Metrics](phys.md) for the model and the CLI verbs.

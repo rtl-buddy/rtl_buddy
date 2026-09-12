@@ -845,6 +845,73 @@ def test_the_module_instance_counts_are_counted_once_per_payload():
     assert js.count("state.instanceCounts = null;") == 2
 
 
+def test_model_identity_is_the_publication_or_the_document_it_came_from():
+    """What a reload is compared by. The publication token when the payload
+    carries one — two reads of one publish share it — and otherwise the
+    manifest path and the top, which is what tells one run's document from
+    another's."""
+
+    out = _node(
+        _marked_js("model-identity")
+        + """
+        var a = { manifest: 'verif/blk/artefacts/both/phys-manifest.json', top: 'blk' };
+        var b = { manifest: 'verif/other/artefacts/both/phys-manifest.json', top: 'blk' };
+        var c = { manifest: a.manifest, top: 'other_top' };
+        var reread = { manifest: a.manifest, top: 'blk', counts: { modules: 9 } };
+        console.log(JSON.stringify([
+          modelIdentity(a) === modelIdentity(reread),
+          modelIdentity(a) === modelIdentity(b),
+          modelIdentity(a) === modelIdentity(c),
+          modelIdentity({ publication: 'ff', manifest: a.manifest }) ===
+            modelIdentity({ publication: 'ff', manifest: b.manifest }),
+          modelIdentity({ hub: { publication: 'ff' } }) ===
+            modelIdentity({ publication: 'ff' }),
+          modelIdentity(null)
+        ]));
+        """
+    )
+    assert json.loads(out) == [True, False, False, True, True, None]
+
+
+def test_a_model_change_drops_the_lens_and_the_selection():
+    """The finding (#562 review, Codex P2). A reload can land on a
+    different run or a different design, and `blk` or `u_sub/_64_` is
+    exactly the kind of rootless name two unrelated models both carry — so
+    the row-still-here checks pass and the reader's lens silently
+    re-applies to a model they never asked about."""
+
+    js = _page_js()
+    body = js.split("function ingest(payload) {")[1].split("renderMetricPicker();")[0]
+    assert "var identity = modelIdentity(payload);" in body
+    assert "state.identity !== null && state.identity !== identity" in body
+    dropped = body.split("if (replaced) {")[1].split("}")[0]
+    assert "state.module = null;" in dropped
+    assert "state.instance = null;" in dropped
+    # Decided before the payload is installed, or `modelIdentity` would be
+    # comparing the new payload with itself.
+    assert body.index("var identity") < body.index("state.payload = payload;")
+    # The reader's own controls are not statements about the model's rows,
+    # so they survive it — as they survive a failed load.
+    for kept in ("state.metric", "state.sort", "state.filter"):
+        assert kept not in dropped, kept
+    # And a focus that arrived before the fetch landed still applies: it
+    # was addressed at whatever model turns up, and it is replayed at the
+    # end of the ingest, after this.
+    ingest = js.split("function ingest(payload) {")[1]
+    assert ingest.index("if (replaced) {") < ingest.index("if (focus) {")
+    assert "applyFocus(focus);" in ingest
+
+
+def test_a_forgotten_model_leaves_no_identity_to_compare_against():
+    """Otherwise the load after a failure would read as a model change and
+    clear a lens that `forgetModel` has already cleared — harmless today,
+    and wrong the moment the two stop agreeing."""
+
+    js = _page_js()
+    body = js.split("function forgetModel() {")[1].split("\n  }")[0]
+    assert "state.identity = null;" in body
+
+
 def test_a_failed_load_forgets_the_model_it_was_showing():
     """The empty panel is a claim that there is nothing to show, and the
     pane used to make it while still holding the last model: the header
