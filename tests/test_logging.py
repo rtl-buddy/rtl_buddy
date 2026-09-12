@@ -391,7 +391,11 @@ def test_vlog_filelist_nested_model_includes_resolve_from_models_yaml(tmp_path):
     assert "../../design/rtl/rtl.sv" in file_text
 
 
-def test_verible_path_missing_is_debug_only(tmp_path):
+def test_verible_path_missing_is_debug_only(tmp_path, monkeypatch):
+    # A host with verible on PATH would take the #439 fallback (available,
+    # WARNING) instead of the missing-everywhere path this test asserts —
+    # stub the lookup so the test does not depend on what is installed.
+    monkeypatch.setattr("rtl_buddy.config.verible.shutil.which", lambda _n: None)
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)
     cfg = VeribleConfigFile(name="verible", path="missing/verible", extra_args={})
