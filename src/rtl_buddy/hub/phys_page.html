@@ -409,7 +409,8 @@
     module: null,       // selected module name — also filters the instances
     instance: null,     // selected instance path, as the model spells it
     sort: { modules: null, instances: null },  // {col, dir} per table
-    shown: INSTANCE_WINDOW,  // instance rows this render may build
+    shown: INSTANCE_WINDOW,  // cap on the instance rows a render may build
+    instanceCounts: null,    // module -> leaf count, built once per payload
     pending: null,      // phys_focus that arrived before the model did
     pendingSelection: null  // selection_changed likewise, see focusInstanceFromWire
   };
@@ -527,22 +528,57 @@
   // <<< row-ordering
 
   // >>> row-window
-  // How many of the ranked rows a render actually builds.
+  // Which slice of the ranked rows a render actually builds:
+  // `{start, count}`, a half-open range into the ranked list.
   //
   // `cap` is what the user has raised the window to so far — it starts
-  // at INSTANCE_WINDOW and each "show more" adds another. `selected` is
-  // the rank of the currently selected row, or -1: a row selected from
-  // ELSEWHERE (an inbound `phys_focus`, a `selection_changed` from the
-  // schematic) has to be in the DOM even when it ranks below the cap,
-  // or the pane would report a selection nobody can see. Growing the
-  // window to reach it is the honest fix; silently dropping the
-  // highlight is not.
-  function windowSize(total, cap, selected) {
-    var shown = Math.max(0, Math.min(cap, total));
-    if (selected >= shown && selected < total) { shown = selected + 1; }
-    return shown;
+  // at INSTANCE_WINDOW and each "show more" adds another. The slice is
+  // NEVER longer than the cap, because the cap is the freeze
+  // protection: six figures of <tr> rebuilt on every sort click and
+  // every keystroke is a hung tab.
+  //
+  // `selected` is the rank of the currently selected row, or -1. A row
+  // selected from ELSEWHERE (an inbound `phys_focus`, a
+  // `selection_changed` from the schematic) has to be in the DOM, or
+  // the pane would report a selection nobody can see — so when it ranks
+  // past the first page the window MOVES to it rather than growing to
+  // reach it: a selection at rank 99,999 must not build 100,000 rows.
+  // It is centred in the slice so the reader gets its neighbours in the
+  // ranking on both sides, and the control under the table says how
+  // many rows the slice has above and below it.
+  //
+  // With nothing selected — and with a selection already on the first
+  // page — the window is anchored at the top, which is what "show more"
+  // and "show all" go on meaning.
+  function rowWindow(total, cap, selected) {
+    var count = Math.max(0, Math.min(cap, total));
+    if (selected < 0 || selected < count) { return { start: 0, count: count }; }
+    var centred = selected - Math.floor(count / 2);
+    return { start: Math.min(Math.max(0, centred), total - count), count: count };
   }
   // <<< row-window
+
+  // >>> instance-counts
+  // module → how many leaf instances carry it, counted in ONE pass.
+  //
+  // The modules table prints this next to every module row, and asking
+  // the instance array per row is O(modules × instances) — on a mapped
+  // design that is thousands times six figures, per render. It depends
+  // on the payload alone (not on the lens, the filter or the sort: the
+  // count is of what the power half RECORDED, not of what is on
+  // screen), so it is built once per payload and read from there.
+  //
+  // A null-prototype map, so a module named `constructor` or
+  // `__proto__` counts as itself rather than inheriting an answer.
+  function countByModule(rows) {
+    var counts = Object.create(null);
+    (rows || []).forEach(function (row) {
+      var key = String(row.module);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return counts;
+  }
+  // <<< instance-counts
 
   // >>> path-normalise
   // The instance-path separator is the TOOL's choice: OpenSTA prints
@@ -559,37 +595,66 @@
     return String(path == null ? '' : path).replace(/\//g, '.');
   }
 
-  // The other half of the same mismatch: a schematic `instance_path` is
-  // rooted at the DESIGN TOP (`blk.u_sub.u_leaf`) and an OpenSTA row is
-  // not (`u_sub/u_leaf`) — the netlist the power flow read has the top
-  // as its context, not as a level. So the root is added on the way out
-  // and ignored on the way in, and neither direction rewrites a row.
+  // The other half of the same mismatch is the ROOT.
   //
-  // Both take the top explicitly rather than reading page state, so this
-  // block stays pure. `top` empty means "no top known": then these are
-  // `toWirePath` and nothing more.
+  // Model rows are uniformly ROOTLESS: an OpenSTA full name is relative
+  // to the design top (`u_sub/u_leaf`), which is the netlist's context
+  // and never a level of the path. A schematic `instance_path` is
+  // rooted (`blk.u_sub.u_leaf`). Neither producer is wrong, so the pane
+  // translates at its two edges and never rewrites a row.
+  //
+  // What it must NOT do is guess which spelling it is holding by
+  // looking at the first level: under a top named `cpu`, the rootless
+  // row `cpu/alu` (a `cpu` instance inside the top) starts with the
+  // top's own name, and a prefix test calls it already-rooted. So:
+  //
+  //   * outgoing (`withTop`) always prepends the top, unconditionally,
+  //     because what it is given is always a model row;
+  //   * inbound (`inboundCandidates` + `findByPath`) tries the levelled
+  //     path against the ACTUAL rows both as sent and with one leading
+  //     top level removed. The model decides which reading names a row;
+  //     provenance only decides which to try first.
+  //
+  // All of these take the top explicitly rather than reading page
+  // state, so this block stays pure. `top` empty means "no top known":
+  // then they are `toWirePath` and nothing more.
   function withTop(path, top) {
     var wire = toWirePath(path), root = toWirePath(top);
-    if (!root || !wire || wire === root || wire.indexOf(root + '.') === 0) {
-      return wire;
-    }
-    return root + '.' + wire;
+    return !root || !wire ? wire : root + '.' + wire;
   }
 
-  function stripTop(path, top) {
+  // `rooted` is what the SENDER is known to do: the schematic's
+  // `selection_changed` carries the top as a level, while a
+  // `phys_focus` target is typically a path copied out of `rb phys`
+  // output, i.e. the model's own rootless spelling. The likely reading
+  // goes first; the other is still offered, because a sender is a
+  // convention and the model is a fact.
+  function inboundCandidates(path, top, rooted) {
     var wire = toWirePath(path), root = toWirePath(top);
-    if (!root || wire === root || wire.indexOf(root + '.') !== 0) { return wire; }
-    return wire.slice(root.length + 1);
+    if (!root || wire.indexOf(root + '.') !== 0) { return [wire]; }
+    var stripped = wire.slice(root.length + 1);
+    return rooted ? [stripped, wire] : [wire, stripped];
   }
 
-  // Comparing a path from elsewhere against the model's: separators are
-  // levelled and the design top is ignored, and nothing else is —
-  // a case-folded or prefix-stripped match would silently claim the
-  // wrong instance. Rootless on both sides is the one spelling both
-  // producers can be reduced to, so an incoming path matches whether or
-  // not it carries the top.
-  function samePath(a, b, top) {
-    return !!a && !!b && stripTop(a, top) === stripTop(b, top);
+  // Two spellings of the same path: separators levelled, and nothing
+  // else — a case-folded or prefix-stripped match would silently claim
+  // the wrong instance. Both sides are the MODEL's spelling by the time
+  // this is reached; rooting is handled at the edges above.
+  function samePath(a, b) {
+    return !!a && !!b && toWirePath(a) === toWirePath(b);
+  }
+
+  // The one place a path from elsewhere meets the model. A reading that
+  // names no row loses to one that does, so the ambiguous case is
+  // settled by the rows rather than by a rule about prefixes.
+  function findByPath(rows, path, top, rooted) {
+    var candidates = inboundCandidates(path, top, rooted);
+    for (var c = 0; c < candidates.length; c++) {
+      for (var r = 0; r < (rows || []).length; r++) {
+        if (samePath(rows[r].instance_path, candidates[c])) { return rows[r]; }
+      }
+    }
+    return null;
   }
   // <<< path-normalise
 
@@ -985,6 +1050,7 @@
     els.empty.classList.remove('show');
     els.dash.hidden = false;
     state.payload = payload;
+    state.instanceCounts = null;
     var hub = payload.hub || {};
     if (Array.isArray(hub.metrics) && hub.metrics.length) { METRICS = hub.metrics; }
     // Only when the user has not picked one: a reload must not undo a
@@ -1331,13 +1397,20 @@
   // How many leaf instances of this module the power half recorded — the
   // join the two halves exist to make. `—` when there is no power half
   // to join against, which is not the same as zero instances.
+  //
+  // The counting itself is `countByModule`, done once for the payload
+  // and cached: this is called per MODULE ROW, and re-scanning the
+  // instance array each time made the modules table quadratic.
+  function instanceCounts() {
+    if (state.instanceCounts === null) {
+      state.instanceCounts = countByModule(rowsOf('instances'));
+    }
+    return state.instanceCounts;
+  }
+
   function instanceCount(module) {
     if (!halfPresent('instances')) { return '—'; }
-    var n = 0;
-    rowsOf('instances').forEach(function (row) {
-      if (String(row.module) === String(module)) { n += 1; }
-    });
-    return String(n);
+    return String(instanceCounts()[String(module)] || 0);
   }
 
   function renderInstances() {
@@ -1376,7 +1449,7 @@
     POWER_COLUMNS.forEach(function (column) {
       maxes[column.key] = maxOf(rows, column.key);
     });
-    var shown = windowSize(ranked.length, state.shown, selectedRank(ranked));
+    var win = rowWindow(ranked.length, state.shown, selectedRank(ranked));
 
     var table = document.createElement('table');
     var thead = document.createElement('thead');
@@ -1393,10 +1466,9 @@
     thead.appendChild(htr); table.appendChild(thead);
 
     var tbody = document.createElement('tbody');
-    ranked.slice(0, shown).forEach(function (row) {
+    ranked.slice(win.start, win.start + win.count).forEach(function (row) {
       var tr = elem('tr', 'row');
-      tr.classList.toggle('sel',
-        samePath(state.instance, row.instance_path, designTop()));
+      tr.classList.toggle('sel', samePath(state.instance, row.instance_path));
       tr.setAttribute('data-path',
         row.instance_path === undefined ? '' : String(row.instance_path));
       var path = elem('td', 'name path', row.instance_path || '—');
@@ -1412,33 +1484,45 @@
     delegate(tbody, 'data-path', activateInstance);
     table.appendChild(tbody);
     els.instances.appendChild(table);
-    renderWindowControl(shown, ranked.length);
+    renderWindowControl(win, ranked.length);
   }
 
   // Where the selected row ranks in the current order, or -1 — what
-  // `windowSize` needs to keep an inbound selection inside the window.
+  // `rowWindow` needs to keep an inbound selection inside the window.
+  // `state.instance` is always the MODEL's spelling of a real row (see
+  // `focusInstance`), so this is a plain levelled comparison.
   function selectedRank(ranked) {
     if (state.instance === null) { return -1; }
-    var top = designTop();
     for (var i = 0; i < ranked.length; i++) {
-      if (samePath(state.instance, ranked[i].instance_path, top)) { return i; }
+      if (samePath(state.instance, ranked[i].instance_path)) { return i; }
     }
     return -1;
   }
 
-  // "N of M rows" plus the two ways to see more of them. Absent when the
-  // window holds everything, which is every small design.
-  function renderWindowControl(shown, total) {
-    if (shown >= total) { return; }
+  // "N of M rows" plus the two ways to see more of them, and — when the
+  // window has moved off the top to hold a selection — how many rows it
+  // has skipped past. Absent when the window holds everything, which is
+  // every small design.
+  function renderWindowControl(win, total) {
+    if (win.count >= total) { return; }
     var line = elem('p', 'window');
+    var above = win.start, below = total - win.start - win.count;
+    var where = above > 0
+      ? 'rows ' + (above + 1).toLocaleString() + '–' +
+        (above + win.count).toLocaleString() + ' of ' + total.toLocaleString()
+      : win.count.toLocaleString() + ' of ' + total.toLocaleString();
+    var skipped = above > 0
+      ? ' (' + above.toLocaleString() + ' above, ' + below.toLocaleString() +
+        ' below the selection)'
+      : '';
     line.appendChild(elem('span', 'muted',
-      shown.toLocaleString() + ' of ' + total.toLocaleString() +
-      ' rows shown — the sort, the filter and the totals are over all ' +
+      where + ' rows shown' + skipped +
+      ' — the sort, the filter and the totals are over all ' +
       total.toLocaleString() + '.'));
-    var step = Math.min(INSTANCE_WINDOW, total - shown);
+    var step = Math.min(INSTANCE_WINDOW, total - win.count);
     var more = elem('button', null, 'show ' + step.toLocaleString() + ' more');
     more.addEventListener('click', function () {
-      state.shown = shown + step;
+      state.shown = win.count + step;
       renderInstances();
     });
     line.appendChild(more);
@@ -1576,14 +1660,12 @@
     return found;
   }
 
-  function instanceRow(path) {
-    var found = null;
-    rowsOf('instances').forEach(function (row) {
-      if (found === null && samePath(row.instance_path, path, designTop())) {
-        found = row;
-      }
-    });
-    return found;
+  // `rooted` says the path came from a producer that roots at the top
+  // (the schematic, over `selection_changed`); everything else — a
+  // `phys_focus` target, a selection this pane is re-checking after a
+  // reload — is the model's own rootless spelling.
+  function instanceRow(path, rooted) {
+    return findByPath(rowsOf('instances'), path, designTop(), rooted);
   }
 
   function focusModule(name) {
@@ -1596,8 +1678,8 @@
     return true;
   }
 
-  function focusInstance(path) {
-    var row = instanceRow(path);
+  function focusInstance(path, rooted) {
+    var row = instanceRow(path, rooted);
     if (row === null) { return false; }
     // The MODEL's spelling, not the sender's: the tables are keyed on
     // it, so a `/`-spelled row selected by a `.`-spelled target has to
@@ -1626,7 +1708,7 @@
       state.pendingSelection = ip;
       return;
     }
-    if (focusInstance(ip)) { note('selected ' + ip); }
+    if (focusInstance(ip, true)) { note('selected ' + ip); }
   }
 
   function setMetric(metric) {

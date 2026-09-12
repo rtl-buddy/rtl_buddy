@@ -59,7 +59,7 @@ rb hub start --serve-viewer
 
 `GET /phy.json` is the `rb phys summary` payload with no row limit, so the pane and the CLI cannot disagree about a number. The pane ranks modules by cells or area and instances by leakage, dynamic or total power, tints each ranked column, and filters the instance table to one module when you click it.
 
-The pane holds every row, but renders the instance table 500 at a time with a `show more` / `show all` control under it — a mapped design's power half runs to six figures of leaf instances, and a table that rebuilt all of them on every sort click would freeze the tab. Sorting, filtering, the tints and the totals are computed over the whole set regardless of what is on screen.
+The pane holds every row, but renders the instance table 500 at a time with a `show more` / `show all` control under it — a mapped design's power half runs to six figures of leaf instances, and a table that rebuilt all of them on every sort click would freeze the tab. Selecting a row that ranks below the window moves the window to it, keeping the row and its neighbours in the ranking on screen without lifting the bound; the control then says how many rows sit above and below the slice. Sorting, filtering, the tints and the totals are computed over the whole set regardless of what is on screen.
 
 `dynamic` is internal plus switching, summed in the browser rather than stored: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows, and says when they disagree.
 
@@ -70,7 +70,7 @@ rb hub send phys-focus module:sub --metric area
 rb hub send phys-focus instance:u_sub/_64_
 ```
 
-An unprefixed target is read as an instance path, and the hub replays the latest focus to the pane when it registers, so sending one before the tab is open works — as does a selection the schematic broadcast before the pane's model had loaded. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. The pane roots the path it sends at the design top, since that is the schematic's coordinate, and ignores the top on the way back in; the tables keep whatever spelling the model recorded. See [Hub](hub.md#synthpower-pane) for the routes and the peer contract.
+An unprefixed target is read as an instance path, and the hub replays the latest focus to the pane when it registers, so sending one before the tab is open works — as does a selection the schematic broadcast before the pane's model had loaded. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. The pane roots the path it sends at the design top, since that is the schematic's coordinate and a model row is always relative to the top; on the way back in it resolves a path against the rows themselves, reading it both as sent and with a leading top level removed, so a design whose top name is also an instance name still selects the right row. The tables keep whatever spelling the model recorded. See [Hub](hub.md#synthpower-pane) for the routes and the peer contract.
 
 Clicking a module filters the instance table to it. When the name is an RTL module and every leaf carries a Liberty cell name, nothing matches, and the pane says so rather than showing an empty table — see [What the module join can answer](#what-the-module-join-can-answer).
 

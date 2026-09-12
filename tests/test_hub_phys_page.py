@@ -599,40 +599,87 @@ def test_the_separator_is_levelled_only_on_the_way_to_the_wire():
     ]
 
 
-def test_the_design_top_is_added_on_the_way_out_and_ignored_on_the_way_in():
-    """A schematic `instance_path` is rooted at the design top; an
-    OpenSTA row is not. Neither producer is wrong, so the pane roots what
-    it sends and un-roots what it compares — and never rewrites a row."""
+def test_the_design_top_is_added_on_the_way_out():
+    """Model rows are uniformly rootless — an OpenSTA full name is
+    relative to the top — and a schematic `instance_path` is rooted. So
+    the top goes on unconditionally: testing what the row starts with is
+    what made a rootless `cpu/alu` under top `cpu` look already-rooted."""
 
     out = _node(
         _marked_js("path-normalise")
         + """
         console.log(JSON.stringify([
           withTop('u_sub/u_leaf', 'blk'),
-          withTop('blk.u_sub.u_leaf', 'blk'),   // already rooted: unchanged
-          withTop('blk', 'blk'),                // the top itself
+          withTop('blk', 'blk'),                // a level that shares the name
+          withTop('cpu/alu', 'cpu'),            // the ambiguous case
           withTop('u_sub/u_leaf', ''),          // no top known: plain levelling
-          stripTop('blk.u_sub.u_leaf', 'blk'),
-          stripTop('u_sub/u_leaf', 'blk'),
-          stripTop('blkish.u_sub', 'blk'),      // a prefix is not a level
-          samePath('u_sub/u_leaf', 'blk.u_sub.u_leaf', 'blk'),
-          samePath('blk/u_sub', 'u_sub', 'blk'),
-          samePath('u_sub', 'u_other', 'blk')
+          withTop('', 'blk')
         ]));
         """
     )
     assert json.loads(out) == [
         "blk.u_sub.u_leaf",
-        "blk.u_sub.u_leaf",
-        "blk",
+        "blk.blk",
+        "cpu.cpu.alu",
         "u_sub.u_leaf",
-        "u_sub.u_leaf",
-        "u_sub.u_leaf",
-        "blkish.u_sub",
-        True,
-        True,
-        False,
+        "",
     ]
+
+
+def test_an_inbound_path_is_resolved_against_the_rows_not_by_its_prefix():
+    """The way back in. A path from elsewhere may or may not carry the
+    top, and no prefix test can tell: under top `cpu`, `cpu.alu` is both
+    a rooted `alu` and a rootless `cpu/alu`, and both can be real rows.
+    So both readings are tried against the ACTUAL rows — the sender's
+    convention only decides which is tried first."""
+
+    out = _node(
+        _marked_js("path-normalise")
+        + """
+        // A design whose top name is also an instance name, with both
+        // readings present as rows.
+        var rows = [
+          { instance_path: 'cpu/alu' },
+          { instance_path: 'alu' }
+        ];
+        function hit(path, rooted) {
+          var row = findByPath(rows, path, 'cpu', rooted);
+          return row === null ? null : row.instance_path;
+        }
+        console.log(JSON.stringify([
+          hit('cpu.cpu.alu', true),    // what withTop('cpu/alu') sent out
+          hit('cpu.alu', true),        // rooted: the top level is the top
+          hit('cpu.alu', false),       // a target in the model's spelling
+          hit('cpu.nope', true),
+          hit('u_sub.u_leaf', true)
+        ]));
+        // With only the rootless row present, a rooted sender still
+        // reaches it: the reading that names no row loses to the one
+        // that does.
+        var one = [{ instance_path: 'cpu/alu' }];
+        console.log(JSON.stringify([
+          findByPath(one, 'cpu.cpu.alu', 'cpu', true).instance_path,
+          findByPath(one, 'cpu.alu', 'cpu', true).instance_path,
+          findByPath(one, 'cpu.alu', 'cpu', false).instance_path
+        ]));
+        """
+    )
+    both, alone = out.strip().splitlines()
+    assert json.loads(both) == ["cpu/alu", "alu", "cpu/alu", None, None]
+    assert json.loads(alone) == ["cpu/alu", "cpu/alu", "cpu/alu"]
+
+
+def test_the_wire_and_a_focus_target_are_read_with_their_own_convention():
+    """`selection_changed` comes from the schematic, which roots its
+    paths; a `phys_focus` target is typically copied out of `rb phys`
+    output, which does not. Provenance picks the first reading."""
+
+    js = _page_js()
+    assert "function instanceRow(path, rooted) {" in js
+    assert "return findByPath(rowsOf('instances'), path, designTop(), rooted);" in js
+    # The wire says so; every other caller takes the rootless default.
+    assert "if (focusInstance(ip, true)) { note('selected ' + ip); }" in js
+    assert "ok = focusInstance(target.slice(9));" in js
 
 
 def test_the_module_column_sorts_by_name_rather_than_by_null():
@@ -680,34 +727,85 @@ def test_the_module_lens_says_when_the_join_cannot_see_the_rows():
     assert "if (matched) { return null; }" in js
 
 
-def test_the_instance_window_is_bounded_and_keeps_the_selection_in_it():
+def test_the_module_instance_counts_are_counted_once_per_payload():
+    """The modules table prints a leaf count next to every module row.
+    Scanning the instance array per row is O(modules x instances) — on a
+    mapped design, thousands times six figures, on every render."""
+
+    out = _node(
+        _marked_js("instance-counts")
+        + """
+        var counts = countByModule([
+          { module: 'DFF_X1' },
+          { module: 'NAND2_X1' },
+          { module: 'DFF_X1' },
+          { module: 'constructor' }
+        ]);
+        console.log(JSON.stringify([
+          counts['DFF_X1'],
+          counts['NAND2_X1'],
+          counts['constructor'],   // a null-prototype map, not Object's
+          counts['toString'],
+          counts['absent'] || 0
+        ]));
+        console.log(JSON.stringify(countByModule(null)));
+        """
+    )
+    counts, empty = out.strip().splitlines()
+    assert json.loads(counts) == [2, 1, 1, None, 0]
+    assert json.loads(empty) == {}
+
+    js = _page_js()
+    # Built once for the payload and read from the cache per row; the
+    # cache dies with the payload that made it.
+    assert "state.instanceCounts = countByModule(rowsOf('instances'));" in js
+    assert "return String(instanceCounts()[String(module)] || 0);" in js
+    assert "state.instanceCounts = null;" in js
+    # And it is a fact about the payload, not about the view: nothing in
+    # the lens/filter/sort path touches it.
+    assert js.count("state.instanceCounts = null;") == 1
+
+
+def test_the_instance_window_is_bounded_and_moves_to_hold_the_selection():
     """`/phy.json` is limit=0, so the pane holds the whole power half — six
     figures of leaf instances on a real mapped design. Every one of them
     rebuilt as a <tr> plus seven <td>s on every sort click and every
-    keystroke is a frozen tab, so the DOM is windowed."""
+    keystroke is a frozen tab, so the DOM is windowed — and a selection
+    deep in the ranking must not be able to talk the pane out of the
+    bound: the window MOVES to it instead of growing to reach it."""
 
     out = _node(
         _marked_js("row-window")
         + """
+        function win(total, cap, selected) {
+          var w = rowWindow(total, cap, selected);
+          return [w.start, w.count];
+        }
         console.log(JSON.stringify([
-          windowSize(100000, 500, -1),   // the cap bounds a huge design
-          windowSize(120, 500, -1),      // a small one is whole
-          windowSize(0, 500, -1),
-          windowSize(100000, 1000, -1),  // one 'show more' later
-          windowSize(100000, 100000, -1) // 'show all'
+          win(100000, 500, -1),   // the cap bounds a huge design
+          win(120, 500, -1),      // a small one is whole
+          win(0, 500, -1),
+          win(100000, 1000, -1),  // one 'show more' later
+          win(100000, 100000, -1) // 'show all'
         ]));
         // A row selected from elsewhere is in the DOM even when it ranks
-        // below the cap — a highlight nobody can see is not a highlight.
+        // below the cap — a highlight nobody can see is not a highlight —
+        // but the slice stays cap-sized wherever it lands.
         console.log(JSON.stringify([
-          windowSize(100000, 500, 8123),
-          windowSize(100000, 500, 12),   // already inside: unchanged
-          windowSize(100000, 500, 99999)
+          win(100000, 500, 8123),
+          win(100000, 500, 12),    // already on the first page: unmoved
+          win(100000, 500, 99999), // the very last row: the window ends there
+          win(100000, 500, 500)    // one past the first page
         ]));
         """
     )
     bounded, selected = out.strip().splitlines()
-    assert json.loads(bounded) == [500, 120, 0, 1000, 100000]
-    assert json.loads(selected) == [8124, 500, 100000]
+    assert json.loads(bounded) == [[0, 500], [0, 120], [0, 0], [0, 1000], [0, 100000]]
+    assert json.loads(selected) == [[7873, 500], [0, 500], [99500, 500], [250, 500]]
+    # Whatever it does, the slice contains the selection and is capped.
+    for (start, count), rank in zip(json.loads(selected), [8123, 12, 99999, 500]):
+        assert count == 500
+        assert start <= rank < start + count
 
 
 def test_the_window_resets_when_the_row_set_changes():
@@ -724,16 +822,21 @@ def test_the_window_resets_when_the_row_set_changes():
     # The heat maxima are over every matching row, not over the window, so
     # a tint does not rescale itself as the reader presses "show more".
     assert "maxes[column.key] = maxOf(rows, column.key);" in js
-    assert "ranked.slice(0, shown).forEach" in js
+    assert "ranked.slice(win.start, win.start + win.count).forEach" in js
 
 
 def test_the_window_control_offers_more_and_all():
     js = _page_js()
-    assert "function renderWindowControl(shown, total) {" in js
-    assert "if (shown >= total) { return; }" in js
-    assert "' rows shown" in js
+    assert "function renderWindowControl(win, total) {" in js
+    assert "if (win.count >= total) { return; }" in js
+    assert "' rows shown'" in js
     assert "'show ' + step.toLocaleString() + ' more'" in js
     assert "'show all ' + total.toLocaleString()" in js
+    # A window that has moved off the top says what it skipped, in both
+    # directions — otherwise the reader sees rank 7,874 first with no
+    # sign that 7,873 rows outrank it.
+    assert "' above, '" in js
+    assert "' below the selection)'" in js
 
 
 def test_row_clicks_are_delegated_to_the_table_body():

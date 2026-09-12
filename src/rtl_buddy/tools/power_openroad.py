@@ -160,6 +160,12 @@ class OpenRoadPower(BasePower):
             ]
         return []  # "default" → static, no activity commands
 
+    # Printed by the generated script between the design-total `report_power`
+    # and the per-instance block below it. It splits `power.log` into the half
+    # that decides the run and the half that only decides the by-product: see
+    # `_fatal_log_region` (#558).
+    _DETAIL_MARKER = "RB_PHYS_DETAIL_BEGIN"
+
     def _emit_per_instance_cmds(self) -> list[str]:
         """Tcl that attributes the run's power to individual leaf instances.
 
@@ -186,8 +192,16 @@ class OpenRoadPower(BasePower):
         `-instances` form, must cost the run its per-instance detail and
         nothing else. A Tcl error escaping to the top level would abort the
         script and take the exit code with it.
+
+        The `catch` alone is not enough, though: an OpenSTA that rejects
+        `-instances` prints an `[ERROR ...]` diagnostic *before* raising, and
+        the post-run log gate fails any run whose log carries one. So the
+        block opens with a marker line naming where the by-product begins —
+        `_fatal_log_region` scans only what precedes it, and this contract
+        holds without the gate having to guess which diagnostics are benign.
         """
         return [
+            f'puts "{self._DETAIL_MARKER}"',
             "catch {",
             "  set rb_insts [get_cells -hierarchical *]",
             "  if {[llength $rb_insts] > 0} {",
@@ -359,6 +373,23 @@ class OpenRoadPower(BasePower):
                 error=result["error"],
             )
 
+    def _fatal_log_region(self, log_text: str) -> str:
+        """The part of `power.log` whose `[ERROR ...]` lines fail the run.
+
+        Everything the generated script prints after `_DETAIL_MARKER` belongs
+        to the per-instance block, which is a by-product: it is `catch`ed, and
+        by the time it runs the design totals are already in `power.rpt`. An
+        `[ERROR ...]` down there (an OpenSTA without `report_power
+        -instances`, say) must cost the model its `instances` half and nothing
+        more — failing the run on it would delete totals this wrapper had
+        already parsed.
+
+        A log with no marker is scanned whole: older scripts predate it, and
+        so does a run that died before reaching the totals.
+        """
+        marker_at = log_text.find(self._DETAIL_MARKER)
+        return log_text if marker_at < 0 else log_text[:marker_at]
+
     def _fail_after_openroad(self, desc: str) -> PowerFailResults:
         """Fail a run that has already invoked OpenROAD, publishing no report.
 
@@ -472,7 +503,11 @@ class OpenRoadPower(BasePower):
         except OSError:
             log_text = ""
 
-        error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
+        error_lines = [
+            ln
+            for ln in self._fatal_log_region(log_text).splitlines()
+            if ln.startswith("[ERROR ")
+        ]
         if error_lines:
             return self._fail_after_openroad(
                 f"{len(error_lines)} ERROR(s) in OpenROAD log"
