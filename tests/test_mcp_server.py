@@ -724,6 +724,11 @@ def test_phys_module_joins_the_synthesis_row_to_the_instances_of_it(
     assert envelope["payload"] == module_payload(load_context(ts.project_root), "sub")
     assert envelope["payload"]["row"]["cell_count"] == 40
     assert envelope["payload"]["instance_count"] == 2
+    # The tool takes no limit, so what it wraps is the complete list —
+    # `rb phys module --limit` heads the CLI's payload (#561 review,
+    # Codex P2) and must not head this one by the same builder.
+    assert envelope["payload"]["limit"] is None
+    assert len(envelope["payload"]["instances"]) == 2
     assert envelope["payload"]["power"]["total_uw"] == pytest.approx(3.171)
 
 
@@ -740,6 +745,9 @@ def test_phys_instance_rolls_up_the_subtree_under_a_path(phys_project: Path):
     assert envelope["payload"]["match"] == "prefix"
     assert envelope["payload"]["rollup"]["instances"] == 2
     assert envelope["payload"]["rollup"]["total_uw"] == pytest.approx(3.171)
+    # Complete, for the reason `phys_module`'s passthrough is.
+    assert envelope["payload"]["limit"] is None
+    assert len(envelope["payload"]["children"]) == envelope["payload"]["child_count"]
 
 
 def test_an_unknown_phys_module_returns_its_candidates(phys_project: Path):
