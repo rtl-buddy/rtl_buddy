@@ -708,9 +708,10 @@
   // A pane is a self-contained single file by design, so this helper is
   // hand-duplicated into cov_page.html and landing_page.html beside it,
   // and the SPA keeps its own copy under the same contract
-  // (rtl-buddy-view, viewer/src/components/HubStatus.vue). Change the
-  // map in one and change it in all four, or the tabs start calling the
-  // same peer different things.
+  // (rtl-buddy-sch, viewer/src/displayNames.js). Change the map in one
+  // and change it in all four, or the tabs start calling the same peer
+  // different things. The cross-repo checklist is rtl-buddy-sch
+  // docs/hub-protocol.md section 13.
   var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
 
   function originLabel(origin) {

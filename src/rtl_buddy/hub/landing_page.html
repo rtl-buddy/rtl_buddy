@@ -255,9 +255,10 @@
   //
   // Hand-duplicated into graph_page.html and cov_page.html beside this
   // file (a pane is a self-contained single file by design), and the
-  // SPA keeps its own copy under the same contract (rtl-buddy-view,
-  // viewer/src/components/HubStatus.vue). Change the map in one and
-  // change it in all four.
+  // SPA keeps its own copy under the same contract (rtl-buddy-sch,
+  // viewer/src/displayNames.js). Change the map in one and change it in
+  // all four. The cross-repo checklist is rtl-buddy-sch
+  // docs/hub-protocol.md section 13.
   var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
 
   function originLabel(origin) {

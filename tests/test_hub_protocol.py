@@ -276,6 +276,38 @@ def test_new_id_is_uuid4():
 # ---------------------------------------------------------------------------
 
 
+def test_origin_enum_matches_vendored_schema():
+    """``Origin`` is a hand-copy of the schema's vocabulary — pin it.
+
+    The vendored schema is the wire contract and ``decode`` validates
+    against it, but the *Python* vocabulary is this enum. Re-syncing the
+    schema (say, after rtl-buddy-sch adds a peer) without extending
+    ``Origin`` leaves a hole that schema validation cannot see: the
+    envelope passes ``_validate`` and then ``Origin(obj["origin"])``
+    raises ``ValueError`` on the first message from the new peer.
+
+    The cross-repo checklist this backstops lives in rtl-buddy-sch's
+    ``docs/hub-protocol.md`` §13.
+    """
+
+    enum = protocol.schema()["properties"]["origin"]["enum"]
+    # Guard the guard: a schema refactor that moved the enum would make
+    # the comparison below pass against nothing.
+    assert isinstance(enum, list) and enum, "schema has no origin enum"
+    # Order-sensitive on purpose. The owner repo pins its own enum in
+    # order too (rtl-buddy-sch
+    # tests/test_hub_protocol_schema.py::test_origin_enum_is_the_full_vocabulary),
+    # so a reordering there is already a deliberate, reviewed act — and
+    # this enum is declared to mirror it. Making the comparison a set
+    # would leave the one place the two orders can silently diverge
+    # unchecked, for no gain: the fix is reordering the members.
+    assert [o.value for o in Origin] == enum, (
+        "Origin does not match the vendored schema's origin enum. Add the "
+        "missing member (or drop the extra one) and keep the declaration "
+        "order identical to the schema's."
+    )
+
+
 def test_vendored_schema_has_expected_types():
     """Catch accidental schema drift: every spec ``type`` is present."""
 
@@ -497,18 +529,34 @@ def test_diagnostics_set_rejects_line_zero():
         )
 
 
-def test_vendored_schema_matches_source_when_view_repo_present():
-    """Schema is vendored — drift detection when the view repo is a sibling.
+#: Directory names an owner checkout may go by, newest first. The repo
+#: was renamed ``rtl-buddy-view`` → ``rtl-buddy-sch``, and checkouts
+#: predating that keep the old directory name (some deliberately — other
+#: sibling-path tests in that repo look for ``../rtl_buddy`` and are
+#: indifferent to its own folder). Probing both is the difference between
+#: a drift check and a silent skip.
+_OWNER_REPO_DIRS = ("rtl-buddy-sch", "rtl-buddy-view")
 
-    The source of truth lives in ``rtl-buddy/rtl-buddy-view``. CI for
-    rtl_buddy does not clone that repo, so this test no-ops there; it
-    fires locally when both checkouts are side-by-side.
+
+def test_vendored_schema_matches_source_when_view_repo_present():
+    """Schema is vendored — drift detection when the owner repo is a sibling.
+
+    The source of truth lives in ``rtl-buddy/rtl-buddy-sch`` (formerly
+    ``rtl-buddy-view``). CI for rtl_buddy does not clone that repo, so
+    this test no-ops there; it fires locally when both checkouts are
+    side-by-side.
     """
 
-    sibling = Path(__file__).resolve().parents[2] / "rtl-buddy-view"
-    src_schema = sibling / "schemas" / "hub-protocol-v1.json"
-    if not src_schema.is_file():
-        pytest.skip("rtl-buddy-view sibling checkout not present")
+    parent = Path(__file__).resolve().parents[2]
+    for name in _OWNER_REPO_DIRS:
+        src_schema = parent / name / "schemas" / "hub-protocol-v1.json"
+        if src_schema.is_file():
+            break
+    else:
+        pytest.skip(
+            "no rtl-buddy-sch sibling checkout "
+            f"(looked for {' / '.join(_OWNER_REPO_DIRS)})"
+        )
 
     vendored = (
         Path(__file__).resolve().parents[1]
@@ -519,6 +567,6 @@ def test_vendored_schema_matches_source_when_view_repo_present():
         / "hub-protocol-v1.json"
     )
     assert vendored.read_bytes() == src_schema.read_bytes(), (
-        "vendored schema has drifted from the rtl-buddy-view source. "
-        "Re-copy and commit; the wire contract is owned by Phase 10a."
+        f"vendored schema has drifted from the source in {src_schema.parent.parent}. "
+        "Re-copy and commit; the wire contract is owned by rtl-buddy-sch."
     )

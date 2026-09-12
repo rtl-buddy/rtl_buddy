@@ -1,7 +1,7 @@
 """Wire envelope codec for the rtl-buddy-hub protocol v1.
 
 The spec lives in ``docs/hub-protocol.md`` of the
-``rtl-buddy/rtl-buddy-view`` repo and is enforced by the JSON Schema at
+``rtl-buddy/rtl-buddy-sch`` repo and is enforced by the JSON Schema at
 ``schemas/hub-protocol-v1.json`` (vendored alongside this module as
 :mod:`rtl_buddy.hub.schema`).
 
@@ -155,7 +155,7 @@ def schema() -> dict[str, Any]:
     """Return a deep copy of the vendored JSON Schema.
 
     Useful for tests that want to drift-check against the source-of-
-    truth copy in ``rtl-buddy-view/schemas/hub-protocol-v1.json``.
+    truth copy in ``rtl-buddy-sch/schemas/hub-protocol-v1.json``.
     """
 
     return json.loads(json.dumps(_SCHEMA))
