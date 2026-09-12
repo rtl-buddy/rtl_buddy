@@ -91,7 +91,7 @@ POWER_KEYS = ("backend", "run", "netlist_source", "report", "instances", "cells"
 
 #: Which block keys hold a path and so need making project-relative. The
 #: rest are plain strings a `rel()` would mangle into a filename.
-_PATH_KEYS = frozenset({"stats", "netlist", "log", "report", "instances", "cells"})
+PATH_KEYS = frozenset({"stats", "netlist", "log", "report", "instances", "cells"})
 
 
 def _generator() -> str:
@@ -170,7 +170,7 @@ def build_manifest(
     def block(values, keys):
         values = values or {}
         return {
-            key: rel(values.get(key)) if key in _PATH_KEYS else values.get(key)
+            key: rel(values.get(key)) if key in PATH_KEYS else values.get(key)
             for key in keys
         }
 
@@ -189,7 +189,7 @@ def build_manifest(
     }
 
 
-def merge_manifest(existing: dict | None, new: dict) -> dict:
+def merge_manifest(existing: dict | None, new: dict, *, own_block: str | None) -> dict:
     """Carry an ``existing`` manifest's other-half block onto ``new``.
 
     The mirror of :func:`rtl_buddy.phys.model.merge_model`, and it must
@@ -198,7 +198,15 @@ def merge_manifest(existing: dict | None, new: dict) -> dict:
     only the last run's reports would leave half the document
     unattributable to the tool output behind it.
 
-    A block is inherited only when the new run left it empty
+    ``own_block`` names the block this run produced (``"synth"`` or
+    ``"power"``) and, exactly as in the model's merge, that block is
+    never inherited. In practice a producer always sets its own
+    ``backend``, so the ``backend is not None`` test below already
+    excludes it — ``own_block`` is what makes that a rule rather than a
+    coincidence of the callers, and keeps a run whose backend name went
+    missing from silently republishing the previous run's report paths.
+
+    Otherwise a block is inherited only when the new run left it empty
     (``backend`` null) and the existing manifest describes the same top,
     for the same reason the model's merge checks the top: a
     same-directory artefact from a different design is not evidence
@@ -219,6 +227,8 @@ def merge_manifest(existing: dict | None, new: dict) -> dict:
         ("power", POWER_KEYS, _POWER_TOTALS),
     )
     for half, keys, totals_keys in halves:
+        if half == own_block:
+            continue
         block = merged.get(half) or {}
         if block.get("backend") is not None:
             continue
@@ -234,13 +244,18 @@ def merge_manifest(existing: dict | None, new: dict) -> dict:
 
 
 def write_manifest(manifest: dict, phys_dir) -> str:
-    """Write ``phys-manifest.json`` into ``phys_dir`` and return its path."""
+    """Write ``phys-manifest.json`` into ``phys_dir`` and return its path.
+
+    Temp-then-:func:`os.replace`, for the reason
+    :func:`rtl_buddy.phys.model.write_model` gives: discovery walks for
+    this file by name, so a reader can arrive mid-rewrite.
+    """
     phys_dir = Path(phys_dir)
     phys_dir.mkdir(parents=True, exist_ok=True)
     path = phys_dir / MANIFEST_FILENAME
-    with path.open("w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2)
-        fh.write("\n")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
     return str(path)
 
 

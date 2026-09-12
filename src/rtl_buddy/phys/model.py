@@ -35,13 +35,18 @@ A run fills only its own half. A synthesis writes ``modules`` and leaves
 stable-keys rule the coverage manifest keeps.
 
 **Merging.** When a model for the same top already exists in the
-artefact directory, the half the new run did not produce is carried
+artefact directory, the half the new run does not *own* is carried
 forward from it rather than being clobbered to null
 (:func:`merge_model`). That is what makes a `rb synth` and a `rb power`
 run configured into one artefact directory add up to a complete
-document, in either order. A different top means a different design, so
-the old model is replaced outright — carrying rows across would
-attribute one design's instances to another's modules.
+document, in either order. The half the run does own is never inherited,
+even when this run failed to produce it: a synthesis whose ``stat
+-json`` was unreadable writes ``modules: null`` under its own fresh
+totals rather than republishing the previous run's rows, which would
+otherwise read as a breakdown of a design that has since changed. A
+different top means a different design, so the old model is replaced
+outright — carrying rows across would attribute one design's instances
+to another's modules.
 
 The model is written to ``<artefact dir>/phys-model.json`` and pointed
 at by ``<artefact dir>/phys-manifest.json``.
@@ -50,6 +55,7 @@ at by ``<artefact dir>/phys-manifest.json``.
 from __future__ import annotations
 
 import json
+import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -172,14 +178,26 @@ def _to_uw(watts: float | None) -> float | None:
     return None if watts is None else watts * _W_TO_UW
 
 
-def merge_model(existing: dict | None, new: dict) -> dict:
+def merge_model(existing: dict | None, new: dict, *, own_half: str | None) -> dict:
     """Fold ``new`` onto an ``existing`` model for the same top.
 
-    Only the halves ``new`` did not produce are taken from ``existing``,
-    together with the totals that belong to them: a rerun of the flow
-    that owns a half must be able to *shrink* it — an edit that removes a
-    module has to remove the row, and inheriting the previous run's rows
-    would republish a module the design no longer has.
+    ``own_half`` names the half the producing command owns — ``"modules"``
+    for a synthesis, ``"instances"`` for a power analysis — and that half
+    is *never* inherited. It is required rather than inferred, because
+    the thing to infer it from is exactly the thing that goes wrong: a
+    synthesis whose ``stat -json`` was unreadable produces
+    ``modules = None``, which is indistinguishable by shape from "this
+    run does not fill that half", and inheriting there would republish
+    the *previous* run's module rows underneath this run's totals. A
+    rerun of the flow that owns a half must be able to shrink it to
+    nothing — ``None`` stays ``None``, with the half's totals keys as
+    this run wrote them, and the reader sees "this run did not produce
+    it" rather than a stale breakdown.
+
+    Only the *other* half is carried forward, together with the totals
+    that belong to it. Pass ``own_half=None`` only for a fold with no
+    producer behind it (two documents being combined after the fact);
+    then any half ``new`` left null is inheritable.
 
     ``existing`` is ignored entirely when it is missing, unreadable, of a
     different ``schema_version``, or describes a different top. The last
@@ -192,6 +210,8 @@ def merge_model(existing: dict | None, new: dict) -> dict:
     merged = dict(new)
     merged["totals"] = dict(new["totals"])
     for half, totals_keys in _HALVES:
+        if half == own_half:
+            continue
         if merged.get(half) is not None or existing.get(half) is None:
             continue
         merged[half] = existing[half]
@@ -215,13 +235,21 @@ def _top_of(model: dict) -> str | None:
 
 
 def write_model(model: dict, artefact_dir) -> str:
-    """Write the model into ``artefact_dir`` and return its path."""
+    """Write the model into ``artefact_dir`` and return its path.
+
+    Through a sibling ``.tmp`` and :func:`os.replace`, the same way the
+    dispatch plan and the result envelopes are written: a `rb phys` read
+    racing a synthesis that is rewriting the document must see one
+    version or the other, never a truncated one.
+    """
     artefact_dir = Path(artefact_dir)
     artefact_dir.mkdir(parents=True, exist_ok=True)
     path = artefact_dir / MODEL_FILENAME
-    with path.open("w", encoding="utf-8") as fh:
-        json.dump(model, fh, indent=2, sort_keys=False)
-        fh.write("\n")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(model, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp, path)
     return str(path)
 
 
