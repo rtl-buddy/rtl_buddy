@@ -21,7 +21,7 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
-from ..phys.publish import publish_synth
+from ..phys.publish import invalidate_half, publish_synth
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
@@ -787,9 +787,15 @@ class YosysSynth:
         is read back inside this same `run()` to build the phys model, and a
         Yosys that exits 0 without reaching its trailing `tee ... stat -json`
         would otherwise have the previous run's per-module areas published as
-        this one's (#558). The model and its manifest are deliberately *not*
-        cleared here -- they are rewritten whole by the next successful run,
-        and a run of the *other* flow may have merged its own half into them.
+        this one's (#558).
+
+        The model and its manifest are not *deleted* -- a run of the other
+        flow may have merged its own half into them, and that half's
+        artefacts are still on disk. They are edited instead: this flow's
+        half is nulled out, because publication happens only on a pass and a
+        rerun that fails here would otherwise leave the previous run's
+        per-module rows discoverable with the `synth_stat.json` behind them
+        already gone (#558).
         """
         stale = clear_stale_artefacts(
             [
@@ -806,6 +812,27 @@ class YosysSynth:
                 "synth.stale_artefacts_removed",
                 synth=self.synth_cfg.get_name(),
                 paths=stale,
+            )
+        self._invalidate_phys_half()
+
+    def _invalidate_phys_half(self) -> None:
+        """Null this flow's half of any model + manifest already here (#558).
+
+        The counterpart of `_publish_phys_model`, called from the clear above
+        so every path that ends without publishing -- a failure, a crash, a
+        gate that returns early -- leaves no module rows standing over
+        artefacts that have just been deleted. The power half is untouched.
+        """
+        result = invalidate_half(self.artefact_dir, "modules")
+        if result["model"] or result["manifest"] or result["error"]:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.phys_half_invalidated",
+                synth=self.synth_cfg.get_name(),
+                model=result["model"],
+                manifest=result["manifest"],
+                error=result["error"],
             )
 
     def _fail_after_yosys(self, desc: str) -> SynthFailResults:

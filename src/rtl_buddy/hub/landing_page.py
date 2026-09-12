@@ -239,6 +239,14 @@ def build_state_payload(
             }
         )
 
+    # The empty-state predicate reads this, so physical artefacts count
+    # as something built: a project that has run `rb synth` but neither
+    # picked a model nor built a graph showed a live phys card above the
+    # words "Nothing built for this project yet"
+    # (rtl-buddy/rtl_buddy#558). A block rather than a bare flag, to
+    # match `graph` — the other data-presence half the page reads.
+    phys: dict = {"present": bool(phys_available)}
+
     graph: dict = {"present": bool(graph_present), "path": graph_path}
     if graph_present and graph_mtime is not None:
         graph["built_at"] = _iso(graph_mtime)
@@ -258,6 +266,7 @@ def build_state_payload(
         "peers": sorted(connected),
         "apps": apps,
         "graph": graph,
+        "phys": phys,
     }
 
 

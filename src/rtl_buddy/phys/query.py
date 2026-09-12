@@ -39,27 +39,51 @@ attribute power to an RTL module on a hierarchical design: no leaf row
 carries ``u_cpu``'s name, so the join simply misses.
 
 Rather than invent an instance→RTL-module mapping here, the surfaces say
-so. ``module_payload`` sets :data:`INSTANCE_JOIN_LIBERTY_ONLY` on
-``instance_join`` when it can see that shape, and ``subtree_rollup``
-reports ``modules_matched`` so a caller can tell a joined area from an
-unjoined one. Real RTL-module↔instance attribution needs the hierarchy
-join, which is tracked as its own phase on the epic.
+so: ``module_payload`` sets :data:`INSTANCE_JOIN_LIBERTY_ONLY` on
+``instance_join`` when it can see that shape. Nothing here attributes
+*area* to an instance or a subtree at all — see :func:`subtree_rollup`.
+Real RTL-module↔instance attribution needs the hierarchy join, which is
+tracked as its own phase on the epic (rtl-buddy/rtl_buddy#558).
+
+**Reading a publication.** The model and the manifest that names it are
+two files, written one after the other, so a reader can arrive between
+the two writes and pair a new model with the old manifest. Both carry
+the same ``publication`` token (see
+:func:`rtl_buddy.phys.model.new_publication`) and
+:func:`load_context` re-reads on a mismatch.
 """
 
 from __future__ import annotations
 
 import difflib
+import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event
 from . import manifest as manifest_mod
 from .model import load_model
+
+logger = logging.getLogger(__name__)
 
 #: Bumped when a payload's shape changes incompatibly. Rides on every
 #: payload so an agent surface can tell.
 PHYS_QUERY_SCHEMA_VERSION = 1
+
+#: How many times :func:`load_context` re-reads a model+manifest pair
+#: whose ``publication`` tokens disagree. Small because the only window
+#: it covers is the gap between two ``os.replace`` calls in the same
+#: function — a reader that is still mismatched after this is looking at
+#: two documents that were never written together, not at a race.
+PUBLICATION_ATTEMPTS = 3
+
+#: Seconds between those attempts. Long enough for a publish to finish
+#: its second write, short enough that a `rb phys summary` on a document
+#: nobody is writing never notices.
+PUBLICATION_RETRY_SECONDS = 0.05
 
 #: Rows per ranking in ``rb phys summary`` before truncation. A headline,
 #: not a report: the whole breakdown is in the model the payload names,
@@ -188,7 +212,7 @@ def resolve_manifest_path(project_root, *, phys_dir=None, manifest=None) -> str:
 
 
 def load_context(project_root, *, phys_dir=None, manifest=None) -> PhysContext:
-    """Load the manifest and the model it names.
+    """Load the manifest and the model it names, as one publication.
 
     A manifest with no readable model is an error rather than an empty
     answer: both documents are written by the same code path, so a
@@ -196,10 +220,49 @@ def load_context(project_root, *, phys_dir=None, manifest=None) -> PhysContext:
     measured nothing. A run that measured nothing still writes a model —
     with both halves ``null`` — and that is a state the payloads report
     rather than refuse.
+
+    **The pair, not the two files.** A publish replaces the model and
+    then the manifest, each atomically but not together, so a read that
+    lands between the two ``os.replace`` calls gets a new model under an
+    old manifest — the totals from one run beside the artefact paths of
+    another. Both documents carry the ``publication`` token of the write
+    that produced them (:func:`rtl_buddy.phys.model.new_publication`), so
+    the mismatch is *visible*: this re-reads the pair up to
+    :data:`PUBLICATION_ATTEMPTS` times, :data:`PUBLICATION_RETRY_SECONDS`
+    apart, which is far longer than the window.
+
+    Still mismatched after that is **not** an error, and this is an
+    advisory read: nothing here holds a lock, so the only alternatives
+    are to refuse a question the documents can very nearly answer or to
+    answer it from the freshest read of each. It takes the latter — the
+    last pair read, which is what the two files say right now — and logs
+    it. Two documents that genuinely disagree (one written by an
+    rtl_buddy that predates the token, say, and one that does not) are
+    the case that would otherwise never resolve. A document that cannot
+    be *read* is still an error, as above.
     """
     manifest_path = resolve_manifest_path(
         project_root, phys_dir=phys_dir, manifest=manifest
     )
+    for attempt in range(PUBLICATION_ATTEMPTS):
+        ctx = _read_publication(manifest_path, project_root)
+        if ctx.manifest.get("publication") == ctx.model.get("publication"):
+            return ctx
+        if attempt + 1 < PUBLICATION_ATTEMPTS:
+            time.sleep(PUBLICATION_RETRY_SECONDS)
+    log_event(
+        logger,
+        logging.DEBUG,
+        "phys.publication_mismatch",
+        manifest=ctx.manifest_path,
+        model=ctx.model_path,
+        attempts=PUBLICATION_ATTEMPTS,
+    )
+    return ctx
+
+
+def _read_publication(manifest_path: str, project_root) -> PhysContext:
+    """One read of the manifest and the model it names."""
     try:
         document = manifest_mod.load_manifest(manifest_path)
     except (OSError, ValueError) as exc:
@@ -546,42 +609,27 @@ def is_descendant(path: str, prefix: str) -> bool:
     return path[len(prefix)] == _CANONICAL_SEPARATOR
 
 
-def subtree_rollup(model: dict, rows: list[dict]) -> dict:
-    """Sum ``rows`` into one subtree figure, area joined in when known.
+def subtree_rollup(rows: list[dict]) -> dict:
+    """Sum ``rows`` into one subtree figure: the leaf count and the power.
 
     The roll-up the model deliberately does not do. Power adds up
-    straightforwardly because every row is a leaf. Area does not come
-    from the rows at all — the power half has no area column — so it is
-    joined from the synthesis half through each row's ``module``, and
-    ``modules_matched`` reports how much of the subtree that join
-    actually covered. A join that matched nothing yields ``null`` rather
-    than ``0.0``: an unjoined subtree has unknown area, not no area.
+    straightforwardly because every row is a leaf and every column is a
+    watt figure of that leaf alone.
 
-    ``modules_matched`` is the honesty mechanism here, and on a mapped
-    hierarchical design it is routinely ``0``. The two halves spell
-    ``module`` in different namespaces — Liberty cells on the leaves, RTL
-    modules on the synthesis rows (see this module's docstring) — so the
-    join lands only where the two coincide: a Liberty cell that Yosys
-    also emitted a ``stat`` row for, or a flat netlist. A caller must read
-    ``area_um2`` against ``modules_matched`` and not as the subtree's
-    area; the real attribution arrives with the hierarchy join.
+    **No area.** There is no per-cell area anywhere in the model, so
+    there is nothing here to sum. The obvious substitute — join each
+    leaf's ``module`` to the synthesis half and add that row's area — is
+    wrong twice over: the synthesis row's ``area_um2`` is the *whole
+    module's* area, not one instance's, so a subtree with fifty
+    ``DFF_X1`` leaves would add the ``DFF_X1`` row's total fifty times;
+    and the two halves spell ``module`` in different namespaces (see this
+    module's docstring), so on a Liberty/RTL name collision the figure
+    would be some other module's area entirely — reported as covered.
+    Area attribution to an instance needs the hierarchy join, which is
+    Phase 5 of the epic (rtl-buddy/rtl_buddy#558); until then this says
+    nothing about area rather than saying something arbitrary.
     """
-    rollup = {"instances": len(rows), **_power_sum(rows)}
-    areas = {
-        str(row["module"]): row.get("area_um2")
-        for row in _module_rows(model)
-        if row.get("module")
-    }
-    matched = 0
-    area_total: float | None = None
-    for row in rows:
-        area = areas.get(str(row.get("module")))
-        if isinstance(area, (int, float)):
-            matched += 1
-            area_total = (area_total or 0.0) + area
-    rollup["area_um2"] = area_total
-    rollup["modules_matched"] = matched
-    return rollup
+    return {"instances": len(rows), **_power_sum(rows)}
 
 
 def instance_payload(ctx: PhysContext, path: str) -> dict:
@@ -630,7 +678,7 @@ def instance_payload(ctx: PhysContext, path: str) -> dict:
             "match": "exact" if exact is not None else "prefix",
             "instance": exact,
             "children": children,
-            "rollup": subtree_rollup(model, covered),
+            "rollup": subtree_rollup(covered),
             "halves": halves_block(model),
             "missing_halves": missing_halves(model),
             "artefacts": artefacts_block(ctx),

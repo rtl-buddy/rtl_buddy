@@ -120,6 +120,31 @@ def test_phys_card_advertises_on_data_presence():
     assert ready["phys"]["note"] is None
 
 
+def test_phys_presence_is_reported_beside_the_graphs():
+    """The page's empty-state test reads data presence, not the card list, so
+    physical artefacts have to appear as a block of their own — otherwise a
+    project whose only build is an `rb synth` shows a live phys card above
+    "Nothing built for this project yet" (rtl-buddy/rtl_buddy#558)."""
+
+    assert landing_page.build_state_payload(hub_addr="h:1")["phys"] == {
+        "present": False
+    }
+    built = landing_page.build_state_payload(hub_addr="h:1", phys_available=True)
+    assert built["phys"] == {"present": True}
+
+
+def test_the_empty_state_counts_every_kind_of_build():
+    """One predicate in the page, and every data-presence half the state
+    carries has to be in it."""
+
+    body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    match = re.search(r"var nothingBuilt = ([^;]+);", body)
+    assert match, "the empty-state predicate moved"
+    predicate = match.group(1)
+    for term in ("hub.active_model", "graph.present", "phys.present"):
+        assert term in predicate, term
+
+
 def test_already_open_comes_from_the_peer_registry():
     """One client per origin: a second tab supersedes the first."""
 

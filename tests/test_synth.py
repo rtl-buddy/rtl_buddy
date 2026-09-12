@@ -5093,6 +5093,46 @@ def test_a_synth_without_a_readable_stat_dump_still_passes(tmp_path, monkeypatch
     assert load_model(result.results["phys_model"])["modules"] is None
 
 
+def test_a_failed_synth_rerun_withdraws_the_modules_half_it_published(
+    tmp_path, monkeypatch
+):
+    """The clear deletes `synth_stat.json`, but publication only happens on a
+    pass — so without this the last run's per-module areas stay in
+    `phys-model.json` with nothing left on disk behind them. The power half,
+    whose report the synthesis never touched, survives (#558)."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import publish_power
+
+    ys, result = _run_yosys_with(
+        tmp_path,
+        monkeypatch,
+        stats_text=_STAT_JSON,
+        log_text="Chip area for module '\\my_module': 12.500000\n",
+    )
+    model_path = Path(result.results["phys_model"])
+    assert load_model(model_path)["modules"]
+
+    # A power run into the same artefact directory, as a co-named `rb power`
+    # would have left it.
+    publish_power(
+        artefact_dir=ys.artefact_dir,
+        top="my_module",
+        backend="openroad",
+        run="demo_power",
+        total_w=2.83e-05,
+    )
+
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _fake_managed_process(returncode=1)
+    )
+    assert isinstance(ys.run(), SynthFailResults)
+
+    model = load_model(model_path)
+    assert model["modules"] is None
+    assert model["totals"]["area_um2"] is None
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+
 def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch):
     """`synth_stat.json` is read back inside the same `run()`, so a rerun that
     dies must not have the last run's per-module areas published (#469)."""

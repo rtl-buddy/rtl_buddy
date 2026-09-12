@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
-from ..phys.publish import publish_power
+from ..phys.publish import invalidate_half, publish_power
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
@@ -314,6 +314,12 @@ class OpenRoadPower(BasePower):
         treatment as the report they accompany: an OpenROAD that exits 0
         without reaching the `catch` block must not have the last run's
         per-instance watts published as this one's (#469, #558).
+
+        The model and its manifest stay -- a synthesis may have merged its
+        own half into them -- but this flow's half is nulled out, because
+        publication happens only on a pass and a failed rerun would otherwise
+        leave the previous run's per-instance watts discoverable with the
+        report behind them already deleted (#558).
         """
         stale = clear_stale_artefacts(
             [
@@ -330,6 +336,27 @@ class OpenRoadPower(BasePower):
                 "power.stale_artefacts_removed",
                 power=self.power_cfg.get_name(),
                 paths=stale,
+            )
+        self._invalidate_phys_half()
+
+    def _invalidate_phys_half(self) -> None:
+        """Null this flow's half of any model + manifest already here (#558).
+
+        The counterpart of `_publish_phys_model`, called from the clear so a
+        run that never reaches publication withdraws the previous one's
+        per-instance rows rather than leaving them over a deleted report. The
+        synthesis half is untouched.
+        """
+        result = invalidate_half(self.artefact_dir, "instances")
+        if result["model"] or result["manifest"] or result["error"]:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "power.phys_half_invalidated",
+                power=self.power_cfg.get_name(),
+                model=result["model"],
+                manifest=result["manifest"],
+                error=result["error"],
             )
 
     def _fail_after_openroad(self, desc: str) -> PowerFailResults:

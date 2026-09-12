@@ -204,6 +204,16 @@
        them, when only one of them was ranked. */
     td.heat { border-radius: var(--radius-1); }
 
+    /* -- the instance table's window control --------------------------
+       `/phy.json` carries every row (limit=0), so the pane sorts and
+       filters over the whole design; what is bounded is the DOM. This
+       sits under the table and says how much of it is on screen. */
+    p.window {
+      margin: .5rem 0 0; display: flex; gap: .5rem; align-items: baseline;
+      flex-wrap: wrap; font-size: var(--fs-small);
+    }
+    p.window button { font-size: var(--fs-small); padding: .1rem .45rem; }
+
     .pill {
       display: inline-block; padding: 0 .4rem; border-radius: 999px;
       border: 1px solid var(--line-strong); font-size: var(--fs-small);
@@ -353,6 +363,23 @@
   // the CLI's hint say the same thing.
   var HALF_PRODUCER = { modules: 'rb synth', instances: 'rb power' };
 
+  // How many instance rows one render builds before the window control
+  // under the table takes over — and how many each "show more" adds.
+  //
+  // `/phy.json` is limit=0, so the pane holds the WHOLE power half and
+  // every sort, filter and total is computed over all of it. What is
+  // bounded is the DOM: a row is a <tr> and seven <td>s, and a real
+  // mapped design's power half is six figures of leaf instances, so an
+  // unbounded table built on every re-render — every sort click, every
+  // keystroke in the filter — is a frozen tab. Five hundred is well
+  // past what fits on a screen and far short of where the browser
+  // starts to struggle.
+  //
+  // The modules table is deliberately NOT windowed: it has one row per
+  // RTL module, which is thousands at the very worst, and a cap there
+  // would cost a scroll for nothing.
+  var INSTANCE_WINDOW = 500;
+
   var els = {
     counts: document.getElementById('counts'),
     metric: document.getElementById('metric'),
@@ -382,6 +409,7 @@
     module: null,       // selected module name — also filters the instances
     instance: null,     // selected instance path, as the model spells it
     sort: { modules: null, instances: null },  // {col, dir} per table
+    shown: INSTANCE_WINDOW,  // instance rows this render may build
     pending: null,      // phys_focus that arrived before the model did
     pendingSelection: null  // selection_changed likewise, see focusInstanceFromWire
   };
@@ -497,6 +525,24 @@
     }).map(function (entry) { return entry.row; });
   }
   // <<< row-ordering
+
+  // >>> row-window
+  // How many of the ranked rows a render actually builds.
+  //
+  // `cap` is what the user has raised the window to so far — it starts
+  // at INSTANCE_WINDOW and each "show more" adds another. `selected` is
+  // the rank of the currently selected row, or -1: a row selected from
+  // ELSEWHERE (an inbound `phys_focus`, a `selection_changed` from the
+  // schematic) has to be in the DOM even when it ranks below the cap,
+  // or the pane would report a selection nobody can see. Growing the
+  // window to reach it is the honest fix; silently dropping the
+  // highlight is not.
+  function windowSize(total, cap, selected) {
+    var shown = Math.max(0, Math.min(cap, total));
+    if (selected >= shown && selected < total) { shown = selected + 1; }
+    return shown;
+  }
+  // <<< row-window
 
   // >>> path-normalise
   // The instance-path separator is the TOOL's choice: OpenSTA prints
@@ -952,6 +998,7 @@
     // filter the instance table to nothing with no way to see why.
     if (state.module !== null && moduleRow(state.module) === null) { state.module = null; }
     if (state.instance !== null && instanceRow(state.instance) === null) { state.instance = null; }
+    resetInstanceWindow();
 
     renderMetricPicker();
     renderAll();
@@ -1165,7 +1212,12 @@
     state.sort[half] = current.col === col
       ? { col: col, dir: current.dir === 'desc' ? 'asc' : 'desc' }
       : { col: col, dir: col === 'name' || col === 'instance_path' ? 'asc' : 'desc' };
-    if (half === 'modules') { renderModules(); } else { renderInstances(); }
+    if (half === 'modules') {
+      renderModules();
+    } else {
+      resetInstanceWindow();
+      renderInstances();
+    }
   }
 
   function matchesFilter(text) {
@@ -1245,6 +1297,7 @@
     ranked.forEach(function (row) {
       var tr = elem('tr', 'row');
       tr.classList.toggle('sel', state.module === row.module);
+      tr.setAttribute('data-module', row.module === undefined ? '' : String(row.module));
       var name = elem('td', 'name', row.module || '—');
       name.title = row.module || '';
       tr.appendChild(name);
@@ -1253,11 +1306,26 @@
       tr.appendChild(heatCell(elem('td', null, fmt(cellValue(row, 'area_um2'))),
         cellValue(row, 'area_um2'), maxArea));
       tr.appendChild(elem('td', 'muted', instanceCount(row.module)));
-      tr.addEventListener('click', function () { activateModule(row.module); });
       tbody.appendChild(tr);
     });
+    delegate(tbody, 'data-module', activateModule);
     table.appendChild(tbody);
     els.modules.appendChild(table);
+  }
+
+  // ONE click listener per table body, not one per row. A listener on
+  // every row is a closure over that row kept alive for as long as the
+  // table is, rebuilt from scratch on every sort, filter and metric
+  // change; on the instance half that is thousands of them per
+  // keystroke. The row carries its identity in an attribute instead and
+  // the body reads it back on the way up.
+  function delegate(tbody, attribute, activate) {
+    tbody.addEventListener('click', function (ev) {
+      var node = ev.target;
+      while (node && node !== tbody && node.nodeName !== 'TR') { node = node.parentNode; }
+      if (!node || node === tbody || !node.hasAttribute(attribute)) { return; }
+      activate(node.getAttribute(attribute));
+    });
   }
 
   // How many leaf instances of this module the power half recorded — the
@@ -1301,10 +1369,14 @@
     }
     var ranked = rankRows(rows, sort.col, sort.dir,
       function (row) { return row.instance_path; });
+    // The heat maxima are taken over EVERY matching row, not over the
+    // window: a tint that rescaled itself as the user pressed "show
+    // more" would say something different about the same row.
     var maxes = Object.create(null);
     POWER_COLUMNS.forEach(function (column) {
       maxes[column.key] = maxOf(rows, column.key);
     });
+    var shown = windowSize(ranked.length, state.shown, selectedRank(ranked));
 
     var table = document.createElement('table');
     var thead = document.createElement('thead');
@@ -1321,10 +1393,12 @@
     thead.appendChild(htr); table.appendChild(thead);
 
     var tbody = document.createElement('tbody');
-    ranked.forEach(function (row) {
+    ranked.slice(0, shown).forEach(function (row) {
       var tr = elem('tr', 'row');
       tr.classList.toggle('sel',
         samePath(state.instance, row.instance_path, designTop()));
+      tr.setAttribute('data-path',
+        row.instance_path === undefined ? '' : String(row.instance_path));
       var path = elem('td', 'name path', row.instance_path || '—');
       path.title = row.instance_path || '';
       tr.appendChild(path);
@@ -1333,12 +1407,57 @@
         var value = cellValue(row, column.key);
         tr.appendChild(heatCell(elem('td', null, fmt(value)), value, maxes[column.key]));
       });
-      tr.addEventListener('click', function () { activateInstance(row.instance_path); });
       tbody.appendChild(tr);
     });
+    delegate(tbody, 'data-path', activateInstance);
     table.appendChild(tbody);
     els.instances.appendChild(table);
+    renderWindowControl(shown, ranked.length);
   }
+
+  // Where the selected row ranks in the current order, or -1 — what
+  // `windowSize` needs to keep an inbound selection inside the window.
+  function selectedRank(ranked) {
+    if (state.instance === null) { return -1; }
+    var top = designTop();
+    for (var i = 0; i < ranked.length; i++) {
+      if (samePath(state.instance, ranked[i].instance_path, top)) { return i; }
+    }
+    return -1;
+  }
+
+  // "N of M rows" plus the two ways to see more of them. Absent when the
+  // window holds everything, which is every small design.
+  function renderWindowControl(shown, total) {
+    if (shown >= total) { return; }
+    var line = elem('p', 'window');
+    line.appendChild(elem('span', 'muted',
+      shown.toLocaleString() + ' of ' + total.toLocaleString() +
+      ' rows shown — the sort, the filter and the totals are over all ' +
+      total.toLocaleString() + '.'));
+    var step = Math.min(INSTANCE_WINDOW, total - shown);
+    var more = elem('button', null, 'show ' + step.toLocaleString() + ' more');
+    more.addEventListener('click', function () {
+      state.shown = shown + step;
+      renderInstances();
+    });
+    line.appendChild(more);
+    var all = elem('button', null, 'show all ' + total.toLocaleString());
+    all.title = 'Builds every row: slow on a design with tens of thousands.';
+    all.addEventListener('click', function () {
+      state.shown = total;
+      renderInstances();
+    });
+    line.appendChild(all);
+    els.instances.appendChild(line);
+  }
+
+  // The window is a property of the ROW SET, so anything that changes
+  // which rows are in the table puts it back to the first page: a new
+  // sort, a new filter, a new metric, a new module lens, a new payload.
+  // Selecting a row does not — the set is the same, and collapsing the
+  // table under the reader's cursor would be its own bug.
+  function resetInstanceWindow() { state.shown = INSTANCE_WINDOW; }
 
   // Why an empty instance table under a module lens is usually not a
   // fact about the design.
@@ -1407,6 +1526,7 @@
     // test lens uses, and the pill above says so too.
     var next = state.module === name ? null : name;
     state.module = next;
+    resetInstanceWindow();
     renderModules();
     renderInstances();
     if (next === null) { note('every instance'); return; }
@@ -1470,6 +1590,7 @@
     if (moduleRow(name) === null) { return false; }
     state.module = String(name);
     state.instance = null;
+    resetInstanceWindow();
     renderModules();
     renderInstances();
     return true;
@@ -1483,6 +1604,7 @@
     // come back as the row's own path or the highlight never matches.
     state.instance = row.instance_path;
     state.module = null;
+    resetInstanceWindow();
     renderModules();
     renderInstances();
     return true;
@@ -1517,6 +1639,7 @@
     // user had sorted by hand.
     var def = METRIC_DEFS[metric];
     if (def) { state.sort[def.half] = null; }
+    resetInstanceWindow();
     renderTotals();
     renderModules();
     renderInstances();
@@ -1562,6 +1685,7 @@
   });
   els.search.addEventListener('input', function () {
     state.filter = els.search.value.trim().toLowerCase();
+    resetInstanceWindow();
     renderModules();
     renderInstances();
   });

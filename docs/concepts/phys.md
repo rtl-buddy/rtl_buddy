@@ -47,7 +47,7 @@ It does not attribute power to an RTL module on a hierarchical design: no leaf r
 
 The model records leaf values only, because a subtree sum depends on the hierarchy the consumer projects onto. `rb phys instance <path>` is that consumer: it sums the leaves under the path at query time and leaves the document unchanged.
 
-The rollup adds the four power columns directly. Area is joined in through each leaf's module, so it covers only the leaves whose module has a synthesis row; the reported `modules_matched` count says how many that was. On a mapped hierarchical design that count is routinely `0` for the namespace reason above — read `area_um2` against it, not on its own.
+The rollup adds the four power columns directly, and reports nothing else. It carries no area: the model has no per-cell area to sum, and the only substitute available — joining each leaf's module to the synthesis half — would add the whole module's area once per leaf, on a name that may belong to the other namespace entirely. Attributing area to an instance or a subtree arrives with the hierarchy join, Phase 5 of the physical-metrics epic ([rtl-buddy/rtl_buddy#558](https://github.com/rtl-buddy/rtl_buddy/issues/558)).
 
 ## Browse the model in the hub
 
@@ -58,6 +58,8 @@ rb hub start --serve-viewer
 ```
 
 `GET /phy.json` is the `rb phys summary` payload with no row limit, so the pane and the CLI cannot disagree about a number. The pane ranks modules by cells or area and instances by leakage, dynamic or total power, tints each ranked column, and filters the instance table to one module when you click it.
+
+The pane holds every row, but renders the instance table 500 at a time with a `show more` / `show all` control under it — a mapped design's power half runs to six figures of leaf instances, and a table that rebuilt all of them on every sort click would freeze the tab. Sorting, filtering, the tints and the totals are computed over the whole set regardless of what is on screen.
 
 `dynamic` is internal plus switching, summed in the browser rather than stored: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows, and says when they disagree.
 

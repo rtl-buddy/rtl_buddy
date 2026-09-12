@@ -680,6 +680,78 @@ def test_the_module_lens_says_when_the_join_cannot_see_the_rows():
     assert "if (matched) { return null; }" in js
 
 
+def test_the_instance_window_is_bounded_and_keeps_the_selection_in_it():
+    """`/phy.json` is limit=0, so the pane holds the whole power half — six
+    figures of leaf instances on a real mapped design. Every one of them
+    rebuilt as a <tr> plus seven <td>s on every sort click and every
+    keystroke is a frozen tab, so the DOM is windowed."""
+
+    out = _node(
+        _marked_js("row-window")
+        + """
+        console.log(JSON.stringify([
+          windowSize(100000, 500, -1),   // the cap bounds a huge design
+          windowSize(120, 500, -1),      // a small one is whole
+          windowSize(0, 500, -1),
+          windowSize(100000, 1000, -1),  // one 'show more' later
+          windowSize(100000, 100000, -1) // 'show all'
+        ]));
+        // A row selected from elsewhere is in the DOM even when it ranks
+        // below the cap — a highlight nobody can see is not a highlight.
+        console.log(JSON.stringify([
+          windowSize(100000, 500, 8123),
+          windowSize(100000, 500, 12),   // already inside: unchanged
+          windowSize(100000, 500, 99999)
+        ]));
+        """
+    )
+    bounded, selected = out.strip().splitlines()
+    assert json.loads(bounded) == [500, 120, 0, 1000, 100000]
+    assert json.loads(selected) == [8124, 500, 100000]
+
+
+def test_the_window_resets_when_the_row_set_changes():
+    """A window raised over one filter must not carry into the next: the
+    control says "N of M", and M is what the current sort/filter/lens
+    matches. Selecting a row is not a change of set — collapsing the table
+    under the reader's cursor would be its own bug."""
+
+    js = _page_js()
+    assert "var INSTANCE_WINDOW = 500;" in js
+    assert "function resetInstanceWindow() { state.shown = INSTANCE_WINDOW; }" in js
+    # Every state change that alters WHICH rows are in the table.
+    assert js.count("resetInstanceWindow();") == 7
+    # The heat maxima are over every matching row, not over the window, so
+    # a tint does not rescale itself as the reader presses "show more".
+    assert "maxes[column.key] = maxOf(rows, column.key);" in js
+    assert "ranked.slice(0, shown).forEach" in js
+
+
+def test_the_window_control_offers_more_and_all():
+    js = _page_js()
+    assert "function renderWindowControl(shown, total) {" in js
+    assert "if (shown >= total) { return; }" in js
+    assert "' rows shown" in js
+    assert "'show ' + step.toLocaleString() + ' more'" in js
+    assert "'show all ' + total.toLocaleString()" in js
+
+
+def test_row_clicks_are_delegated_to_the_table_body():
+    """One listener per table, not one per row. A per-row closure is kept
+    alive for as long as the table is and rebuilt on every re-render, which
+    on the instance half is thousands of them per keystroke."""
+
+    js = _page_js()
+    assert "function delegate(tbody, attribute, activate) {" in js
+    assert "delegate(tbody, 'data-module', activateModule);" in js
+    assert "delegate(tbody, 'data-path', activateInstance);" in js
+    # The row carries its identity in an attribute instead of a closure.
+    assert "tr.setAttribute('data-module'" in js
+    assert "tr.setAttribute('data-path'" in js
+    # And no row wires up a listener of its own any more.
+    assert "tr.addEventListener(" not in js
+
+
 def test_an_early_selection_is_held_until_the_model_arrives():
     """The hub replays the cached selection right after `welcome`, which
     routinely beats the `/phy.json` fetch. `phys_focus` was already held
