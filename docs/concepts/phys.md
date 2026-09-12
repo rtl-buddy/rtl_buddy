@@ -68,7 +68,9 @@ rb hub send phys-focus module:sub --metric area
 rb hub send phys-focus instance:u_sub/_64_
 ```
 
-An unprefixed target is read as an instance path, and the hub replays the latest focus to the pane when it registers, so sending one before the tab is open works. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. See [Hub](hub.md#synthpower-pane) for the routes and the peer contract.
+An unprefixed target is read as an instance path, and the hub replays the latest focus to the pane when it registers, so sending one before the tab is open works — as does a selection the schematic broadcast before the pane's model had loaded. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. The pane roots the path it sends at the design top, since that is the schematic's coordinate, and ignores the top on the way back in; the tables keep whatever spelling the model recorded. See [Hub](hub.md#synthpower-pane) for the routes and the peer contract.
+
+Clicking a module filters the instance table to it. When the name is an RTL module and every leaf carries a Liberty cell name, nothing matches, and the pane says so rather than showing an empty table — see [What the module join can answer](#what-the-module-join-can-answer).
 
 ## Machine payloads
 

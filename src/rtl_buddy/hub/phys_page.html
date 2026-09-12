@@ -382,7 +382,8 @@
     module: null,       // selected module name — also filters the instances
     instance: null,     // selected instance path, as the model spells it
     sort: { modules: null, instances: null },  // {col, dir} per table
-    pending: null       // phys_focus that arrived before the model did
+    pending: null,      // phys_focus that arrived before the model did
+    pendingSelection: null  // selection_changed likewise, see focusInstanceFromWire
   };
 
   // ---------------------------------------------------------------
@@ -442,7 +443,12 @@
   // sort and the heat ramp cannot disagree about what a column means.
   function cellValue(row, column) {
     if (column === 'dynamic') { return dynamicOf(row); }
-    if (column === 'name') { return String((row && row.module) || ''); }
+    // `name` (the module table's own column) and `module` (the instance
+    // table's) are the same string; going through `num` would make the
+    // header sort by null and so not sort at all.
+    if (column === 'name' || column === 'module') {
+      return String((row && row.module) || '');
+    }
     if (column === 'instance_path') { return String((row && row.instance_path) || ''); }
     return num(row && row[column]);
   }
@@ -507,11 +513,37 @@
     return String(path == null ? '' : path).replace(/\//g, '.');
   }
 
+  // The other half of the same mismatch: a schematic `instance_path` is
+  // rooted at the DESIGN TOP (`blk.u_sub.u_leaf`) and an OpenSTA row is
+  // not (`u_sub/u_leaf`) — the netlist the power flow read has the top
+  // as its context, not as a level. So the root is added on the way out
+  // and ignored on the way in, and neither direction rewrites a row.
+  //
+  // Both take the top explicitly rather than reading page state, so this
+  // block stays pure. `top` empty means "no top known": then these are
+  // `toWirePath` and nothing more.
+  function withTop(path, top) {
+    var wire = toWirePath(path), root = toWirePath(top);
+    if (!root || !wire || wire === root || wire.indexOf(root + '.') === 0) {
+      return wire;
+    }
+    return root + '.' + wire;
+  }
+
+  function stripTop(path, top) {
+    var wire = toWirePath(path), root = toWirePath(top);
+    if (!root || wire === root || wire.indexOf(root + '.') !== 0) { return wire; }
+    return wire.slice(root.length + 1);
+  }
+
   // Comparing a path from elsewhere against the model's: separators are
-  // levelled and nothing else is, because a case-folded or
-  // prefix-stripped match would silently claim the wrong instance.
-  function samePath(a, b) {
-    return !!a && !!b && toWirePath(a) === toWirePath(b);
+  // levelled and the design top is ignored, and nothing else is —
+  // a case-folded or prefix-stripped match would silently claim the
+  // wrong instance. Rootless on both sides is the one spelling both
+  // producers can be reduced to, so an incoming path matches whether or
+  // not it carries the top.
+  function samePath(a, b, top) {
+    return !!a && !!b && stripTop(a, top) === stripTop(b, top);
   }
   // <<< path-normalise
 
@@ -896,6 +928,13 @@
     note('');
   }
 
+  // The design top the model was built for, as the payload's run header
+  // reports it. `''` when the run did not record one, which turns the
+  // rooting rules above back into plain levelling.
+  function designTop() {
+    return String((state.payload && state.payload.top) || '');
+  }
+
   function ingest(payload) {
     els.empty.classList.remove('show');
     els.dash.hidden = false;
@@ -919,9 +958,17 @@
 
     var counts = payload.counts || {};
     note(describeCounts(counts));
-    if (state.pending) {
-      var focus = state.pending; state.pending = null;
+    // Both replays the hub sends on connect land before `/phy.json`
+    // resolves as often as not, so both are stashed rather than dropped.
+    // An explicit `phys_focus` wins over a passive selection when both
+    // are waiting: one is an instruction, the other is commentary.
+    var focus = state.pending, selection = state.pendingSelection;
+    state.pending = null;
+    state.pendingSelection = null;
+    if (focus) {
       applyFocus(focus);
+    } else if (selection) {
+      focusInstanceFromWire(selection);
     }
   }
 
@@ -1248,7 +1295,8 @@
       els.instances.appendChild(modulePill());
     }
     if (!rows.length) {
-      els.instances.appendChild(elem('p', 'muted', 'no instances match.'));
+      els.instances.appendChild(joinMissNote() ||
+        elem('p', 'muted', 'no instances match.'));
       return;
     }
     var ranked = rankRows(rows, sort.col, sort.dir,
@@ -1275,7 +1323,8 @@
     var tbody = document.createElement('tbody');
     ranked.forEach(function (row) {
       var tr = elem('tr', 'row');
-      tr.classList.toggle('sel', samePath(state.instance, row.instance_path));
+      tr.classList.toggle('sel',
+        samePath(state.instance, row.instance_path, designTop()));
       var path = elem('td', 'name path', row.instance_path || '—');
       path.title = row.instance_path || '';
       tr.appendChild(path);
@@ -1289,6 +1338,37 @@
     });
     table.appendChild(tbody);
     els.instances.appendChild(table);
+  }
+
+  // Why an empty instance table under a module lens is usually not a
+  // fact about the design.
+  //
+  // The two halves spell `module` in two namespaces: a synthesis row
+  // carries an RTL module name, a leaf carries the Liberty cell it is an
+  // instance of. Clicking an RTL module on a mapped hierarchical design
+  // therefore matches nothing, and a bare "no instances match" would
+  // read as "this block burns no power". `rb phys module` puts the same
+  // sentence on its payload as `instance_join`; the summary payload this
+  // pane reads has no per-module note, so the same test is made here.
+  //
+  // Null — i.e. the plain empty state — when the lens is off, when a
+  // search box is what emptied the table, when there is no power half to
+  // join against, or when the name DOES match rows (in which case the
+  // table is not empty in the first place).
+  function joinMissNote() {
+    if (state.module === null || state.filter) { return null; }
+    var instances = rowsOf('instances');
+    if (!halfPresent('instances') || !instances.length) { return null; }
+    var matched = false;
+    instances.forEach(function (row) {
+      if (String(row.module) === String(state.module)) { matched = true; }
+    });
+    if (matched) { return null; }
+    return elem('p', 'muted join-miss',
+      'no instance rows carry ' + state.module + ' — the module column ' +
+      'above holds Liberty cell names, not RTL module names, so power ' +
+      'cannot be attributed to an RTL module until the hierarchy join ' +
+      'lands. Liberty cells (DFF_X1, NAND2_X1) do resolve here.');
   }
 
   // Filtering to one module is a lens, and a lens you cannot take off is
@@ -1352,10 +1432,12 @@
     // schematic's coordinate, so this pane can address it directly —
     // the one thing the coverage pane cannot do, since coverage knows
     // files and modules and has to go through the hub's resolver.
-    // Separators are levelled onto the wire's dots on the way out; see
-    // `toWirePath`.
-    if (emit('selection_changed', { instance_path: toWirePath(path) })) {
-      note('select ' + toWirePath(path) +
+    // Separators are levelled onto the wire's dots and the design top is
+    // put back on the front, because the schematic's coordinate is
+    // rooted at the top and OpenSTA's row is not; see `withTop`.
+    var wire = withTop(path, designTop());
+    if (emit('selection_changed', { instance_path: wire })) {
+      note('select ' + wire +
            (hasPeer('view') ? '' : ' (the schematic is not connected)'));
     } else {
       note('hub not connected', 'error');
@@ -1377,7 +1459,9 @@
   function instanceRow(path) {
     var found = null;
     rowsOf('instances').forEach(function (row) {
-      if (found === null && samePath(row.instance_path, path)) { found = row; }
+      if (found === null && samePath(row.instance_path, path, designTop())) {
+        found = row;
+      }
     });
     return found;
   }
@@ -1410,7 +1494,16 @@
   // never a leaf in a power report.
   function focusInstanceFromWire(ip) {
     if (Array.isArray(ip)) { ip = ip[0]; }
-    if (typeof ip !== 'string' || !ip || !state.payload) { return; }
+    if (typeof ip !== 'string' || !ip) { return; }
+    if (!state.payload) {
+      // The hub replays the cached selection immediately after
+      // `welcome`, which routinely beats the `/phy.json` fetch — the
+      // same race `applyFocus` already holds a `phys_focus` for. Held
+      // here too, or opening the pane while a selection is live shows
+      // nothing selected.
+      state.pendingSelection = ip;
+      return;
+    }
     if (focusInstance(ip)) { note('selected ' + ip); }
   }
 
