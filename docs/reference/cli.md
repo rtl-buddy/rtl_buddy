@@ -58,8 +58,10 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
 │                    subtree, instances-of, port-connections, source-snippet); JSON on │
 │                    stdout                                                            │
-│ mcp                serve the design knowledge graph and hierarchy queries over the   │
-│                    Model Context Protocol (stdio); needs the 'mcp' extra             │
+│ mcp                serve the design knowledge graph, test status, coverage, physical │
+│                    metrics, hierarchy queries and — with a hub running — the live    │
+│                    session over the Model Context Protocol (stdio); needs the 'mcp'  │
+│                    extra                                                             │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
@@ -373,7 +375,8 @@ Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG
 ```text
 Usage: rtl-buddy mcp [OPTIONS]
 
- serve the design knowledge graph and hierarchy queries over the Model Context Protocol
+ serve the design knowledge graph, test status, coverage, physical metrics, hierarchy
+ queries and — with a hub running — the live session over the Model Context Protocol
  (stdio); needs the 'mcp' extra
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮

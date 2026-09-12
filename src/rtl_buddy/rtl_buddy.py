@@ -459,8 +459,10 @@ class RtlBuddy:
         self.app.command(
             "mcp",
             help=(
-                "serve the design knowledge graph and hierarchy queries over "
-                "the Model Context Protocol (stdio); needs the 'mcp' extra"
+                "serve the design knowledge graph, test status, coverage, "
+                "physical metrics, hierarchy queries and — with a hub "
+                "running — the live session over the Model Context "
+                "Protocol (stdio); needs the 'mcp' extra"
             ),
         )(self.do_cmd_mcp)
         self.graph_app = typer.Typer(
@@ -7123,8 +7125,9 @@ class RtlBuddy:
         ] = False,
     ):
         """
-        serve the design knowledge graph, the hierarchy query verbs and — when
-        a hub is running — the live session over the Model Context Protocol
+        serve the design knowledge graph, test status, coverage, physical
+        metrics and the hierarchy query verbs — and, when a hub is running,
+        the live session — over the Model Context Protocol
         """
         root = str(
             Path(root_dir).resolve()
