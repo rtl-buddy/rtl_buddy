@@ -724,7 +724,67 @@ def test_the_module_lens_says_when_the_join_cannot_see_the_rows():
     assert "Liberty cell names, not RTL module names" in js
     assert "hierarchy join" in js
     assert "if (state.module === null || state.filter) { return null; }" in js
-    assert "if (matched) { return null; }" in js
+    # The membership test is `namespacesOf`, shared with the collision
+    # note below rather than spelled a second time here.
+    assert "if (spaces.indexOf('liberty') >= 0) { return null; }" in js
+
+
+def test_a_name_in_both_namespaces_is_a_collision_the_pane_says_out_loud():
+    """The finding (#562 review, Codex P2). A word that is an RTL module
+    in the synthesis half AND a Liberty cell in the power half made a
+    lens that looked complete: the cell type's leaves listed under the
+    module's cells and area, every number real, nothing saying they
+    measure two different things. `rb phys module` reports it as
+    `instance_join`; the summary payload the pane reads carries no
+    per-module note, so the pane makes the same test itself."""
+
+    js = _page_js()
+    assert "function collisionNote()" in js
+    # Rendered under the lens pill, so it is above the rows it qualifies
+    # and shows whether or not the filter has emptied the table.
+    assert "var collision = collisionNote();" in js
+    assert "if (collision) { els.instances.appendChild(collision); }" in js
+    # Only a name in BOTH namespaces, and it says which measurement is
+    # whose and what the module's own power is waiting on.
+    assert "if (spaces.length < 2) { return null; }" in js
+    assert "name collision: " in js
+    assert "is an RTL module in the " in js
+    assert "a Liberty cell in the power half" in js
+    assert "needs the hierarchy join" in js
+
+
+def test_the_pane_splits_the_two_module_namespaces_the_way_the_query_does():
+    """`namespacesOf` is the pane's copy of `phys.query.namespaces_of`,
+    and both notes are decided by it: `['rtl']` alone is the miss,
+    `['rtl', 'liberty']` is the collision."""
+
+    out = _node(
+        _marked_js("namespace-split")
+        + """
+        var modules = [{ module: 'blk' }, { module: 'sub' }];
+        var instances = [
+          { instance_path: 'u_sub/_64_', module: 'DFF_X1' },
+          { instance_path: 'u_sub/_65_', module: 'sub' },
+          { instance_path: 'u_sub/_66_', module: null }
+        ];
+        console.log(JSON.stringify([
+          namespacesOf(modules, instances, 'blk'),
+          namespacesOf(modules, instances, 'DFF_X1'),
+          namespacesOf(modules, instances, 'sub'),
+          namespacesOf(modules, instances, 'nowhere'),
+          namespacesOf(modules, instances, null)
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        ["rtl"],
+        ["liberty"],
+        # The collision, ordered as the query layer orders it.
+        ["rtl", "liberty"],
+        [],
+        # A `null` module column is not a row named "null".
+        [],
+    ]
 
 
 def test_the_module_instance_counts_are_counted_once_per_payload():

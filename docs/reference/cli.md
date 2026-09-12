@@ -993,7 +993,8 @@ Usage: rtl-buddy phys summary [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --limit           INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest first (0  │
-│                                         for all)                                     │
+│                                         for all); truncates the --machine payload    │
+│                                         too                                          │
 │                                         [default: 10]                                │
 │ --phys-dir        TEXT                  artefact directory holding                   │
 │                                         phys-manifest.json                           │
@@ -1015,7 +1016,8 @@ Usage: rtl-buddy phys module [OPTIONS] MODULE
 │ *    module      TEXT  module or liberty cell as the model records it [required]     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER RANGE [x>=0]  instances to list, hottest first (0 for all) │
+│ --limit           INTEGER RANGE [x>=0]  instances to list, hottest first (0 for      │
+│                                         all); truncates the --machine payload too    │
 │                                         [default: 10]                                │
 │ --phys-dir        TEXT                  artefact directory holding                   │
 │                                         phys-manifest.json                           │
@@ -1037,7 +1039,9 @@ Usage: rtl-buddy phys instance [OPTIONS] PATH
 │ *    path      TEXT  instance path, exact or the root of a subtree [required]        │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER RANGE [x>=0]  children to list (0 for all) [default: 10]   │
+│ --limit           INTEGER RANGE [x>=0]  children to list (0 for all); truncates the  │
+│                                         --machine payload too                        │
+│                                         [default: 10]                                │
 │ --phys-dir        TEXT                  artefact directory holding                   │
 │                                         phys-manifest.json                           │
 │                                         [default: (newest phys-manifest.json under   │

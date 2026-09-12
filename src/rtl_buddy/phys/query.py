@@ -379,16 +379,29 @@ _SHAPE_MAPPING = "an object"
 _SHAPE_ROWS = "an array of objects"
 _SHAPE_TEXT = "a string"
 
-#: Every nested field the readers in this module index into, and the
-#: shape each one is indexed as. Named once, as data, because the check
-#: belongs at the read and not in whichever payload builder happens to
-#: touch a block first: one malformed document must be one refusal,
-#: whichever verb was asked. ``null`` is admitted everywhere — a
-#: half-filled model and a manifest with no power block are the ordinary
-#: states these payloads report rather than refuse.
+#: Every nested field a read here dereferences, and the shape each one
+#: is dereferenced as. Named once, as data, because the check belongs at
+#: the read and not in whichever payload builder happens to touch a block
+#: first: one malformed document must be one refusal, whichever verb was
+#: asked. ``null`` is admitted everywhere — a half-filled model and a
+#: manifest with no power block are the ordinary states these payloads
+#: report rather than refuse.
+#:
+#: "A read here" includes the manifest helpers this module reads
+#: *through*: ``phys_dir`` is never indexed by a payload, but
+#: :func:`~rtl_buddy.phys.manifest.project_root_for` calls
+#: ``os.path.isabs`` on it and walks its ``parts`` on the way to every
+#: artefact path, which a list or a number fails with a ``TypeError``
+#: past the envelope. The header fields a payload only *echoes*
+#: (``run``, ``top``, ``generated_at``, ``command``, ``publication``) are
+#: deliberately absent: nothing dereferences them, so nothing here can
+#: fail on their shape, and refusing a whole document over a field that
+#: is passed through untouched would be strictness with no failure behind
+#: it.
 _NESTED_SHAPES = {
     "manifest": (
         ("model", _SHAPE_TEXT),
+        ("phys_dir", _SHAPE_TEXT),
         ("synth", _SHAPE_MAPPING),
         ("power", _SHAPE_MAPPING),
         ("totals", _SHAPE_MAPPING),
@@ -576,6 +589,20 @@ def _instance_rows(model: dict) -> list[dict]:
     return list(model.get("instances") or [])
 
 
+def truncate(rows: list[dict], limit: int | None) -> list[dict]:
+    """The rows a payload lists, given the ``limit`` its caller asked for.
+
+    One rule, named once, because three payloads and two surfaces obey
+    it: ``None`` means the caller wants the complete list (the builders'
+    default, and what the MCP tools pass), ``0`` means the same thing
+    said by a CLI flag whose help documents ``0`` as "all", and anything
+    positive is a head. Nothing here reports *that* it truncated — the
+    payload carries the applied ``limit`` and the untruncated count
+    beside the list, so a consumer can tell without being told.
+    """
+    return rows if limit is None or limit <= 0 else rows[:limit]
+
+
 def _sort_key_desc(value):
     """Order a possibly-``None`` metric descending, nulls last.
 
@@ -602,8 +629,7 @@ def heaviest_modules(model: dict, limit: int | None = None) -> list[dict]:
             str(row.get("module") or ""),
         )
 
-    ordered = sorted(_module_rows(model), key=key)
-    return ordered if limit is None or limit <= 0 else ordered[:limit]
+    return truncate(sorted(_module_rows(model), key=key), limit)
 
 
 def hottest_instances(model: dict, limit: int | None = None) -> list[dict]:
@@ -615,8 +641,7 @@ def hottest_instances(model: dict, limit: int | None = None) -> list[dict]:
             str(row.get("instance_path") or ""),
         )
 
-    ordered = sorted(_instance_rows(model), key=key)
-    return ordered if limit is None or limit <= 0 else ordered[:limit]
+    return truncate(sorted(_instance_rows(model), key=key), limit)
 
 
 def _power_sum(rows) -> dict:
@@ -742,7 +767,7 @@ def _missing_half_hint(model: dict) -> str:
     return f"; this model has no {listed}"
 
 
-def module_payload(ctx: PhysContext, module: str) -> dict:
+def module_payload(ctx: PhysContext, module: str, *, limit: int | None = None) -> dict:
     """One module's synthesis row and the instances of it, with power.
 
     The join the two halves make where they can: ``modules`` says how
@@ -773,6 +798,22 @@ def module_payload(ctx: PhysContext, module: str) -> dict:
     really do have rows under that name), and nothing sums across them;
     the note is what stops the pairing from being read as a module's
     own power.
+
+    ``limit`` heads the ``instances`` list, and defaults to the complete
+    one. It lives here rather than in the CLI's rendering because the
+    machine payload is the CLI's *whole* output under ``--machine``: a
+    flag honoured only in the table would print one row and emit ten
+    thousand, which is the flag lying to exactly the consumer that cannot
+    re-count. The MCP tools pass nothing and so keep the complete list,
+    which is the contract they were registered with.
+
+    A truncated list stays self-describing: ``instance_count`` is the
+    number of instances there *are* — never the number listed — and
+    ``limit`` is what was applied, so ``len(instances) < instance_count``
+    is a head rather than a miss. ``power`` sums every matching instance
+    for the same reason: it is the module's total, and a total over the
+    first ``n`` rows of an arbitrary ranking is not a figure anyone
+    asked for.
     """
     resolved = resolve_module_name(ctx.model, module, where=ctx.model_path)
     model = ctx.model
@@ -796,8 +837,9 @@ def module_payload(ctx: PhysContext, module: str) -> dict:
             "module": resolved,
             "namespaces": namespaces,
             "row": row,
-            "instances": instances,
+            "instances": None if instances is None else truncate(instances, limit),
             "instance_count": None if instances is None else len(instances),
+            "limit": limit,
             "power": None if instances is None else _power_sum(instances),
             "instance_join": _instance_join_note(model, row, instances, namespaces),
             "halves": halves_block(model),
@@ -884,7 +926,7 @@ def subtree_rollup(rows: list[dict]) -> dict:
     return {"instances": len(rows), **_power_sum(rows)}
 
 
-def instance_payload(ctx: PhysContext, path: str) -> dict:
+def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -> dict:
     """One instance's row, or the subtree its path is the root of.
 
     Exact match first, prefix second — in that order because a path that
@@ -897,6 +939,13 @@ def instance_payload(ctx: PhysContext, path: str) -> dict:
     a dotted query finds slash-stored rows and the reverse. The rows
     themselves are returned with the model's own spelling, and
     ``instance_path`` echoes what the user asked.
+
+    ``limit`` heads the ``children`` list and defaults to the complete
+    one, exactly as :func:`module_payload`'s does and for the same
+    reason. ``child_count`` is how many children there are and ``rollup``
+    sums every leaf under the path, listed or not — a subtree total that
+    counted only the rows that fitted on a terminal would be a different
+    number under ``--limit 5`` than under ``--limit 0``.
     """
     model = ctx.model
     if model.get("instances") is None:
@@ -929,7 +978,9 @@ def instance_payload(ctx: PhysContext, path: str) -> dict:
             "instance_path": path,
             "match": "exact" if exact is not None else "prefix",
             "instance": exact,
-            "children": children,
+            "children": truncate(children, limit),
+            "child_count": len(children),
+            "limit": limit,
             "rollup": subtree_rollup(covered),
             "halves": halves_block(model),
             "missing_halves": missing_halves(model),
