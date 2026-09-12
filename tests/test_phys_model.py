@@ -647,6 +647,36 @@ def test_discovery_does_not_pick_up_a_coverage_manifest(tmp_path):
     assert discover_manifests(root) == [str(artefacts / MANIFEST_FILENAME)]
 
 
+def test_discovery_reaches_a_manifest_behind_a_symlinked_artefact_dir(tmp_path):
+    """`artefacts/` linked onto scratch storage is an ordinary setup — the
+    same one the filelist writer is pinned against — and `os.walk`'s default
+    would report a project with no physical data at all."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    suite = root / "verif" / "demo"
+    suite.mkdir(parents=True)
+    physical = tmp_path / "scratch" / "artefacts"
+    artefacts = physical / "demo_synth"
+    artefacts.mkdir(parents=True)
+    (suite / "artefacts").symlink_to(physical, target_is_directory=True)
+    write_manifest(_synth_manifest(root, artefacts, None), artefacts)
+
+    found = discover_manifests(root)
+
+    assert found == [str(suite / "artefacts" / "demo_synth" / MANIFEST_FILENAME)]
+
+
+def test_discovery_terminates_on_a_symlink_loop(tmp_path):
+    """Following links costs a loop risk, so a directory is admitted once by
+    its real path: the link back to an ancestor is not descended into, and
+    the run it circles is still reported exactly once."""
+    root, artefacts = _project(tmp_path)
+    write_manifest(_synth_manifest(root, artefacts, None), artefacts)
+    (artefacts / "loop").symlink_to(root, target_is_directory=True)
+
+    assert discover_manifests(root) == [str(artefacts / MANIFEST_FILENAME)]
+
+
 # ---------------------------------------------------------------------------
 # publish — the entry point the backends call
 # ---------------------------------------------------------------------------
