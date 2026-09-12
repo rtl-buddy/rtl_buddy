@@ -33,10 +33,11 @@ the *Liberty cell* each leaf is an instance of — ``DFF_X1``,
 ``NAND2_X1`` — because that is what ``report_power`` and the cell
 sidecar name, and a mapped netlist's leaves are cells, not RTL modules.
 So the join these verbs make on that column answers Liberty-cell
-questions ("how much do all the DFFs burn") and, on a flat netlist whose
-one RTL module is also its top, the top's question. It does *not*
-attribute power to an RTL module on a hierarchical design: no leaf row
-carries ``u_cpu``'s name, so the join simply misses.
+questions ("how much do all the DFFs burn") and nothing else. It does
+*not* attribute power to an RTL module, and a flat netlist is no
+exception: the join matches the power half's ``module`` field as it
+stands, and no leaf row carries ``u_cpu``'s name — or the top's — so it
+simply misses.
 
 Rather than invent an instance→RTL-module mapping here, the surfaces say
 so: every module payload carries the ``namespaces`` the name it resolved
@@ -60,6 +61,17 @@ out of the query layer, past :class:`PhysQueryError` and past the
 machine-mode envelope that turns a refusal into a result an agent can
 read. :func:`_require_mapping` makes it the same kind of refusal as an
 unreadable file, naming the path and what was found there.
+
+**And so is a block that is not the shape it is read as.** An object at
+the root and a ``schema_version`` this build knows say the document is
+one of these; neither says anything about its insides. A hand-edited or
+half-written file can carry both over ``"synth": []``, ``"modules": 7``
+or ``"totals": "x"`` and reach the builders, where ``len()`` on a number
+and ``.get`` on a string raise past the envelope exactly as a non-object
+root did. :func:`_require_blocks` refuses those at the read too, naming
+the field and what it holds. It is deliberately shallow: each block is
+checked for the shape it is *indexed* as and never for its keys, every
+one of which is optional by design.
 
 **A version this build does not know is an error, not a guess.** Both
 documents carry a ``schema_version`` that their producers bump when the
@@ -322,6 +334,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
     _require_schema(
         document, manifest_mod.MANIFEST_SCHEMA_VERSION, manifest_path, "manifest"
     )
+    _require_blocks(document, manifest_path, "manifest")
 
     root = manifest_mod.project_root_for(manifest_path) or str(project_root)
     model_path = manifest_mod.resolve(manifest_path, document.get("model"))
@@ -336,6 +349,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
         raise PhysQueryError(f"phys: cannot read {model_path}: {exc}")
     _require_mapping(model, model_path, "model")
     _require_schema(model, MODEL_SCHEMA_VERSION, model_path, "model")
+    _require_blocks(model, model_path, "model")
 
     return PhysContext(
         project_root=root,
@@ -346,17 +360,51 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
     )
 
 
-#: JSON's own names for the roots a document can have instead of an
-#: object, so the refusal below says what the file is in the vocabulary
-#: of the format it is written in rather than in Python's.
-_JSON_ROOTS = {
+#: JSON's own names for what a value is, so the refusals below say what
+#: a document holds in the vocabulary of the format it is written in
+#: rather than in Python's.
+_JSON_KINDS = {
     type(None): "null",
     bool: "a boolean",
     int: "a number",
     float: "a number",
     str: "a string",
     list: "an array",
+    dict: "an object",
 }
+
+#: The three shapes a nested block is read as here, spelled as the
+#: refusal spells them.
+_SHAPE_MAPPING = "an object"
+_SHAPE_ROWS = "an array of objects"
+_SHAPE_TEXT = "a string"
+
+#: Every nested field the readers in this module index into, and the
+#: shape each one is indexed as. Named once, as data, because the check
+#: belongs at the read and not in whichever payload builder happens to
+#: touch a block first: one malformed document must be one refusal,
+#: whichever verb was asked. ``null`` is admitted everywhere — a
+#: half-filled model and a manifest with no power block are the ordinary
+#: states these payloads report rather than refuse.
+_NESTED_SHAPES = {
+    "manifest": (
+        ("model", _SHAPE_TEXT),
+        ("synth", _SHAPE_MAPPING),
+        ("power", _SHAPE_MAPPING),
+        ("totals", _SHAPE_MAPPING),
+    ),
+    "model": (
+        ("units", _SHAPE_MAPPING),
+        ("totals", _SHAPE_MAPPING),
+        ("modules", _SHAPE_ROWS),
+        ("instances", _SHAPE_ROWS),
+    ),
+}
+
+
+def _json_kind(value) -> str:
+    """What ``value`` is, in JSON's vocabulary."""
+    return _JSON_KINDS.get(type(value), "not a JSON value")
 
 
 def _require_mapping(document, path, what: str) -> None:
@@ -375,9 +423,47 @@ def _require_mapping(document, path, what: str) -> None:
         return
     raise PhysQueryError(
         f"phys: {path} is not a {what} document: its JSON root is "
-        f"{_JSON_ROOTS.get(type(document), 'not an object')}, and a {what} "
+        f"{_json_kind(document)}, and a {what} "
         "is an object; re-run `rb synth` or `rb power` to rewrite it"
     )
+
+
+def _shape_ok(value, shape: str) -> bool:
+    """Whether ``value`` is the ``shape`` a reader here indexes it as."""
+    if shape == _SHAPE_MAPPING:
+        return isinstance(value, dict)
+    if shape == _SHAPE_TEXT:
+        return isinstance(value, str)
+    return isinstance(value, list) and all(isinstance(row, dict) for row in value)
+
+
+def _require_blocks(document: dict, path, what: str) -> None:
+    """Refuse a document whose nested blocks are not the shapes they are read as.
+
+    The row-level test is a plain ``all()`` over the list rather than a
+    per-column schema, and that is the whole of the strictness on
+    purpose: every column a payload reads is read with ``.get`` and
+    every one of them is legitimately ``None`` somewhere (no Liberty, no
+    ``area_um2``), so anything finer would refuse documents these
+    payloads answer about correctly today. What it does catch is the
+    thing that cannot be answered about at all — a block of the wrong
+    *kind*, which is a truncated write or a hand edit rather than a
+    measurement that did not happen.
+    """
+    for field, shape in _NESTED_SHAPES[what]:
+        value = document.get(field)
+        if value is None or _shape_ok(value, shape):
+            continue
+        found = (
+            "an array whose rows are not all objects"
+            if shape == _SHAPE_ROWS and isinstance(value, list)
+            else _json_kind(value)
+        )
+        raise PhysQueryError(
+            f"phys: {path} is not a readable {what}: its `{field}` is {found}, "
+            f"and a {what}'s `{field}` is {shape} or null; re-run `rb synth` "
+            "or `rb power` to rewrite it"
+        )
 
 
 def _require_schema(document: dict, supported: int, path, what: str) -> None:

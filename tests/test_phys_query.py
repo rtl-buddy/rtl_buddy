@@ -419,6 +419,84 @@ def test_a_document_whose_json_root_is_not_an_object_is_refused(
     assert "is an object" in message
 
 
+def _rewrite_field(path, field, value):
+    """Replace one nested field of a document that is otherwise well formed."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    document[field] = value
+    Path(path).write_text(json.dumps(document), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "document, field, malformed, described",
+    [
+        # The manifest's producer blocks. `[]` is the shape an emptied
+        # block is most likely to be hand-edited into, and it is the one
+        # `document.get("synth") or {}` silently survives while a
+        # non-empty list does not.
+        (MANIFEST_FILENAME, "synth", [], "an array"),
+        (MANIFEST_FILENAME, "power", ["openroad"], "an array"),
+        (MANIFEST_FILENAME, "power", "openroad", "a string"),
+        (MANIFEST_FILENAME, "totals", 7, "a number"),
+        (MANIFEST_FILENAME, "model", ["phys-model.json"], "an array"),
+        # The model's two halves and the totals beside them.
+        ("phys-model.json", "modules", 7, "a number"),
+        ("phys-model.json", "modules", {"blk": 120}, "an object"),
+        ("phys-model.json", "instances", "u_sub/_64_", "a string"),
+        (
+            "phys-model.json",
+            "instances",
+            ["u_sub/_64_"],
+            "an array whose rows are not all objects",
+        ),
+        ("phys-model.json", "totals", "x", "a string"),
+        ("phys-model.json", "units", [], "an array"),
+    ],
+)
+def test_a_document_whose_blocks_are_the_wrong_shape_is_refused(
+    project, document, field, malformed, described
+):
+    """The finding (#561 review, Codex P2). A mapping root and a supported
+    `schema_version` say the document is one of these; neither says its
+    blocks are the shapes the builders index them as. Each of these used to
+    reach a `len()` on a number or a `.get` on a string deep inside a
+    payload — a `TypeError` or an `AttributeError` past `PhysQueryError`
+    and past the machine envelope."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _rewrite_field(phys_dir / document, field, malformed)
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        load_context(project)
+
+    message = str(excinfo.value)
+    assert document in message
+    assert f"`{field}`" in message
+    assert described in message
+
+
+def test_a_half_that_is_null_is_not_a_malformed_half(project):
+    """The refusal is about shape, not about absence: a model half is `null`
+    on every one-sided run, and that is a state the payloads report."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _rewrite_field(phys_dir / "phys-model.json", "instances", None)
+    _rewrite_field(phys_dir / MANIFEST_FILENAME, "power", None)
+
+    payload = summary_payload(load_context(project))
+
+    assert payload["missing_halves"] == ["instances"]
+
+
+def test_an_empty_half_is_not_a_malformed_half_either(project):
+    """`[]` is a design with no rows measured, which is an answer; only a
+    list whose rows are not objects is unreadable."""
+    phys_dir = project / "verif" / "blk" / "artefacts" / "both"
+    _rewrite_field(phys_dir / "phys-model.json", "instances", [])
+
+    payload = summary_payload(load_context(project))
+
+    assert payload["counts"]["instances"] == 0
+    assert payload["missing_halves"] == []
+
+
 # --- summary ----------------------------------------------------------------
 
 
