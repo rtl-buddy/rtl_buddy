@@ -45,6 +45,7 @@ SUBCOMMANDS = [
     "tool-check",
     "graph",
     "cov",
+    "phys",
     "axi-profile",
     "verible",
     "mut",
