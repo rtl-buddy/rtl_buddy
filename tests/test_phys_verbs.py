@@ -35,7 +35,11 @@ from rtl_buddy.phys.model import (
     merge_model,
     write_model,
 )
-from rtl_buddy.phys.query import INSTANCE_JOIN_LIBERTY_ONLY
+from rtl_buddy.phys.query import (
+    INSTANCE_JOIN_LIBERTY_ONLY,
+    INSTANCE_JOIN_NAME_COLLISION,
+    PhysQueryError,
+)
 from rtl_buddy.rtl_buddy import RtlBuddy
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -45,10 +49,13 @@ _MODULES = [
     {"module": "sub", "cell_count": 40, "area_um2": 96.0},
 ]
 
+# The leaves name Liberty cells, the synthesis rows name RTL modules —
+# two namespaces, kept apart here so `_COLLIDING_INSTANCES` below is the
+# case it is meant to be.
 _INSTANCES = [
     {
         "instance_path": "u_sub/_64_",
-        "module": "sub",
+        "module": "DFF_X1",
         "leakage_uw": 0.079,
         "internal_uw": 2.28,
         "switching_uw": 0.0675,
@@ -56,13 +63,17 @@ _INSTANCES = [
     },
     {
         "instance_path": "u_sub/u_leaf/_12_",
-        "module": "sub",
+        "module": "DFF_X1",
         "leakage_uw": 0.001,
         "internal_uw": 0.5,
         "switching_uw": 0.25,
         "total_uw": 0.751,
     },
 ]
+
+
+#: A design whose Liberty cell is named after one of its RTL modules.
+_COLLIDING_INSTANCES = [{**row, "module": "sub"} for row in _INSTANCES]
 
 
 def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None):
@@ -152,6 +163,13 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", root)
     _write_run(root, "old_synth", modules=_MODULES, mtime=1_000_000)
     _write_run(root, "power_only", instances=_INSTANCES, mtime=1_500_000)
+    _write_run(
+        root,
+        "collision",
+        modules=_MODULES,
+        instances=_COLLIDING_INSTANCES,
+        mtime=1_700_000,
+    )
     _write_run(root, "both", modules=_MODULES, instances=_INSTANCES, mtime=2_000_000)
     monkeypatch.chdir(root)
     return root
@@ -275,27 +293,100 @@ def test_phys_verbs_fail_loudly_with_no_artefacts(tmp_path, monkeypatch):
     assert "rb synth" in error and "rb power" in error
 
 
+@pytest.mark.parametrize("document", [MANIFEST_FILENAME, "phys-model.json"])
+def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
+    phys_project, document
+):
+    """The finding (#561 review, Codex P2). A JSON root that is not an object
+    used to raise `AttributeError` out of the query layer, so `--machine`
+    emitted a traceback and no envelope — the one thing an agent surface
+    cannot read. It is a refusal like any other now."""
+    (phys_project / "verif" / "blk" / "artefacts" / "both" / document).write_text(
+        "[]", encoding="utf-8"
+    )
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "summary"])
+
+    envelope = _machine(result)
+    assert envelope["exit_code"] == 2
+    error = envelope["payload"]["error"]
+    assert document in error and "an array" in error
+
+    # Without machine mode it is the same refusal the other unanswerable
+    # reads make: a `FatalRtlBuddyError` carrying the path, not a traceback
+    # from somewhere inside the reader.
+    runner, rb = _runner()
+    rendered = runner.invoke(rb.app, ["phys", "summary"])
+    assert rendered.exit_code != 0
+    assert isinstance(rendered.exception, PhysQueryError)
+    assert document in str(rendered.exception)
+
+
 # --- module -----------------------------------------------------------------
 
 
-def test_phys_module_joins_cells_area_and_instance_power(phys_project):
+def test_phys_module_reports_a_liberty_cells_instance_power(phys_project):
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "module", "DFF_X1"])
+
+    payload = _machine(result)["payload"]
+    assert payload["namespaces"] == ["liberty"]
+    assert payload["row"] is None
+    assert payload["instance_count"] == 2
+    assert payload["power"]["total_uw"] == pytest.approx(3.171)
+
+
+def test_phys_module_reports_an_rtl_modules_own_row(phys_project):
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["--machine", "phys", "module", "sub"])
 
     payload = _machine(result)["payload"]
+    assert payload["namespaces"] == ["rtl"]
     assert payload["row"] == {"module": "sub", "cell_count": 40, "area_um2": 96.0}
-    assert payload["instance_count"] == 2
-    assert payload["power"]["total_uw"] == pytest.approx(3.171)
+
+
+def test_phys_module_names_both_namespaces_on_a_collision(phys_project):
+    """The finding (#561 review, Codex P2): one name, two measurements of two
+    different things. The payload says so and the CLI prints it, rather than
+    showing a module's cells and area beside a cell type's power as though
+    they were one block's numbers."""
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "phys",
+            "module",
+            "sub",
+            "--phys-dir",
+            "verif/blk/artefacts/collision",
+        ],
+    )
+
+    payload = _machine(result)["payload"]
+    assert payload["namespaces"] == ["rtl", "liberty"]
+    assert payload["instance_join"] == INSTANCE_JOIN_NAME_COLLISION
+
+    runner, rb = _runner()
+    rendered = runner.invoke(
+        rb.app,
+        ["phys", "module", "sub", "--phys-dir", "verif/blk/artefacts/collision"],
+    )
+    assert rendered.exit_code == 0, rendered.output
+    assert "name collision" in rendered.output
 
 
 def test_phys_module_renders_its_instances(phys_project):
     runner, rb = _runner()
 
-    result = runner.invoke(rb.app, ["phys", "module", "sub"])
+    result = runner.invoke(rb.app, ["phys", "module", "DFF_X1"])
 
     assert result.exit_code == 0, result.output
-    assert "instances of sub: 2/2" in result.output
+    assert "instances of DFF_X1: 2/2" in result.output
     # The table ellipsizes a path too long for the column, as the coverage
     # tables do; the prefix is what a reader matches on.
     assert "u_sub/u_leaf" in result.output
@@ -324,7 +415,7 @@ def test_phys_module_carries_the_join_note_in_its_machine_payload(phys_project):
     assert payload["instance_join"] == INSTANCE_JOIN_LIBERTY_ONLY
     # A cell name the join does reach carries no note at all.
     runner, rb = _runner()
-    reached = _machine(runner.invoke(rb.app, ["--machine", "phys", "module", "sub"]))
+    reached = _machine(runner.invoke(rb.app, ["--machine", "phys", "module", "DFF_X1"]))
     assert reached["payload"]["instance_join"] is None
 
 

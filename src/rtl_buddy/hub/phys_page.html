@@ -411,6 +411,7 @@
     sort: { modules: null, instances: null },  // {col, dir} per table
     shown: INSTANCE_WINDOW,  // cap on the instance rows a render may build
     instanceCounts: null,    // module -> leaf count, built once per payload
+    searchCleared: false,   // a focus took the search off to show its row
     pending: null,      // phys_focus that arrived before the model did
     pendingSelection: null  // selection_changed likewise, see focusInstanceFromWire
   };
@@ -1286,8 +1287,31 @@
     }
   }
 
+  // >>> filter-hides
+  // Does the search box hide a row whose searchable text is `texts`?
+  //
+  // The one rule for "is this row on screen", written once because two
+  // callers need the same answer for opposite reasons: the renderers
+  // drop the rows it hides, and an inbound focus takes the search OFF
+  // when it would hide the row being focused. A second spelling is how
+  // the pane would come to report a focus it did not actually show.
+  //
+  // `texts` is every column the filter is matched against for that
+  // table — one for a module row, the path and the cell for an instance.
+  function filterHides(filter, texts) {
+    if (!filter) { return false; }
+    for (var i = 0; i < texts.length; i++) {
+      if (texts[i] != null &&
+          String(texts[i]).toLowerCase().indexOf(filter) >= 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+  // <<< filter-hides
+
   function matchesFilter(text) {
-    return !state.filter || String(text).toLowerCase().indexOf(state.filter) >= 0;
+    return !filterHides(state.filter, [text]);
   }
 
   // The heat fraction for one cell: the row's value over the largest in
@@ -1430,7 +1454,7 @@
       if (state.module !== null && String(row.module) !== String(state.module)) {
         return false;
       }
-      return matchesFilter(row.instance_path) || matchesFilter(row.module);
+      return !filterHides(state.filter, [row.instance_path, row.module]);
     });
     if (state.module !== null) {
       els.instances.appendChild(modulePill());
@@ -1668,8 +1692,36 @@
     return findByPath(rowsOf('instances'), path, designTop(), rooted);
   }
 
+  // Take the search box off when it would hide what is being focused.
+  //
+  // A focus arriving from elsewhere reports success by selecting a row,
+  // and a row the active filter excludes is not rendered at all — so the
+  // pane would say "focused u_cpu/_31_" over a table that does not
+  // contain it, which is the one thing a cross-pane focus may not do.
+  // The filter is the reader's own state, so it is left alone whenever
+  // it already shows the target: the loss is only taken when keeping it
+  // would mean lying. `state.searchCleared` is picked up by the note the
+  // caller prints, so the reader is told which of their controls moved.
+  function revealPastFilter(texts) {
+    if (!filterHides(state.filter, texts)) { return; }
+    state.filter = '';
+    els.search.value = '';
+    state.searchCleared = true;
+  }
+
+  // The note an inbound focus prints, saying so when the search went with
+  // it. Cleared as it is read: the flag belongs to one focus, not to the
+  // pane.
+  function focusNote(text) {
+    if (!state.searchCleared) { return text; }
+    state.searchCleared = false;
+    return text + ' (search cleared to show it)';
+  }
+
   function focusModule(name) {
     if (moduleRow(name) === null) { return false; }
+    // The module table matches the filter against this column alone.
+    revealPastFilter([name]);
     state.module = String(name);
     state.instance = null;
     resetInstanceWindow();
@@ -1681,6 +1733,9 @@
   function focusInstance(path, rooted) {
     var row = instanceRow(path, rooted);
     if (row === null) { return false; }
+    // The instance table matches on the path or the cell, so both are
+    // offered before the search is given up.
+    revealPastFilter([row.instance_path, row.module]);
     // The MODEL's spelling, not the sender's: the tables are keyed on
     // it, so a `/`-spelled row selected by a `.`-spelled target has to
     // come back as the row's own path or the highlight never matches.
@@ -1708,7 +1763,7 @@
       state.pendingSelection = ip;
       return;
     }
-    if (focusInstance(ip, true)) { note('selected ' + ip); }
+    if (focusInstance(ip, true)) { note(focusNote('selected ' + ip)); }
   }
 
   function setMetric(metric) {
@@ -1754,7 +1809,8 @@
     // A soft miss, like graph_focus and cov_focus: report it and keep
     // the current focus rather than blanking the pane over a stale
     // target.
-    note(ok ? 'focused ' + target : 'phys-focus: no ' + target + ' in this run',
+    note(ok ? focusNote('focused ' + target)
+            : 'phys-focus: no ' + target + ' in this run',
          ok ? null : 'warn');
   }
 
