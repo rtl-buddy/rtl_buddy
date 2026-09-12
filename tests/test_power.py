@@ -944,3 +944,48 @@ def test_power_ignores_a_previous_runs_per_instance_report(tmp_path, monkeypatch
 
     assert not Path(backend._instances_report_path()).exists()
     assert load_model(result.results["phys_model"])["instances"] is None
+
+
+def test_a_failed_power_rerun_withdraws_the_instances_half_it_published(
+    tmp_path, monkeypatch
+):
+    """Publication happens only on a pass, so a rerun that fails leaves the
+    last run's per-instance watts in `phys-model.json` with the report behind
+    them already cleared. The clear withdraws them instead — and leaves the
+    synthesis half, whose own artefacts are untouched, exactly as it was
+    (#558)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import publish_synth
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend, result = _run_power_with(
+        tmp_path, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+    model_path = Path(result.results["phys_model"])
+    assert load_model(model_path)["instances"]
+
+    # A synthesis into the same artefact directory, as a co-named `rb synth`
+    # would have left it.
+    publish_synth(
+        artefact_dir=backend.artefact_dir,
+        top="demo_top",
+        backend="yosys",
+        run="demo_synth",
+        area_um2=5.586,
+        gate_count=2,
+    )
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    rerun = backend.run()
+
+    assert isinstance(rerun, PowerFailResults)
+    model = load_model(model_path)
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] is None
+    assert model["totals"]["area_um2"] == 5.586

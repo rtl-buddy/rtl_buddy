@@ -48,6 +48,19 @@ different top means a different design, so the old model is replaced
 outright — carrying rows across would attribute one design's instances
 to another's modules.
 
+**Invalidation.** The half a run owns is republished only when that run
+gets far enough to publish. A rerun that fails earlier has already
+deleted the raw artefacts behind the previous run's half, so leaving
+that half in place would leave a measurement discoverable whose evidence
+is gone — :func:`rtl_buddy.phys.publish.invalidate_half` nulls it
+(:func:`blank_half`) at clear time instead, and the other half stays.
+
+**Publication token.** The model and the manifest are two files written
+one after the other, so a reader can pair a fresh model with a stale
+manifest. Both carry the same ``publication`` token
+(:func:`new_publication`), which is how a reader tells a pair it caught
+mid-rewrite from one written together.
+
 The model is written to ``<artefact dir>/phys-model.json`` and pointed
 at by ``<artefact dir>/phys-manifest.json``.
 """
@@ -56,6 +69,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -110,9 +124,31 @@ def _empty_totals() -> dict:
     return {key: None for key in TOTALS_KEYS}
 
 
+def new_publication() -> str:
+    """A fresh publication token, identifying one model+manifest write.
+
+    The model and the manifest that names it are written as two files,
+    one after the other, so a reader can arrive between the two writes
+    and pair a new model with the old manifest — each document is
+    atomic (see :func:`write_model`) but the *pair* is not. Both halves
+    of a publication carry the same token, which is what lets
+    :func:`rtl_buddy.phys.query.load_context` notice it caught the pair
+    mid-rewrite and read again.
+
+    Opaque and never compared for order: it answers "were these two
+    written together", not "which is newer".
+    """
+    return uuid.uuid4().hex
+
+
 def _base(top: str | None) -> dict:
     return {
         "schema_version": MODEL_SCHEMA_VERSION,
+        # Filled by `phys.publish._publish`, which stamps the same token
+        # into the manifest it writes beside this. Null in a document
+        # built but never published — the builders below do not know
+        # which publication they will end up in.
+        "publication": None,
         "generator": _generator(),
         "design": {"top": top},
         "units": dict(UNITS),
@@ -204,6 +240,11 @@ def merge_model(existing: dict | None, new: dict, *, own_half: str | None) -> di
     of those is the one that matters: an artefact directory is keyed on a
     run's *name*, and names are not unique across designs, so a
     same-directory model is only evidence about the same top.
+
+    The merged document keeps ``new``'s ``publication`` token — a merge
+    is part of the publication being written, not of the one that put
+    the inherited half there, and the manifest written alongside it
+    carries the same token.
     """
     if not _mergeable(existing, new):
         return new
@@ -232,6 +273,31 @@ def _mergeable(existing, new: dict) -> bool:
 def _top_of(model: dict) -> str | None:
     design = model.get("design")
     return design.get("top") if isinstance(design, dict) else None
+
+
+def blank_half(model: dict, own_half: str) -> dict:
+    """``model`` with ``own_half`` and the totals it owns nulled out.
+
+    The counterpart of :func:`merge_model`, walking the same
+    :data:`_HALVES` pairing so the two cannot disagree about which
+    totals travel with which half. Used when a rerun has cleared the raw
+    artefacts behind a half but will not republish it — see
+    :func:`rtl_buddy.phys.publish.invalidate_half` for why that is a
+    state worth writing down rather than leaving alone.
+
+    The other half is untouched, including its totals: a `rb power` run
+    that failed says nothing about the synthesis rows a `rb synth` put
+    in the same directory.
+    """
+    blanked = dict(model)
+    blanked["totals"] = dict(model.get("totals") or {})
+    for half, totals_keys in _HALVES:
+        if half != own_half:
+            continue
+        blanked[half] = None
+        for key in totals_keys:
+            blanked["totals"][key] = None
+    return blanked
 
 
 def write_model(model: dict, artefact_dir) -> str:

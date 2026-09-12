@@ -29,7 +29,7 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
-from ..phys.publish import publish_synth
+from ..phys.publish import invalidate_half, publish_synth
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
 # ABC script used by the Yosys stage — area-focused, no timing window
@@ -753,7 +753,11 @@ class OpenRoadSynth:
         `synth_stat.json` goes with them: it is read back inside this same
         `run()` to build the phys model, so a stage 1 that exits 0 without
         reaching its trailing `tee ... stat -json` must not have the previous
-        run's per-module areas published as this one's (#558).
+        run's per-module areas published as this one's (#558). The model and
+        its manifest survive -- the other flow's half may be in them -- but
+        this flow's half is nulled out, since publication happens only on a
+        pass and a failed rerun would otherwise leave module rows standing
+        over a `synth_stat.json` that has just been deleted (#558).
         """
         stale = clear_stale_artefacts(
             [
@@ -770,6 +774,26 @@ class OpenRoadSynth:
                 "synth.stale_artefacts_removed",
                 synth=self.synth_cfg.get_name(),
                 paths=stale,
+            )
+        self._invalidate_phys_half()
+
+    def _invalidate_phys_half(self) -> None:
+        """Null this flow's half of any model + manifest already here (#558).
+
+        See the Yosys backend's copy: publication only happens on a pass, so
+        the clear is where a run that will not publish has to withdraw the
+        previous one's module rows. The power half is untouched.
+        """
+        result = invalidate_half(self.artefact_dir, "modules")
+        if result["model"] or result["manifest"] or result["error"]:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.phys_half_invalidated",
+                synth=self.synth_cfg.get_name(),
+                model=result["model"],
+                manifest=result["manifest"],
+                error=result["error"],
             )
 
     def _fail_after_yosys(self, desc: str) -> SynthFailResults:
