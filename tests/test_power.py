@@ -864,7 +864,7 @@ def test_power_script_records_the_liberty_cell_of_each_instance(tmp_path):
     assert "get_property $rb_inst ref_name" in script
 
 
-def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None):
+def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None, log=""):
     """Run an OpenRoadPower whose fake OpenROAD writes the given reports."""
     from unittest.mock import MagicMock
     from rtl_buddy.tools import power_openroad
@@ -874,7 +874,7 @@ def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None):
     monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
 
     def _fake_run(cmd, **kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(cmd[cmd.index("-log") + 1]).write_text(log)
         Path(backend._report_path()).write_text(_TOTAL_RPT)
         if instances is not None:
             Path(backend._instances_report_path()).write_text(instances)
@@ -989,3 +989,78 @@ def test_a_failed_power_rerun_withdraws_the_instances_half_it_published(
     assert model["instances"] is None
     assert model["totals"]["total_uw"] is None
     assert model["totals"]["area_um2"] == 5.586
+
+
+def test_power_script_marks_where_the_by_product_begins(tmp_path):
+    """The marker sits after the design-total report and before the walk, so
+    the log gate can tell a fatal diagnostic from a by-product one (#558)."""
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    backend = _make_power_backend(tmp_path)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+    marker = lines.index(f'puts "{OpenRoadPower._DETAIL_MARKER}"')
+    totals = next(i for i, ln in enumerate(lines) if ln.startswith("report_power >"))
+    walk = lines.index("  set rb_insts [get_cells -hierarchical *]")
+
+    assert totals < marker < walk
+
+
+def test_an_error_in_the_by_product_half_costs_only_that_half(tmp_path, monkeypatch):
+    """An OpenSTA without `report_power -instances` prints an `[ERROR ...]`
+    before the `catch` swallows the failure. The totals are already on disk
+    by then, so the run passes and loses its `instances` half (#558)."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerPassResults
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    _backend, result = _run_power_with(
+        tmp_path,
+        monkeypatch,
+        log=(
+            "[INFO ODB-0227] LEF file: nangate45.lef\n"
+            f"{OpenRoadPower._DETAIL_MARKER}\n"
+            "[ERROR STA-0001] report_power: unknown option -instances\n"
+        ),
+    )
+
+    assert isinstance(result, PowerPassResults)
+    assert result.results["total_w"] == pytest.approx(2.83e-05)
+    assert load_model(result.results["phys_model"])["instances"] is None
+
+
+def test_an_error_before_the_marker_still_fails_the_run(tmp_path, monkeypatch):
+    """Everything up to the marker is the analysis itself: a diagnostic there
+    means the watts cannot be trusted, and the report goes with it (#558)."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    backend, result = _run_power_with(
+        tmp_path,
+        monkeypatch,
+        instances=_INSTANCE_RPT,
+        cells=_INSTANCE_CELLS,
+        log=(
+            "[ERROR STA-0603] no clocks have been defined\n"
+            f"{OpenRoadPower._DETAIL_MARKER}\n"
+        ),
+    )
+
+    assert isinstance(result, PowerFailResults)
+    assert "1 ERROR(s) in OpenROAD log" in result.results["desc"]
+    assert not Path(backend._report_path()).exists()
+
+
+def test_a_log_without_the_marker_is_scanned_whole(tmp_path, monkeypatch):
+    """Backward compatibility: a log from a script that predates the marker
+    has no by-product half to exempt, so every `[ERROR ...]` is fatal."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    _backend, result = _run_power_with(
+        tmp_path,
+        monkeypatch,
+        log="[ERROR STA-0001] report_power: unknown option -instances\n",
+    )
+
+    assert isinstance(result, PowerFailResults)
+    assert "1 ERROR(s) in OpenROAD log" in result.results["desc"]
