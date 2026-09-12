@@ -63,16 +63,86 @@ def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
     return elab_job_argv(spec)
 
 
-# Queue states that mean "still occupying the queue". Anything else
-# (COMPLETED/FAILED/TIMEOUT/CANCELLED...) has finished as far as the
-# collector is concerned — the result envelope decides pass/fail.
+# Every state in which Slurm still holds a submitted job: the NON-TERMINAL
+# half of job_state_codes(7). Anything else (COMPLETED/FAILED/TIMEOUT/
+# CANCELLED...) has finished as far as the collector is concerned — the
+# result envelope decides pass/fail.
 #
-# `ST` (STOPPED) sits beside `S` (SUSPENDED) for the same reason the dedup
-# probe lists both: job_state_codes(7) has a STOPPED job retaining its CPUs,
-# so it is still running as far as the queue is concerned. A state missing
-# here reads as *drained*, which would start collection on a job that has
-# not written its envelope yet (#527).
-_ACTIVE_STATES = "PD,R,S,ST,CG,CF"
+# ONE list with two consumers, deliberately. `wait_all`'s drain poll and the
+# build job's dedup probe ask the same question — is a job of ours still
+# alive? — and two rounds of review found them answering it differently, so
+# they now cannot drift (#527 review). The poll is the half that must be
+# complete: a state missing from its filter makes a LIVE job invisible to
+# `_outstanding`, so the wait returns, the collector records a missing
+# envelope for a job that is still queued, and nothing cancels it. For the
+# probe an omission only loses the warning naming the job
+# `--dependency=singleton` waits for — which is why the held states
+# (REQUEUE_HOLD, RESV_DEL_HOLD, SPECIAL_EXIT) matter most there: a
+# predecessor parked in one is exactly the indefinitely-held job the
+# documented `scancel` recovery is for.
+#
+# Spelled out rather than omitted, which is the trap here: `squeue` with no
+# `--states` does NOT list every live job, it reports "pending, running, and
+# completing jobs" (squeue(1)), so dropping the flag would NARROW this
+# filter — SUSPENDED, CONFIGURING and every held state would go missing.
+# `--states=all` is not the default and would go the other way, naming jobs
+# that have already finished.
+#
+# Long names rather than the short codes (`PD,R,S,...`): squeue takes
+# either, the long form is the one job_state_codes(7) documents, and several
+# of these states have no abbreviation to write.
+_NONTERMINAL_STATES = (
+    "PENDING",
+    "RUNNING",
+    "SUSPENDED",
+    # A SIGSTOPped job "retains its CPUs" (job_state_codes(7)), so it has
+    # not terminated: `singleton` still waits for it and the collector must
+    # still wait for its envelope (#527).
+    "STOPPED",
+    "CONFIGURING",
+    "COMPLETING",
+    "STAGE_OUT",
+    "SIGNALING",
+    "RESIZING",
+    "REQUEUED",
+    "REQUEUE_HOLD",
+    # Held because the reservation it asked for was deleted: as stuck, and
+    # as un-terminated, as a REQUEUE_HOLD job.
+    "RESV_DEL_HOLD",
+    "REQUEUE_FED",
+    "SPECIAL_EXIT",
+    "REVOKED",
+    "PREEMPTED",
+)
+_STATES_FILTER = ",".join(_NONTERMINAL_STATES)
+
+# What squeue answers a state name its Slurm predates: `squeue: error:
+# Invalid job state specified: RESV_DEL_HOLD`. A name it rejects is a state
+# that build has no concept of, so no job of ours can be sitting in it —
+# dropping just that name keeps every state the cluster DOES know, where
+# retrying without `--states` would fall back to squeue's own narrower
+# default and hide a held job (#527 review). An empty capture is the older
+# phrasing that names nothing.
+_INVALID_STATE_RE = re.compile(
+    r"invalid job state[s]?(?: specified)?\s*:?\s*([A-Za-z_,]*)", re.I
+)
+# ...and what it answers once none of the ids are in the queue any more.
+# That is completion, not failure: the jobs aged out.
+_GONE_FROM_QUEUE = "invalid job id"
+
+
+def _rejected_states(stderr: str) -> tuple[str, ...] | None:
+    """State names squeue refused, or ``None`` when it refused none.
+
+    An empty tuple means it rejected the filter without naming a name, which
+    the caller can only answer by dropping the filter rather than one entry.
+    """
+    match = _INVALID_STATE_RE.search(stderr or "")
+    if match is None:
+        return None
+    named = (match.group(1) or "").replace(",", " ").split()
+    return tuple(name.upper() for name in named)
+
 
 # squeue's reason for a job whose `afterok` dependency has already failed.
 # Such a job is PENDING but will NEVER run, and since PD counts as "still in
@@ -288,49 +358,11 @@ _DEPENDENCY_OR_SEPARATOR = "?"
 # shorter one would read `--deadline` as a dependency.
 _DEPENDENCY_OPT = "--dependency"
 _DEPENDENCY_MIN_ABBREV = "--dep"
-# What the informational probe counts as "still in flight": every
-# NON-TERMINAL state in Slurm's job_state_codes(7), because that is
-# exactly the set `singleton` waits on — it defers this job until every
-# earlier one of the same name and user has *terminated* (#507 review).
-# The unglamorous half of the list is the half that matters: a
-# predecessor parked in REQUEUE_HOLD or SPECIAL_EXIT is precisely the
-# indefinitely-held job the documented `scancel` recovery is for, and a
-# filter that omitted those suppressed the warning naming its id.
-#
-# Spelled out rather than omitted, which is the trap here: `squeue` with
-# no `--states` does NOT list every live job, it reports "pending,
-# running, and completing jobs" (squeue(1)), so dropping the flag would
-# NARROW this filter and reintroduce the bug for CONFIGURING and
-# SUSPENDED as well. `--states=all` is not the default and would go the
-# other way, naming jobs that have already finished.
-_DEDUP_STATES = ",".join(
-    (
-        "PENDING",
-        "RUNNING",
-        "SUSPENDED",
-        # A job whose processes were SIGSTOPped: job_state_codes(7) says a
-        # STOPPED job "retains its CPUs", so it has not terminated and
-        # `singleton` still waits for it — the wait this probe exists to
-        # explain, and an omission that left the documented `scancel`
-        # recovery without the id it needs (#527).
-        "STOPPED",
-        "CONFIGURING",
-        "COMPLETING",
-        "STAGE_OUT",
-        "SIGNALING",
-        "RESIZING",
-        "REQUEUED",
-        "REQUEUE_HOLD",
-        # The third held state, found beside STOPPED while checking the list
-        # against job_state_codes(7): a job held because its reservation was
-        # deleted is as stuck, and as un-terminated, as a REQUEUE_HOLD one.
-        "RESV_DEL_HOLD",
-        "REQUEUE_FED",
-        "SPECIAL_EXIT",
-        "REVOKED",
-        "PREEMPTED",
-    )
-)
+# What the informational probe counts as "still in flight" is the same
+# non-terminal set the drain poll waits on — :data:`_STATES_FILTER`,
+# defined once at the top of this module — because that is exactly the set
+# `singleton` waits on: it defers this job until every earlier one of the
+# same name and user has *terminated* (#507 review).
 # The probe sits between the user and their submission, so it is
 # time-boxed: a wedged squeue must cost a few seconds and a DEBUG line,
 # never the run. It only feeds a log line — the guarantee is the
@@ -608,6 +640,16 @@ class SlurmDispatchBackend(DispatchBackend):
         # failure retires it for this backend instance; a probe that
         # answers keeps being asked.
         self._dedup_probe_available = True
+        # The state filter every drain poll asks with, narrowed in place if
+        # this cluster's Slurm rejects one of the names (see
+        # `_narrow_wait_states`). A property of the Slurm being talked to,
+        # so it is remembered for the run rather than re-learned per poll.
+        self._wait_states: str | None = _STATES_FILTER
+        # Clusters whose poll has already failed for an unexplained reason:
+        # the first failure is a WARNING, the rest are DEBUG, or a wedged
+        # squeue would print one line per poll for the whole wait (#527
+        # review).
+        self._wait_poll_failed: set = set()
 
     def _resolve_accounting_frequency(self) -> float | None:
         """Request per-second task sampling, unless the user asked for a rate.
@@ -759,7 +801,7 @@ class SlurmDispatchBackend(DispatchBackend):
         explains the resulting wait can *name* the jobs being waited on.
         Nothing branches on it but that line.
 
-        The filter is every non-terminal state (:data:`_DEDUP_STATES`),
+        The filter is every non-terminal state (:data:`_STATES_FILTER`),
         which is the set ``singleton`` itself waits on — including the
         held ones (``REQUEUE_HOLD``, ``SPECIAL_EXIT``) a stuck
         predecessor sits in, since those are the ids the documented
@@ -829,7 +871,7 @@ class SlurmDispatchBackend(DispatchBackend):
 
         try:
             proc = subprocess.run(
-                _argv(_DEDUP_STATES),
+                _argv(_STATES_FILTER),
                 capture_output=True,
                 text=True,
                 cwd=cwd,
@@ -1718,6 +1760,126 @@ class SlurmDispatchBackend(DispatchBackend):
                     longest = (record["name"] or record["id"], elapsed)
         return outstanding, longest
 
+    def _wait_argv(self, base_ids, *, cluster, states) -> list[str]:
+        """One drain poll's argv. ``states`` of ``None`` omits the filter."""
+        return [
+            "squeue",
+            "--noheader",
+            f"--format={_SQUEUE_FORMAT}",
+            *([] if states is None else [f"--states={states}"]),
+            *(["-M", cluster] if cluster else []),
+            "--jobs",
+            ",".join(base_ids),
+        ]
+
+    def _poll_queue(self, base_ids, *, cluster, cwd) -> tuple[list[str], str]:
+        """One cluster's live jobs: ``(squeue lines, status)``.
+
+        ``status`` is one of three ANSWERS, which the caller must keep apart
+        (#527 review):
+
+        - ``"ok"`` — squeue answered, and the lines are every job of ours it
+          still holds. An empty list means drained.
+        - ``"drained"`` — squeue says it holds none of these ids at all
+          (``Invalid job id specified``), which is how a fleet that has aged
+          out of the queue reports completion.
+        - ``"unknown"`` — the poll FAILED. It says nothing about the jobs, so
+          it must never be read as a drain: an empty answer from a query
+          that errored would retire jobs that are still running, and the
+          collector would score their absent envelopes as failures while the
+          fleet ran on unwaited and uncancelled.
+
+        A rejected state name is recovered from rather than fatal, because
+        the name is a state the cluster's Slurm does not have — see
+        :func:`_rejected_states`.
+        """
+        # Bounded by the filter's own length: each rejection drops the name
+        # it named, so the loop cannot outlive the list.
+        for _ in range(len(_NONTERMINAL_STATES) + 1):
+            proc = subprocess.run(
+                self._wait_argv(base_ids, cluster=cluster, states=self._wait_states),
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+            )
+            if proc.returncode == 0:
+                return proc.stdout.splitlines(), "ok"
+            if self._wait_states is None:
+                break
+            rejected = _rejected_states(proc.stderr)
+            if rejected is None:
+                break
+            self._narrow_wait_states(rejected, cluster=cluster)
+        if _GONE_FROM_QUEUE in (proc.stderr or "").lower():
+            return [], "drained"
+        # Anything else — a socket timeout to a busy controller, a squeue
+        # that is not on PATH on this poll, an unreadable cluster — is
+        # transient far more often than it is terminal, so the wait keeps
+        # polling instead of failing the run. What it must NOT do is
+        # conclude anything about the jobs.
+        level = logging.DEBUG if cluster in self._wait_poll_failed else logging.WARNING
+        self._wait_poll_failed.add(cluster)
+        log_event(
+            logger,
+            level,
+            "dispatch.wait_poll_failed",
+            backend=self.name,
+            cluster=cluster,
+            jobs=len(base_ids),
+            error=(proc.stderr or "").strip()[:200]
+            or f"squeue exited {proc.returncode}",
+        )
+        return [], "unknown"
+
+    def _narrow_wait_states(self, rejected: tuple, *, cluster) -> None:
+        """Drop the state names this Slurm rejected, for the rest of the run.
+
+        A name squeue refuses is a state that build does not have, so no job
+        can be in it and the remaining filter is exactly as complete as the
+        full one. When squeue named nothing the filter has to go instead,
+        which leaves squeue's own default — pending, running and completing —
+        narrower than this wants, so that degradation is a WARNING rather
+        than a silent fallback (#527 review).
+        """
+        current = [] if self._wait_states is None else self._wait_states.split(",")
+        kept = [state for state in current if state not in rejected]
+        if rejected and kept:
+            self._wait_states = ",".join(kept)
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.wait_states_narrowed",
+                backend=self.name,
+                cluster=cluster,
+                dropped=",".join(rejected),
+                states=self._wait_states,
+            )
+            return
+        self._wait_states = None
+        log_event(
+            logger,
+            logging.WARNING,
+            "dispatch.wait_states_unfiltered",
+            backend=self.name,
+            cluster=cluster,
+            dropped=",".join(rejected) or None,
+        )
+
+    def _assumed_outstanding(self, handles, *, cluster) -> dict:
+        """Every handle of ``cluster``, as "still outstanding".
+
+        What a failed poll leaves the wait believing (#527 review): the jobs
+        were submitted and nothing has been seen to end them. Keeping them in
+        the outstanding set is what stops an unanswered poll reading as a
+        drain — and what keeps `max-wait` armed, since the deadline is only
+        enforced while something is outstanding.
+        """
+        return {
+            telemetry_key(h): "pending"
+            for h in handles
+            if h is not None and getattr(h, "cluster", None) == cluster
+        }
+
     def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
         if not handles:
             return
@@ -1746,28 +1908,18 @@ class SlurmDispatchBackend(DispatchBackend):
             states: dict[str, str] = {}
             longest = None
             for cluster, base_ids in by_cluster.items():
-                proc = subprocess.run(
-                    [
-                        "squeue",
-                        "--noheader",
-                        f"--format={_SQUEUE_FORMAT}",
-                        f"--states={_ACTIVE_STATES}",
-                        *(["-M", cluster] if cluster else []),
-                        "--jobs",
-                        ",".join(base_ids),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    cwd=cwd,
-                )
-                # squeue errors ("Invalid job id specified") once every job
-                # has aged out of the queue — that is completion, not
-                # failure, and it is per cluster: the others are still asked.
-                if proc.returncode != 0:
+                # Three answers, not two: "these are still queued", "they
+                # have all aged out" and "the poll failed, so I know
+                # nothing". Only the middle one is a drain — a failed query
+                # used to take the same path as an empty one, retiring live
+                # jobs (#527 review). Per cluster: the others are still asked.
+                lines, status = self._poll_queue(base_ids, cluster=cluster, cwd=cwd)
+                if status == "drained":
                     continue
-                records = self._reap_never_satisfied(
-                    proc.stdout.splitlines(), cwd=cwd, cluster=cluster
-                )
+                if status == "unknown":
+                    states.update(self._assumed_outstanding(handles, cluster=cluster))
+                    continue
+                records = self._reap_never_satisfied(lines, cwd=cwd, cluster=cluster)
                 cluster_states, cluster_longest = self._outstanding(
                     records, handles, cluster=cluster
                 )

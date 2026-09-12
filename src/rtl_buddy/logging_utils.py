@@ -958,6 +958,30 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "max-array-tasks, where the cluster caps tasks per array below "
                 "it) to have such groups split"
             )
+        case "dispatch.wait_poll_failed":
+            where = (
+                f" on cluster {fields.get('cluster')}" if fields.get("cluster") else ""
+            )
+            return (
+                f"dispatch: squeue could not be polled{where} "
+                f"({fields.get('error')}); {fields.get('jobs')} job(s) are still "
+                "assumed outstanding — a failed poll is not proof that they "
+                "finished, so the wait keeps asking"
+            )
+        case "dispatch.wait_states_unfiltered":
+            return (
+                "dispatch: squeue rejected the job-state filter "
+                f"({fields.get('dropped') or 'naming no state'}), so the wait "
+                "now sees only squeue's default states (pending, running, "
+                "completing); a job held in another state may be reported "
+                "finished early"
+            )
+        case "dispatch.wait_states_narrowed":
+            return (
+                f"dispatch: squeue does not know the job state(s) "
+                f"{fields.get('dropped')}, so the wait filters on "
+                f"{fields.get('states')} instead"
+            )
         case "dispatch.drained":
             return (
                 f"All {fields.get('jobs')} dispatched job(s) finished on the "

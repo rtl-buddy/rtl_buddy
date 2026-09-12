@@ -295,6 +295,232 @@ def test_wait_all_treats_squeue_error_as_drained(monkeypatch):
     assert len(calls) == 1
 
 
+# ---------- #527 review: the drain poll must see every live state, and a
+# ---------- failed poll is not a drain
+
+
+@pytest.mark.parametrize("state", ["REQUEUE_HOLD", "SIGNALING", "STOPPED"])
+def test_a_job_held_in_an_exotic_state_keeps_the_wait_going(monkeypatch, state):
+    """A live job must never fall out of the wait because of its state.
+
+    The drain poll used to filter on six short codes, so a job that entered
+    REQUEUE_HOLD (or SIGNALING, or STOPPED) matched nothing: squeue returned
+    no row, `_outstanding` saw an empty queue, `wait_all` returned, and the
+    collector recorded a missing envelope for a job that was still there —
+    unwaited and, on a failure path, uncancelled. The filter is now the same
+    non-terminal set the dedup probe uses (#527 review).
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0, stdout=f"7|None|{state}|0:10|rb:basic\n", stderr=""
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all([JobHandle("7", _spec())])
+    # Two polls: the state above kept the fleet outstanding for one more
+    # round, and only the empty answer drained it.
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+    assert state in slurm_module._STATES_FILTER.split(",")
+
+
+def test_the_wait_filter_is_the_dedup_filter(monkeypatch):
+    """One source for both, so the two cannot drift apart again (#527 review).
+
+    They are asking the same question — is a job of ours still alive? — and
+    answering it differently is what made a held job invisible to the wait
+    while the dedup probe could see it.
+    """
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    backend.wait_all([JobHandle("1", _spec())])
+    (wait_states,) = [arg for arg in calls[0] if str(arg).startswith("--states=")]
+    assert wait_states == f"--states={slurm_module._STATES_FILTER}"
+    # ...and it really is the non-terminal set, spelled the way
+    # job_state_codes(7) spells it.
+    assert wait_states.split("=", 1)[1].split(",") == list(
+        slurm_module._NONTERMINAL_STATES
+    )
+
+
+def test_an_unknown_state_name_is_dropped_and_the_poll_retried(monkeypatch, caplog):
+    """A Slurm older than a state name still gets the rest of the filter.
+
+    squeue names the state it refuses, and a name it refuses is one that
+    build has no concept of — so no job can be sitting in it, and dropping
+    just that name keeps every state the cluster does know. Retrying
+    unfiltered instead would fall back to squeue's own narrower default and
+    hide exactly the held job this filter exists to see (#527 review).
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified: RESV_DEL_HOLD",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("1", _spec())])
+
+    first, second = [argv for argv in calls if argv[0] == "squeue"]
+    assert "RESV_DEL_HOLD" in [
+        s for arg in first if str(arg).startswith("--states=") for s in arg.split(",")
+    ]
+    retried = [arg for arg in second if str(arg).startswith("--states=")][0]
+    assert "RESV_DEL_HOLD" not in retried
+    # Every other state survived: the filter was narrowed, not abandoned.
+    assert "REQUEUE_HOLD" in retried and "STOPPED" in retried
+    (fields,) = _events(caplog, "dispatch.wait_states_narrowed")
+    assert fields["dropped"] == "RESV_DEL_HOLD"
+    # ...and it is remembered, so the rest of the run does not re-learn it.
+    assert "RESV_DEL_HOLD" not in backend._wait_states
+
+
+def test_a_rejection_naming_no_state_drops_the_filter_loudly(monkeypatch, caplog):
+    """Nothing to drop means the filter goes — and the user is told.
+
+    squeue's own default (pending, running, completing) is narrower than the
+    wait wants, so a job held in another state can be reported finished
+    early. That is a degradation, not a silent fallback (#527 review).
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("1", _spec())])
+
+    _, second = [argv for argv in calls if argv[0] == "squeue"]
+    assert not [arg for arg in second if str(arg).startswith("--states=")]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_states_unfiltered"
+    ]
+    assert record.levelno == logging.WARNING  # console-visible by default
+    assert "pending, running, completing" in record.getMessage()
+    assert backend._wait_states is None
+
+
+def test_a_failed_poll_is_not_a_drain(monkeypatch, caplog):
+    """An errored squeue says nothing about the jobs (#527 review).
+
+    A transient controller timeout used to take the same path as an empty
+    queue — the wait returned, the collector scored every absent envelope as
+    a failure, and the fleet ran on with nothing waiting for it or
+    cancelling it. The jobs stay outstanding and the next poll asks again.
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="slurm_load_jobs error: Socket timed out on send/recv operation",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("7", _spec())])
+
+    # It polled again rather than declaring the fleet finished on an error.
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_poll_failed"
+    ]
+    assert record.levelno == logging.WARNING
+    assert "Socket timed out" in record.__dict__["rtl_fields"]["error"]
+    # ...and the drain event is the one that ended the wait, not the failure.
+    assert _events(caplog, "dispatch.drained")
+
+
+def test_a_repeatedly_failing_poll_warns_once_then_debugs(monkeypatch, caplog):
+    """One WARNING per cluster: a wedged squeue must not fill the console."""
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=1, stdout="", stderr="slurm_load_jobs error: x"),
+            SimpleNamespace(returncode=1, stdout="", stderr="slurm_load_jobs error: x"),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("7", _spec())])
+
+    levels = [
+        r.levelno
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_poll_failed"
+    ]
+    assert levels == [logging.WARNING, logging.DEBUG]
+
+
+def test_a_failed_poll_still_honours_max_wait(monkeypatch):
+    """The deadline is only armed while something is outstanding (#435).
+
+    So a poll that fails has to keep the jobs outstanding for that reason
+    too: a squeue that never answers must end in the `max-wait` failure, not
+    in an unbounded loop (#527 review).
+    """
+    clock = iter([0.0, 0.0, 0.0, 100.0, 100.0, 200.0, 200.0, 300.0, 300.0])
+    monkeypatch.setattr(slurm_module.time, "monotonic", lambda: next(clock, 400.0))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    calls = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        return SimpleNamespace(
+            returncode=1, stdout="", stderr="slurm_load_jobs error: unreachable"
+        )
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0, max_wait=10.0))
+
+    with pytest.raises(FatalRtlBuddyError, match="max-wait"):
+        backend.wait_all([JobHandle("7", _spec())])
+
+
 def test_wait_all_no_handles_is_a_no_op(monkeypatch):
     calls = []
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, []))
@@ -2474,7 +2700,7 @@ def test_the_local_wait_argv_is_unchanged(monkeypatch):
         "squeue",
         "--noheader",
         f"--format={slurm_module._SQUEUE_FORMAT}",
-        f"--states={slurm_module._ACTIVE_STATES}",
+        f"--states={slurm_module._STATES_FILTER}",
         "--jobs",
         "500",
     ]
@@ -2819,7 +3045,7 @@ def test_an_in_flight_build_job_is_named_in_the_warning(monkeypatch, caplog):
     assert probe[0] == "squeue"
     assert "--noheader" in probe and "--format=%i" in probe
     assert f"--name={job_name}" in probe
-    assert f"--states={slurm_module._DEDUP_STATES}" in probe
+    assert f"--states={slurm_module._STATES_FILTER}" in probe
     assert any(a.startswith("--user=") for a in probe)
     # ...and it runs BEFORE the submit, or it would find this run's own job.
     assert argv[0] == "sbatch"
@@ -2850,7 +3076,7 @@ def test_an_in_flight_build_job_is_named_in_the_warning(monkeypatch, caplog):
 def test_a_completing_build_job_still_counts_as_in_flight():
     """A COMPLETING job is still finishing, so naming it explains a wait
     that has not ended."""
-    assert "COMPLETING" in slurm_module._DEDUP_STATES.split(",")
+    assert "COMPLETING" in slurm_module._STATES_FILTER.split(",")
 
 
 def test_a_stopped_build_job_still_counts_as_in_flight():
@@ -2861,11 +3087,7 @@ def test_a_stopped_build_job_still_counts_as_in_flight():
     `dispatch.build_job_deduped` gave none of the documented `scancel`
     recovery guidance for the very job that is holding the allocation.
     """
-    assert "STOPPED" in slurm_module._DEDUP_STATES.split(",")
-    # The same gap in the wait_all poll, where a state missing from the
-    # filter reads as *drained*: `ST` sits beside `S` for the same reason.
-    assert "ST" in slurm_module._ACTIVE_STATES.split(",")
-    assert "S" in slurm_module._ACTIVE_STATES.split(",")
+    assert "STOPPED" in slurm_module._STATES_FILTER.split(",")
 
 
 def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
@@ -3578,7 +3800,7 @@ def test_the_probe_asks_for_every_non_terminal_state():
     documented `scancel` recovery exists for, and the old filter left
     exactly those ids unreportable.
     """
-    states = slurm_module._DEDUP_STATES.split(",")
+    states = slurm_module._STATES_FILTER.split(",")
     for non_terminal in (
         "PENDING",
         "RUNNING",
