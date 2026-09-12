@@ -47,10 +47,13 @@ and run no EDA tool. It is a convenience surface, not a prerequisite; the
 `phys_module` joins the two halves of the physical model on their `module`
 column, and the two spell it differently: RTL module names in the synthesis
 half, Liberty cell names (`DFF_X1`) on the power half's leaves. So it answers
-"how much do the DFFs burn" and a flat netlist's top, and its payload's
-`instance_join` says so when an RTL module matched no instance. Do not report
-an empty instance list as "this block burns no power"; read
-`rb --machine docs show concepts/phys` first.
+Liberty-cell questions — "how much do the DFFs burn" — and nothing else: the
+join matches the power half's `module` field as it stands, so no leaf row
+carries an RTL module's name, the top's included, and flattening the design
+changes the hierarchy rather than the namespace. Its payload's `instance_join`
+says so when an RTL module matched no instance, and says it the other way when
+one name is in both namespaces. Do not report an empty instance list as "this
+block burns no power"; read `rb --machine docs show concepts/phys` first.
 
 `phys_focus` is served only when a live hub was discovered at start-up — with
 no hub running it is absent, not failing, and the three read tools answer

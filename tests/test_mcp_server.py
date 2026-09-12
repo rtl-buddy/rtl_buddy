@@ -650,6 +650,20 @@ def test_physical_reads_are_stateless_and_mirror_their_cli_verbs(mcp_project: Pa
     assert headless.spec("phys_instance").command == "rb phys instance"
 
 
+def test_phys_module_does_not_claim_it_answers_a_flat_netlists_top(
+    mcp_project: Path,
+):
+    """The claim came off the concepts page and the query docstring in
+    round 6 and survived here, which is the copy an agent actually reads.
+    The join matches the power half's `module` field as it stands, so no
+    leaf row carries an RTL module's name — the top's included."""
+    description = _toolset(mcp_project).spec("phys_module").description
+
+    assert "flat netlist's top" not in description
+    assert "Liberty-cell questions ('how much do the DFFs burn') and " in description
+    assert "flattening the design changes the hierarchy rather than the " in description
+
+
 def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
     """Same builder as ``rb --machine phys summary``, not a second shape."""
     from rtl_buddy.phys.query import load_context, summary_payload

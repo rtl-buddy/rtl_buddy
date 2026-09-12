@@ -42,6 +42,13 @@ def test_bundled_skills_keep_critical_operational_guidance():
     assert "`phys_focus` is served only when a live hub" in graph
     assert "soft miss" in graph
     assert "instance_join" in graph
+    # The join answers Liberty-cell questions and nothing else. The skill
+    # used to name a flat netlist's top as a second thing it answers;
+    # flattening changes the hierarchy, not the namespace the leaves are
+    # named in, so an agent that believed it would attribute a cell
+    # type's power to the design top.
+    assert "flat netlist" not in graph
+    assert "changes the hierarchy rather than the namespace" in graph
 
     tests = _bundled_skill_text("rtl-buddy-test")
     assert "result.json" in tests
