@@ -73,6 +73,20 @@ class Origin(str, Enum):
     has to be open alongside them, and one client per origin means a
     shared slot would evict whichever tab you looked at second."""
 
+    PHYS = "phys"
+    """The hub-served synth+power pane (``GET /phy``).
+
+    Its own origin for the third time, and for the third time because
+    the pane's job is to drive the others: clicking the module that owns
+    the area selects it in the schematic and opens it in the editor, so
+    the phys tab is open *alongside* them rather than instead of one.
+    One client per origin means a shared ``view`` or ``cov`` slot would
+    have the two tabs evicting each other.
+
+    The ORIGIN is ``phys`` while the page is ``/phy`` and the label is
+    ``phy`` — the same split ``GRAPH``/``/gph`` already carries. A page
+    route and a display name are chrome; the wire is protocol v1."""
+
 
 class Kind(str, Enum):
     """``kind`` field — envelope category."""

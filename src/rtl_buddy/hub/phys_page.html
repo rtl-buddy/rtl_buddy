@@ -1,0 +1,1583 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rtl-buddy-phy</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
+  <!--
+    Served by rtl_buddy.hub.phys_page at GET /phy (rtl-buddy/rtl_buddy#558).
+
+    Offline on purpose: no CDN, no web font, no build step — the hub is
+    routinely run on machines with no route off localhost. The one
+    stylesheet link is same-origin (/hub/theme.css, served by this same
+    hub process, rtl-buddy/rtl_buddy#398); the block below repeats only
+    the tokens the page cannot render without, as a fallback for a sheet
+    that 404s (an old hub serving a new pane).
+
+    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
+    select :root, so they tie on specificity and document order decides
+    — a fallback placed after the link would permanently shadow the
+    sheet, including its @media (prefers-color-scheme: dark) block, and
+    every later palette edit would silently stop reaching this pane.
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:          #f8fafc;
+      --panel:       #ffffff;
+      --panel-2:     #f1f5f9;
+      --line:        #e2e8f0;
+      --line-strong: #cbd5e1;
+      --fg:          #1e293b;
+      --fg-muted:    #64748b;
+      --fg-faint:    #94a3b8;
+      --accent:      #2563eb;
+      --ok:          #16a34a;
+      --warn:        #b45309;
+      --err:         #dc2626;
+      --warn-bg:     #fef3c7;
+      /* Heat ramp: the continuous fill is
+         hsl(var(--heat-h), var(--heat-s),
+             calc(--heat-l0 + (--heat-l1 - --heat-l0) * --f)),
+         so these are the tokens that have to survive a missing sheet or
+         every row tint goes black. They live in the SHEET, beside the
+         coverage ramp, and not in this page: the cov pane carries a
+         comment scar about exactly that — its saturation used to be
+         page-local, which is one ramp in two places. */
+      --heat-h:      18;
+      --heat-s:      85%;
+      --heat-l0:     96%;
+      --heat-l1:     66%;
+      --heat-none:   #e5e7eb;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --fs-base:  13px;
+      --fs-small: 11px;
+      --radius-1: 3px;
+      --radius-2: 4px;
+    }
+  </style>
+  <link rel="stylesheet" href="/hub/theme.css">
+  <style>
+    /* Page-local derivations of the shared tokens. Nothing here may
+       re-declare a sheet token: both blocks select :root, so a
+       re-declaration after the link would out-rank the sheet. */
+    :root {
+      --numcol: 7.5rem;  /* one numeric column of the two tables */
+    }
+    * { box-sizing: border-box; }
+    /* The sections below set `display` on the very elements the script
+       toggles with `hidden`, and an id beats the UA sheet's [hidden]. */
+    [hidden] { display: none !important; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font: var(--fs-base)/1.45 var(--font-mono);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    header {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      padding: .5rem .75rem; border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    header h1 {
+      font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em;
+      white-space: nowrap;
+    }
+    header h1 small { color: var(--fg-muted); font-weight: 400; }
+    .grow { flex: 1 1 auto; }
+    input[type="search"], select {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: var(--radius-2);
+      padding: .25rem .5rem;
+    }
+    input[type="search"] { min-width: 12rem; }
+    input[type="search"]:focus, select:focus { outline: 1px solid var(--accent); }
+    button {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: var(--radius-2);
+      padding: .25rem .55rem; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    label.chk { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; }
+    nav.switcher { display: flex; gap: .35rem; align-items: center; }
+    nav.switcher a {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line-strong); border-radius: var(--radius-2);
+      padding: .25rem .55rem; text-decoration: none; white-space: nowrap;
+    }
+    nav.switcher a:hover { border-color: var(--accent); color: var(--accent); }
+
+    main { flex: 1 1 auto; display: flex; min-height: 0; }
+    /* One column rather than the cov pane's aside + detail: both tables
+       here are numeric and wide — modules carry cells, area and share,
+       instances carry a hierarchical path and five power columns — and
+       a 24rem sidebar would truncate the one thing a reader is scanning
+       for. They stack in one scroller instead, totals first. */
+    section#content {
+      flex: 1 1 auto; min-width: 0; min-height: 0; position: relative;
+      display: flex; flex-direction: column;
+    }
+    #dash { flex: 1 1 auto; overflow: auto; min-height: 0; padding: .75rem; }
+    h2 {
+      font-size: 12px; margin: .9rem 0 .4rem; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--fg-muted);
+      display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap;
+    }
+    h2:first-child { margin-top: 0; }
+    .muted { color: var(--fg-muted); }
+    .faint { color: var(--fg-faint); }
+    .msg-error { color: var(--err); font-weight: 600; }
+    .msg-warn { color: var(--warn); font-weight: 600; }
+
+    /* -- heat ramp: one rule, both themes, driven by --f -------------
+       Sequential, not diverging: coverage has a good end and a bad end
+       and earns the red→green hue sweep; area and power only have
+       "more", so the hue is fixed and the ramp runs on lightness. Both
+       endpoints are sheet tokens, so the interpolation is CSS and the
+       script only ever sets the 0..1 fraction. */
+    .heat {
+      --f: 0;
+      background: hsl(var(--heat-h), var(--heat-s),
+        calc(var(--heat-l0) + (var(--heat-l1) - var(--heat-l0)) * var(--f)));
+    }
+    .heat.none { background: var(--heat-none); }
+
+    /* -- cards: the totals sanity block -------------------------------- */
+    .cards { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .card {
+      border: 1px solid var(--line); border-radius: var(--radius-3, 6px);
+      background: var(--panel); padding: .5rem .6rem; min-width: 10rem;
+      cursor: pointer;
+    }
+    .card:hover { border-color: var(--accent); }
+    .card.on { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+    .card .k {
+      font-size: var(--fs-small); color: var(--fg-muted);
+      text-transform: uppercase; letter-spacing: .08em;
+    }
+    .card .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .card .v small { font-size: 11px; font-weight: 400; color: var(--fg-muted); }
+    .card .n { font-size: var(--fs-small); color: var(--fg-muted); }
+    /* The sanity line: the flows' own log scrape versus the sum of the
+       rows, which come from a different scrape entirely. A mismatch is
+       information (rtl_buddy/phys/model.py), so it is shown rather than
+       reconciled — and only when BOTH numbers exist. */
+    .card .cmp { font-size: var(--fs-small); }
+    .card .cmp.agree { color: var(--ok); }
+    .card .cmp.differ { color: var(--warn); font-weight: 600; }
+
+    dl.kv { display: grid; grid-template-columns: 9rem 1fr; gap: .1rem .5rem; margin: 0; }
+    dl.kv dt { color: var(--fg-muted); }
+    dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+    /* -- tables -------------------------------------------------------- */
+    table { border-collapse: collapse; width: 100%; font-size: var(--fs-small); }
+    table th {
+      text-align: right; font-weight: 600; color: var(--fg-muted);
+      padding: .15rem .35rem; border-bottom: 1px solid var(--line-strong);
+      position: sticky; top: 0; background: var(--panel); white-space: nowrap;
+    }
+    table th.sortable { cursor: pointer; }
+    table th.sortable:hover { color: var(--accent); }
+    table th.sort { color: var(--accent); }
+    table th:first-child, table td:first-child { text-align: left; }
+    table td {
+      padding: .12rem .35rem; text-align: right;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    table td.name {
+      max-width: 34rem; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* Hierarchical paths truncate at their useless end, like the cov
+       pane's file list: `…/u_alu/_137_`, not `u_cpu/u_fetch/u_…`. */
+    table td.path { direction: rtl; text-align: left; }
+    tr.row { cursor: pointer; }
+    tr.row:hover td { background: var(--panel-2); }
+    tr.row.sel td { box-shadow: inset 2px 0 0 var(--accent); }
+    tr.row.hot td:first-child { font-weight: 600; }
+    /* The tinted cell is the metric's own column, not the whole row: a
+       wash behind five numbers says "this row is big" about all of
+       them, when only one of them was ranked. */
+    td.heat { border-radius: var(--radius-1); }
+
+    .pill {
+      display: inline-block; padding: 0 .4rem; border-radius: 999px;
+      border: 1px solid var(--line-strong); font-size: var(--fs-small);
+      color: var(--fg-muted); white-space: nowrap; text-transform: none;
+      letter-spacing: 0;
+    }
+    .pill.hot { border-color: var(--accent); color: var(--accent); }
+    .pill.act { cursor: pointer; }
+    .pill.act:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* -- the missing-half banner --------------------------------------
+       A physical model is routinely half-filled by design: a synthesis
+       writes `modules` and a power analysis writes `instances`. Naming
+       the command that fills the other half is the whole message. */
+    .banner {
+      border: 1px solid var(--warn); background: var(--warn-bg);
+      color: var(--fg); border-radius: var(--radius-2);
+      padding: .35rem .6rem; margin-bottom: .6rem;
+    }
+    .banner code {
+      background: var(--panel); padding: .05rem .3rem;
+      border-radius: var(--radius-1);
+    }
+
+    footer {
+      border-top: 1px solid var(--line); background: var(--panel);
+      padding: .3rem .75rem; color: var(--fg-muted);
+      display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+    }
+    /* Shared hub chrome: connection dot + one vocabulary
+       (connected / connecting… / offline) — docs/concepts/hub.md. */
+    .dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
+    .dot.connected { background: var(--ok); }
+    .dot.connecting { background: var(--warn); }
+    .dot.offline { background: var(--err); }
+    /* A fourth strip state, and the only one that is also a control:
+       another tab of THIS pane took the hub slot, and the words are the
+       way back (`showSuperseded`). Not a status word — it says what
+       happened and what a click will do. */
+    .take-back {
+      color: var(--err); font-weight: 600;
+      cursor: pointer; text-decoration: underline;
+    }
+
+    #empty {
+      position: absolute; inset: 0; display: none; place-items: center;
+      text-align: center; padding: 2rem;
+    }
+    #empty.show { display: grid; }
+    #empty code {
+      background: var(--panel-2); padding: .1rem .35rem; border-radius: var(--radius-1);
+    }
+  </style>
+  <script>
+    %HUB_INJECTION%
+  </script>
+</head>
+<body>
+  <header>
+    <h1>rtl-buddy-phy <small id="counts"></small></h1>
+    <label class="chk" title="Which physical metric this pane is ranked on. `cells` and `area` come from the synthesis half and rank the module table; `leakage` and `total` come from the power half and rank the instance table; `dynamic` is internal + switching, summed here rather than stored — no producer writes that column down. The other table keeps its own default ranking, so both halves stay readable.">
+      metric <select id="metric"></select>
+    </label>
+    <input type="search" id="search" placeholder="filter modules and instances…" spellcheck="false">
+    <span class="grow"></span>
+    <label class="chk" title="Clicking a module also broadcasts graph_focus, and clicking an instance also broadcasts selection_changed — the schematic and the graph pane follow. Does nothing when neither is connected.">
+      <input type="checkbox" id="opt-select" checked> sync schematic
+    </label>
+    <button id="reload" title="Re-fetch /phy.json (after another rb synth or rb power run)">reload</button>
+    <nav class="switcher" aria-label="hub apps">
+      <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
+      <a href="/sch" target="_blank" rel="noopener" data-origin="view"
+         title="Open the schematic in a new tab. Selecting an instance here selects it there.">sch ↗</a>
+      <a href="/gph" target="_blank" rel="noopener" data-origin="graph"
+         title="Open the design knowledge graph in a new tab. Selecting a module here focuses it there.">gph ↗</a>
+      <a href="/cov" target="_blank" rel="noopener" data-origin="cov"
+         title="Open the coverage pane in a new tab.">cov ↗</a>
+    </nav>
+  </header>
+
+  <main>
+    <section id="content">
+      <div id="dash">
+        <div id="banner"></div>
+        <div id="totals" class="cards"></div>
+        <h2>modules <span id="modules-note" class="pill"></span></h2>
+        <div id="modules"></div>
+        <h2>instances <span id="instances-note" class="pill"></span></h2>
+        <div id="instances"></div>
+        <h2>run</h2>
+        <dl class="kv" id="run"></dl>
+      </div>
+      <div id="empty"><div id="empty-msg"></div></div>
+    </section>
+  </main>
+
+  <footer>
+    <span><span class="dot connecting" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
+    <span id="peers" class="muted"></span>
+    <span id="hub-version" class="muted"></span>
+    <span class="grow"></span>
+    <span id="msg" class="muted"></span>
+  </footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var PHY_URL = window.__RTL_BUDDY_PHY_URL__ || '/phy.json';
+
+  // Metric order is authoritative from `hub.metrics` when served; this
+  // is the fallback for a payload from an older hub. It is also the
+  // `phys_focus.metric` enum, verbatim.
+  var METRICS = ['cells', 'area', 'leakage', 'dynamic', 'total'];
+  //: The metric the pane opens on. Total power is the number a person
+  //  opening this pane is usually chasing; when the run produced no
+  //  power half at all, `initialMetric` falls back to a metric the
+  //  model can actually answer, so the pane never opens on an empty
+  //  column and reads as broken.
+  var DEFAULT_METRIC = 'total';
+
+  // Which half owns each metric, which model column carries it, and how
+  // a value is written. `dynamic` has no column: it is internal +
+  // switching, summed by `dynamicOf` below.
+  var METRIC_DEFS = {
+    cells:   { half: 'modules',   column: 'cell_count', total: 'cell_count', unit: '',    kind: 'count' },
+    area:    { half: 'modules',   column: 'area_um2',   total: 'area_um2',   unit: 'µm²', kind: 'real' },
+    leakage: { half: 'instances', column: 'leakage_uw', total: 'leakage_uw', unit: 'µW',  kind: 'real' },
+    dynamic: { half: 'instances', column: null,         total: null,         unit: 'µW',  kind: 'real' },
+    total:   { half: 'instances', column: 'total_uw',   total: 'total_uw',   unit: 'µW',  kind: 'real' }
+  };
+
+  // The instance table's power columns, total first and then what it
+  // decomposes into — the order rtl_buddy/phys/query.py's
+  // POWER_COLUMNS states, with `dynamic` slotted in beside the two
+  // halves it is the sum of.
+  var POWER_COLUMNS = [
+    { key: 'total_uw',     label: 'total' },
+    { key: 'internal_uw',  label: 'internal' },
+    { key: 'switching_uw', label: 'switching' },
+    { key: 'dynamic',      label: 'dynamic' },
+    { key: 'leakage_uw',   label: 'leakage' }
+  ];
+
+  // Which command fills each half — the same map
+  // rtl_buddy/phys/query.py keys HALF_PRODUCER on, so the banner and
+  // the CLI's hint say the same thing.
+  var HALF_PRODUCER = { modules: 'rb synth', instances: 'rb power' };
+
+  var els = {
+    counts: document.getElementById('counts'),
+    metric: document.getElementById('metric'),
+    search: document.getElementById('search'),
+    optSelect: document.getElementById('opt-select'),
+    banner: document.getElementById('banner'),
+    totals: document.getElementById('totals'),
+    modules: document.getElementById('modules'),
+    modulesNote: document.getElementById('modules-note'),
+    instances: document.getElementById('instances'),
+    instancesNote: document.getElementById('instances-note'),
+    run: document.getElementById('run'),
+    dash: document.getElementById('dash'),
+    empty: document.getElementById('empty'),
+    emptyMsg: document.getElementById('empty-msg'),
+    peers: document.getElementById('peers'),
+    hubVersion: document.getElementById('hub-version'),
+    msg: document.getElementById('msg'),
+    wsDot: document.getElementById('ws-dot'),
+    wsStatus: document.getElementById('ws-status')
+  };
+
+  var state = {
+    payload: null,
+    metric: null,       // chosen on the first ingest, the user's pick after
+    filter: '',
+    module: null,       // selected module name — also filters the instances
+    instance: null,     // selected instance path, as the model spells it
+    sort: { modules: null, instances: null },  // {col, dir} per table
+    pending: null,      // phys_focus that arrived before the model did
+    pendingSelection: null  // selection_changed likewise, see focusInstanceFromWire
+  };
+
+  // ---------------------------------------------------------------
+  // small helpers
+  // ---------------------------------------------------------------
+
+  function note(text, level) {
+    els.msg.textContent = text || '';
+    els.msg.className =
+      level === 'error' ? 'msg-error' : level === 'warn' ? 'msg-warn' : 'muted';
+  }
+  function clear(node) { while (node.firstChild) { node.removeChild(node.firstChild); } }
+  function elem(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) { n.className = cls; }
+    if (text != null) { n.textContent = String(text); }
+    return n;
+  }
+  function uuid() {
+    if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
+    var b = new Uint8Array(16);
+    (window.crypto || {}).getRandomValues
+      ? crypto.getRandomValues(b)
+      : (function () { for (var i = 0; i < 16; i++) { b[i] = Math.floor(Math.random() * 256); } })();
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    var h = []; for (var i = 0; i < 16; i++) { h.push((b[i] + 0x100).toString(16).slice(1)); }
+    return h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' +
+           h.slice(6, 8).join('') + '-' + h.slice(8, 10).join('') + '-' + h.slice(10).join('');
+  }
+
+  // >>> derived-metrics
+  // The three pure rules the whole pane counts with. Nothing here
+  // touches the DOM or page state.
+  //
+  // `null` is not zero, everywhere in this block. A column no producer
+  // measured — Yosys writes no `area` without a Liberty — must not read
+  // as "this module is free"; it reads as "nobody said".
+  function num(value) {
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }
+
+  // Dynamic power: internal + switching. Not a column of the model,
+  // because no producer writes it down — OpenSTA reports the two halves
+  // and the total, and "dynamic" is the number a reviewer actually
+  // compares against leakage. Summed here, and `null` when NEITHER half
+  // was measured (one half alone is still a partial answer worth
+  // showing, so it is not null then).
+  function dynamicOf(row) {
+    var internal = num(row && row.internal_uw);
+    var switching = num(row && row.switching_uw);
+    if (internal === null && switching === null) { return null; }
+    return (internal || 0) + (switching || 0);
+  }
+
+  // One row's value for one column name, with `dynamic` resolved. The
+  // single place a column name becomes a number, so the tables, the
+  // sort and the heat ramp cannot disagree about what a column means.
+  function cellValue(row, column) {
+    if (column === 'dynamic') { return dynamicOf(row); }
+    // `name` (the module table's own column) and `module` (the instance
+    // table's) are the same string; going through `num` would make the
+    // header sort by null and so not sort at all.
+    if (column === 'name' || column === 'module') {
+      return String((row && row.module) || '');
+    }
+    if (column === 'instance_path') { return String((row && row.instance_path) || ''); }
+    return num(row && row[column]);
+  }
+
+  // Add one column over rows — the SUM half of the totals-versus-sum
+  // comparison. `null` in, `null` out: a column no row measured stays
+  // null rather than becoming 0, or an unmeasured half would read as a
+  // design that burns nothing.
+  function sumColumn(rows, column) {
+    var total = null;
+    (rows || []).forEach(function (row) {
+      var value = cellValue(row, column);
+      if (typeof value === 'number') { total = (total || 0) + value; }
+    });
+    return total;
+  }
+  // <<< derived-metrics
+
+  // >>> row-ordering
+  // Ranking, in one pure function, for both tables.
+  //
+  // Nulls sink, always. A row whose metric was never measured is not a
+  // zero (see `num` above), so it sorts below every measured row in
+  // BOTH directions — ascending is "smallest measured first", not "the
+  // unmeasured ones first". That is the same rule
+  // rtl_buddy/phys/query.py's `_sort_key_desc` applies server-side, so
+  // the pane's default order is the CLI's order.
+  //
+  // Ties break on the row's name, and only then on its original index,
+  // so a re-sort of equal rows cannot jitter between renders.
+  function rankRows(rows, column, dir, nameOf) {
+    var sign = dir === 'asc' ? 1 : -1;
+    return (rows || []).map(function (row, index) {
+      return { row: row, index: index, name: String(nameOf(row) || '') };
+    }).sort(function (a, b) {
+      var av = cellValue(a.row, column), bv = cellValue(b.row, column);
+      var aNull = typeof av !== 'number', bNull = typeof bv !== 'number';
+      if (typeof av === 'string' || typeof bv === 'string') {
+        var as = String(av), bs = String(bv);
+        return (as < bs ? -1 : as > bs ? 1 : 0) * sign || (a.index - b.index);
+      }
+      if (aNull !== bNull) { return aNull ? 1 : -1; }
+      if (aNull && bNull) { return (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.index - b.index); }
+      if (av !== bv) { return (av - bv) * sign; }
+      return (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.index - b.index);
+    }).map(function (entry) { return entry.row; });
+  }
+  // <<< row-ordering
+
+  // >>> path-normalise
+  // The instance-path separator is the TOOL's choice: OpenSTA prints
+  // `/` for a netlist it read from Verilog, and every RTL-side
+  // consumer — view.json, the schematic SPA, `selection_changed` —
+  // spells the same path with `.`. rtl_buddy/phys/query.py admits both
+  // on the way in for exactly this reason; the pane has to pick one on
+  // the way OUT, and the wire's vocabulary is dots.
+  //
+  // So: the model's spelling is what the tables show and what a
+  // `phys_focus` target is matched against, and this is the one
+  // translation, applied at the two edges that face the schematic.
+  function toWirePath(path) {
+    return String(path == null ? '' : path).replace(/\//g, '.');
+  }
+
+  // The other half of the same mismatch: a schematic `instance_path` is
+  // rooted at the DESIGN TOP (`blk.u_sub.u_leaf`) and an OpenSTA row is
+  // not (`u_sub/u_leaf`) — the netlist the power flow read has the top
+  // as its context, not as a level. So the root is added on the way out
+  // and ignored on the way in, and neither direction rewrites a row.
+  //
+  // Both take the top explicitly rather than reading page state, so this
+  // block stays pure. `top` empty means "no top known": then these are
+  // `toWirePath` and nothing more.
+  function withTop(path, top) {
+    var wire = toWirePath(path), root = toWirePath(top);
+    if (!root || !wire || wire === root || wire.indexOf(root + '.') === 0) {
+      return wire;
+    }
+    return root + '.' + wire;
+  }
+
+  function stripTop(path, top) {
+    var wire = toWirePath(path), root = toWirePath(top);
+    if (!root || wire === root || wire.indexOf(root + '.') !== 0) { return wire; }
+    return wire.slice(root.length + 1);
+  }
+
+  // Comparing a path from elsewhere against the model's: separators are
+  // levelled and the design top is ignored, and nothing else is —
+  // a case-folded or prefix-stripped match would silently claim the
+  // wrong instance. Rootless on both sides is the one spelling both
+  // producers can be reduced to, so an incoming path matches whether or
+  // not it carries the top.
+  function samePath(a, b, top) {
+    return !!a && !!b && stripTop(a, top) === stripTop(b, top);
+  }
+  // <<< path-normalise
+
+  // --- formatting ----------------------------------------------------
+  // Data is mono and right-aligned (the hub's type rule), so the only
+  // job left is choosing a precision that keeps a column scannable: a
+  // leakage figure of 0.079 µW and a total of 41822 µW are the same
+  // column, and neither may render as `8e-2` or as fifteen digits.
+  function fmt(value, kind) {
+    if (typeof value !== 'number' || !isFinite(value)) { return '—'; }
+    if (kind === 'count') { return group(String(Math.round(value))); }
+    var abs = Math.abs(value);
+    if (abs >= 1000) { return group(value.toFixed(0)); }
+    if (abs >= 1) { return value.toFixed(2); }
+    if (abs === 0) { return '0'; }
+    return value.toPrecision(3);
+  }
+  function group(text) {
+    return text.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function fmtMetric(value, metric) {
+    var def = METRIC_DEFS[metric] || {};
+    return fmt(value, def.kind);
+  }
+
+  // ---------------------------------------------------------------
+  // hub WebSocket — same /ws the SPA and the other panes use
+  // ---------------------------------------------------------------
+
+  var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
+  // Set when a hello was refused because the phys slot was taken, so the
+  // NEXT hello asks the hub to evict the incumbent. Cleared on welcome,
+  // so a later reconnect starts polite again.
+  var pendingTakeover = false;
+  // The hub kicked this tab out because a NEWER phys tab registered.
+  // Racing back would only kick that tab out in turn — two tabs evicting
+  // each other every retry is exactly the defect this state exists to
+  // stop — so auto-reconnect stands down until the user asks for the
+  // slot back.
+  var superseded = false;
+
+  // >>> hello-payload
+  // The hello payload, built rather than inlined so the takeover rule is
+  // one pure function.
+  //
+  // `takeover` is opt-in PER HELLO. The first hello of a connection is
+  // polite — the field is omitted entirely, which `_run_handshake` in
+  // hub/server.py reads as false — and only a retry, after the hub
+  // answered `not_connected: phys client already registered`, asks it to
+  // evict whoever holds the slot. Sending it unconditionally is what
+  // made two tabs of the cov pane supersede each other in a loop.
+  //
+  // Same flow as the schematic SPA (rtl-buddy-sch,
+  // viewer/src/composables/useHub.js — its `_pendingTakeover` /
+  // `superseded` handling), hand-duplicated here because a pane is a
+  // self-contained single file by design; graph_page.html and
+  // cov_page.html carry the same helper with their own client and
+  // capabilities. Change the rule in one and change it in all four, or
+  // the tabs start fighting again.
+  //
+  // The CLIENT is the wire origin `phys`, not the page's `/phy` route
+  // and not its `phy` label: a page rename does not touch the wire.
+  function helloPayload(takeover) {
+    var payload = {
+      client: 'phys', version: '1.0.0', capabilities: ['phys_focus']
+    };
+    if (takeover) { payload.takeover = true; }
+    return payload;
+  }
+  // <<< hello-payload
+
+  function sendHello() {
+    return send({
+      v: 1, id: uuid(), origin: 'phys', kind: 'request', type: 'hello',
+      payload: helloPayload(pendingTakeover)
+    });
+  }
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
+    catch (e) { scheduleReconnect(); return; }
+
+    ws.addEventListener('open', sendHello);
+    ws.addEventListener('message', function (ev) {
+      var env; try { env = JSON.parse(ev.data); } catch (e) { return; }
+      applyEnvelope(env);
+    });
+    ws.addEventListener('close', function () {
+      wsReady = false;
+      // The hub closes the socket right after superseding us. That close
+      // must not repaint the strip over the take-back affordance, and
+      // must not restart the retry loop.
+      if (superseded) { return; }
+      els.wsDot.className = 'dot offline';
+      els.wsStatus.textContent = 'offline';
+      els.wsStatus.title = 'lost /ws — retrying';
+      scheduleReconnect();
+    });
+    ws.addEventListener('error', function () { /* close handles it */ });
+  }
+
+  function scheduleReconnect() {
+    if (superseded) { return; }
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
+  }
+
+  function send(env) {
+    if (!ws || ws.readyState !== 1) { return false; }
+    ws.send(JSON.stringify(env));
+    return true;
+  }
+  function emit(type, payload) {
+    return send({ v: 1, id: uuid(), origin: 'phys', kind: 'event', type: type, payload: payload });
+  }
+  function request(type, payload, onReply) {
+    var id = uuid();
+    if (onReply) { pending[id] = onReply; }
+    return send({ v: 1, id: id, origin: 'phys', kind: 'request', type: type, payload: payload });
+  }
+
+  function applyEnvelope(env) {
+    if (!env || typeof env !== 'object') { return; }
+    // Correlation is by echoed `id`: a response carries the request's
+    // own id (there is no separate in_reply_to field on the wire).
+    if ((env.kind === 'response' || env.kind === 'error') && pending[env.id]) {
+      var cb = pending[env.id]; delete pending[env.id];
+      cb(env);
+    }
+    switch (env.type) {
+      case 'welcome':
+        wsReady = true; retryMs = 500;
+        // Hello accepted — the next reconnect starts polite again.
+        pendingTakeover = false;
+        clearTakeBack();
+        els.wsDot.className = 'dot connected';
+        els.wsStatus.textContent = 'connected';
+        setHubVersion(env.payload && env.payload.server_version);
+        setPeers(env.payload && env.payload.registered_clients);
+        break;
+      case 'peer_joined':
+      case 'bye':
+        // Cheap refresh: ask the hub who is connected rather than
+        // maintaining a shadow registry that can drift.
+        request('state_snapshot', {}, function (reply) {
+          if (reply.kind === 'response' && reply.payload) { setPeers(reply.payload.peers); }
+        });
+        break;
+      case 'phys_focus':
+        if (env.origin === 'phys') { break; }
+        applyFocus(env.payload || {});
+        break;
+      case 'selection_changed':
+        if (env.origin === 'phys') { break; }
+        // Exact, and no heuristic: an instance path IS this pane's own
+        // coordinate for the power half, so a selection either names a
+        // row here or names something this run did not measure.
+        focusInstanceFromWire(env.payload && env.payload.instance_path);
+        break;
+      default:
+        break;
+    }
+    if (env.kind === 'error' && env.payload && !handleHubError(env.payload)) {
+      note('hub error: ' + env.payload.code + ': ' + env.payload.message, 'error');
+    }
+  }
+
+  // The two hub errors that are about this tab's REGISTRATION rather
+  // than about a request it made. Returns true when the error has been
+  // dealt with here, in which case the message area stays out of it —
+  // one event, one surface.
+  //
+  // Mirrors the schematic SPA's `error` case (rtl-buddy-sch,
+  // viewer/src/composables/useHub.js); graph_page.html and cov_page.html
+  // carry the same handler. One one-client-per-origin rule, four apps
+  // that have to obey it identically.
+  function handleHubError(payload) {
+    // Superseded: a newer phys tab owns the slot now. The strip says so
+    // and offers the way back; auto-reconnect stops, because winning the
+    // race back would only evict that tab.
+    if (payload.code === 'superseded') {
+      superseded = true;
+      showSuperseded();
+      if (ws) { try { ws.close(); } catch (e) { /* already gone */ } }
+      return true;
+    }
+    // The polite hello lost to an incumbent. Ask once more, this time
+    // asking the hub to evict it. Once, not in a loop: if the takeover
+    // hello fails too, the next error falls through to the message area.
+    // The hub drops the socket after refusing a hello, so this send
+    // usually goes nowhere and the flag rides the reconnect instead —
+    // both routes end in the same takeover hello.
+    if (payload.code === 'not_connected' && !pendingTakeover &&
+        /already registered/i.test(payload.message || '')) {
+      pendingTakeover = true;
+      sendHello();
+      return true;
+    }
+    return false;
+  }
+
+  var SUPERSEDED_TEXT =
+    'another phys tab took this connection — click to take back';
+  var SUPERSEDED_HINT =
+    'A newer phys tab registered with the hub, and the hub allows ' +
+    'one client per origin. Click to take the slot back — that tab goes ' +
+    'offline instead.';
+
+  function showSuperseded() {
+    els.wsDot.className = 'dot offline';
+    els.wsStatus.textContent = SUPERSEDED_TEXT;
+    els.wsStatus.title = SUPERSEDED_HINT;
+    els.wsStatus.className = 'take-back';
+    els.wsStatus.setAttribute('role', 'button');
+    els.wsStatus.setAttribute('tabindex', '0');
+  }
+
+  function clearTakeBack() {
+    els.wsStatus.className = '';
+    els.wsStatus.removeAttribute('role');
+    els.wsStatus.removeAttribute('tabindex');
+  }
+
+  // The user asking for the slot back. The other tab still holds it, so
+  // the hello that reclaims it has to ask for the takeover the first
+  // hello deliberately did not.
+  function takeBack() {
+    if (!superseded) { return; }
+    superseded = false;
+    pendingTakeover = true;
+    retryMs = 500;
+    clearTakeBack();
+    els.wsDot.className = 'dot connecting';
+    els.wsStatus.textContent = 'connecting…';
+    els.wsStatus.title = hubTitle;
+    connect();
+  }
+
+  // >>> origin-labels
+  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
+  // WIRE vocabulary and it does not move for a rebrand: the schematic
+  // app registers as `view`, the graph pane as `graph` and this pane as
+  // `phys`, and all three keep doing so until protocol v2. Their
+  // DISPLAY names are `sch`, `gph` and `phy` (rtl-buddy-sch,
+  // rtl-buddy-gph, rtl-buddy-phys), so this map is the seam, and every
+  // place an origin reaches a user goes through it -- the peer strip
+  // below and the header switcher's sibling labels. An origin with no
+  // entry is shown verbatim (`cov` among them), which is what keeps a
+  // peer from a newer hub legible instead of blank.
+  //
+  // It is also the one knob for a short name: change `phy` here and
+  // every label for this pane in this file follows.
+  //
+  // A pane is a self-contained single file by design, so this helper is
+  // hand-duplicated into graph_page.html, cov_page.html and
+  // landing_page.html beside it, and the SPA keeps its own copy under
+  // the same contract (rtl-buddy-sch, viewer/src/displayNames.js).
+  // Change the map in one and change it in all five, or the tabs start
+  // calling the same peer different things. The cross-repo checklist is
+  // rtl-buddy-sch docs/hub-protocol.md section 13.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };
+
+  function originLabel(origin) {
+    var key = String(origin == null ? '' : origin);
+    return Object.prototype.hasOwnProperty.call(ORIGIN_LABELS, key)
+      ? ORIGIN_LABELS[key] : key;
+  }
+  // <<< origin-labels
+
+  // The switcher's sibling links carry `data-origin`, so their labels
+  // come from the map too (outside the markers: this one touches the
+  // DOM). The text in the markup is what a person reading the file
+  // sees; this is what the browser shows.
+  function relabelSwitcher() {
+    var links = document.querySelectorAll('.switcher a[data-origin]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].textContent = originLabel(links[i].getAttribute('data-origin')) + ' ↗';
+    }
+  }
+
+  // The latest peer list, kept rather than only printed: a click that
+  // broadcasts to an app nobody is running is a click with no effect,
+  // and the status line says so instead of staying silent.
+  var peers = [];
+
+  function hasPeer(origin) { return peers.indexOf(origin) >= 0; }
+
+  function setPeers(list) {
+    if (!Array.isArray(list)) { return; }
+    peers = list.slice().sort();
+    els.peers.textContent =
+      'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
+  }
+
+  // >>> version-label
+  // One version label, said the same way by every hub app: this pane,
+  // graph_page.html and cov_page.html beside it, the landing page, and
+  // the schematic SPA (rtl-buddy-sch, viewer/src/buildInfo.js). A pane
+  // is a self-contained single file by design, so this helper is
+  // hand-duplicated rather than shared, and the SPA keeps its own copy
+  // under the same contract. Change the rule in one and change it
+  // everywhere, or the tabs start disagreeing about which build is
+  // running.
+  //
+  // The input is rtl_buddy's own version as setuptools-scm writes it:
+  // `6.26.2` from a release tag, `6.26.2.dev13+g3f5b890e3.d20260806`
+  // from anything built past one. Everything before `+` is the version
+  // a person quotes. The local segment after it carries the git SHA as
+  // a `g`-prefixed hex run, alongside a `.dYYYYMMDD` build date that
+  // says nothing the SHA does not — so the SHA is the payload, the date
+  // is dropped, and nine hex digits is as much of a SHA as anyone
+  // actually reads.
+  //
+  // A local segment with no `g<hex>` run is not an error — `1.0+local`
+  // is a legal version — it simply has no build to point at, and the
+  // base alone is the label.
+  function versionLabel(raw) {
+    var text = String(raw == null ? '' : raw);
+    var plus = text.indexOf('+');
+    var base = plus < 0 ? text : text.slice(0, plus);
+    if (!base) { return null; }
+    var local = plus < 0 ? '' : text.slice(plus + 1);
+    var found = /(^|[.\-_])g([0-9a-fA-F]{4,})(?=$|[.\-_])/.exec(local);
+    return found ? base + ' @ ' + found[2].slice(0, 9) : base;
+  }
+  // <<< version-label
+
+  // Re-read on every welcome, not just the first: a reconnect can land
+  // on a hub that was restarted on a newer build, and a label frozen at
+  // the version of the first connection would then be quietly wrong.
+  // Kept so the strip's tooltip can be restored after a state that
+  // borrowed it (`showSuperseded` explains itself there instead).
+  var hubTitle = '';
+
+  function setHubVersion(raw) {
+    var full = raw ? String(raw) : '';
+    var label = versionLabel(full);
+    els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';
+    els.hubVersion.title = full;
+    hubTitle = 'hub ' + full;
+    els.wsStatus.title = hubTitle;
+  }
+
+  // ---------------------------------------------------------------
+  // loading
+  // ---------------------------------------------------------------
+
+  function load() {
+    note('loading ' + PHY_URL + '…');
+    fetch(PHY_URL, { cache: 'no-store' }).then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    }).then(function (res) {
+      if (!res.ok) { showEmpty(res.body && res.body.error); return; }
+      ingest(res.body);
+    }).catch(function (e) {
+      showEmpty('could not read ' + PHY_URL + ': ' + e);
+    });
+  }
+
+  function showEmpty(message) {
+    els.empty.classList.add('show');
+    els.dash.hidden = true;
+    clear(els.emptyMsg);
+    // The one piece of artwork this pane carries: a small mascot on the
+    // "no data yet" panel, per the hub's identity-marks-only rule.
+    var art = document.createElement('img');
+    art.src = '/hub/assets/rtl-buddy-mascot-240.png';
+    art.width = 120; art.height = 120; art.alt = '';
+    els.emptyMsg.appendChild(art);
+    els.emptyMsg.appendChild(elem('p', null, message || 'no physical metrics to show.'));
+    // Both commands, because either one alone produces a model this
+    // pane can render: `rb synth` fills the module half and `rb power`
+    // fills the instance half.
+    var q = elem('p', 'muted');
+    q.appendChild(document.createTextNode('Produce some with '));
+    q.appendChild(elem('code', null, 'rb synth'));
+    q.appendChild(document.createTextNode(' or '));
+    q.appendChild(elem('code', null, 'rb power'));
+    q.appendChild(document.createTextNode(', then press reload.'));
+    els.emptyMsg.appendChild(q);
+    note('');
+  }
+
+  // The design top the model was built for, as the payload's run header
+  // reports it. `''` when the run did not record one, which turns the
+  // rooting rules above back into plain levelling.
+  function designTop() {
+    return String((state.payload && state.payload.top) || '');
+  }
+
+  function ingest(payload) {
+    els.empty.classList.remove('show');
+    els.dash.hidden = false;
+    state.payload = payload;
+    var hub = payload.hub || {};
+    if (Array.isArray(hub.metrics) && hub.metrics.length) { METRICS = hub.metrics; }
+    // Only when the user has not picked one: a reload must not undo a
+    // choice, but a first load has to land on a metric this model can
+    // answer (a synthesis-only run has no power at all, and opening on
+    // an empty column reads as a broken pane, not as a missing half).
+    if (!state.metric || METRICS.indexOf(state.metric) < 0) {
+      state.metric = initialMetric(payload);
+    }
+    // A row the previous model had may be gone; a stale selection would
+    // filter the instance table to nothing with no way to see why.
+    if (state.module !== null && moduleRow(state.module) === null) { state.module = null; }
+    if (state.instance !== null && instanceRow(state.instance) === null) { state.instance = null; }
+
+    renderMetricPicker();
+    renderAll();
+
+    var counts = payload.counts || {};
+    note(describeCounts(counts));
+    // Both replays the hub sends on connect land before `/phy.json`
+    // resolves as often as not, so both are stashed rather than dropped.
+    // An explicit `phys_focus` wins over a passive selection when both
+    // are waiting: one is an instruction, the other is commentary.
+    var focus = state.pending, selection = state.pendingSelection;
+    state.pending = null;
+    state.pendingSelection = null;
+    if (focus) {
+      applyFocus(focus);
+    } else if (selection) {
+      focusInstanceFromWire(selection);
+    }
+  }
+
+  function describeCounts(counts) {
+    var parts = [];
+    ['modules', 'instances'].forEach(function (half) {
+      var n = counts[half];
+      // `null` is "this run did not produce the half" and 0 is "it
+      // produced none" — the model's own distinction, kept here.
+      parts.push(n == null ? 'no ' + half : n + ' ' + half);
+    });
+    return parts.join(', ');
+  }
+
+  function initialMetric(payload) {
+    function answerable(metric) {
+      var def = METRIC_DEFS[metric];
+      return !!def && METRICS.indexOf(metric) >= 0 &&
+             ((payload.halves || {})[def.half] || {}).present === true;
+    }
+    if (answerable(DEFAULT_METRIC)) { return DEFAULT_METRIC; }
+    for (var i = 0; i < METRICS.length; i++) {
+      if (answerable(METRICS[i])) { return METRICS[i]; }
+    }
+    return METRICS[0];
+  }
+
+  function renderMetricPicker() {
+    clear(els.metric);
+    METRICS.forEach(function (metric) {
+      var opt = elem('option', null, metric);
+      opt.value = metric;
+      var def = METRIC_DEFS[metric] || {};
+      var half = ((state.payload.halves || {})[def.half] || {});
+      // A metric whose half this run did not produce is kept but
+      // marked: "no synthesis ran here" is a fact about the run, not a
+      // design with no cells, and hiding the option would look like the
+      // latter.
+      if (half.present !== true) {
+        opt.textContent = metric + ' (run ' + (half.produced_by || '?') + ')';
+      }
+      els.metric.appendChild(opt);
+    });
+    els.metric.value = state.metric;
+  }
+
+  function renderAll() {
+    renderHeader();
+    renderBanner();
+    renderTotals();
+    renderModules();
+    renderInstances();
+    renderRun();
+  }
+
+  // ---------------------------------------------------------------
+  // header + banner
+  // ---------------------------------------------------------------
+
+  function renderHeader() {
+    var p = state.payload || {};
+    var totals = p.totals || {};
+    var parts = [];
+    if (p.top) { parts.push(p.top); }
+    if (typeof totals.cell_count === 'number') {
+      parts.push(fmt(totals.cell_count, 'count') + ' cells');
+    }
+    if (typeof totals.area_um2 === 'number') {
+      parts.push(fmt(totals.area_um2) + ' µm²');
+    }
+    if (typeof totals.total_uw === 'number') {
+      parts.push(fmt(totals.total_uw) + ' µW');
+    }
+    els.counts.textContent = parts.length ? '· ' + parts.join(' · ') : '';
+    els.counts.title = p.manifest ? 'from ' + p.manifest : '';
+  }
+
+  function renderBanner() {
+    clear(els.banner);
+    var missing = (state.payload && state.payload.missing_halves) || [];
+    if (!missing.length) { return; }
+    var box = elem('div', 'banner');
+    box.appendChild(document.createTextNode(
+      missing.length > 1
+        ? 'This model has neither half yet. '
+        : 'This model has no ' + missing[0] + ' half. '));
+    missing.forEach(function (half, index) {
+      if (index) { box.appendChild(document.createTextNode(' and ')); }
+      box.appendChild(document.createTextNode('Run '));
+      box.appendChild(elem('code', null, HALF_PRODUCER[half] || '?'));
+      box.appendChild(document.createTextNode(
+        ' into the same artefact directory to fill ' + half));
+    });
+    box.appendChild(document.createTextNode(
+      '; a run of both, for the same top, merges into one model in either order.'));
+    els.banner.appendChild(box);
+  }
+
+  // ---------------------------------------------------------------
+  // totals — the sanity block
+  // ---------------------------------------------------------------
+
+  // The flows' own log scrape and the sum of the rows come from two
+  // different scrapes, so BOTH are shown and neither is derived from the
+  // other: a mismatch is information (rtl_buddy/phys/model.py says so),
+  // and folding one into the other here would destroy it.
+  function renderTotals() {
+    clear(els.totals);
+    var p = state.payload || {};
+    var totals = p.totals || {};
+    METRICS.forEach(function (metric) {
+      var def = METRIC_DEFS[metric];
+      if (!def) { return; }
+      var reported = def.total === null
+        // `dynamic` has no totals key either: the sanity block carries
+        // internal and switching, so the reported dynamic is their sum
+        // the same way a row's is.
+        ? dynamicOf(totals)
+        : num(totals[def.total]);
+      var rows = rowsOf(def.half);
+      var summed = sumColumn(rows, def.column === null ? 'dynamic' : def.column);
+
+      var card = elem('div', 'card' + (state.metric === metric ? ' on' : ''));
+      card.appendChild(elem('div', 'k', metric));
+      var v = elem('div', 'v', fmt(reported, def.kind));
+      if (def.unit) { v.appendChild(elem('small', null, ' ' + def.unit)); }
+      card.appendChild(v);
+      card.appendChild(elem('div', 'n',
+        reported === null ? 'not measured by this run' : 'reported by the flow'));
+      card.appendChild(comparison(reported, summed, def));
+      card.title = 'Rank the pane on ' + metric + '.';
+      card.addEventListener('click', function () { setMetric(metric); });
+      els.totals.appendChild(card);
+    });
+  }
+
+  // The visible half of the sanity block. Shown only when both numbers
+  // exist: "Σ rows —" against a reported total says nothing about
+  // agreement, it says the other scrape did not run.
+  function comparison(reported, summed, def) {
+    if (summed === null) { return elem('div', 'cmp faint', 'Σ rows —'); }
+    var text = 'Σ rows ' + fmt(summed, def.kind);
+    if (reported === null) { return elem('div', 'cmp muted', text); }
+    var delta = summed - reported;
+    // A tolerance, not an equality: the two scrapes round differently
+    // (Yosys prints area to two places, the rows carry the Liberty's
+    // own), so a part in a thousand is agreement, not a discrepancy.
+    var agree = reported === 0 ? delta === 0 : Math.abs(delta / reported) < 1e-3;
+    var node = elem('div', 'cmp ' + (agree ? 'agree' : 'differ'),
+      text + (agree ? '  ✓' : '  Δ ' + (delta > 0 ? '+' : '') + fmt(delta, def.kind)));
+    node.title = agree
+      ? 'The flow’s own total and the sum of the rows agree.'
+      : 'The flow scraped its total from its log and the rows come from a ' +
+        'different scrape, so these two numbers are independent. A gap is ' +
+        'information — commonly a hierarchy the row report flattened, or a ' +
+        'cell class one of the two scrapes counted and the other did not.';
+    return node;
+  }
+
+  function rowsOf(half) {
+    var p = state.payload || {};
+    return (half === 'modules' ? p.modules : p.instances) || [];
+  }
+
+  function halfPresent(half) {
+    return (((state.payload || {}).halves || {})[half] || {}).present === true;
+  }
+
+  // ---------------------------------------------------------------
+  // tables
+  // ---------------------------------------------------------------
+
+  // Which column each table is ranked on: the selected metric when this
+  // table owns it, and the table's own default otherwise. Both tables
+  // stay ranked — a table that fell back to payload order while the
+  // other one sorted would look broken rather than unselected.
+  function sortFor(half) {
+    var chosen = state.sort[half];
+    if (chosen) { return chosen; }
+    var def = METRIC_DEFS[state.metric];
+    if (def && def.half === half) {
+      return { col: def.column === null ? 'dynamic' : def.column, dir: 'desc' };
+    }
+    return half === 'modules'
+      ? { col: 'cell_count', dir: 'desc' }
+      : { col: 'total_uw', dir: 'desc' };
+  }
+
+  function setSort(half, col) {
+    var current = sortFor(half);
+    // Second click on the ranked column reverses it; a click on another
+    // column starts that one descending, because "the biggest" is what
+    // a physical table is read for.
+    state.sort[half] = current.col === col
+      ? { col: col, dir: current.dir === 'desc' ? 'asc' : 'desc' }
+      : { col: col, dir: col === 'name' || col === 'instance_path' ? 'asc' : 'desc' };
+    if (half === 'modules') { renderModules(); } else { renderInstances(); }
+  }
+
+  function matchesFilter(text) {
+    return !state.filter || String(text).toLowerCase().indexOf(state.filter) >= 0;
+  }
+
+  // The heat fraction for one cell: the row's value over the largest in
+  // the same column of the same table. Linear, and against the maximum
+  // rather than the total, because the question the tint answers is
+  // "how does this row compare with the worst offender" — a share-of-
+  // total ramp on a design with ten thousand instances is ten thousand
+  // rows of the palest tint.
+  function heatCell(td, value, max) {
+    if (typeof value !== 'number' || max === null || max <= 0) {
+      td.classList.add('heat', 'none');
+      return td;
+    }
+    td.classList.add('heat');
+    td.classList.remove('none');
+    td.style.setProperty('--f', String(Math.max(0, Math.min(1, value / max))));
+    return td;
+  }
+
+  function maxOf(rows, column) {
+    var max = null;
+    (rows || []).forEach(function (row) {
+      var value = cellValue(row, column);
+      if (typeof value === 'number' && (max === null || value > max)) { max = value; }
+    });
+    return max;
+  }
+
+  function headerCell(label, col, sort, half, title) {
+    var th = elem('th', 'sortable' + (sort.col === col ? ' sort' : ''),
+      label + (sort.col === col ? (sort.dir === 'desc' ? ' ▾' : ' ▴') : ''));
+    if (title) { th.title = title; }
+    th.addEventListener('click', function () { setSort(half, col); });
+    return th;
+  }
+
+  function renderModules() {
+    clear(els.modules);
+    clear(els.modulesNote);
+    var sort = sortFor('modules');
+    els.modulesNote.textContent = 'ranked by ' + sort.col;
+    els.modulesNote.className = 'pill' +
+      ((METRIC_DEFS[state.metric] || {}).half === 'modules' ? ' hot' : '');
+
+    if (!halfPresent('modules')) {
+      els.modules.appendChild(elem('p', 'muted',
+        'no synthesis half — run `' + HALF_PRODUCER.modules + '`.'));
+      return;
+    }
+    var rows = rowsOf('modules').filter(function (row) {
+      return matchesFilter(row.module);
+    });
+    if (!rows.length) {
+      els.modules.appendChild(elem('p', 'muted', 'no modules match.'));
+      return;
+    }
+    var ranked = rankRows(rows, sort.col, sort.dir, function (row) { return row.module; });
+    var maxCells = maxOf(rows, 'cell_count');
+    var maxArea = maxOf(rows, 'area_um2');
+
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var htr = document.createElement('tr');
+    htr.appendChild(headerCell('module', 'name', sort, 'modules'));
+    htr.appendChild(headerCell('cells', 'cell_count', sort, 'modules',
+      'Cells the synthesis mapped for this module.'));
+    htr.appendChild(headerCell('area µm²', 'area_um2', sort, 'modules',
+      'Null for an unmapped run: Yosys reports no area without a Liberty.'));
+    htr.appendChild(elem('th', null, 'instances'));
+    thead.appendChild(htr); table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    ranked.forEach(function (row) {
+      var tr = elem('tr', 'row');
+      tr.classList.toggle('sel', state.module === row.module);
+      var name = elem('td', 'name', row.module || '—');
+      name.title = row.module || '';
+      tr.appendChild(name);
+      tr.appendChild(heatCell(elem('td', null, fmt(cellValue(row, 'cell_count'), 'count')),
+        cellValue(row, 'cell_count'), maxCells));
+      tr.appendChild(heatCell(elem('td', null, fmt(cellValue(row, 'area_um2'))),
+        cellValue(row, 'area_um2'), maxArea));
+      tr.appendChild(elem('td', 'muted', instanceCount(row.module)));
+      tr.addEventListener('click', function () { activateModule(row.module); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    els.modules.appendChild(table);
+  }
+
+  // How many leaf instances of this module the power half recorded — the
+  // join the two halves exist to make. `—` when there is no power half
+  // to join against, which is not the same as zero instances.
+  function instanceCount(module) {
+    if (!halfPresent('instances')) { return '—'; }
+    var n = 0;
+    rowsOf('instances').forEach(function (row) {
+      if (String(row.module) === String(module)) { n += 1; }
+    });
+    return String(n);
+  }
+
+  function renderInstances() {
+    clear(els.instances);
+    clear(els.instancesNote);
+    var sort = sortFor('instances');
+    els.instancesNote.textContent = 'ranked by ' + sort.col;
+    els.instancesNote.className = 'pill' +
+      ((METRIC_DEFS[state.metric] || {}).half === 'instances' ? ' hot' : '');
+
+    if (!halfPresent('instances')) {
+      els.instances.appendChild(elem('p', 'muted',
+        'no power half — run `' + HALF_PRODUCER.instances + '`.'));
+      return;
+    }
+    var rows = rowsOf('instances').filter(function (row) {
+      if (state.module !== null && String(row.module) !== String(state.module)) {
+        return false;
+      }
+      return matchesFilter(row.instance_path) || matchesFilter(row.module);
+    });
+    if (state.module !== null) {
+      els.instances.appendChild(modulePill());
+    }
+    if (!rows.length) {
+      els.instances.appendChild(joinMissNote() ||
+        elem('p', 'muted', 'no instances match.'));
+      return;
+    }
+    var ranked = rankRows(rows, sort.col, sort.dir,
+      function (row) { return row.instance_path; });
+    var maxes = Object.create(null);
+    POWER_COLUMNS.forEach(function (column) {
+      maxes[column.key] = maxOf(rows, column.key);
+    });
+
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var htr = document.createElement('tr');
+    htr.appendChild(headerCell('instance', 'instance_path', sort, 'instances'));
+    htr.appendChild(headerCell('module', 'module', sort, 'instances',
+      'The Liberty cell this leaf is an instance of.'));
+    POWER_COLUMNS.forEach(function (column) {
+      htr.appendChild(headerCell(column.label + ' µW', column.key, sort, 'instances',
+        column.key === 'dynamic'
+          ? 'internal + switching, summed by this pane: no producer writes a dynamic column.'
+          : null));
+    });
+    thead.appendChild(htr); table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    ranked.forEach(function (row) {
+      var tr = elem('tr', 'row');
+      tr.classList.toggle('sel',
+        samePath(state.instance, row.instance_path, designTop()));
+      var path = elem('td', 'name path', row.instance_path || '—');
+      path.title = row.instance_path || '';
+      tr.appendChild(path);
+      tr.appendChild(elem('td', 'muted', row.module || '—'));
+      POWER_COLUMNS.forEach(function (column) {
+        var value = cellValue(row, column.key);
+        tr.appendChild(heatCell(elem('td', null, fmt(value)), value, maxes[column.key]));
+      });
+      tr.addEventListener('click', function () { activateInstance(row.instance_path); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    els.instances.appendChild(table);
+  }
+
+  // Why an empty instance table under a module lens is usually not a
+  // fact about the design.
+  //
+  // The two halves spell `module` in two namespaces: a synthesis row
+  // carries an RTL module name, a leaf carries the Liberty cell it is an
+  // instance of. Clicking an RTL module on a mapped hierarchical design
+  // therefore matches nothing, and a bare "no instances match" would
+  // read as "this block burns no power". `rb phys module` puts the same
+  // sentence on its payload as `instance_join`; the summary payload this
+  // pane reads has no per-module note, so the same test is made here.
+  //
+  // Null — i.e. the plain empty state — when the lens is off, when a
+  // search box is what emptied the table, when there is no power half to
+  // join against, or when the name DOES match rows (in which case the
+  // table is not empty in the first place).
+  function joinMissNote() {
+    if (state.module === null || state.filter) { return null; }
+    var instances = rowsOf('instances');
+    if (!halfPresent('instances') || !instances.length) { return null; }
+    var matched = false;
+    instances.forEach(function (row) {
+      if (String(row.module) === String(state.module)) { matched = true; }
+    });
+    if (matched) { return null; }
+    return elem('p', 'muted join-miss',
+      'no instance rows carry ' + state.module + ' — the module column ' +
+      'above holds Liberty cell names, not RTL module names, so power ' +
+      'cannot be attributed to an RTL module until the hierarchy join ' +
+      'lands. Liberty cells (DFF_X1, NAND2_X1) do resolve here.');
+  }
+
+  // Filtering to one module is a lens, and a lens you cannot take off is
+  // a mode — so it says it is on, where the rows are, and saying it is
+  // the way out.
+  function modulePill() {
+    var pill = elem('span', 'pill hot act', 'module: ' + state.module + ' ×');
+    pill.title = 'Only instances of ' + state.module +
+      ' are listed. Click for every instance.';
+    pill.addEventListener('click', function () { activateModule(state.module); });
+    return pill;
+  }
+
+  function renderRun() {
+    clear(els.run);
+    var p = state.payload || {};
+    var backends = p.backends || {};
+    var hub = p.hub || {};
+    [['manifest', p.manifest], ['generated', p.generated_at],
+     ['command', p.run_command], ['run', p.run], ['top', p.top],
+     ['synth backend', backends.synth], ['power backend', backends.power],
+     ['model', hub.model], ['generator', hub.generator]
+    ].forEach(function (pair) {
+      if (pair[1] == null) { return; }
+      els.run.appendChild(elem('dt', null, pair[0]));
+      els.run.appendChild(elem('dd', null, pair[1]));
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // clicks → hub envelopes
+  // ---------------------------------------------------------------
+
+  function activateModule(name) {
+    // Second click clears the lens: the same gesture the cov pane's
+    // test lens uses, and the pill above says so too.
+    var next = state.module === name ? null : name;
+    state.module = next;
+    renderModules();
+    renderInstances();
+    if (next === null) { note('every instance'); return; }
+    if (!els.optSelect.checked) { note('module ' + next); return; }
+    // `graph_focus {node:'module:<name>'}` is what the coverage pane
+    // emits for a module too, and for the same reason: the graph pane
+    // speaks node ids and the schematic SPA resolves `module:` targets
+    // as well, so ONE broadcast reaches whichever of the two is open.
+    // The pane invents no message type of its own in this direction.
+    if (emit('graph_focus', { node: 'module:' + next })) {
+      note('graph-focus module:' + next +
+           (hasPeer('graph') || hasPeer('view') ? '' : ' (nobody listening)'));
+    } else {
+      note('hub not connected', 'error');
+    }
+  }
+
+  function activateInstance(path) {
+    state.instance = path;
+    renderInstances();
+    if (!els.optSelect.checked) { note('instance ' + path); return; }
+    // `selection_changed`, not `source_focused`: an instance path IS the
+    // schematic's coordinate, so this pane can address it directly —
+    // the one thing the coverage pane cannot do, since coverage knows
+    // files and modules and has to go through the hub's resolver.
+    // Separators are levelled onto the wire's dots and the design top is
+    // put back on the front, because the schematic's coordinate is
+    // rooted at the top and OpenSTA's row is not; see `withTop`.
+    var wire = withTop(path, designTop());
+    if (emit('selection_changed', { instance_path: wire })) {
+      note('select ' + wire +
+           (hasPeer('view') ? '' : ' (the schematic is not connected)'));
+    } else {
+      note('hub not connected', 'error');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // inbound focus
+  // ---------------------------------------------------------------
+
+  function moduleRow(name) {
+    var found = null;
+    rowsOf('modules').concat(rowsOf('instances')).forEach(function (row) {
+      if (found === null && String(row.module) === String(name)) { found = row; }
+    });
+    return found;
+  }
+
+  function instanceRow(path) {
+    var found = null;
+    rowsOf('instances').forEach(function (row) {
+      if (found === null && samePath(row.instance_path, path, designTop())) {
+        found = row;
+      }
+    });
+    return found;
+  }
+
+  function focusModule(name) {
+    if (moduleRow(name) === null) { return false; }
+    state.module = String(name);
+    state.instance = null;
+    renderModules();
+    renderInstances();
+    return true;
+  }
+
+  function focusInstance(path) {
+    var row = instanceRow(path);
+    if (row === null) { return false; }
+    // The MODEL's spelling, not the sender's: the tables are keyed on
+    // it, so a `/`-spelled row selected by a `.`-spelled target has to
+    // come back as the row's own path or the highlight never matches.
+    state.instance = row.instance_path;
+    state.module = null;
+    renderModules();
+    renderInstances();
+    return true;
+  }
+
+  // A `selection_changed` from the schematic or the editor. Silent on a
+  // miss, unlike a `phys_focus`: a selection is a running commentary on
+  // what the user is doing elsewhere, and most of what they select was
+  // never a leaf in a power report.
+  function focusInstanceFromWire(ip) {
+    if (Array.isArray(ip)) { ip = ip[0]; }
+    if (typeof ip !== 'string' || !ip) { return; }
+    if (!state.payload) {
+      // The hub replays the cached selection immediately after
+      // `welcome`, which routinely beats the `/phy.json` fetch — the
+      // same race `applyFocus` already holds a `phys_focus` for. Held
+      // here too, or opening the pane while a selection is live shows
+      // nothing selected.
+      state.pendingSelection = ip;
+      return;
+    }
+    if (focusInstance(ip)) { note('selected ' + ip); }
+  }
+
+  function setMetric(metric) {
+    if (METRICS.indexOf(metric) < 0) { return false; }
+    state.metric = metric;
+    els.metric.value = metric;
+    // The explicit per-table sort is what the METRIC picks, so choosing
+    // a metric clears a hand-picked column on the half that metric owns
+    // — otherwise the switcher would silently do nothing on a table the
+    // user had sorted by hand.
+    var def = METRIC_DEFS[metric];
+    if (def) { state.sort[def.half] = null; }
+    renderTotals();
+    renderModules();
+    renderInstances();
+    return true;
+  }
+
+  function applyFocus(payload) {
+    if (!state.payload) {
+      // The hub replays a cached focus on connect, which routinely wins
+      // the race against the model fetch; hold it rather than dropping
+      // it.
+      state.pending = payload;
+      return;
+    }
+    var target = payload && payload.target;
+    if (typeof target !== 'string' || !target) { return; }
+    // The metric hint is applied even when the target misses: it is an
+    // independent instruction ("show me leakage"), and honouring half
+    // of a payload beats honouring none of it.
+    if (payload.metric) { setMetric(payload.metric); }
+    var ok;
+    if (target.indexOf('module:') === 0) {
+      ok = focusModule(target.slice(7));
+    } else if (target.indexOf('instance:') === 0) {
+      ok = focusInstance(target.slice(9));
+    } else {
+      // Unprefixed strings are instance paths — the schema says so.
+      ok = focusInstance(target);
+    }
+    // A soft miss, like graph_focus and cov_focus: report it and keep
+    // the current focus rather than blanking the pane over a stale
+    // target.
+    note(ok ? 'focused ' + target : 'phys-focus: no ' + target + ' in this run',
+         ok ? null : 'warn');
+  }
+
+  // ---------------------------------------------------------------
+  // wiring
+  // ---------------------------------------------------------------
+
+  els.metric.addEventListener('change', function () {
+    setMetric(els.metric.value);
+  });
+  els.search.addEventListener('input', function () {
+    state.filter = els.search.value.trim().toLowerCase();
+    renderModules();
+    renderInstances();
+  });
+  document.getElementById('reload').addEventListener('click', load);
+  // The strip's status word doubles as the take-back control while this
+  // tab is superseded; `takeBack` no-ops in every other state, so the
+  // listener is bound once here rather than added and removed.
+  els.wsStatus.addEventListener('click', takeBack);
+  els.wsStatus.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
+  });
+
+  relabelSwitcher();
+  connect();
+  load();
+})();
+</script>
+</body>
+</html>

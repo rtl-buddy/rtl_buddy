@@ -17,7 +17,7 @@
       "description": "RFC 4122 UUID for request/response correlation and loop-prevention dedupe."
     },
     "origin": {
-      "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"],
+      "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"],
       "description": "Conceptual originator of the message; the loop-prevention discriminator."
     },
     "kind": {
@@ -153,6 +153,31 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "Optional coverage item within the target — a branch/toggle/expression bin id as it appears in `/cov.json`, or an SVA cover point name. Unknown ids are a soft miss like an unknown `target`."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "phys_focus" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["target"],
+            "additionalProperties": false,
+            "description": "Focus the phys pane (`GET /phy`) on one target of the run's physical model (`GET /phy.json`). Modelled on `graph_focus` and `cov_focus`: one required coordinate string plus an optional narrowing hint, all resolved by the pane. `target` is prefixed — `instance:<hierarchical path>` or `module:<name>`; a bare string carrying no recognised prefix is read as an instance path. A target the pane's loaded model does not contain is a soft miss (the pane reports it and keeps its current focus), matching the semantics of `graph_focus` and `view_overlay_set`. The hub caches the latest `phys_focus` and replays it to a pane that registers later, so a focus sent before the tab is open still lands.",
+            "properties": {
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What to focus. `instance:<hierarchical path>` — an instance path rooted at `view.json.top`, as `/phy.json` keys its per-instance power rows. `module:<name>` — a design module, focusing its synthesis row (cells, area) and the instances of it. Unprefixed strings are treated as `instance:`."
+              },
+              "metric": {
+                "enum": ["cells", "area", "leakage", "dynamic", "total"],
+                "description": "Optional: which physical metric the pane should foreground for the target. `cells` and `area` come from synthesis, `leakage` and `total` from the power model, and `dynamic` is internal + switching summed by the pane rather than a key of its own. Omitted means \"leave the pane's current metric selection alone\"."
               }
             }
           }
@@ -761,14 +786,14 @@
                   "active_model":  { "type": ["string", "null"], "description": "Currently-active model name when the hub was started with --model NAME, else null." },
                   "selection":     { "type": ["object", "null"], "description": "Last selection_changed payload broadcast through the hub, plus the origin that produced it. Null when the hub has seen no selection yet.",
                                      "required": ["instance_path", "origin"], "additionalProperties": false,
-                                     "properties": { "instance_path": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] } } },
+                                     "properties": { "instance_path": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"] } } },
                   "cursor_time":   { "type": ["object", "null"], "description": "Last cursor_time_changed payload + origin. Null when no cursor event has fired.",
                                      "required": ["t_fs", "origin"], "additionalProperties": false,
-                                     "properties": { "t_fs": { "type": "string", "pattern": "^[0-9]+$" }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] } } },
+                                     "properties": { "t_fs": { "type": "string", "pattern": "^[0-9]+$" }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"] } } },
                   "wave_scope":    { "type": ["object", "null"], "description": "Last scope_changed payload + origin. Null when no scope event has fired.",
                                      "required": ["wave_scope", "origin"], "additionalProperties": false,
-                                     "properties": { "wave_scope": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] } } },
-                  "peers":         { "type": "array", "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] }, "uniqueItems": true,
+                                     "properties": { "wave_scope": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"] } } },
+                  "peers":         { "type": "array", "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"] }, "uniqueItems": true,
                                      "description": "Origins currently registered against the hub." },
                   "diagnostics_sources": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true,
                                            "description": "Names of producers with cached diagnostics_set bundles." }
@@ -785,13 +810,13 @@
       "then": {
         "properties": {
           "kind": { "const": "request" },
-          "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] },
+          "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"] },
           "payload": {
             "type": "object",
             "required": ["client", "version", "capabilities"],
             "additionalProperties": false,
             "properties": {
-              "client": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] },
+              "client": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"] },
               "version": { "type": "string", "minLength": 1, "description": "Semver of the client implementation." },
               "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
               "takeover": { "type": "boolean", "description": "When true, instructs the hub to disconnect any existing registration for the same client slot before accepting this hello. Used by browser tabs that find an older tab already attached: the new tab requests takeover, the old tab gets bye-broadcast and its socket closed. Optional; default false." }
@@ -813,7 +838,7 @@
               "server_version": { "type": "string", "minLength": 1 },
               "registered_clients": {
                 "type": "array",
-                "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] },
+                "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"] },
                 "uniqueItems": true
               }
             }

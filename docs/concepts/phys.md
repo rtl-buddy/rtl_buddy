@@ -1,5 +1,5 @@
 ---
-description: Query saved synthesis and power artefacts by module and instance with rb phys, from the physical model each run writes.
+description: Query saved synthesis and power artefacts by module and instance with rb phys or the hub's synth+power pane, from the physical model each run writes.
 ---
 
 # Physical Metrics
@@ -48,6 +48,29 @@ It does not attribute power to an RTL module on a hierarchical design: no leaf r
 The model records leaf values only, because a subtree sum depends on the hierarchy the consumer projects onto. `rb phys instance <path>` is that consumer: it sums the leaves under the path at query time and leaves the document unchanged.
 
 The rollup adds the four power columns directly. Area is joined in through each leaf's module, so it covers only the leaves whose module has a synthesis row; the reported `modules_matched` count says how many that was. On a mapped hierarchical design that count is routinely `0` for the namespace reason above — read `area_um2` against it, not on its own.
+
+## Browse the model in the hub
+
+The hub serves the same model as a page. Start the browser layer and open `/phy`:
+
+```bash
+rb hub start --serve-viewer
+```
+
+`GET /phy.json` is the `rb phys summary` payload with no row limit, so the pane and the CLI cannot disagree about a number. The pane ranks modules by cells or area and instances by leakage, dynamic or total power, tints each ranked column, and filters the instance table to one module when you click it.
+
+`dynamic` is internal plus switching, summed in the browser rather than stored: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows, and says when they disagree.
+
+Point the pane at a target from anywhere:
+
+```bash
+rb hub send phys-focus module:sub --metric area
+rb hub send phys-focus instance:u_sub/_64_
+```
+
+An unprefixed target is read as an instance path, and the hub replays the latest focus to the pane when it registers, so sending one before the tab is open works — as does a selection the schematic broadcast before the pane's model had loaded. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. The pane roots the path it sends at the design top, since that is the schematic's coordinate, and ignores the top on the way back in; the tables keep whatever spelling the model recorded. See [Hub](hub.md#synthpower-pane) for the routes and the peer contract.
+
+Clicking a module filters the instance table to it. When the name is an RTL module and every leaf carries a Liberty cell name, nothing matches, and the pane says so rather than showing an empty table — see [What the module join can answer](#what-the-module-join-can-answer).
 
 ## Machine payloads
 
