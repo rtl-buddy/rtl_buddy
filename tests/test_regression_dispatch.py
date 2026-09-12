@@ -2629,8 +2629,9 @@ def test_jobs_flag_sizes_the_local_parallel_pool(
     """``-j`` reaches the backend as its pool size (#360)."""
     backend, seen = _FakeBackend(), {}
 
-    def _capture(name, cfg):
+    def _capture(name, cfg, *, config_path=None):
         seen["name"], seen["jobs"] = name, cfg.jobs
+        seen["config_path"] = config_path
         return backend
 
     monkeypatch.setattr(rtl_buddy_module, "create_dispatch_backend", _capture)
@@ -2647,7 +2648,13 @@ def test_jobs_flag_sizes_the_local_parallel_pool(
         ]
     )
     assert result.exit_code == 0, result.output
-    assert seen == {"name": "local-parallel", "jobs": 3}
+    # ...and the config it was built from travels with it, so advice about an
+    # `sbatch-args` override can name the file that holds it (#527).
+    assert seen == {
+        "name": "local-parallel",
+        "jobs": 3,
+        "config_path": str(minimal_project / "root_config.yaml"),
+    }
 
 
 def test_jobs_flag_is_rejected_against_a_backend_without_a_pool(
@@ -3086,8 +3093,11 @@ def _backend_factory(backend):
     review). A fake that ignores `cfg` would hide exactly that wiring.
     """
 
-    def factory(name, cfg):
+    def factory(name, cfg, *, config_path=None):
         backend.effective_sbatch_args = list(getattr(cfg, "sbatch_args", None) or [])
+        # ...and the file they came from, which the real factory records
+        # beside them so an `sbatch-args` edit hint can name it (#527).
+        backend.effective_sbatch_args_path = config_path
         return backend if name not in (None, "local") else None
 
     return factory
@@ -4073,7 +4083,9 @@ def test_an_abandoned_retry_leaves_the_first_attempts_cpu_metadata(
     assert [a for a in advice if a["resource"] == "cpus"] == []
 
 
-def _use_backend_with_fixed_args(monkeypatch, backend, sbatch_args):
+def _use_backend_with_fixed_args(
+    monkeypatch, backend, sbatch_args, *, args_config_path=None
+):
     """A backend built from a DIFFERENT config than the suite's.
 
     The real shape: `_resolve_dispatch_backend` runs once, before the suite
@@ -4081,10 +4093,17 @@ def _use_backend_with_fixed_args(monkeypatch, backend, sbatch_args):
     rebuilt for any suite that walks up to a different one. The backend
     keeps the arguments it was constructed with, whatever the current
     suite's `cfg-dispatch` says.
+
+    `args_config_path` is the orchestration config those arguments came
+    from — the file an edit hint about them has to name, and a different
+    file from the suite's own root in exactly this scenario (#527). The
+    `config_path` the head hands the factory is dropped for the same reason
+    `cfg` is: this fake stands for a backend built somewhere else.
     """
 
-    def factory(name, cfg):
+    def factory(name, cfg, *, config_path=None):
         backend.effective_sbatch_args = list(sbatch_args)
+        backend.effective_sbatch_args_path = args_config_path
         return backend if name not in (None, "local") else None
 
     monkeypatch.setattr(rtl_buddy_module, "create_dispatch_backend", factory)
@@ -4138,6 +4157,104 @@ def test_an_override_only_the_backend_carries_is_still_found(
     assert (
         "`--ntasks=4` multiplies this job's cpu request" in (cpus["edit_hint"]["note"])
     )
+
+
+def test_the_override_hint_names_the_config_the_backend_was_built_from(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The machine hint has to be appliable where the override lives (#527).
+
+    Same multi-root shape as above: the backend carries the orchestration
+    config's `sbatch-args`, and the suite walked up to another root. The
+    override is found from the backend, so the `file` beside it must come
+    from the backend too — pointing at the suite's root_config.yaml would
+    have an agent edit a `cfg-dispatch` nothing submits with, leaving the
+    override in place and the advice to recur.
+    """
+    orchestration_cfg = "/proj/orchestration/root_config.yaml"
+    backend = _use_backend_with_fixed_args(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 8,
+                    "req_cpus": 8,
+                    "total_cpu_s": 200.0,  # 0.25 efficiency against those 8
+                }
+            }
+        ),
+        ["--cpus-per-task=8"],
+        args_config_path=orchestration_cfg,
+    )
+    assert backend is not None
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert cpus["edit_hint"]["file"] == orchestration_cfg
+    # ...and not the root this suite resolved, which holds no sbatch-args.
+    assert str(minimal_project) not in cpus["edit_hint"]["file"]
+
+
+def test_a_single_root_run_hints_at_its_own_root_config(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary case is unchanged: one root, and it is the one named.
+
+    The head hands the factory the config it built the backend from, so a
+    run whose suites all share that root still gets an absolute path to it
+    (#527).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n"
+        + "  sbatch-args: [--cpus-per-task=8]\n"
+    )
+    backend = _use_backend(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 8,
+                    "req_cpus": 8,
+                    "total_cpu_s": 200.0,
+                }
+            }
+        ),
+    )
+    assert backend is not None
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert cpus["edit_hint"]["file"] == str(root_cfg)
 
 
 def test_a_suite_override_the_backend_never_had_makes_no_false_hint(

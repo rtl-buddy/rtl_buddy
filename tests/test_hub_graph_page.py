@@ -992,6 +992,247 @@ def test_a_module_the_active_model_never_instantiates_still_resolves():
     assert json.loads(lines[3]) == [None, None, None]
 
 
+def test_a_root_is_translated_back_to_a_selectable_model():
+    """``modelForRoot`` is ``activeModelRoots`` run backwards.
+
+    A root is a MODULE name; ``GET /view.json?model=`` takes a MODEL name.
+    While a model was always named after its top the cross-model warning
+    could offer the root verbatim, but a models.yaml ``top:`` decoupled
+    them — offering ``bar`` for a model declared as ``foo`` asks the hub
+    to activate something no models.yaml declares. The same stitch names
+    the declaring model.
+    """
+
+    out = _node_eval(
+        _marked_js("active-model")
+        + """
+        var links = [
+          { type: 'maps_to', source: 'model:design/common/models.yaml#fifo',
+            target: 'module:fifo' },
+          // `top: axi_xbar` — the root is not a selectable model name.
+          { type: 'maps_to', source: 'model:design/vendor/models.yaml#pp_axi',
+            target: 'module:axi_xbar' },
+          // Suite-qualified on the stitch side; the lookup key is not.
+          { type: 'maps_to', source: 'model:design/x/models.yaml#alias',
+            target: 'module:real_top@verif/x' },
+          // First stitch wins when two models top at one module — link
+          // order, the same tie-break the ranking uses.
+          { type: 'maps_to', source: 'model:design/y/models.yaml#twin_a',
+            target: 'module:shared_top' },
+          { type: 'maps_to', source: 'model:design/y/models.yaml#twin_b',
+            target: 'module:shared_top' },
+          // Right type, wrong shapes — none of these names a model.
+          { type: 'maps_to', source: 'tb:verif/x#tb', target: 'module:tb_top' },
+          { type: 'maps_to', source: 'model:design/x/models.yaml',
+            target: 'module:unfragmented' },
+          { type: 'instance_of', source: 'inst:cdc/cdc', target: 'module:cdc' },
+          null
+        ];
+        var roots = ['fifo', 'axi_xbar', 'real_top', 'shared_top', 'tb_top',
+                     'unfragmented', 'cdc', '', null, undefined];
+        console.log(JSON.stringify(roots.map(function (r) {
+          return modelForRoot(links, r);
+        })));
+        // No payload to read a stitch off: the convention is all there is.
+        console.log(JSON.stringify([modelForRoot(null, 'fifo'),
+                                    modelForRoot([], 'fifo')]));
+        """
+    )
+    translated, degenerate = out.strip().splitlines()
+    assert json.loads(translated) == [
+        "fifo",
+        # The point of the change: the declaring model, not the module.
+        "pp_axi",
+        "alias",
+        "twin_a",
+        # A `tb:` stitch does not declare a model, and neither does a
+        # `model:` id with no `#<name>` fragment — the module name stands.
+        "tb_top",
+        "unfragmented",
+        "cdc",
+        None,
+        None,
+        None,
+    ]
+    assert json.loads(degenerate) == ["fifo", "fifo"]
+
+
+def test_the_cross_model_warning_compares_roots_not_the_model_name():
+    """``maybeWarnCrossModel`` closes over the pane's state, so its wiring
+    is asserted on the source — the ranking and the translation it calls
+    are pure and are tested in ``node`` above.
+
+    The bug: with an active model ``foo`` topped at ``bar``,
+    ``shallowestInstancePath`` correctly *prefers* the ``bar``-rooted
+    instance and the warning then declared that very selection
+    cross-model, offering ``?model=bar`` — a module name the hub cannot
+    activate.
+    """
+
+    js = _page_js()
+    warn = js.split("function maybeWarnCrossModel(ip) {")[1].split("\n  }")[0]
+    # The root is de-qualified and tested against the mapped roots, never
+    # against the model name.
+    assert "var root = rootComponent(ip);" in warn
+    assert "root === activeModel" not in warn
+    # Only "the hub has no active model at all" is decided synchronously;
+    # the CACHED roots never suppress on their own, because the cache can
+    # be behind the schematic.
+    assert "if (!activeModel) { setCrossModel(null); return; }" in warn
+    assert "currentModelRoots()[root]) { setCrossModel(null); return; }" not in warn
+    # The reconfirm always happens, and the test uses the freshly confirmed
+    # model's roots rather than a stale set.
+    assert "activeModel = reply.payload.active_model;" in warn
+    assert "if (activeModel && !currentModelRoots()[root])" in warn
+    # An unconfirmable reply disarms rather than leaving the previous
+    # selection's target standing under this one.
+    assert "if (reply.kind !== 'response') { setCrossModel(null); return; }" in warn
+    # A genuinely foreign root is translated back to a selectable model
+    # before the switch target is built — and both the button and the note
+    # name that model, not the module.
+    assert "var target = modelForRoot(state.links, root);" in warn
+    assert "setCrossModel({ model: target, ip: ip });" in warn
+    assert "originLabel('view') + ' → ' + target" in warn
+    # The switch itself is unchanged: it asks the hub for that model.
+    fix = js.split("els.fixView.addEventListener('click', function () {")[1]
+    assert "fetch('/view.json?model=' + encodeURIComponent(target.model))" in fix
+
+
+def _cross_model_js() -> str:
+    """``maybeWarnCrossModel`` itself, sliced out for ``node``.
+
+    It is not inside a marker block because it is not pure — it closes over
+    ``activeModel``, ``state`` and the pane's ``request`` / ``note`` /
+    ``setCrossModel``. Those are exactly the four seams the staleness
+    question lives in, though, so the function is lifted whole and run
+    against stubs for them, on top of the real pure helpers it calls.
+
+    ``currentModelRoots`` is stood in uncached: the memoisation keys are
+    asserted on the source in
+    ``test_the_module_branch_resolves_through_the_active_model_preference``,
+    and keying on ``activeModel`` is what makes a re-read after the refresh
+    recompute anyway — so the stand-in has the same semantics.
+    """
+
+    body = _page_js().split("function maybeWarnCrossModel(ip) {")[1].split("\n  }")[0]
+    return (
+        _marked_js("active-model")
+        + "function currentModelRoots() {\n"
+        + "  return activeModelRoots(state.links, activeModel, state.nodes);\n"
+        + "}\n"
+        + "function maybeWarnCrossModel(ip) {"
+        + body
+        + "\n}\n"
+    )
+
+
+def test_a_stale_active_model_cannot_suppress_the_cross_model_warning():
+    """The cached model never decides on its own — not even when it agrees.
+
+    The cache exists for the synchronous ranking and can be behind the
+    schematic: the view may have switched while this socket was down, or
+    before its ``view_changed`` was applied. Suppressing on a cached-root
+    match is then a silent failure in that exact window — the schematic
+    shows another model, the click highlights nothing, and the pane says
+    nothing and offers no switch. Every real selection reconfirms first.
+
+    The scenarios below all select ``bar.u_x``. ``bar`` is model ``foo``'s
+    ``top:``, so a cached ``foo`` DOES contain it as a root; ``cdc`` is a
+    second model rooted at itself.
+    """
+
+    out = _node_eval(
+        _cross_model_js()
+        + """
+        var LINKS = [
+          // `top: bar` — the root is not the model's name.
+          { type: 'maps_to', source: 'model:design/a/models.yaml#foo',
+            target: 'module:bar' },
+          { type: 'maps_to', source: 'model:design/b/models.yaml#cdc',
+            target: 'module:cdc' }
+        ];
+        var NODES = [
+          { id: 'model:design/a/models.yaml#foo', type: 'model' },
+          { id: 'model:design/b/models.yaml#cdc', type: 'model' }
+        ];
+        var state, activeModel, crossModel, notes, requests, reply;
+        function setCrossModel(t) { crossModel = t; }
+        function note(text, level) { notes.push([text, level]); }
+        function originLabel() { return 'view'; }
+        function request(type, payload, onReply) {
+          requests.push(type);
+          onReply(reply);
+        }
+        function scenario(cached, replyEnv) {
+          state = { links: LINKS, nodes: NODES };
+          activeModel = cached; crossModel = null; notes = []; requests = [];
+          reply = replyEnv;
+          maybeWarnCrossModel('bar.u_x');
+          return {
+            requests: requests, cross: crossModel, notes: notes,
+            active: activeModel
+          };
+        }
+        function confirm(model) {
+          return { kind: 'response', payload: { active_model: model } };
+        }
+        console.log(JSON.stringify([
+          // 1. The regression: the cache says `foo`, whose roots contain
+          //    `bar`, but the schematic is really on `cdc`.
+          scenario('foo', confirm('cdc')),
+          // 2. The cache was right — reconfirmed, then suppressed.
+          scenario('foo', confirm('foo')),
+          // 3. Stale the other way: the cache accuses, the hub exonerates.
+          scenario('cdc', confirm('foo')),
+          // 4. A genuinely foreign root, cache and hub agreeing.
+          scenario('cdc', confirm('cdc')),
+          // 5. The hub has no active model any more.
+          scenario('foo', confirm(null)),
+          // 6. Unconfirmable: no accusation, and no stale arming left.
+          scenario('foo', { kind: 'error', payload: {} }),
+          // 7. No cached model at all: decided synchronously, no request.
+          scenario(null, confirm('cdc'))
+        ], null, 0));
+        """
+    )
+    stale, right, exonerated, foreign, none, unconfirmable, unknown = json.loads(out)
+
+    # 1. Reconfirmed, and the warning fires against the REAL model. The
+    #    switch target is `foo`, the model that declares `bar` as its top —
+    #    `bar` itself is not something the hub can activate.
+    assert stale["requests"] == ["state_snapshot"]
+    assert stale["active"] == "cdc"
+    assert stale["cross"] == {"model": "foo", "ip": "bar.u_x"}
+    assert len(stale["notes"]) == 1 and stale["notes"][0][1] == "warn"
+    assert "(cdc)" in stale["notes"][0][0]
+    assert "view → foo" in stale["notes"][0][0]
+
+    # 2. The suppressed case still reconfirms — and stays quiet.
+    assert right["requests"] == ["state_snapshot"]
+    assert right["cross"] is None and right["notes"] == []
+
+    # 3. …and a stale cache cannot invent a warning either.
+    assert exonerated["requests"] == ["state_snapshot"]
+    assert exonerated["active"] == "foo"
+    assert exonerated["cross"] is None and exonerated["notes"] == []
+
+    # 4. The ordinary cross-model case is unchanged.
+    assert foreign["cross"] == {"model": "foo", "ip": "bar.u_x"}
+    assert len(foreign["notes"]) == 1
+
+    # 5. No active model to be outside of: nothing to warn about.
+    assert none["requests"] == ["state_snapshot"]
+    assert none["cross"] is None and none["notes"] == []
+
+    # 6. An error envelope disarms rather than accusing on a guess.
+    assert unconfirmable["cross"] is None and unconfirmable["notes"] == []
+    assert unconfirmable["active"] == "foo"  # the cache is left alone
+
+    # 7. The one synchronous short-circuit, and the only silent one.
+    assert unknown["requests"] == []
+    assert unknown["cross"] is None and unknown["notes"] == []
+
+
 def test_the_module_branch_resolves_through_the_active_model_preference():
     """``instancePathFor`` closes over the page's DOM state, so the wiring
     — collect every instance, then rank them against the active model's

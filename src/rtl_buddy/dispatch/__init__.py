@@ -58,9 +58,22 @@ def validate_backend_name(name) -> None:
     )
 
 
-def create_dispatch_backend(name, dispatch_cfg) -> DispatchBackend | None:
-    """Instantiate the named backend; ``None``/``local`` → in-process."""
+def create_dispatch_backend(
+    name, dispatch_cfg, *, config_path=None
+) -> DispatchBackend | None:
+    """Instantiate the named backend; ``None``/``local`` → in-process.
+
+    ``config_path`` is the root_config.yaml ``dispatch_cfg`` came from. It is
+    recorded on the backend beside the arguments it keeps, so advice about an
+    `sbatch-args` override can name the file that actually holds it — the
+    orchestration config, which in a multi-root regression is not the root a
+    later suite resolves (#527).
+    """
     validate_backend_name(name)
     if name is None or name == "local":
         return None
-    return _BACKENDS[name](dispatch_cfg)
+    backend = _BACKENDS[name](dispatch_cfg)
+    backend.effective_sbatch_args_path = (
+        None if config_path is None else str(config_path)
+    )
+    return backend

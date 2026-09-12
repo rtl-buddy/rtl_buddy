@@ -719,6 +719,94 @@ def test_multi_line_define_body_is_skipped_whole():
     assert _names(scan_text(src, "m.sv")) == [(6, "function", "real_one")]
 
 
+def test_an_active_multiline_define_body_hides_its_own_conditional():
+    """Directives in a live macro's replacement text belong to the expansion,
+    not to the file: the body is skipped whole, so the `ifdef inside it never
+    opens a conditional here."""
+    src = (
+        "`define WRAPPED \\\n"
+        "  `ifdef ALSO_NEVER \\\n"
+        "    function int hidden; return 1; endfunction \\\n"
+        "  `endif\n"
+        "module m;\n"
+        "  function int real_one; return 1; endfunction\n"
+        "endmodule\n"
+    )
+    assert [f.name for f in scan_text(src, "m.sv")] == ["real_one"]
+
+
+def _inactive_define(body: str) -> str:
+    """A `define inside a never-taken branch whose macro body is `body`."""
+    return (
+        "`ifdef NEVER\n"
+        "`define OPENER \\\n"
+        f"{body}\n"
+        "`endif\n"
+        "module m;\n"
+        "  function int later; return 1; endfunction\n"
+        "endmodule\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "  `ifdef ALSO_NEVER",
+        "  `ifndef ALSO_NEVER",
+        "  `ifdef ALSO_NEVER \\\n    junk \\\n  `endif",
+        "  `else",
+        "  `elsif ALSO_NEVER",
+        "  `endif",
+    ],
+)
+def test_directives_in_an_inactive_macro_body_do_not_move_the_conditional(body):
+    """The disabled-branch skip used to step over the `define token alone, so a
+    continued macro body's own `ifdef was read as a real conditional. The outer
+    branch then stayed open past its `endif and every later declaration --
+    including a static-lifetime one both frontends compile -- was dropped,
+    which under the default slang gate admits the corrupted netlist
+    (rtl-buddy/rtl_buddy#527)."""
+    assert [f.name for f in scan_text(_inactive_define(body), "m.sv")] == ["later"]
+
+
+def test_the_else_branch_of_an_inactive_define_is_still_compiled():
+    """The branch the compiler does take is the one that matters: a macro body
+    left half-read used to attach the `else to the body's own conditional, so
+    the live branch was scanned as dead and its declarations vanished."""
+    src = (
+        "`ifdef NEVER\n"
+        "`define OPENER \\\n"
+        "  `ifdef ALSO_NEVER\n"
+        "`else\n"
+        "function int taken; return 1; endfunction\n"
+        "`endif\n"
+        "module m;\n"
+        "  function int later; return 1; endfunction\n"
+        "endmodule\n"
+    )
+    assert [f.name for f in scan_text(src, "m.sv")] == ["taken", "later"]
+
+
+def test_an_inactive_define_does_not_register_its_macro_name():
+    """Skipping the body must not define the macro: the compiler never reaches
+    the `define, so a later `ifdef on that name is false and its `ifndef true."""
+    src = (
+        "`ifdef NEVER\n"
+        "`define OPENER \\\n"
+        "  `ifdef ALSO_NEVER\n"
+        "`endif\n"
+        "module m;\n"
+        "`ifdef OPENER\n"
+        "  function int from_defined; return 1; endfunction\n"
+        "`endif\n"
+        "`ifndef OPENER\n"
+        "  function int from_undefined; return 1; endfunction\n"
+        "`endif\n"
+        "endmodule\n"
+    )
+    assert [f.name for f in scan_text(src, "m.sv")] == ["from_undefined"]
+
+
 def test_escaped_identifier_is_never_read_as_a_keyword():
     src = dedent("""\
         module m;
@@ -1094,6 +1182,7 @@ def test_undefineall_reaches_the_next_source_under_single_unit(tmp_path):
 
 def _include_chain(tmp_path, length, *, leaf_body):
     """`f0.sv` includes `f1.svh` includes ... includes the leaf."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     for i in range(length):
         nxt = f"f{i + 1}.svh"
         (tmp_path / (f"f{i}.sv" if i == 0 else f"f{i}.svh")).write_text(
@@ -1112,6 +1201,40 @@ def test_a_deep_acyclic_include_chain_is_followed(tmp_path):
     findings = scan_files([str(top)])
     assert [f.name for f in findings] == ["deep"]
     assert findings[0].path.endswith("f60.svh")
+
+
+def test_a_600_deep_include_chain_does_not_exhaust_the_python_stack(tmp_path):
+    """Expansion recursed through _expand_file and _expand_text, two Python
+    frames per header, so an acyclic chain of roughly 500 headers raised an
+    uncaught RecursionError: no structured failure and no fatal machine
+    envelope, the CLI catching only FatalRtlBuddyError and FilelistError
+    (rtl-buddy/rtl_buddy#527)."""
+    top = _include_chain(
+        tmp_path, 600, leaf_body="function int deep; return 1; endfunction\n"
+    )
+    findings = scan_files([str(top)])
+    assert [f.name for f in findings] == ["deep"]
+    assert findings[0].path.endswith("f600.svh")
+
+
+def test_the_advertised_include_depth_is_the_one_that_fires(tmp_path):
+    """The cap has to be reachable to be the cap: at the real
+    MAX_INCLUDE_DEPTH the leaf is still scanned, and one deeper is the
+    structured fatal error rather than a RecursionError."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools import sv_lifetime_scan
+
+    depth = sv_lifetime_scan.MAX_INCLUDE_DEPTH
+    at_cap = _include_chain(
+        tmp_path / "at_cap",
+        depth,
+        leaf_body="function int deep; return 1; endfunction\n",
+    )
+    assert [f.name for f in scan_files([str(at_cap)])] == ["deep"]
+
+    over = _include_chain(tmp_path / "over", depth + 1, leaf_body="// nothing\n")
+    with pytest.raises(FatalRtlBuddyError, match="include nesting deeper than"):
+        scan_files([str(over)])
 
 
 def test_exceeding_the_include_depth_raises_instead_of_dropping(tmp_path):

@@ -633,6 +633,12 @@ def test_slurm_explains_scontrol_as_an_optional_probe():
     assert "scontrol" in text
     assert "MaxArraySize" in text
     assert "cfg-dispatch.max-array-size" in text
+    # BOTH ceilings, because scontrol is the only source of either and they
+    # are configured separately: a cluster whose SchedulerParameters=
+    # max_array_tasks is the lower one still refuses the group after
+    # max-array-size is pinned to the real MaxArraySize (#527).
+    assert "max_array_tasks" in text
+    assert "cfg-dispatch.max-array-tasks" in text
     # Still optional overall: sbatch is the version probe and the gate.
     assert slurm.version_cmd[0] == "sbatch"
     assert slurm.optional

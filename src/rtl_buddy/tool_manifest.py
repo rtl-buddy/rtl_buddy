@@ -415,9 +415,11 @@ def _builtin_manifest() -> list[ToolSpec]:
             detection=(PathDetector(),),
             optional_binaries={
                 "scontrol": "`scontrol show config` supplies the cluster's "
-                "MaxArraySize, which lets dispatch split a resource group too "
-                "large for one job array; without it set "
-                "cfg-dispatch.max-array-size, or sbatch refuses the group with "
+                "MaxArraySize and SchedulerParameters=max_array_tasks, which let "
+                "dispatch split a resource group too large for one job array; "
+                "without it set cfg-dispatch.max-array-size, and "
+                "cfg-dispatch.max-array-tasks too where the cluster caps tasks "
+                "per array below it, or sbatch refuses the group with "
                 "`Invalid job array specification`",
             },
             install_hint={

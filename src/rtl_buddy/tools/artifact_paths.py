@@ -363,7 +363,8 @@ def clear_managed_outputs(
 
     Args:
       artefact_dir: the run's artefact directory. A missing directory is
-        not an error; there is simply nothing to clear.
+        not an error; there is simply nothing to clear. One that exists but
+        cannot be listed *is* an error — see ``Raises``.
       suffixes: the filename suffixes this flow writes (``".bit"``,
         ``".routed.odb"``). Include the dot. Match a *log* suffix here and
         you defeat the log exemption, so don't.
@@ -405,6 +406,11 @@ def clear_managed_outputs(
 
     Returns:
       The paths removed, sorted, for logging.
+
+    Raises:
+      FatalRtlBuddyError: the directory could not be listed, or an existing
+        artefact could not be removed. Either way some stale output may
+        still be in place, so this fails loudly rather than running on.
     """
     directory = Path(artefact_dir)
     suffixes = tuple(suffixes)
@@ -419,6 +425,13 @@ def clear_managed_outputs(
         entries = sorted(directory.iterdir())
     except (FileNotFoundError, NotADirectoryError):
         return []
+    except OSError as e:
+        # A directory that cannot be listed is *not* the same as an empty
+        # one: any stale output in it survives and is read back as this
+        # run's result. Fail the same way an undeletable artefact does.
+        raise FatalRtlBuddyError(
+            f"{owner}: could not list the previous run's artefacts in {directory}: {e}"
+        ) from e
 
     def _doomed(name: str) -> bool:
         # This flow's own outputs go regardless of what they are named:
