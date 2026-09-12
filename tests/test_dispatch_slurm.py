@@ -387,7 +387,7 @@ def test_an_unknown_state_name_is_dropped_and_the_poll_retried(monkeypatch, capl
     (fields,) = _events(caplog, "dispatch.wait_states_narrowed")
     assert fields["dropped"] == "RESV_DEL_HOLD"
     # ...and it is remembered, so the rest of the run does not re-learn it.
-    assert "RESV_DEL_HOLD" not in backend._wait_states
+    assert "RESV_DEL_HOLD" not in backend._wait_states_for(None)
 
 
 def test_a_rejection_naming_no_state_drops_the_filter_loudly(monkeypatch, caplog):
@@ -425,7 +425,142 @@ def test_a_rejection_naming_no_state_drops_the_filter_loudly(monkeypatch, caplog
     ]
     assert record.levelno == logging.WARNING  # console-visible by default
     assert "pending, running, completing" in record.getMessage()
-    assert backend._wait_states is None
+    assert backend._wait_states_for(None) is None
+
+
+def _by_cluster_run(calls, answers):
+    """subprocess.run stand-in that answers per cluster, in poll order.
+
+    ``answers`` is ``{cluster: [result, ...]}``; the cluster is read off the
+    `-M` of the argv (``None`` for an unqualified poll), and each poll of a
+    cluster pops that cluster's next result. This is the shape a federation
+    has — one `squeue -M <name>` per cluster, per round — which a single
+    shared result queue cannot model.
+    """
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        argv = list(argv)
+        calls.append(argv)
+        cluster = argv[argv.index("-M") + 1] if "-M" in argv else None
+        queue = answers[cluster]
+        return (
+            queue.pop(0)
+            if queue
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+    return run
+
+
+def _states_of(argv):
+    """The `--states=` value of one poll's argv, or None when unfiltered."""
+    flags = [arg for arg in argv if str(arg).startswith("--states=")]
+    return flags[0].split("=", 1)[1] if flags else None
+
+
+def test_one_clusters_rejection_does_not_narrow_another(monkeypatch):
+    """A federation can run several Slurm versions (#527 review).
+
+    An old cluster that rejects RESV_DEL_HOLD used to narrow the filter for
+    the WHOLE backend, so the next cluster — new enough to have that state,
+    and holding a job in it — was polled with a filter too small to see it.
+    squeue returned no row, `wait_all` declared the fleet drained, and the
+    live job was collected as a missing result and left behind. The
+    narrowing belongs to the cluster that asked for it.
+    """
+    calls = []
+    answers = {
+        "old": [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified: RESV_DEL_HOLD",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+        "new": [
+            # The job the old cluster's rejection must not hide.
+            SimpleNamespace(
+                returncode=0,
+                stdout="8|None|RESV_DEL_HOLD|0:10|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    }
+    monkeypatch.setattr(slurm_module.subprocess, "run", _by_cluster_run(calls, answers))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("7", _spec(run_id=1), cluster="old"),
+            JobHandle("8", _spec(run_id=2), cluster="new"),
+        ]
+    )
+
+    old_polls = [argv for argv in calls if "old" in argv]
+    new_polls = [argv for argv in calls if "new" in argv]
+    # The old cluster dropped the name it refused and was asked again...
+    assert "RESV_DEL_HOLD" in _states_of(old_polls[0])
+    assert "RESV_DEL_HOLD" not in _states_of(old_polls[1])
+    assert "REQUEUE_HOLD" in _states_of(old_polls[1])  # narrowed, not dropped
+    # ...while every poll of the new cluster kept the full filter, including
+    # the round after the rejection.
+    assert len(new_polls) == 2
+    for argv in new_polls:
+        assert _states_of(argv) == slurm_module._STATES_FILTER
+    # Which is what kept its RESV_DEL_HOLD job in the wait: the fleet needed
+    # a second round, rather than draining on the first.
+    assert len(old_polls) == 3  # the rejection, its retry, then round two
+    assert backend._wait_states_for("new") == slurm_module._STATES_FILTER
+    assert "RESV_DEL_HOLD" not in backend._wait_states_for("old")
+
+
+def test_an_unfiltered_degradation_stays_on_the_refusing_cluster(monkeypatch, caplog):
+    """Dropping the filter entirely is scoped the same way (#527 review)."""
+    import logging
+
+    calls = []
+    answers = {
+        "old": [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+        "new": [SimpleNamespace(returncode=0, stdout="", stderr="")],
+    }
+    monkeypatch.setattr(slurm_module.subprocess, "run", _by_cluster_run(calls, answers))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all(
+            [
+                JobHandle("7", _spec(run_id=1), cluster="old"),
+                JobHandle("8", _spec(run_id=2), cluster="new"),
+            ]
+        )
+
+    old_polls = [argv for argv in calls if "old" in argv]
+    new_polls = [argv for argv in calls if "new" in argv]
+    assert _states_of(old_polls[1]) is None  # asked again without the filter
+    assert _states_of(new_polls[0]) == slurm_module._STATES_FILTER
+    assert backend._wait_states_for("old") is None
+    assert backend._wait_states_for("new") == slurm_module._STATES_FILTER
+    (fields,) = _events(caplog, "dispatch.wait_states_unfiltered")
+    # The WARNING names the cluster it applies to, or a reader would take it
+    # for the whole fleet.
+    assert fields["cluster"] == "old"
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_states_unfiltered"
+    ]
+    assert record.levelno == logging.WARNING
 
 
 def test_a_failed_poll_is_not_a_drain(monkeypatch, caplog):

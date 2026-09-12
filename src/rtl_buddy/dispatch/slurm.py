@@ -640,11 +640,20 @@ class SlurmDispatchBackend(DispatchBackend):
         # failure retires it for this backend instance; a probe that
         # answers keeps being asked.
         self._dedup_probe_available = True
-        # The state filter every drain poll asks with, narrowed in place if
-        # this cluster's Slurm rejects one of the names (see
-        # `_narrow_wait_states`). A property of the Slurm being talked to,
-        # so it is remembered for the run rather than re-learned per poll.
-        self._wait_states: str | None = _STATES_FILTER
+        # The state filter each drain poll asks with, PER CLUSTER: an absent
+        # entry means the full `_STATES_FILTER`, and a cluster whose Slurm
+        # rejects one of the names gets its own narrowed (or dropped) value
+        # — see `_narrow_wait_states`. Keyed like `_wait_poll_failed` below,
+        # by the cluster the poll addressed.
+        #
+        # Per cluster and not per backend, because the state names a Slurm
+        # knows are a property of THAT Slurm: one backend can hold handles
+        # on several clusters of a federation running different versions,
+        # and narrowing them all to what the oldest accepts would poll a
+        # newer cluster with a filter too small to see its own held job —
+        # which reads as drained, and retires a job that is still running
+        # (#527 review).
+        self._wait_states_by_cluster: dict = {}
         # Clusters whose poll has already failed for an unexplained reason:
         # the first failure is a WARNING, the rest are DEBUG, or a wedged
         # squeue would print one line per poll for the whole wait (#527
@@ -1796,15 +1805,16 @@ class SlurmDispatchBackend(DispatchBackend):
         # Bounded by the filter's own length: each rejection drops the name
         # it named, so the loop cannot outlive the list.
         for _ in range(len(_NONTERMINAL_STATES) + 1):
+            states = self._wait_states_for(cluster)
             proc = subprocess.run(
-                self._wait_argv(base_ids, cluster=cluster, states=self._wait_states),
+                self._wait_argv(base_ids, cluster=cluster, states=states),
                 capture_output=True,
                 text=True,
                 cwd=cwd,
             )
             if proc.returncode == 0:
                 return proc.stdout.splitlines(), "ok"
-            if self._wait_states is None:
+            if states is None:
                 break
             rejected = _rejected_states(proc.stderr)
             if rejected is None:
@@ -1831,8 +1841,19 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return [], "unknown"
 
+    def _wait_states_for(self, cluster) -> str | None:
+        """The filter to poll ``cluster`` with: the full set until it says no.
+
+        ``None`` is "no ``--states`` at all", which only a cluster that
+        refused the filter without naming a state gets (see
+        :meth:`_narrow_wait_states`). Every other cluster keeps asking with
+        everything, whatever an older sibling in the same federation
+        rejected (#527 review).
+        """
+        return self._wait_states_by_cluster.get(cluster, _STATES_FILTER)
+
     def _narrow_wait_states(self, rejected: tuple, *, cluster) -> None:
-        """Drop the state names this Slurm rejected, for the rest of the run.
+        """Drop the state names THIS cluster rejected, for the rest of the run.
 
         A name squeue refuses is a state that build does not have, so no job
         can be in it and the remaining filter is exactly as complete as the
@@ -1840,11 +1861,20 @@ class SlurmDispatchBackend(DispatchBackend):
         which leaves squeue's own default — pending, running and completing —
         narrower than this wants, so that degradation is a WARNING rather
         than a silent fallback (#527 review).
+
+        Recorded against ``cluster`` alone. The rejection says what one
+        Slurm knows, and a federation can run several versions: applying it
+        backend-wide would poll a newer cluster with a filter too narrow for
+        its own held jobs, and an unseen job reads as a finished one.
         """
-        current = [] if self._wait_states is None else self._wait_states.split(",")
-        kept = [state for state in current if state not in rejected]
+        current = self._wait_states_for(cluster)
+        kept = [
+            state
+            for state in ([] if current is None else current.split(","))
+            if state not in rejected
+        ]
         if rejected and kept:
-            self._wait_states = ",".join(kept)
+            self._wait_states_by_cluster[cluster] = ",".join(kept)
             log_event(
                 logger,
                 logging.DEBUG,
@@ -1852,10 +1882,10 @@ class SlurmDispatchBackend(DispatchBackend):
                 backend=self.name,
                 cluster=cluster,
                 dropped=",".join(rejected),
-                states=self._wait_states,
+                states=self._wait_states_by_cluster[cluster],
             )
             return
-        self._wait_states = None
+        self._wait_states_by_cluster[cluster] = None
         log_event(
             logger,
             logging.WARNING,
