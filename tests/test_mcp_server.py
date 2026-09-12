@@ -238,6 +238,7 @@ def phys_project(mcp_project: Path) -> Path:
             leakage_w=0.08e-6,
             total_w=3.171e-6,
         ),
+        own_half="instances",
     )
     model_path = write_model(model, phys_dir)
     write_manifest(

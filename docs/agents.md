@@ -28,7 +28,7 @@ A query exits 1 when nothing matches and 2 when no graph exists. Full node expan
 
 ## Use the MCP server
 
-`rb mcp` exposes graph, coverage, hierarchy, and available live-hub operations as MCP tools over stdio:
+`rb mcp` exposes graph, coverage, physical-metrics, hierarchy, and available live-hub operations as MCP tools over stdio:
 
 ```json
 {"mcpServers": {"rtl-buddy": {"command": "rb", "args": ["mcp"]}}}
@@ -41,6 +41,8 @@ uv add "rtl_buddy[mcp]"
 ```
 
 Each response wraps the corresponding `--machine` payload in `{tool, ok, meta, payload}`. Command-level failures return `ok: false` and an `error`; they do not become transport failures. The CLI provides the same operations when MCP is unavailable.
+
+The physical-metrics tools are `phys_summary`, `phys_module`, and `phys_instance`, reading the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; they run no EDA tool and need no hub. `phys_focus` joins them when a live hub is discovered. `phys_module` joins on the model's `module` column, which holds RTL module names in the synthesis half and Liberty cell names in the power half — see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
 
 ## Bundled agent skills
 

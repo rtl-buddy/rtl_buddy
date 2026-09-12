@@ -1150,12 +1150,18 @@ def build_toolset(
             command="rb phys module",
             description=(
                 "What one module costs: its synthesis row (cell count and "
-                "area) joined to every instance of it and the power each one "
-                "burns, with their sum. Reads artefacts already on disk — no "
-                "EDA tool runs. The name may be a design module from the "
-                "synthesis half or a Liberty cell from the power half, so "
-                "'how much do the DFFs burn' is answerable too. Either half "
-                "may be absent: the payload reports what it has and names the "
+                "area), and the instance rows whose module column matches, "
+                "with the power they sum to. Reads artefacts already on disk "
+                "— no EDA tool runs. The two halves spell 'module' in two "
+                "namespaces: RTL module names in the synthesis half, Liberty "
+                "cell names on the power half's leaves. So this answers "
+                "Liberty-cell questions ('how much do the DFFs burn') and a "
+                "flat netlist's top, but NOT 'how much power does u_cpu burn' "
+                "on a mapped hierarchical design — no leaf row carries an RTL "
+                "module name. When that is what happened the payload's "
+                "'instance_join' says so; do not report the empty instance "
+                "list as 'this block burns no power'. Either half may be "
+                "absent: the payload reports what it has and names the "
                 "command that would supply the rest. An unknown name comes "
                 "back as ok: false with 'candidates'."
             ),
@@ -1186,7 +1192,10 @@ def build_toolset(
                 "Power for one instance path, or — when the path names a "
                 "subtree rather than a leaf — the leaves under it and their "
                 "rolled-up total, with area joined in through each leaf's "
-                "module. Reads artefacts already on disk; no EDA tool runs. "
+                "module (read 'area_um2' against 'modules_matched': the join "
+                "is on Liberty cell names and routinely covers none of a "
+                "mapped hierarchical subtree). Reads artefacts already on "
+                "disk; no EDA tool runs. "
                 "The model stores leaf values only, so this is where a "
                 "hierarchy question is actually answered. Instance rows come "
                 "from the power half alone: a synthesis-only model comes back "
@@ -1200,7 +1209,8 @@ def build_toolset(
                         "description": (
                             "Instance path, exact or the root of a subtree, as "
                             "the model records it (either '/' or '.' "
-                            "separated), e.g. one from phys_summary's "
+                            "separated — both are levelled before matching), "
+                            "e.g. one from phys_summary's "
                             "'instances' ranking."
                         ),
                     },
