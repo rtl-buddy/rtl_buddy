@@ -432,6 +432,7 @@ def analyze_build_reservation(
     compile_origins=None,
     suite_config_hint=None,
     cpus_override=None,
+    sbatch_args_config_path=None,
 ):
     """Right-size the *build job's* own reservation (#495).
 
@@ -474,8 +475,15 @@ def analyze_build_reservation(
     :func:`~rtl_buddy.config.dispatch.sbatch_args_cpu_request_options`), so
     the cpus row's ``edit_hint`` can name ``cfg-dispatch.sbatch-args``, say
     which field it masks, and — where several of them multiply — decline to
-    put the suggestion on any one of them. Empty telemetry (a
-    local-parallel backend reports none) yields no advice at all.
+    put the suggestion on any one of them. ``sbatch_args_config_path`` is
+    the config file those arguments came from, which is the ``file`` such a
+    hint names: the backend is built once from the orchestration
+    root_config.yaml, so in a multi-root regression it is NOT
+    ``root_config_hint``, and naming the suite's root would send an agent to
+    edit a `cfg-dispatch` the backend never reads (#527). It falls back to
+    ``root_config_hint`` when the caller has no better answer. Empty
+    telemetry (a local-parallel backend reports none) yields no advice at
+    all.
 
     ``compile_work`` is what the build envelope says the job actually did:
     ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
@@ -615,8 +623,14 @@ def analyze_build_reservation(
                     tasks=build_tasks,
                 ),
             }
-            if from_args and root_config_hint:
-                edit["file"] = root_config_hint
+            # The config the ARGUMENTS came from — the backend's own, not
+            # necessarily this suite's root (#527). The fields below are
+            # suite-resolved and keep pointing at `root_config_hint`; only
+            # this one belongs to the backend, and a hint naming a
+            # `cfg-dispatch` it never reads would not retire the advice.
+            override_file = sbatch_args_config_path or root_config_hint
+            if from_args and override_file:
+                edit["file"] = override_file
             return edit
         # Point at whichever file holds the value that WON. A suite-level
         # `compile:` block is the most specific layer, so for a field it
@@ -842,6 +856,7 @@ def analyze_suite_reservations(
     root_config_path=None,
     accounting_interval_s=None,
     compile_origins=None,
+    sbatch_args_config_path=None,
 ):
     """Produce :class:`RightsizeFinding`s for one suite's dispatched rows.
 
@@ -858,7 +873,13 @@ def analyze_suite_reservations(
     never retire. ``accounting_interval_s`` is the
     scheduler's usage-sampling interval, used to suppress memory advice
     derived from a peak that was never sampled (#365); ``None`` disables
-    that suppression.
+    that suppression. ``sbatch_args_config_path`` is the config file the
+    backend's ``sbatch-args`` came from, named as the ``file`` of a hint
+    about a cpu override written there: the backend is instantiated once
+    from the orchestration root_config.yaml, so in a multi-root regression
+    that is a different file from ``root_config_path`` and an agent sent to
+    the suite's root would edit a ``cfg-dispatch`` nothing submits with
+    (#527). Falls back to ``root_config_path``.
     """
     findings = []
     unsampled = []
@@ -943,8 +964,15 @@ def analyze_suite_reservations(
                         tasks=_tasks,
                     ),
                 }
-                if from_args and root_config_path:
-                    edit["file"] = root_config_path
+                # The file the ARGUMENTS live in, which is the config the
+                # backend was built from rather than this suite's root
+                # (#527): the two diverge in a multi-root regression, and
+                # only the backend's is what `sbatch` receives — so a hint
+                # naming the other one edits a `cfg-dispatch` that changes
+                # nothing and the finding comes back next run.
+                override_file = sbatch_args_config_path or root_config_path
+                if from_args and override_file:
+                    edit["file"] = override_file
                 return edit
             # A field the compile reservation won is masked by the max, so
             # editing the test's resources: would not move the allocation.

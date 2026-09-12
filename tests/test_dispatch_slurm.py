@@ -2542,6 +2542,74 @@ def test_a_size_governed_rejection_still_points_at_max_array_size(
     assert "max-array-tasks" not in message
 
 
+def test_an_unreadable_limit_recovery_names_both_ceilings(monkeypatch, tmp_path):
+    """Pinning MaxArraySize alone does not clear a lower task cap (#527).
+
+    With no limit resolved the recovery used to name
+    `cfg-dispatch.max-array-size` only. A cluster whose binding ceiling is
+    `SchedulerParameters=max_array_tasks` then refuses the next submission
+    identically — the slices are within the index bound and still above the
+    task count — so both independently configurable ceilings have to be in
+    the sentence.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        ),
+    ]
+    # No `max_array_size`/`max_array_tasks`: the scontrol probe fails, which
+    # is the submit host this recovery text is written for.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    assert "could not be read" in message  # this IS the unknown-limit path
+    assert "cfg-dispatch.max-array-size" in message
+    assert "cfg-dispatch.max-array-tasks" in message
+    # ...and says which cluster value each one stands in for, or a site
+    # cannot tell them apart well enough to write the right number.
+    assert "MaxArraySize" in message
+    assert "max_array_tasks" in message
+
+
+def test_the_unknown_limit_run_log_line_names_both_ceilings_too(
+    monkeypatch, tmp_path, caplog
+):
+    """The same recovery, on the line that reports the cause (#527).
+
+    The `hint` field already carried both; the rendered sentence — what a
+    console actually shows — named only the index bound.
+    """
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="100\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "arr"
+        )
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+    assert "max-array-tasks" in fields["hint"]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.max_array_size_unknown"
+    ]
+    message = record.getMessage()
+    assert "cfg-dispatch.max-array-size" in message
+    assert "max-array-tasks" in message
+
+
 def test_handle_key_round_trips_through_its_split():
     key = base_module.telemetry_key(JobHandle("77_1", _spec(), cluster="alpha"))
     assert base_module.split_handle_key(key) == ("alpha", "77_1")
@@ -2783,6 +2851,21 @@ def test_a_completing_build_job_still_counts_as_in_flight():
     """A COMPLETING job is still finishing, so naming it explains a wait
     that has not ended."""
     assert "COMPLETING" in slurm_module._DEDUP_STATES.split(",")
+
+
+def test_a_stopped_build_job_still_counts_as_in_flight():
+    """SIGSTOP does not terminate a job, so `singleton` keeps waiting (#527).
+
+    job_state_codes(7) has a STOPPED job retaining its CPUs. Omitted from
+    the filter, `squeue` returned no predecessor id and
+    `dispatch.build_job_deduped` gave none of the documented `scancel`
+    recovery guidance for the very job that is holding the allocation.
+    """
+    assert "STOPPED" in slurm_module._DEDUP_STATES.split(",")
+    # The same gap in the wait_all poll, where a state missing from the
+    # filter reads as *drained*: `ST` sits beside `S` for the same reason.
+    assert "ST" in slurm_module._ACTIVE_STATES.split(",")
+    assert "S" in slurm_module._ACTIVE_STATES.split(",")
 
 
 def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
@@ -3511,6 +3594,12 @@ def test_the_probe_asks_for_every_non_terminal_state():
         "SPECIAL_EXIT",
         "REVOKED",
         "PREEMPTED",
+        # A SIGSTOPped job retains its CPUs (job_state_codes(7)), so it has
+        # not terminated and `singleton` still waits for it; and a job held
+        # because its reservation was deleted is as stuck as a REQUEUE_HOLD
+        # one (#527).
+        "STOPPED",
+        "RESV_DEL_HOLD",
     ):
         assert non_terminal in states, non_terminal
     # ...and nothing that has already ended: naming a finished job as one

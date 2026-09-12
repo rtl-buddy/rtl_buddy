@@ -3190,7 +3190,16 @@ class RtlBuddy:
         dispatch_cfg = self.root_cfg.get_dispatch_cfg()
         if jobs is not None:
             dispatch_cfg = replace(dispatch_cfg, jobs=jobs)
-        return create_dispatch_backend(backend_name, dispatch_cfg)
+        return create_dispatch_backend(
+            backend_name,
+            dispatch_cfg,
+            # Which root_config.yaml this `cfg-dispatch` came from, snapshotted
+            # with it: this runs ONCE, before the suite loop, so it is the
+            # orchestration config even after `root_cfg` is rebuilt for a suite
+            # under a different root — and that is the file an `sbatch-args`
+            # edit hint has to name (#527).
+            config_path=getattr(self.root_cfg, "root_cfg_path", None),
+        )
 
     def _reject_early_stop_under_dispatch(self, dispatch, backend):
         """Reject ``--early-stop`` under dispatch, naming what selected it.
@@ -4505,6 +4514,16 @@ class RtlBuddy:
         rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
         if not rightsize_cfg.report:
             return []
+        # Where the `sbatch-args` the jobs were submitted with actually live.
+        # The overrides themselves are read off the backend (#505 review), so
+        # the file named in an `edit_hint` about them has to come from there
+        # too: the backend was built once from the orchestration
+        # root_config.yaml, while `self.root_cfg` below is whichever root THIS
+        # suite walked up to, and applying a hint that named the suite's root
+        # would edit a `cfg-dispatch` the instantiated backend never reads
+        # (#527). getattr, for the same reason the others use it — analysis is
+        # advisory and must never turn a finished run into an abort.
+        sbatch_args_config_path = getattr(backend, "effective_sbatch_args_path", None)
         # The suite's own `compile:` block as submit resolved it, and which
         # compile fields it won (#497). .get(), unlike `build_handle` below:
         # an old state dict — or a caller that assembled one by hand — must
@@ -4529,6 +4548,9 @@ class RtlBuddy:
             # attribute: analysis is advisory and runs after every job has
             # finished — it must never turn a completed run into an abort.
             root_config_path=getattr(self.root_cfg, "root_cfg_path", None),
+            # ...except for a cpu override in `sbatch-args`, which belongs to
+            # the backend and so names the backend's own config (#527).
+            sbatch_args_config_path=sbatch_args_config_path,
             # ...unless the suite's own compile block is what governs that
             # field, in which case cfg-dispatch is the layer it overrides
             # and the hint has to name the suite instead (#497). This
@@ -4600,6 +4622,11 @@ class RtlBuddy:
                     # what the per-test rows carry, so both halves of a
                     # suite's advice describe one submission.
                     cpus_override=(state or {}).get("cpus_override") or [],
+                    # ...and the config those `sbatch-args` came from, so the
+                    # hint's `file` is the one the backend reads rather than
+                    # this suite's root (#527). Same value the per-test rows
+                    # above got: one submission, one file to edit.
+                    sbatch_args_config_path=sbatch_args_config_path,
                 )
             )
         for finding in findings:

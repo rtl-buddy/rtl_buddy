@@ -300,6 +300,16 @@ class DispatchBackend(ABC):
     # override the backend really passes, or inventing one it does not
     # (#505 review).
     effective_sbatch_args: tuple = ()
+    # ...and the config file those arguments were read from, travelling
+    # beside them for the same reason. An `sbatch-args` cpu override makes
+    # right-sizing point its machine-readable `edit_hint` at
+    # `cfg-dispatch.sbatch-args`, and the `file` half has to be the config
+    # the INSTANTIATED backend reads: in a multi-root regression the
+    # suite's own root_config.yaml is a different file, and an agent
+    # applying a hint that named it would edit a `cfg-dispatch` nothing
+    # submits with, leaving the override — and the advice — in place
+    # (#527). ``None`` where the backend was built without one.
+    effective_sbatch_args_path: str | None = None
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
         """Per-job reserved-vs-used accounting, keyed by :func:`telemetry_key`.

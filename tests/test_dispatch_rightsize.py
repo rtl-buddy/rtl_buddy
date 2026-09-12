@@ -69,6 +69,7 @@ def _analyze(
     root_config_path=None,
     accounting_interval_s=None,
     compile_origins=None,
+    sbatch_args_config_path=None,
 ):
     return analyze_suite_reservations(
         rows,
@@ -80,6 +81,7 @@ def _analyze(
         root_config_path=root_config_path,
         accounting_interval_s=accounting_interval_s,
         compile_origins=compile_origins,
+        sbatch_args_config_path=sbatch_args_config_path,
     )
 
 
@@ -777,6 +779,7 @@ def _build_advice(
     compile_origins=None,
     suite_config_hint=None,
     cpus_override=None,
+    sbatch_args_config_path=None,
 ):
     return analyze_build_reservation(
         telemetry,
@@ -790,6 +793,7 @@ def _build_advice(
         compile_origins=compile_origins,
         suite_config_hint=suite_config_hint,
         cpus_override=cpus_override,
+        sbatch_args_config_path=sbatch_args_config_path,
     )
 
 
@@ -2195,6 +2199,147 @@ def test_env_and_args_together_name_both_and_keep_the_file():
         "`--cpus-per-task=2` and `SBATCH_NTASKS=4` set this job's cpu request" in note
     )
     assert "product" not in note
+
+
+# --------- #527: the override's file is the BACKEND's config, not the suite's
+
+
+def test_an_args_override_hint_names_the_backends_own_config():
+    """The `file` has to be where those arguments really live (#527).
+
+    The overrides are read off the backend, which was instantiated once from
+    the orchestration `root_config.yaml`; this suite resolved a different
+    root. A hint naming the suite's root would have an agent edit a
+    `cfg-dispatch` the instantiated backend never reads — the override stays
+    in force, and the advice comes back next run.
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 2000.0,  # 0.25 efficiency
+            },
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=8"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(
+            rows,
+            root_config_path="verif/blk/root_config.yaml",
+            sbatch_args_config_path="/proj/orchestration/root_config.yaml",
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpu.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpu.edit_hint["file"] == "/proj/orchestration/root_config.yaml"
+
+
+def test_only_the_args_hint_moves_to_the_backends_config():
+    """The suite-resolved fields keep naming the suite's own root.
+
+    `cfg-dispatch.compile.*` advice is about the reservation THIS suite
+    resolved, so its file is this suite's root config; only the verbatim
+    `sbatch-args` passthrough belongs to the backend (#527).
+    """
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 24 * 2**30,
+                "max_rss_bytes": 2 * 2**30,
+                "alloc_cpus": 1,
+                "req_cpus": 1,
+                "total_cpu_s": 100.0,
+            },
+            governed_by={"mem": "compile"},
+            compile_floor={"mem": "1G"},
+        )
+    ]
+    (mem,) = [
+        f
+        for f in _analyze(
+            rows,
+            root_config_path="verif/blk/root_config.yaml",
+            sbatch_args_config_path="/proj/orchestration/root_config.yaml",
+        )
+        if f.resource == "mem"
+    ]
+    assert mem.edit_hint["path"] == "cfg-dispatch.compile.mem"
+    assert mem.edit_hint["file"] == "verif/blk/root_config.yaml"
+
+
+def test_without_a_backend_config_the_args_hint_falls_back_to_the_root():
+    """A caller with no better answer keeps the pre-#527 file."""
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 1000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "req_cpus": 8,
+                "total_cpu_s": 2000.0,
+            },
+            requested_cpus=None,
+            cpus_override=["--cpus-per-task=8"],
+        )
+    ]
+    (cpu,) = [
+        f
+        for f in _analyze(rows, root_config_path="root_config.yaml")
+        if f.resource == "cpus"
+    ]
+    assert cpu.edit_hint["file"] == "root_config.yaml"
+
+
+def test_the_build_rows_args_hint_names_the_backends_config_too():
+    """The `(build job)` row carries the same override, so the same file."""
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 7200,
+        "alloc_cpus": 8,
+        "req_cpus": 8,
+        "total_cpu_s": 200,  # 0.25 efficiency against the 8 submitted
+    }
+    (cpus_a,) = [
+        f
+        for f in _build_advice(
+            telemetry,
+            parallel=1,
+            cpus=2,
+            root="verif/blk/root_config.yaml",
+            cpus_override=["--cpus-per-task=8"],
+            sbatch_args_config_path="/proj/orchestration/root_config.yaml",
+        )
+        if f.resource == "cpus"
+    ]
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.sbatch-args"
+    assert cpus_a.edit_hint["file"] == "/proj/orchestration/root_config.yaml"
+    # ...while a field with no override still points at the suite's own root.
+    (time_a,) = [
+        f
+        for f in _build_advice(
+            telemetry,
+            parallel=1,
+            cpus=2,
+            root="verif/blk/root_config.yaml",
+            sbatch_args_config_path="/proj/orchestration/root_config.yaml",
+        )
+        if f.resource == "time"
+    ]
+    assert time_a.edit_hint["file"] == "verif/blk/root_config.yaml"
 
 
 def test_the_build_row_takes_an_env_override_too():

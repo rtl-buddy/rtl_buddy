@@ -66,7 +66,13 @@ def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
 # Queue states that mean "still occupying the queue". Anything else
 # (COMPLETED/FAILED/TIMEOUT/CANCELLED...) has finished as far as the
 # collector is concerned — the result envelope decides pass/fail.
-_ACTIVE_STATES = "PD,R,S,CG,CF"
+#
+# `ST` (STOPPED) sits beside `S` (SUSPENDED) for the same reason the dedup
+# probe lists both: job_state_codes(7) has a STOPPED job retaining its CPUs,
+# so it is still running as far as the queue is concerned. A state missing
+# here reads as *drained*, which would start collection on a job that has
+# not written its envelope yet (#527).
+_ACTIVE_STATES = "PD,R,S,ST,CG,CF"
 
 # squeue's reason for a job whose `afterok` dependency has already failed.
 # Such a job is PENDING but will NEVER run, and since PD counts as "still in
@@ -302,6 +308,12 @@ _DEDUP_STATES = ",".join(
         "PENDING",
         "RUNNING",
         "SUSPENDED",
+        # A job whose processes were SIGSTOPped: job_state_codes(7) says a
+        # STOPPED job "retains its CPUs", so it has not terminated and
+        # `singleton` still waits for it — the wait this probe exists to
+        # explain, and an omission that left the documented `scancel`
+        # recovery without the id it needs (#527).
+        "STOPPED",
         "CONFIGURING",
         "COMPLETING",
         "STAGE_OUT",
@@ -309,6 +321,10 @@ _DEDUP_STATES = ",".join(
         "RESIZING",
         "REQUEUED",
         "REQUEUE_HOLD",
+        # The third held state, found beside STOPPED while checking the list
+        # against job_state_codes(7): a job held because its reservation was
+        # deleted is as stuck, and as un-terminated, as a REQUEUE_HOLD one.
+        "RESV_DEL_HOLD",
         "REQUEUE_FED",
         "SPECIAL_EXIT",
         "REVOKED",
@@ -1369,10 +1385,20 @@ class SlurmDispatchBackend(DispatchBackend):
             self._cluster_selection(), _ArrayLimit(None)
         )
         if resolved.elements is None:
+            # BOTH ceilings, because either one alone can be the binding
+            # one and they are configured separately: a cluster whose
+            # `SchedulerParameters=max_array_tasks` is the lower limit
+            # refuses the next submission identically after
+            # `max-array-size` is set to the real MaxArraySize, and the
+            # advice would simply recur (#509 round 17 review).
             return (
-                "; the cluster's MaxArraySize could not be read, so this group "
-                "was submitted as one array — set cfg-dispatch.max-array-size to "
-                "let rb split a group larger than that limit"
+                "; the cluster's array limits could not be read, so this group "
+                "was submitted as one array — set cfg-dispatch.max-array-size "
+                "(the cluster's MaxArraySize) and cfg-dispatch.max-array-tasks "
+                "(its SchedulerParameters=max_array_tasks, where it caps tasks "
+                "per array below that) to let rb split a group larger than "
+                "either limit; each is layered on its own and either one alone "
+                "is enough to split"
             )
         # Named for the ceiling that actually produced the slice: sending a
         # site to `max-array-size` when its task cap was binding would have

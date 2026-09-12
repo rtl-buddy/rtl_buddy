@@ -951,10 +951,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "dispatch.max_array_size_unknown":
             return (
-                "dispatch: could not read the cluster's MaxArraySize "
+                "dispatch: could not read the cluster's array limits "
                 f"({fields.get('error')}), so a resource group is submitted as "
-                "one array — sbatch refuses a group larger than that limit; "
-                "set cfg-dispatch.max-array-size to have such groups split"
+                "one array — sbatch refuses a group larger than either limit; "
+                "set cfg-dispatch.max-array-size (and cfg-dispatch."
+                "max-array-tasks, where the cluster caps tasks per array below "
+                "it) to have such groups split"
             )
         case "dispatch.drained":
             return (
