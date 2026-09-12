@@ -1414,7 +1414,7 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
     assert "'open ' + " not in row
     assert "window.open(" not in row
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    for route in ("/sch", "/cov"):
+    for route in ("/sch", "/cov", "/phy"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
@@ -1465,7 +1465,7 @@ def test_the_action_row_has_no_open_buttons():
     assert "window.open(" not in row
     # The header switcher still carries the open links.
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    for route in ("/sch", "/cov"):
+    for route in ("/sch", "/cov", "/phy"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
@@ -2124,6 +2124,21 @@ def test_every_rendered_origin_goes_through_the_map():
     assert "els.fixView.textContent = originLabel('view') + ' → ' + target.model;" in js
 
 
+def test_the_header_switcher_links_every_sibling_pane():
+    """A pane's header is the only way from one app to the next, so a new
+    pane that is not in it is a pane nobody finds. `/phy` shipped with the
+    physical model (rtl-buddy/rtl_buddy#558) and belongs beside the other
+    two, addressed by the wire origin its label is derived from."""
+
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    switcher = body.split('<nav class="switcher"')[1].split("</nav>")[0]
+    for route, origin in (("/sch", "view"), ("/cov", "cov"), ("/phy", "phys")):
+        assert (
+            f'<a href="{route}" target="_blank" rel="noopener" data-origin="{origin}"'
+            in switcher
+        )
+
+
 def test_the_rename_did_not_leak_into_the_wire():
     """The fence for the display rebrand: the hub still speaks `view`,
     `graph` and `cov` on the wire, and `/view.json` is still `/view.json`.
@@ -2139,6 +2154,7 @@ def test_the_rename_did_not_leak_into_the_wire():
     assert "origin: 'cov'," in js
     # The page link is the short name...
     assert 'href="/sch"' in body
+    assert 'href="/phy"' in body
     assert 'href="/view"' not in body
     # ...and the data route it fetches from is emphatically not.
     assert "fetch('/view.json?model=' + encodeURIComponent(target.model))" in js
