@@ -39,15 +39,27 @@ directory holds no publication to inherit from, this run writes its own
 half under a fresh token, and the next run of the other flow fills the
 other half back in.
 
-**Binding a half to the netlist it measured.** Both publishes hash the
-netlist they touched — the one a synthesis wrote, the one a power run
-read — and record it in the model's ``provenance`` block. That is what
-lets a later synthesis tell per-instance rows that still describe its
-netlist from rows measured on the one it has just replaced; see
-:func:`rtl_buddy.phys.model.may_inherit_instances` for the rule and
-:func:`_sha256` for the cost. The manifest merge is told the same
-answer, so the two documents cannot end up disagreeing about whether
-this directory holds a power measurement.
+**Binding a half to the netlist it measured.** Both publishes record
+the sha256 of the netlist they touched in the model's ``provenance``
+block, and that is what lets either flow tell rows that still describe
+its netlist from rows measured on one that has since been replaced; see
+:func:`rtl_buddy.phys.model.may_inherit_other_half` for the rule and
+:func:`sha256_of` for the cost. The manifest merge is told the same
+answer, so the two documents cannot end up disagreeing about what this
+directory holds.
+
+The two sides get the hash at different moments, and the difference is
+not cosmetic. A synthesis *wrote* the netlist it names, so hashing it
+here is hashing what the run produced. A power analysis only read one,
+minutes before this publish runs, so hashing it here would describe
+whatever is at that path *now* — a netlist a concurrent `rb synth` into
+the upstream directory may have replaced while OpenROAD was working,
+which is exactly the mismatch the hash exists to catch, recorded as a
+match. So :func:`publish_power` does not take a path at all: it takes
+the ``netlist_sha256`` its caller captured when it handed the netlist to
+the tool (:meth:`rtl_buddy.tools.power_openroad.OpenRoadPower._write_script`),
+and a caller that captured none records none, which the merge reads as
+"no evidence" and refuses to inherit on.
 
 **The failing rerun.** Those six steps run only when the flow gets far
 enough to pass, so a rerun that fails earlier would leave the previous
@@ -181,7 +193,7 @@ def publish_synth(
             modules=modules,
             area_um2=area_um2,
             gate_count=gate_count,
-            netlist_sha256=_sha256(netlist_path),
+            netlist_sha256=sha256_of(netlist_path),
         )
 
     return _publish(
@@ -211,7 +223,7 @@ def publish_power(
     backend: str,
     run: str | None = None,
     netlist_source: str | None = None,
-    netlist_path=None,
+    netlist_sha256: str | None = None,
     report_path=None,
     instances_path=None,
     cells_path=None,
@@ -228,12 +240,17 @@ def publish_power(
     :param cells_path: the ``<instance> <liberty cell>`` sidecar the
         generated Tcl writes; its absence costs the rows their ``module``
         column and nothing else.
-    :param netlist_path: the netlist this analysis read, hashed into the
-        model's provenance so a later synthesis can tell whether these
-        rows still describe the design it writes. ``None`` for a
-        ``netlist-source: pnr`` run, which reads a routed database and
-        not a netlist — those rows are then never inherited forward,
-        which is the strict reading and the safe one.
+    :param netlist_sha256: the hash of the netlist this analysis read,
+        recorded in the model's provenance so a later synthesis can tell
+        whether these rows still describe the design it writes, and so
+        this publish can tell whether the module rows already here
+        describe the netlist it read. Taken as a hash rather than a path
+        because the bytes to identify are the ones OpenROAD was given,
+        not the ones at that path when this runs — see the module
+        docstring. ``None`` for a ``netlist-source: pnr`` run, which
+        reads a routed database and not a netlist, and for a caller that
+        could not read the file; nothing is then inherited in either
+        direction, which is the strict reading and the safe one.
     :returns: the same ``{"model", "manifest", "rows", "error"}`` shape
         :func:`publish_synth` returns.
     """
@@ -257,7 +274,7 @@ def publish_power(
             switching_w=switching_w,
             leakage_w=leakage_w,
             total_w=total_w,
-            netlist_sha256=_sha256(netlist_path),
+            netlist_sha256=netlist_sha256,
         )
 
     return _publish(
@@ -292,22 +309,22 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
     the pair the last publish left, or nothing at all —
     :func:`_existing_pair`.
 
-    The two merges are handed the same verdict on the power half. The
-    model's is :func:`rtl_buddy.phys.model.may_inherit_instances`; the
-    manifest has no netlist hash of its own to test, so a synthesis that
-    the model says may not carry the rows forward is given nothing to
-    merge its manifest onto either. Otherwise the model would say
+    The two merges are handed the same verdict on the half this run does
+    not own. The model's is
+    :func:`rtl_buddy.phys.model.may_inherit_other_half`; the manifest has
+    no netlist hash of its own to test, so a publish the model says may
+    not carry the other half forward is given nothing to merge its
+    manifest onto either. Otherwise the model would say
     ``instances: null`` while the manifest beside it went on naming the
     power reports and republishing their totals — one publication
-    contradicting itself about whether this directory holds a power
-    measurement at all.
+    contradicting itself about what this directory holds.
     """
     try:
         publication = model_mod.new_publication()
         fresh = build()
         rows = fresh[half_key]
         existing_model, existing_manifest = _existing_pair(artefact_dir)
-        if not model_mod.may_inherit_instances(
+        if not model_mod.may_inherit_other_half(
             existing_model, fresh, own_half=half_key
         ):
             existing_manifest = None
@@ -412,19 +429,24 @@ def _only_produced(values: dict) -> dict:
     }
 
 
-def _sha256(path) -> str | None:
+def sha256_of(path) -> str | None:
     """The sha256 of ``path``, or ``None`` when there is nothing to hash.
 
-    One sequential read of a file the flow has just written or has just
-    handed to a tool that read it several times over, so the cost sits
-    below the noise of either flow — a synthesis and a power analysis are
-    minutes of work, and this is one pass over their smallest artefact.
-    Chunked rather than slurped so a flat netlist from a large design
-    does not have to fit in memory to be identified.
+    One sequential read of a file the flow has just written or is about
+    to hand to a tool that will read it several times over, so the cost
+    sits below the noise of either flow — a synthesis and a power
+    analysis are minutes of work, and this is one pass over their
+    smallest artefact. Chunked rather than slurped so a flat netlist from
+    a large design does not have to fit in memory to be identified.
 
     An unreadable file is ``None`` — the same "no evidence" a document
     that never recorded a hash carries, and the merge treats the two
     alike.
+
+    Public because the power flow calls it itself: the bytes worth
+    identifying there are the ones it hands OpenROAD, which is minutes
+    before it publishes (see the module docstring), so the hash is
+    captured at the hand-off and threaded into :func:`publish_power`.
     """
     if path is None:
         return None

@@ -124,9 +124,27 @@ def project_relative(path, project_root) -> str | None:
     A path outside the project (an artefact directory on a scratch
     filesystem, say) is kept verbatim rather than turned into a ``../..``
     chain nothing can join on.
+
+    The comparison is made on the *logical* paths first — absolute-ised
+    but with no symlink resolved — and only falls back to the resolved
+    pair. A suite whose ``artefacts/`` is a link to scratch storage is an
+    ordinary setup, the same one :func:`discover_manifests` follows and
+    the filelist writer is pinned against, and resolving both operands
+    would put the scratch path on both sides of the ``relative_to``,
+    match nothing, and write the manifest full of absolute host paths.
+    The project-relative rule is about the tree the project is read
+    through, not about where the bytes live. Resolving is still worth a
+    second try, for the reverse arrangement: a path handed in through a
+    link that the project root is *not* reached through.
     """
     if path is None:
         return None
+    logical = Path(os.path.abspath(path))
+    logical_root = Path(os.path.abspath(project_root))
+    try:
+        return logical.relative_to(logical_root).as_posix()
+    except ValueError:
+        pass
     try:
         return Path(path).resolve().relative_to(Path(project_root).resolve()).as_posix()
     except ValueError:
@@ -152,12 +170,22 @@ def project_root_for_dir(artefact_dir) -> str:
     a synthesis run outside a project is not an error *here* — it is a
     manifest whose paths are bare filenames, which is still joinable and
     still worth writing.
+
+    Walked on the logical path first, for the reason
+    :func:`project_relative` gives and to the same end: an ``artefacts/``
+    symlinked to scratch resolves out of the project entirely, and a walk
+    that started there would find no root, hand every path back absolute,
+    and break the project-relative contract for exactly the layout the
+    rest of the module supports. The resolved walk is the fallback, so a
+    directory reached through a link from outside the project still finds
+    the root it really sits under.
     """
-    start = Path(artefact_dir).resolve()
-    for candidate in (start, *start.parents):
-        if any((candidate / marker).exists() for marker in _ROOT_MARKERS):
-            return str(candidate)
-    return str(start)
+    logical = Path(os.path.abspath(artefact_dir))
+    for start in (logical, Path(artefact_dir).resolve()):
+        for candidate in (start, *start.parents):
+            if any((candidate / marker).exists() for marker in _ROOT_MARKERS):
+                return str(candidate)
+    return str(logical)
 
 
 def build_manifest(
@@ -344,8 +372,17 @@ def resolve(manifest_path, relative_path) -> str | None:
 
 
 def project_root_for(manifest_path) -> str | None:
-    """Infer the project root a manifest's relative paths hang off."""
-    manifest_path = Path(manifest_path).resolve()
+    """Infer the project root a manifest's relative paths hang off.
+
+    Counted back up the *logical* path, not the resolved one: the
+    ``phys_dir`` the walk consumes is relative to the project root as the
+    writer saw it, and an ``artefacts/`` symlinked to scratch resolves to
+    a path with none of those components above it (see
+    :func:`project_relative`). Walking a resolved path up by
+    ``len(phys_dir.parts)`` would then climb out of scratch entirely and
+    return a root no manifest path joins onto.
+    """
+    manifest_path = Path(os.path.abspath(manifest_path))
     try:
         manifest = load_manifest(manifest_path)
     except (OSError, ValueError):

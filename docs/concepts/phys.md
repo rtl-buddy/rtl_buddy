@@ -20,7 +20,7 @@ rb phys summary --phys-dir verif/blk/artefacts/nightly
 
 - `summary` reports the run header, the design totals, the heaviest modules by cell count, and the hottest instances by total power. `--limit 0` shows every row.
 - `module` reports one module's cells and area, then the instances of it and the power they burn. The name may be a design module from the synthesis half or a Liberty cell from the power half; see [What the module join can answer](#what-the-module-join-can-answer).
-- `instance` reports one instance's power. A path that names a subtree instead of a leaf lists the leaves under it and rolls them up. Paths are compared level by level, so `u_sub.u_leaf` and `u_sub/u_leaf` name the same instance whichever spelling the tool wrote.
+- `instance` reports one instance's power. A path that names a subtree instead of a leaf lists the leaves under it, hottest by total power first, and rolls them up. Paths are compared level by level, so `u_sub.u_leaf` and `u_sub/u_leaf` name the same instance whichever spelling the tool wrote.
 
 `--phys-dir` selects an artefact directory and `--manifest` names the document directly. An explicit `--manifest` wins over `--phys-dir`, which wins over discovery.
 
