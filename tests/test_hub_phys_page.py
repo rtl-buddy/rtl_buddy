@@ -678,7 +678,7 @@ def test_the_wire_and_a_focus_target_are_read_with_their_own_convention():
     assert "function instanceRow(path, rooted) {" in js
     assert "return findByPath(rowsOf('instances'), path, designTop(), rooted);" in js
     # The wire says so; every other caller takes the rootless default.
-    assert "if (focusInstance(ip, true)) { note('selected ' + ip); }" in js
+    assert "if (focusInstance(ip, true)) { note(focusNote('selected ' + ip)); }" in js
     assert "ok = focusInstance(target.slice(9));" in js
 
 
@@ -837,6 +837,63 @@ def test_the_window_control_offers_more_and_all():
     # sign that 7,873 rows outrank it.
     assert "' above, '" in js
     assert "' below the selection)'" in js
+
+
+def test_the_filter_rule_is_one_rule_for_both_of_its_readers():
+    """`filterHides` answers "is this row on screen" for the renderers and
+    for an inbound focus alike, so the pane cannot report a focus onto a row
+    its own table left out."""
+
+    out = _node(
+        _marked_js("filter-hides")
+        + """
+        console.log(JSON.stringify([
+          filterHides('', ['u_cpu/_31_', 'DFF_X1']),      // no filter: nothing hidden
+          filterHides('cpu', ['u_cpu/_31_', 'DFF_X1']),   // the path matches
+          filterHides('dff', ['u_cpu/_31_', 'DFF_X1']),   // the cell matches, cased
+          filterHides('alu', ['u_cpu/_31_', 'DFF_X1']),   // neither: hidden
+          filterHides('alu', [null, undefined]),          // a row with no text
+          filterHides('sub', ['sub'])                     // the module table's one column
+        ]));
+        """
+    )
+
+    assert json.loads(out) == [False, False, False, True, True, False]
+
+
+def test_an_inbound_focus_is_not_left_behind_the_search_box():
+    """`focusInstance`/`focusModule` report success by selecting a row, and a
+    row the active filter excludes is never rendered — so the pane would
+    claim a focus onto a table that does not contain it. The search comes
+    off when, and only when, it would hide the target (#562 review)."""
+
+    js = _page_js()
+    assert "function revealPastFilter(texts) {" in js
+    assert "if (!filterHides(state.filter, texts)) { return; }" in js
+    assert "state.filter = '';" in js
+    assert "els.search.value = '';" in js
+    # Both focus paths, each offering the columns its own table filters on.
+    assert "revealPastFilter([name]);" in js
+    assert "revealPastFilter([row.instance_path, row.module]);" in js
+    # And the renderers ask the same question of the same helper.
+    assert "return !filterHides(state.filter, [row.instance_path, row.module]);" in js
+    assert "return !filterHides(state.filter, [text]);" in js
+
+
+def test_a_focus_that_took_the_search_off_says_so():
+    """Both ingresses — an explicit `phys_focus` and a `selection_changed`
+    from the schematic — print the note through `focusNote`, so a reader
+    whose search box has just emptied is told which of their controls the
+    focus moved."""
+
+    js = _page_js()
+    assert "searchCleared: false," in js
+    assert "state.searchCleared = true;" in js
+    assert "return text + ' (search cleared to show it)';" in js
+    # Read once and cleared: the flag belongs to one focus.
+    assert "state.searchCleared = false;\n    return text" in js
+    assert "if (focusInstance(ip, true)) { note(focusNote('selected ' + ip)); }" in js
+    assert "note(ok ? focusNote('focused ' + target)" in js
 
 
 def test_row_clicks_are_delegated_to_the_table_body():
