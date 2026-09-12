@@ -78,6 +78,11 @@ from ..tools.artifact_paths import (  # noqa: E402
     PHYS_MANIFEST_NAME as MANIFEST_FILENAME,
 )
 
+# The model's pairing of each half with the totals it owns. Imported so
+# the two merges cannot drift apart on which numbers travel with which
+# block; see :func:`merge_manifest`.
+from .model import _POWER_TOTALS, _SYNTH_TOTALS  # noqa: E402
+
 #: Keys of the ``synth`` block, so a power-only run still writes them all.
 SYNTH_KEYS = ("backend", "run", "stats", "netlist", "log")
 
@@ -197,7 +202,9 @@ def merge_manifest(existing: dict | None, new: dict) -> dict:
     (``backend`` null) and the existing manifest describes the same top,
     for the same reason the model's merge checks the top: a
     same-directory artefact from a different design is not evidence
-    about this one.
+    about this one. Totals travel with their half: a block this run
+    re-produced keeps the totals it wrote, nulls included — a scrape
+    that failed this time must not republish last run's number.
     """
     if not isinstance(existing, dict):
         return new
@@ -207,16 +214,22 @@ def merge_manifest(existing: dict | None, new: dict) -> dict:
         return new
     merged = dict(new)
     merged["totals"] = dict(new.get("totals") or {})
-    for half, keys in (("synth", SYNTH_KEYS), ("power", POWER_KEYS)):
+    halves = (
+        ("synth", SYNTH_KEYS, _SYNTH_TOTALS),
+        ("power", POWER_KEYS, _POWER_TOTALS),
+    )
+    for half, keys, totals_keys in halves:
         block = merged.get(half) or {}
         if block.get("backend") is not None:
             continue
         inherited = existing.get(half)
-        if isinstance(inherited, dict) and inherited.get("backend") is not None:
-            merged[half] = {key: inherited.get(key) for key in keys}
-    for key, value in (existing.get("totals") or {}).items():
-        if merged["totals"].get(key) is None:
-            merged["totals"][key] = value
+        if not isinstance(inherited, dict) or inherited.get("backend") is None:
+            continue
+        merged[half] = {key: inherited.get(key) for key in keys}
+        for key in totals_keys:
+            value = (existing.get("totals") or {}).get(key)
+            if value is not None and merged["totals"].get(key) is None:
+                merged["totals"][key] = value
     return merged
 
 

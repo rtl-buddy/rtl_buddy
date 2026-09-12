@@ -392,6 +392,23 @@ def test_manifest_merge_carries_the_other_halfs_block_forward(tmp_path):
     assert merged["totals"] == {"total_uw": 28.3, "area_um2": 5.586}
 
 
+def test_manifest_merge_keeps_a_reproduced_halfs_totals_as_written(tmp_path):
+    root, artefacts = _project(tmp_path)
+    old = _synth_manifest(
+        root, artefacts, None, totals={"area_um2": 5.586, "cell_count": 31}
+    )
+    rerun = _synth_manifest(
+        root, artefacts, None, totals={"area_um2": None, "cell_count": 9}
+    )
+
+    merged = merge_manifest(old, rerun)
+
+    # The rerun re-produced the synth half, so its totals stand as
+    # written: a scrape that failed this time is null, not last run's
+    # number — the manifest mirror of the model's shrinking rerun rule.
+    assert merged["totals"] == {"area_um2": None, "cell_count": 9}
+
+
 def test_manifest_merge_ignores_a_manifest_for_a_different_top(tmp_path):
     root, artefacts = _project(tmp_path)
     other = _synth_manifest(root, artefacts, None)
