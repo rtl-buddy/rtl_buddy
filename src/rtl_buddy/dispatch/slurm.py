@@ -63,23 +63,20 @@ def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
     return elab_job_argv(spec)
 
 
-# Every state in which Slurm still holds a submitted job: the NON-TERMINAL
-# half of job_state_codes(7). Anything else (COMPLETED/FAILED/TIMEOUT/
-# CANCELLED...) has finished as far as the collector is concerned — the
-# result envelope decides pass/fail.
+# Every state in which Slurm still holds a submitted job ALIVE — the
+# non-terminal half of job_state_codes(7) minus the two records it keeps
+# after the job is over (see `_TERMINAL_RETAINED_STATES`). Anything else
+# (COMPLETED/FAILED/TIMEOUT/CANCELLED...) has finished as far as the
+# collector is concerned — the result envelope decides pass/fail.
 #
-# ONE list with two consumers, deliberately. `wait_all`'s drain poll and the
-# build job's dedup probe ask the same question — is a job of ours still
-# alive? — and two rounds of review found them answering it differently, so
-# they now cannot drift (#527 review). The poll is the half that must be
-# complete: a state missing from its filter makes a LIVE job invisible to
-# `_outstanding`, so the wait returns, the collector records a missing
-# envelope for a job that is still queued, and nothing cancels it. For the
-# probe an omission only loses the warning naming the job
-# `--dependency=singleton` waits for — which is why the held states
-# (REQUEUE_HOLD, RESV_DEL_HOLD, SPECIAL_EXIT) matter most there: a
-# predecessor parked in one is exactly the indefinitely-held job the
-# documented `scancel` recovery is for.
+# This is the set `wait_all`'s drain poll waits on, and it must be complete
+# in BOTH directions (#527 review). A live state missing from it makes a
+# live job invisible to `_outstanding`: the wait returns, the collector
+# records a missing envelope for a job that is still queued, and nothing
+# cancels it. A finished state wrongly IN it holds the fleet on a record
+# Slurm is merely retaining until it is purged, which delays collection and
+# the license-queue retry — and, with a finite `max-wait`, fails a run whose
+# jobs had all ended.
 #
 # Spelled out rather than omitted, which is the trap here: `squeue` with no
 # `--states` does NOT list every live job, it reports "pending, running, and
@@ -91,7 +88,7 @@ def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
 # Long names rather than the short codes (`PD,R,S,...`): squeue takes
 # either, the long form is the one job_state_codes(7) documents, and several
 # of these states have no abbreviation to write.
-_NONTERMINAL_STATES = (
+_LIVE_STATES = (
     "PENDING",
     "RUNNING",
     "SUSPENDED",
@@ -110,11 +107,36 @@ _NONTERMINAL_STATES = (
     # as un-terminated, as a REQUEUE_HOLD job.
     "RESV_DEL_HOLD",
     "REQUEUE_FED",
+    # "The job was requeued in a special state" — a requeue, so the job runs
+    # again once it is released. Held, not finished.
     "SPECIAL_EXIT",
-    "REVOKED",
-    "PREEMPTED",
 )
-_STATES_FILTER = ",".join(_NONTERMINAL_STATES)
+
+# ...and the two that sit in squeue's state list looking non-terminal but
+# are RESULTS: the job is over and Slurm is keeping the record until it is
+# purged (#527 round-19 review).
+#
+# PREEMPTED is where the collector expects to find a preempted job: retry
+# classifies it beside TIMEOUT and NODE_FAIL in
+# :data:`~rtl_buddy.dispatch.retry.RESOURCE_KILL_STATES` — an allocation
+# lost, which is a finished job to re-submit rather than one to keep waiting
+# for. (A preemption configured to requeue moves the job on to
+# REQUEUED/PENDING, both above, so that case still holds the fleet.)
+# REVOKED is the federation twin: "sibling was removed from cluster due to
+# other cluster starting the job", so this record will never progress and
+# waiting on it would be waiting for a job running somewhere else.
+#
+# The dedup probe still asks for both, because there the over-report is
+# free: it only names the ids `--dependency=singleton` may be waiting for,
+# and a predecessor whose record is still in the queue is worth naming
+# either way. In the drain poll the same over-report costs a run.
+_TERMINAL_RETAINED_STATES = ("PREEMPTED", "REVOKED")
+
+# The two filters, DERIVED from one base so they cannot drift apart: the
+# probe's set is the drain set plus the retained results.
+_DEDUP_STATES = _LIVE_STATES + _TERMINAL_RETAINED_STATES
+_DRAIN_FILTER = ",".join(_LIVE_STATES)
+_DEDUP_FILTER = ",".join(_DEDUP_STATES)
 
 # What squeue answers a state name its Slurm predates: `squeue: error:
 # Invalid job state specified: RESV_DEL_HOLD`. A name it rejects is a state
@@ -358,11 +380,12 @@ _DEPENDENCY_OR_SEPARATOR = "?"
 # shorter one would read `--deadline` as a dependency.
 _DEPENDENCY_OPT = "--dependency"
 _DEPENDENCY_MIN_ABBREV = "--dep"
-# What the informational probe counts as "still in flight" is the same
-# non-terminal set the drain poll waits on — :data:`_STATES_FILTER`,
-# defined once at the top of this module — because that is exactly the set
-# `singleton` waits on: it defers this job until every earlier one of the
-# same name and user has *terminated* (#507 review).
+# What the informational probe counts as "still in flight" is
+# :data:`_DEDUP_FILTER`, defined once at the top of this module as the drain
+# poll's live states plus the results Slurm retains — because `singleton`
+# defers this job until every earlier one of the same name and user has
+# *terminated*, and a record still in the queue is worth naming whichever of
+# the two it is (#507 review, #527 round 19).
 # The probe sits between the user and their submission, so it is
 # time-boxed: a wedged squeue must cost a few seconds and a DEBUG line,
 # never the run. It only feeds a log line — the guarantee is the
@@ -641,7 +664,7 @@ class SlurmDispatchBackend(DispatchBackend):
         # answers keeps being asked.
         self._dedup_probe_available = True
         # The state filter each drain poll asks with, PER CLUSTER: an absent
-        # entry means the full `_STATES_FILTER`, and a cluster whose Slurm
+        # entry means the full `_DRAIN_FILTER`, and a cluster whose Slurm
         # rejects one of the names gets its own narrowed (or dropped) value
         # — see `_narrow_wait_states`. Keyed like `_wait_poll_failed` below,
         # by the cluster the poll addressed.
@@ -810,7 +833,7 @@ class SlurmDispatchBackend(DispatchBackend):
         explains the resulting wait can *name* the jobs being waited on.
         Nothing branches on it but that line.
 
-        The filter is every non-terminal state (:data:`_STATES_FILTER`),
+        The filter is every non-terminal state (:data:`_DEDUP_FILTER`),
         which is the set ``singleton`` itself waits on — including the
         held ones (``REQUEUE_HOLD``, ``SPECIAL_EXIT``) a stuck
         predecessor sits in, since those are the ids the documented
@@ -880,7 +903,7 @@ class SlurmDispatchBackend(DispatchBackend):
 
         try:
             proc = subprocess.run(
-                _argv(_STATES_FILTER),
+                _argv(_DEDUP_FILTER),
                 capture_output=True,
                 text=True,
                 cwd=cwd,
@@ -1754,6 +1777,14 @@ class SlurmDispatchBackend(DispatchBackend):
         outstanding: dict[str, str] = {}
         longest = None
         for record in records:
+            if record["state"] in _TERMINAL_RETAINED_STATES:
+                # A result Slurm is still holding on to, not a job to wait
+                # for. `_DRAIN_FILTER` does not ask for these, but a poll
+                # that fell back to squeue's own filter — or a Slurm that
+                # renders a state the filter did not name — can still put one
+                # here, and counting it would keep the fleet outstanding
+                # until the record was purged (#527 round-19 review).
+                continue
             running = record["state"] == _SQUEUE_RUNNING_STATE
             expanded = [
                 keys[job_id]
@@ -1804,7 +1835,7 @@ class SlurmDispatchBackend(DispatchBackend):
         """
         # Bounded by the filter's own length: each rejection drops the name
         # it named, so the loop cannot outlive the list.
-        for _ in range(len(_NONTERMINAL_STATES) + 1):
+        for _ in range(len(_LIVE_STATES) + 1):
             states = self._wait_states_for(cluster)
             proc = subprocess.run(
                 self._wait_argv(base_ids, cluster=cluster, states=states),
@@ -1850,7 +1881,7 @@ class SlurmDispatchBackend(DispatchBackend):
         everything, whatever an older sibling in the same federation
         rejected (#527 review).
         """
-        return self._wait_states_by_cluster.get(cluster, _STATES_FILTER)
+        return self._wait_states_by_cluster.get(cluster, _DRAIN_FILTER)
 
     def _narrow_wait_states(self, rejected: tuple, *, cluster) -> None:
         """Drop the state names THIS cluster rejected, for the rest of the run.
