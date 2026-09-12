@@ -368,11 +368,27 @@ def discover_manifests(project_root) -> list[str]:
     into, so the filename is the only marker. Version-control and build
     directories are skipped; ties break on the path so the order is
     deterministic on a tree with identical timestamps.
+
+    Symlinked directories are followed. A suite whose ``artefacts/`` is a
+    link to scratch storage is an ordinary, documented setup — the same
+    one the filelist writer is pinned against — and ``os.walk``'s default
+    would walk straight past every run published into it, reporting a
+    project with no physical data at all. Following costs a loop risk,
+    so each directory is admitted once by its real path: a link back to
+    an ancestor lands on a path already seen, is not descended into, and
+    the walk terminates. That guard also keeps a run reachable by two
+    paths from being listed twice.
     """
     root = Path(project_root)
     found: list[tuple[float, str]] = []
+    seen: set[str] = set()
     skip = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache"}
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
         dirnames[:] = [
             d for d in dirnames if d not in skip and not d.startswith("obj_dir")
         ]
