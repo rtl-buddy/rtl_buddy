@@ -45,6 +45,10 @@ from rtl_buddy.phys.query import (
     summary_payload,
 )
 
+# The two halves' `module` columns are two namespaces: RTL module names
+# on the synthesis rows, Liberty cell names on the leaves. The fixtures
+# keep them apart, as a real mapped design does, so the collision case
+# below is a case rather than the baseline.
 MODULE_ROWS = [
     {"module": "blk", "cell_count": 120, "area_um2": 480.5},
     {"module": "sub", "cell_count": 40, "area_um2": 96.0},
@@ -54,7 +58,7 @@ MODULE_ROWS = [
 INSTANCE_ROWS = [
     {
         "instance_path": "u_sub/_64_",
-        "module": "sub",
+        "module": "DFF_X1",
         "leakage_uw": 0.079,
         "internal_uw": 2.28,
         "switching_uw": 0.0675,
@@ -62,7 +66,7 @@ INSTANCE_ROWS = [
     },
     {
         "instance_path": "u_sub/u_leaf/_12_",
-        "module": "tiny",
+        "module": "INV_X1",
         "leakage_uw": 0.001,
         "internal_uw": 0.5,
         "switching_uw": 0.25,
@@ -70,12 +74,20 @@ INSTANCE_ROWS = [
     },
     {
         "instance_path": "u_other/_9_",
-        "module": "sub",
+        "module": "DFF_X1",
         "leakage_uw": 0.5,
         "internal_uw": 8.0,
         "switching_uw": 1.5,
         "total_uw": 10.0,
     },
+]
+
+
+#: The pathological but perfectly legal design: a Liberty cell named
+#: exactly like one of the RTL modules. Both halves then have rows under
+#: `sub`, measuring two different things.
+COLLIDING_INSTANCE_ROWS = [
+    {**row, "module": "sub"} for row in INSTANCE_ROWS if row["module"] == "DFF_X1"
 ]
 
 
@@ -152,9 +164,23 @@ def project(tmp_path):
     (root / ".git").mkdir(parents=True)
     _write_run(root, "old_synth", modules=MODULE_ROWS, mtime=1_000_000)
     _write_run(
+        root,
+        "collision",
+        modules=MODULE_ROWS,
+        instances=COLLIDING_INSTANCE_ROWS,
+        mtime=1_500_000,
+    )
+    _write_run(
         root, "both", modules=MODULE_ROWS, instances=INSTANCE_ROWS, mtime=2_000_000
     )
     return root
+
+
+def _collision_context(project):
+    """The run whose Liberty cell is named after one of the RTL modules."""
+    return load_context(
+        project, phys_dir=project / "verif" / "blk" / "artefacts" / "collision"
+    )
 
 
 # --- discovery --------------------------------------------------------------
@@ -444,11 +470,15 @@ def test_rankings_sink_the_rows_nobody_measured():
 # --- module -----------------------------------------------------------------
 
 
-def test_module_payload_joins_the_synth_row_to_its_instances(project):
-    payload = module_payload(load_context(project), "sub")
+def test_module_payload_sums_the_power_of_a_liberty_cells_instances(project):
+    """A cell type's question — "what do all the DFFs burn" — is the one
+    the power half can answer on its own, and the synthesis half has no
+    row to add to it."""
+    payload = module_payload(load_context(project), "DFF_X1")
 
-    assert payload["module"] == "sub"
-    assert payload["row"] == {"module": "sub", "cell_count": 40, "area_um2": 96.0}
+    assert payload["module"] == "DFF_X1"
+    assert payload["namespaces"] == ["liberty"]
+    assert payload["row"] is None
     assert [row["instance_path"] for row in payload["instances"]] == [
         "u_other/_9_",
         "u_sub/_64_",
@@ -458,12 +488,49 @@ def test_module_payload_joins_the_synth_row_to_its_instances(project):
     assert payload["power"]["leakage_uw"] == pytest.approx(0.579)
 
 
+def test_module_payload_reports_an_rtl_modules_own_row(project):
+    payload = module_payload(load_context(project), "sub")
+
+    assert payload["namespaces"] == ["rtl"]
+    assert payload["row"] == {"module": "sub", "cell_count": 40, "area_um2": 96.0}
+
+
+def test_a_name_in_both_namespaces_is_reported_as_a_collision(project):
+    """The finding (#561 review, Codex P2). `sub` is an RTL module *and* a
+    Liberty cell here, so the payload holds a module's cells and area beside
+    an unrelated cell type's power. Both are real; what would be false is
+    presenting them as one module's totals, so the payload names both
+    namespaces and the join note says what happened."""
+    payload = module_payload(_collision_context(project), "sub")
+
+    assert payload["namespaces"] == ["rtl", "liberty"]
+    assert payload["instance_join"] == query_mod.INSTANCE_JOIN_NAME_COLLISION
+    assert "name collision" in payload["instance_join"]
+    # Neither half is dropped or folded into the other — the note is what
+    # keeps the pairing from being read as one measurement.
+    assert payload["row"] == {"module": "sub", "cell_count": 40, "area_um2": 96.0}
+    assert payload["instance_count"] == 2
+
+
+def test_a_collision_note_outranks_the_liberty_only_note(project):
+    """Both conditions can be true of one name only in the collision case,
+    and it is the one the reader would not otherwise suspect: that payload
+    looks complete."""
+    ctx = _collision_context(project)
+
+    payload = module_payload(ctx, "blk")
+    assert payload["namespaces"] == ["rtl"]
+    assert payload["instance_join"] == INSTANCE_JOIN_LIBERTY_ONLY
+
+
 def test_module_names_span_both_halves(project):
     """A liberty cell only the power half knows is still askable."""
     ctx = load_context(project)
     ctx.model["modules"] = [{"module": "blk", "cell_count": 1, "area_um2": None}]
 
-    assert module_names(ctx.model) == ["blk", "sub", "tiny"]
+    assert module_names(ctx.model) == ["DFF_X1", "INV_X1", "blk"]
+    assert query_mod.namespaces_of(ctx.model, "DFF_X1") == ["liberty"]
+    assert query_mod.namespaces_of(ctx.model, "blk") == ["rtl"]
 
 
 def test_module_name_matching_is_case_insensitive(project):
@@ -500,7 +567,7 @@ def test_a_module_only_the_synth_half_knows_says_the_join_cannot_see_it(project)
 
 def test_a_module_the_join_does_reach_carries_no_note(project):
     """A Liberty cell name matches, so there is nothing to qualify."""
-    assert module_payload(load_context(project), "sub")["instance_join"] is None
+    assert module_payload(load_context(project), "DFF_X1")["instance_join"] is None
 
 
 def test_a_synth_only_model_carries_no_join_note(project):
@@ -538,7 +605,7 @@ def test_instance_payload_answers_an_exact_leaf(project):
     payload = instance_payload(load_context(project), "u_sub/_64_")
 
     assert payload["match"] == "exact"
-    assert payload["instance"]["module"] == "sub"
+    assert payload["instance"]["module"] == "DFF_X1"
     assert payload["children"] == []
     assert payload["rollup"]["instances"] == 1
     assert payload["rollup"]["total_uw"] == pytest.approx(2.42)

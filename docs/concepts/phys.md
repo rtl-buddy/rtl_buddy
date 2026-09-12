@@ -43,6 +43,8 @@ So `rb phys module` answers:
 
 It does not attribute power to an RTL module on a hierarchical design: no leaf row carries `u_cpu`'s name, so the join finds nothing. When a name resolves out of the synthesis half alone and the power half is populated, the payload's `instance_join` says so in words and the console prints it, so an empty instance list is never mistaken for "this block burns nothing". Attribution through the real hierarchy is a later phase of the physical-metrics epic.
 
+Nothing stops one name from being in both namespaces — a Liberty cell named after a block, or an RTL module called `DFF_X1`. Then the two halves are measuring two different things under one word, and `rb phys module` says so: `namespaces` lists both and `instance_join` carries a collision note the console prints. The row and the instances are still reported, and still not added together; the note is what keeps a module's cells and area beside a cell type's power from reading as one block's totals.
+
 ## Roll up a hierarchy
 
 The model records leaf values only, because a subtree sum depends on the hierarchy the consumer projects onto. `rb phys instance <path>` is that consumer: it sums the leaves under the path at query time and leaves the document unchanged.
@@ -53,4 +55,4 @@ The rollup adds the four power columns directly, and reports nothing else. It ca
 
 `--machine` emits the payload the verb built, carrying its own `schema_version`, the project-relative manifest and model paths, the run header, the artefact block, and the verb's data: rankings for `summary`, the module row plus its instances for `module`, and the row or subtree plus its rollup for `instance`.
 
-Each payload also carries `halves` and `missing_halves`, which report which halves the model has and which command fills each one. A `null` value means the run did not measure it; `0` means it measured zero. The `module` payload also carries `instance_join`: `null` when the instance list needs no qualification, and a sentence naming the Liberty-cell namespace limit when the module matched nothing because of it.
+Each payload also carries `halves` and `missing_halves`, which report which halves the model has and which command fills each one. A `null` value means the run did not measure it; `0` means it measured zero. The `module` payload also carries `namespaces` — `["rtl"]`, `["liberty"]`, or both — and `instance_join`: `null` when the instance list needs no qualification, a sentence naming the Liberty-cell namespace limit when the module matched nothing because of it, and a collision sentence when the name is in both namespaces.
