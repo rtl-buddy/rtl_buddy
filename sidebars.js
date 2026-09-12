@@ -27,6 +27,7 @@ const sidebars = {
         'concepts/synthesis',
         'concepts/pnr',
         'concepts/power',
+        'concepts/phys',
         'concepts/fpga',
         'concepts/fpv',
         'concepts/abv-simulation',

@@ -80,6 +80,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ tool-check         check installed tool dependencies and subcommand readiness        │
 │ graph              build the design knowledge graph                                  │
 │ cov                query coverage artefacts already on disk                          │
+│ phys               query physical artefacts already on disk                          │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
 │ mut                mutation testing                                                  │
@@ -960,6 +961,86 @@ Usage: rtl-buddy cov module [OPTIONS] MODULE
 │                                 [default: (newest cov_dir under the project root)]   │
 │ --manifest             TEXT     manifest.json to read directly                       │
 │ --help                          Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys
+
+```text
+Usage: rtl-buddy phys [OPTIONS] COMMAND [ARGS]...
+
+ query physical artefacts already on disk
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ summary   the run's totals, its heaviest modules and its hottest instances           │
+│ module    one module's cells and area, and the instances of it with power            │
+│ instance  one instance's power, or the rolled-up subtree under its path              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys summary
+
+```text
+Usage: rtl-buddy phys summary [OPTIONS]
+
+ the run's totals, its heaviest modules and its hottest instances
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest first (0  │
+│                                         for all)                                     │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys module
+
+```text
+Usage: rtl-buddy phys module [OPTIONS] MODULE
+
+ one module's cells and area, and the instances of it with power
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    module      TEXT  module or liberty cell as the model records it [required]     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  instances to list, hottest first (0 for all) │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys instance
+
+```text
+Usage: rtl-buddy phys instance [OPTIONS] PATH
+
+ one instance's power, or the rolled-up subtree under its path
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  instance path, exact or the root of a subtree [required]        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  children to list (0 for all) [default: 10]   │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

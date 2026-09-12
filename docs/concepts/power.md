@@ -121,6 +121,8 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | `phys-model.json` | Physical model — per-instance rows plus the design totals |
 | `phys-manifest.json` | Which physical artefacts this run produced, and where |
 
+Query the model with `rb phys`; see [Physical Metrics](phys.md).
+
 The per-instance half is a by-product, never a gate: the design totals are parsed and reported before it is read, and the hierarchy walk that produces it runs inside a Tcl `catch`. An OpenSTA that cannot produce it costs the model its `instances` block — `null`, with a warning — and the run still reports `PASS`. A `rb synth` run writing into the same artefact directory for the same top fills the model's per-module half rather than replacing it.
 
 An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names.
