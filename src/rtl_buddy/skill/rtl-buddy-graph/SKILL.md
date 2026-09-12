@@ -38,8 +38,19 @@ rb --machine graph path NODE_A NODE_B
 - Use direct file reads for port lists, one instance's connections, or a compact
   `tests.yaml`; graph payloads can cost more than those files.
 
-`rb mcp` exposes the same query and hierarchy payloads over stdio. It is a
-convenience surface, not a prerequisite; the `--machine` CLI remains complete.
+`rb mcp` exposes the same query and hierarchy payloads over stdio, plus the
+coverage (`cov_summary`, `cov_module`) and physical-metrics (`phys_summary`,
+`phys_module`, `phys_instance`) families, which read artefacts already on disk
+and run no EDA tool. It is a convenience surface, not a prerequisite; the
+`--machine` CLI remains complete.
+
+`phys_module` joins the two halves of the physical model on their `module`
+column, and the two spell it differently: RTL module names in the synthesis
+half, Liberty cell names (`DFF_X1`) on the power half's leaves. So it answers
+"how much do the DFFs burn" and a flat netlist's top, and its payload's
+`instance_join` says so when an RTL module matched no instance. Do not report
+an empty instance list as "this block burns no power"; read
+`rb --machine docs show concepts/phys` first.
 
 For interactive graph, coverage, source, and waveform coordination, read
 `rb --machine docs show concepts/hub` before sending hub commands.

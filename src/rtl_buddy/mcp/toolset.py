@@ -14,7 +14,8 @@ Two groups of tools:
 
 * **stateless** — always present. They read
   ``artefacts/graph/graph.json`` plus the results overlay, read
-  ``cov_dir/manifest.json`` and its model for the coverage verbs, and
+  ``cov_dir/manifest.json`` and its model for the coverage verbs, read
+  ``phys-manifest.json`` and its model for the physical verbs, and
   shell out to ``rtl-buddy-view`` for the hierarchy verbs. No hub, no
   daemon, no session: identical behaviour in an IDE, on a CI runner, or
   on a dispatch node.
@@ -44,6 +45,7 @@ from ..cov import query as cov_query
 from ..errors import FatalRtlBuddyError
 from ..graph import query as graph_query
 from ..logging_utils import log_event
+from ..phys import query as phys_query
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,9 @@ STATELESS_TOOL_NAMES = (
     "test_status",
     "cov_summary",
     "cov_module",
+    "phys_summary",
+    "phys_module",
+    "phys_instance",
     "find_module",
     "instances_of",
     "port_connections",
@@ -70,6 +75,7 @@ HUB_TOOL_NAMES = (
     "hub_resolve",
     "hub_diagnose",
     "cov_focus",
+    "phys_focus",
 )
 
 _SEVERITIES = ("error", "warning", "info", "hint")
@@ -78,6 +84,12 @@ _SEVERITIES = ("error", "warning", "info", "hint")
 #: literal ``rb hub send cov-focus`` spells, and for the same reason:
 #: the contract is the hub's schema, not this process's coverage model.
 _COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
+
+#: ``phys_focus.metric`` enum, mirroring the wire schema — the same
+#: literal ``rb hub send phys-focus`` spells, and for the same reason.
+#: ``dynamic`` is in the list although no model column carries it: it is
+#: internal + switching, summed by the pane.
+_PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
 
 
 def _tool_version() -> str:
@@ -252,10 +264,15 @@ class Toolset:
             return self._envelope(
                 name, spec.command, ok=False, error=str(exc), **exc.details
             )
-        except (graph_query.GraphQueryError, cov_query.CovQueryError) as exc:
-            # Both carry near misses for a name that does not exist, and
-            # both must be caught above FatalRtlBuddyError (CovQueryError
-            # is one) or the candidates would be dropped.
+        except (
+            graph_query.GraphQueryError,
+            cov_query.CovQueryError,
+            phys_query.PhysQueryError,
+        ) as exc:
+            # All three carry near misses for a name that does not exist,
+            # and all three must be caught above FatalRtlBuddyError (both
+            # the coverage and the physical error are one) or the
+            # candidates would be dropped.
             details = {"candidates": exc.candidates} if exc.candidates else {}
             return self._envelope(
                 name, spec.command, ok=False, error=str(exc), **details
@@ -390,33 +407,34 @@ class Toolset:
     # coverage handlers
     # ------------------------------------------------------------------
 
+    def _rooted(self, value: str | None) -> str | None:
+        """Anchor a discovery override on the project root, not the cwd.
+
+        An MCP client has no invocation directory to speak from — the
+        host spawns ``rb mcp`` wherever it happens to sit, and the agent
+        never sees where that is — while the paths the payloads hand
+        back are repo-relative (``artefacts.manifest`` is
+        ``verif/blk_a/cov_dir/manifest.json``). Reading a relative
+        argument against the server's cwd would answer a path the agent
+        never named.
+        """
+        if value is None:
+            return None
+        path = Path(value)
+        return str(path if path.is_absolute() else self.project_root / path)
+
     def _cov_context(self, args: dict) -> cov_query.CovContext:
         """Load the manifest and model a coverage tool answers from.
 
         Re-read per call, like the graph: an agent that runs a coverage
         regression in one turn asks about it in the next, and the
-        alternative is answering from a run that no longer exists.
-
-        A relative ``cov_dir``/``manifest`` is anchored on the project
-        root, not on the process cwd. An MCP client has no invocation
-        directory to speak from — the host spawns ``rb mcp`` wherever it
-        happens to sit, and the agent never sees where that is — while
-        the paths the payloads hand back are repo-relative
-        (``artefacts.manifest`` is ``verif/blk_a/cov_dir/manifest.json``).
-        Reading a relative argument against the server's cwd would answer
-        a path the agent never named.
+        alternative is answering from a run that no longer exists. A
+        relative ``cov_dir``/``manifest`` is rooted by :meth:`_rooted`.
         """
-
-        def rooted(value: str | None) -> str | None:
-            if value is None:
-                return None
-            path = Path(value)
-            return str(path if path.is_absolute() else self.project_root / path)
-
         return cov_query.load_context(
             self.project_root,
-            cov_dir=rooted(args.get("cov_dir")),
-            manifest=rooted(args.get("manifest")),
+            cov_dir=self._rooted(args.get("cov_dir")),
+            manifest=self._rooted(args.get("manifest")),
         )
 
     def _h_cov_summary(self, args: dict) -> dict:
@@ -428,6 +446,43 @@ class Toolset:
     def _h_cov_module(self, args: dict) -> dict:
         return cov_query.module_payload(
             self._cov_context(args), str(_req(args, "module"))
+        )
+
+    # ------------------------------------------------------------------
+    # physical-metrics handlers
+    # ------------------------------------------------------------------
+
+    def _phys_context(self, args: dict) -> phys_query.PhysContext:
+        """Load the manifest and model a physical tool answers from.
+
+        Re-read per call, exactly as the coverage tools do: an agent that
+        runs ``rb synth`` or ``rb power`` in one turn asks what it
+        measured in the next, and a cached context would answer from a
+        run that no longer exists. Lock-free, like the CLI verbs — these
+        read artefacts and write nothing, and taking the artefact lock
+        would fail the question precisely while a flow is producing the
+        answer to it.
+        """
+        return phys_query.load_context(
+            self.project_root,
+            phys_dir=self._rooted(args.get("phys_dir")),
+            manifest=self._rooted(args.get("manifest")),
+        )
+
+    def _h_phys_summary(self, args: dict) -> dict:
+        return phys_query.summary_payload(
+            self._phys_context(args),
+            limit=int(args.get("limit", phys_query.DEFAULT_RANK_LIMIT)),
+        )
+
+    def _h_phys_module(self, args: dict) -> dict:
+        return phys_query.module_payload(
+            self._phys_context(args), str(_req(args, "module"))
+        )
+
+    def _h_phys_instance(self, args: dict) -> dict:
+        return phys_query.instance_payload(
+            self._phys_context(args), str(_req(args, "path"))
         )
 
     # ------------------------------------------------------------------
@@ -661,6 +716,23 @@ class Toolset:
             payload["item"] = item
         return self._hub_emit("cov_focus", payload)
 
+    def _h_phys_focus(self, args: dict) -> dict:
+        # Emit what was validated, stripped, with the optional key
+        # omitted rather than sent as null — the same three rules
+        # ``rb hub send phys-focus`` follows, because the pane matches
+        # ``target`` as a string and the wire schema is
+        # additionalProperties:false with no nullable hints.
+        payload: dict[str, Any] = {"target": str(_req(args, "target")).strip()}
+        metric = args.get("metric")
+        if metric is not None:
+            if metric not in _PHYS_METRICS:
+                raise ToolError(
+                    f"phys_focus: metric must be one of "
+                    f"{'/'.join(_PHYS_METRICS)}, got {metric!r}"
+                )
+            payload["metric"] = metric
+        return self._hub_emit("phys_focus", payload)
+
 
 def _req(args: dict, key: str):
     value = args.get(key)
@@ -734,6 +806,26 @@ _COV_MANIFEST_PROP = {
         "A manifest.json to read directly, bypassing discovery; a relative "
         "path resolves against the project root, e.g. "
         "verif/blk_a/cov_dir/manifest.json."
+    ),
+}
+
+_PHYS_DIR_PROP = {
+    "type": "string",
+    "description": (
+        "Artefact directory holding phys-manifest.json; a relative path "
+        "resolves against the project root, e.g. "
+        "verif/blk/artefacts/nightly. Default: the newest "
+        "phys-manifest.json under the project root, which is the run that "
+        "finished last."
+    ),
+}
+
+_PHYS_MANIFEST_PROP = {
+    "type": "string",
+    "description": (
+        "A phys-manifest.json to read directly, bypassing discovery; a "
+        "relative path resolves against the project root, e.g. "
+        "verif/blk/artefacts/nightly/phys-manifest.json."
     ),
 }
 
@@ -1015,6 +1107,119 @@ def build_toolset(
                 ["module"],
             ),
             handler=ts._h_cov_module,
+        )
+    )
+    register(
+        ToolSpec(
+            name="phys_summary",
+            title="Physical metrics of the last run",
+            command="rb phys summary",
+            description=(
+                "What the last synthesis or power run measured, read from "
+                "artefacts already on disk — no synthesis, no power analysis, "
+                "no EDA tool runs. Returns the run header and backends, the "
+                "design totals (cells, area, the four power columns), the "
+                "heaviest modules by cell count, the hottest instances by "
+                "total power, which halves of the model are filled and which "
+                "command fills a missing one, and where every physical "
+                "artefact landed. Stateless: a CI node answers this with no "
+                "hub and no daemon. Start here when the question is 'what is "
+                "big or hot', then call phys_module or phys_instance."
+            ),
+            input_schema=_obj(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Rows per ranking, heaviest/hottest first (default "
+                            f"{phys_query.DEFAULT_RANK_LIMIT}; 0 for all)."
+                        ),
+                        "minimum": 0,
+                    },
+                    "phys_dir": _PHYS_DIR_PROP,
+                    "manifest": _PHYS_MANIFEST_PROP,
+                }
+            ),
+            handler=ts._h_phys_summary,
+        )
+    )
+    register(
+        ToolSpec(
+            name="phys_module",
+            title="Physical metrics of one module",
+            command="rb phys module",
+            description=(
+                "What one module costs: its synthesis row (cell count and "
+                "area), and the instance rows whose module column matches, "
+                "with the power they sum to. Reads artefacts already on disk "
+                "— no EDA tool runs. The two halves spell 'module' in two "
+                "namespaces: RTL module names in the synthesis half, Liberty "
+                "cell names on the power half's leaves. So this answers "
+                "Liberty-cell questions ('how much do the DFFs burn') and a "
+                "flat netlist's top, but NOT 'how much power does u_cpu burn' "
+                "on a mapped hierarchical design — no leaf row carries an RTL "
+                "module name. When that is what happened the payload's "
+                "'instance_join' says so; do not report the empty instance "
+                "list as 'this block burns no power'. Either half may be "
+                "absent: the payload reports what it has and names the "
+                "command that would supply the rest. An unknown name comes "
+                "back as ok: false with 'candidates'."
+            ),
+            input_schema=_obj(
+                {
+                    "module": {
+                        "type": "string",
+                        "description": (
+                            "Module or Liberty cell name as the physical model "
+                            "records it, e.g. one named in phys_summary's "
+                            "'modules' ranking."
+                        ),
+                    },
+                    "phys_dir": _PHYS_DIR_PROP,
+                    "manifest": _PHYS_MANIFEST_PROP,
+                },
+                ["module"],
+            ),
+            handler=ts._h_phys_module,
+        )
+    )
+    register(
+        ToolSpec(
+            name="phys_instance",
+            title="Physical metrics of one instance or subtree",
+            command="rb phys instance",
+            description=(
+                "Power for one instance path, or — when the path names a "
+                "subtree rather than a leaf — the leaves under it and their "
+                "rolled-up total, with area joined in through each leaf's "
+                "module (read 'area_um2' against 'modules_matched': the join "
+                "is on Liberty cell names and routinely covers none of a "
+                "mapped hierarchical subtree). Reads artefacts already on "
+                "disk; no EDA tool runs. "
+                "The model stores leaf values only, so this is where a "
+                "hierarchy question is actually answered. Instance rows come "
+                "from the power half alone: a synthesis-only model comes back "
+                "as ok: false naming `rb power`, and an unknown path comes "
+                "back with 'candidates'."
+            ),
+            input_schema=_obj(
+                {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Instance path, exact or the root of a subtree, as "
+                            "the model records it (either '/' or '.' "
+                            "separated — both are levelled before matching), "
+                            "e.g. one from phys_summary's "
+                            "'instances' ranking."
+                        ),
+                    },
+                    "phys_dir": _PHYS_DIR_PROP,
+                    "manifest": _PHYS_MANIFEST_PROP,
+                },
+                ["path"],
+            ),
+            handler=ts._h_phys_instance,
         )
     )
     register(
@@ -1322,6 +1527,45 @@ def build_toolset(
                     ["target"],
                 ),
                 handler=ts._h_cov_focus,
+            )
+        )
+        register(
+            ToolSpec(
+                name="phys_focus",
+                title="Point the live synth+power pane at a target",
+                command="rb hub send phys-focus",
+                description=(
+                    "Broadcast a physical focus so the hub's /phy pane shows "
+                    "what you are talking about. Target is prefixed: "
+                    "'module:alu' or 'instance:u_cpu/u_alu' (an unprefixed "
+                    "string is read as an instance path); metric foregrounds "
+                    "one physical metric. Use the names phys_summary, "
+                    "phys_module and phys_instance return. A target the "
+                    "pane's model does not contain is a soft miss, and the "
+                    "hub replays the latest focus to a pane that connects "
+                    "later, so sending this before the tab is open works."
+                ),
+                input_schema=_obj(
+                    {
+                        "target": {
+                            "type": "string",
+                            "description": (
+                                "module:<name>, instance:<hierarchical path>, "
+                                "or a bare instance path."
+                            ),
+                        },
+                        "metric": {
+                            "type": "string",
+                            "enum": list(_PHYS_METRICS),
+                            "description": (
+                                "Physical metric to foreground. 'dynamic' is "
+                                "internal + switching, summed by the pane."
+                            ),
+                        },
+                    },
+                    ["target"],
+                ),
+                handler=ts._h_phys_focus,
             )
         )
 

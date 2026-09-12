@@ -10,10 +10,10 @@ What these tests pin:
 * the tool set is SDK-free — it builds, lists and answers on a machine
   that has never installed ``mcp``, which is also what makes the schemas
   checkable here;
-* the stateless tools are always served — including the coverage reads,
-  whose artefacts are on disk — and the hub tools appear only when a live
-  hub was discovered, so an agent on a CI node is never offered a tool
-  that can only fail;
+* the stateless tools are always served — including the coverage and
+  physical-metrics reads, whose artefacts are on disk — and the hub tools
+  appear only when a live hub was discovered, so an agent on a CI node is
+  never offered a tool that can only fail;
 * every result is the ``rb --machine`` payload verbatim, wrapped in an
   envelope reporting ``rtl_buddy_version``;
 * a bad question (unknown tool, missing graph, unknown model) comes back
@@ -178,6 +178,96 @@ def cov_project(mcp_project: Path) -> Path:
             tests=[{"name": "t_basic", "raw": cov_dir / "t_basic.dat"}],
         ),
         cov_dir,
+    )
+    return mcp_project
+
+
+_PHYS_MODULES = [
+    {"module": "blk_a", "cell_count": 120, "area_um2": 480.5},
+    {"module": "sub", "cell_count": 40, "area_um2": 96.0},
+]
+
+_PHYS_INSTANCES = [
+    {
+        "instance_path": "u_sub/_64_",
+        "module": "sub",
+        "leakage_uw": 0.079,
+        "internal_uw": 2.28,
+        "switching_uw": 0.0675,
+        "total_uw": 2.42,
+    },
+    {
+        "instance_path": "u_sub/u_leaf/_12_",
+        "module": "sub",
+        "leakage_uw": 0.001,
+        "internal_uw": 0.5,
+        "switching_uw": 0.25,
+        "total_uw": 0.751,
+    },
+]
+
+
+@pytest.fixture
+def phys_project(mcp_project: Path) -> Path:
+    """The graph project, plus one run's physical artefacts on disk.
+
+    Written by the phase-1 producers rather than by a real synthesis:
+    what these tests pin is that the MCP tools hand back what the ``rb
+    phys`` builders produce, and running yosys here would only add an
+    EDA tool to the path.
+    """
+    from rtl_buddy.phys.manifest import build_manifest, write_manifest
+    from rtl_buddy.phys.model import (
+        build_power_model,
+        build_synth_model,
+        merge_model,
+        write_model,
+    )
+
+    phys_dir = mcp_project / "verif" / "blk_a" / "artefacts" / "nightly"
+    phys_dir.mkdir(parents=True)
+    model = merge_model(
+        build_synth_model(
+            top="blk_a", modules=_PHYS_MODULES, area_um2=576.5, gate_count=160
+        ),
+        build_power_model(
+            top="blk_a",
+            instances=_PHYS_INSTANCES,
+            internal_w=2.78e-6,
+            switching_w=0.3175e-6,
+            leakage_w=0.08e-6,
+            total_w=3.171e-6,
+        ),
+        own_half="instances",
+    )
+    model_path = write_model(model, phys_dir)
+    write_manifest(
+        build_manifest(
+            project_root=mcp_project,
+            phys_dir=phys_dir,
+            command="power",
+            run="nightly",
+            top="blk_a",
+            model_path=model_path,
+            totals=model["totals"],
+            synth={
+                "backend": "yosys",
+                "run": "nightly",
+                "stats": phys_dir / "synth_stat.json",
+                "netlist": phys_dir / "synth_netlist.v",
+                "log": phys_dir / "synth.log",
+            },
+            power={
+                "backend": "openroad",
+                "run": "nightly",
+                "netlist_source": "synth",
+                "report": phys_dir / "power.rpt",
+                "instances": phys_dir / "power_instances.rpt",
+                "cells": phys_dir / "power_instances.cells",
+                "log": phys_dir / "power.log",
+            },
+        ),
+        phys_dir,
     )
     return mcp_project
 
@@ -542,6 +632,294 @@ def test_cov_focus_validates_before_dialling(mcp_project: Path):
 
     assert envelope["ok"] is False
     assert "metric" in envelope["error"]
+
+
+# ---------------------------------------------------------------------------
+# Physical metrics
+# ---------------------------------------------------------------------------
+
+
+def test_physical_reads_are_stateless_and_mirror_their_cli_verbs(mcp_project: Path):
+    """Artefacts are on disk: a CI node answers phys with no hub, and no
+    EDA tool is run to answer any of the three."""
+    headless = _toolset(mcp_project)
+
+    assert {"phys_summary", "phys_module", "phys_instance"} <= set(headless.names())
+    assert headless.spec("phys_summary").command == "rb phys summary"
+    assert headless.spec("phys_module").command == "rb phys module"
+    assert headless.spec("phys_instance").command == "rb phys instance"
+
+
+def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
+    """Same builder as ``rb --machine phys summary``, not a second shape."""
+    from rtl_buddy.phys.query import load_context, summary_payload
+
+    ts = _toolset(phys_project)
+    envelope = ts.call("phys_summary", {})
+
+    assert envelope["ok"] is True
+    assert envelope["meta"]["command"] == "rb phys summary"
+    assert envelope["payload"] == summary_payload(load_context(ts.project_root))
+    assert set(envelope["payload"]) == {
+        "schema_version",
+        "manifest",
+        "model",
+        "generated_at",
+        "run_command",
+        "run",
+        "top",
+        "backends",
+        "units",
+        "totals",
+        "counts",
+        "halves",
+        "missing_halves",
+        "limit",
+        "modules",
+        "instances",
+        "artefacts",
+    }
+    assert envelope["payload"]["missing_halves"] == []
+    assert [row["module"] for row in envelope["payload"]["modules"]] == ["blk_a", "sub"]
+    assert envelope["payload"]["artefacts"]["manifest"] == (
+        "verif/blk_a/artefacts/nightly/phys-manifest.json"
+    )
+
+
+def test_phys_summary_truncates_the_rankings_heaviest_first(phys_project: Path):
+    """The one row a limited summary keeps is the one to go look at."""
+    ts = _toolset(phys_project)
+
+    everything = ts.call("phys_summary", {"limit": 0})["payload"]
+    heaviest = ts.call("phys_summary", {"limit": 1})["payload"]
+
+    assert [row["module"] for row in everything["modules"]] == ["blk_a", "sub"]
+    assert [row["module"] for row in heaviest["modules"]] == ["blk_a"]
+    assert [row["instance_path"] for row in heaviest["instances"]] == ["u_sub/_64_"]
+
+
+def test_phys_module_joins_the_synthesis_row_to_the_instances_of_it(
+    phys_project: Path,
+):
+    from rtl_buddy.phys.query import load_context, module_payload
+
+    ts = _toolset(phys_project)
+    envelope = ts.call("phys_module", {"module": "sub"})
+
+    assert envelope["ok"] is True
+    assert envelope["payload"] == module_payload(load_context(ts.project_root), "sub")
+    assert envelope["payload"]["row"]["cell_count"] == 40
+    assert envelope["payload"]["instance_count"] == 2
+    assert envelope["payload"]["power"]["total_uw"] == pytest.approx(3.171)
+
+
+def test_phys_instance_rolls_up_the_subtree_under_a_path(phys_project: Path):
+    from rtl_buddy.phys.query import instance_payload, load_context
+
+    ts = _toolset(phys_project)
+    envelope = ts.call("phys_instance", {"path": "u_sub"})
+
+    assert envelope["ok"] is True
+    assert envelope["payload"] == instance_payload(
+        load_context(ts.project_root), "u_sub"
+    )
+    assert envelope["payload"]["match"] == "prefix"
+    assert envelope["payload"]["rollup"]["instances"] == 2
+    assert envelope["payload"]["rollup"]["total_uw"] == pytest.approx(3.171)
+
+
+def test_an_unknown_phys_module_returns_its_candidates(phys_project: Path):
+    """A typo is likelier than a missing block; hand back the near miss."""
+    ts = _toolset(phys_project)
+
+    envelope = ts.call("phys_module", {"module": "blk_z"})
+
+    assert envelope["ok"] is False
+    assert envelope["candidates"] == ["blk_a"]
+
+
+def test_an_unknown_phys_instance_returns_its_candidates(phys_project: Path):
+    ts = _toolset(phys_project)
+
+    envelope = ts.call("phys_instance", {"path": "u_nope"})
+
+    assert envelope["ok"] is False
+    assert envelope["candidates"] == ["u_sub/_64_", "u_sub/u_leaf/_12_"]
+
+
+def test_phys_reads_a_named_phys_dir_instead_of_the_newest(phys_project: Path):
+    ts = _toolset(phys_project)
+    nightly = phys_project / "verif" / "blk_a" / "artefacts" / "nightly"
+
+    named = ts.call("phys_summary", {"phys_dir": str(nightly)})
+    missing = ts.call("phys_summary", {"phys_dir": str(phys_project / "verif")})
+
+    assert named["ok"] is True
+    assert missing["ok"] is False
+    assert "phys-manifest.json" in missing["error"]
+
+
+def test_phys_reads_a_relative_phys_dir_against_the_project_root(
+    phys_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An MCP client has no invocation cwd; the payload speaks repo paths.
+
+    The host spawns ``rb mcp`` in a directory the agent never sees, so
+    the natural argument is the repo-relative one the payload itself
+    hands back (``artefacts.manifest``). Resolving it against the
+    server's cwd would answer a path nobody named — hence the chdir.
+    """
+    ts = _toolset(phys_project)
+    elsewhere = tmp_path / "somewhere_else"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    relative = ts.call("phys_summary", {"phys_dir": "verif/blk_a/artefacts/nightly"})
+    absolute = ts.call(
+        "phys_summary",
+        {"phys_dir": str(phys_project / "verif" / "blk_a" / "artefacts" / "nightly")},
+    )
+
+    assert relative["ok"] is True, relative.get("error")
+    assert relative["payload"] == absolute["payload"]
+    assert relative["payload"]["artefacts"]["manifest"] == (
+        "verif/blk_a/artefacts/nightly/phys-manifest.json"
+    )
+
+
+def test_phys_reads_a_relative_manifest_against_the_project_root(
+    phys_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``manifest`` is the path the summary reports back, verbatim."""
+    ts = _toolset(phys_project)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    envelope = ts.call(
+        "phys_module",
+        {
+            "module": "sub",
+            "manifest": "verif/blk_a/artefacts/nightly/phys-manifest.json",
+        },
+    )
+
+    assert envelope["ok"] is True, envelope.get("error")
+    assert envelope["payload"]["instance_count"] == 2
+
+
+def test_a_project_with_no_physical_run_names_the_commands_that_make_one(
+    empty_project: Path,
+):
+    ts = _toolset(empty_project)
+
+    envelope = ts.call("phys_summary", {})
+
+    assert envelope["ok"] is False
+    assert "rb synth" in envelope["error"]
+    assert "rb power" in envelope["error"]
+
+
+def test_phys_focus_needs_a_hub_and_the_reads_do_not(mcp_project: Path):
+    """Pointing a pane is the one physical question a headless process
+    cannot answer; the three reads answer from disk."""
+    headless = _toolset(mcp_project)
+    live = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+
+    assert "phys_focus" not in headless.names()
+    assert "phys_focus" in live.names()
+    assert live.spec("phys_focus").command == "rb hub send phys-focus"
+
+
+def test_phys_focus_omits_the_metric_it_was_not_given(
+    mcp_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``additionalProperties: false`` and no nullable hints on the wire."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+    sent: dict = {}
+    monkeypatch.setattr(
+        ts,
+        "_hub_emit",
+        lambda type_, payload: sent.update({"type": type_, "payload": payload}) or {},
+    )
+
+    ts.call("phys_focus", {"target": "module:sub"})
+
+    assert sent["type"] == "phys_focus"
+    assert sent["payload"] == {"target": "module:sub"}
+
+
+def test_phys_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
+    mcp_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Padded input, one payload: the MCP tool and ``rb hub send``.
+
+    The pane matches ``target`` as a string, so a trailing space is a
+    miss rather than a near miss, and a rule spelled one way on one
+    surface and another way on the other is observable on the wire.
+    Both validate *and* emit the stripped value.
+    """
+    from rtl_buddy.hub import send as hub_send
+
+    padded = {"target": "  instance:u_sub/_64_  ", "metric": "dynamic"}
+
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+    from_mcp: dict = {}
+    monkeypatch.setattr(
+        ts,
+        "_hub_emit",
+        lambda type_, payload: (
+            from_mcp.update({"type": type_, "payload": payload}) or {}
+        ),
+    )
+    ts.call("phys_focus", dict(padded))
+
+    from_cli: dict = {}
+
+    class _Recorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def emit(self, type_, payload):
+            from_cli.update({"type": type_, "payload": payload})
+
+    monkeypatch.setattr(hub_send, "_open_or_exit", _Recorder)
+    hub_send.cmd_phys_focus(padded["target"], metric=padded["metric"])
+
+    assert from_mcp == from_cli
+    assert from_cli == {
+        "type": "phys_focus",
+        "payload": {"target": "instance:u_sub/_64_", "metric": "dynamic"},
+    }
+
+
+def test_phys_focus_validates_before_dialling(mcp_project: Path):
+    """Port 1 refuses connections: reaching it would mean no validation.
+
+    ``switching`` is a real model column and still not a pane metric —
+    the enum is the hub's wire schema, not this process's vocabulary.
+    """
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
+
+    envelope = ts.call("phys_focus", {"target": "module:sub", "metric": "switching"})
+
+    assert envelope["ok"] is False
+    assert "metric" in envelope["error"]
+    assert "cells/area/leakage/dynamic/total" in envelope["error"]
+
+
+def test_phys_focus_reports_a_dead_hub_rather_than_crashing(mcp_project: Path):
+    """The handle said yes at start; the socket may still say no."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
+
+    envelope = ts.call("phys_focus", {"target": "module:sub"})
+
+    assert envelope["ok"] is False
+    assert "hub" in envelope["error"].lower()
+    assert envelope["meta"]["command"] == "rb hub send phys-focus"
 
 
 # ---------------------------------------------------------------------------
