@@ -34,6 +34,7 @@ class PowerPassResults(PowerResults):
         switching_w: float | None = None,
         leakage_w: float | None = None,
         activity_source: str | None = None,
+        phys_model: str | None = None,
     ):
         super().__init__(
             name=name,
@@ -53,6 +54,10 @@ class PowerPassResults(PowerResults):
             self.results["leakage_w"] = leakage_w
         if activity_source is not None:
             self.results["activity_source"] = activity_source
+        # Where the per-instance breakdown behind these scalars was written
+        # (#558). Absent when the run could not publish one.
+        if phys_model is not None:
+            self.results["phys_model"] = phys_model
 
 
 class PowerFailResults(PowerResults):

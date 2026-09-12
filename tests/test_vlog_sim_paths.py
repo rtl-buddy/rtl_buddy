@@ -1053,6 +1053,7 @@ def test_protected_names_are_outputs_a_flow_really_writes():
     # Check the *bindings* for those instead of grepping for the string.
     from rtl_buddy.cov import manifest as cov_manifest, model as cov_model
     from rtl_buddy.graph import config_tier, results as graph_results
+    from rtl_buddy.phys import manifest as phys_manifest, model as phys_model
     from rtl_buddy.tools import artifact_paths as ap
     from rtl_buddy.xplr import gitprov, ledger
 
@@ -1063,6 +1064,8 @@ def test_protected_names_are_outputs_a_flow_really_writes():
         graph_results.RESULTS_OVERLAY_NAME: ap.RESULTS_OVERLAY_NAME,
         cov_manifest.MANIFEST_FILENAME: ap.COV_MANIFEST_NAME,
         cov_model.MODEL_FILENAME: ap.COV_MODEL_NAME,
+        phys_manifest.MANIFEST_FILENAME: ap.PHYS_MANIFEST_NAME,
+        phys_model.MODEL_FILENAME: ap.PHYS_MODEL_NAME,
         ledger.RECORD_FILENAME: ap.XPLR_RECORD_NAME,
         gitprov.WORKTREE_SIDECAR: ap.XPLR_WORKTREE_SIDECAR_NAME,
     }

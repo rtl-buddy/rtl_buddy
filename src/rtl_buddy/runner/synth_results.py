@@ -32,6 +32,7 @@ class SynthPassResults(SynthResults):
         wns_ps: float | None = None,
         tns_ps: float | None = None,
         static_function_findings: int | None = None,
+        phys_model: str | None = None,
     ):
         super().__init__(
             name=name,
@@ -49,6 +50,10 @@ class SynthPassResults(SynthResults):
         # found something: a passing run whose netlist may still be wrong.
         if static_function_findings:
             self.results["static_function_findings"] = static_function_findings
+        # Where the per-module breakdown behind these scalars was written
+        # (#558). Absent when the run could not publish one.
+        if phys_model is not None:
+            self.results["phys_model"] = phys_model
 
 
 class SynthFailResults(SynthResults):

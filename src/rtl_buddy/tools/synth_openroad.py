@@ -29,6 +29,7 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.publish import publish_synth
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
 # ABC script used by the Yosys stage — area-focused, no timing window
@@ -85,6 +86,10 @@ class OpenRoadSynth:
 
     def _yosys_netlist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth_netlist.v")
+
+    def _stats_path(self) -> str:
+        """Yosys' machine-readable per-module `stat -json` dump (#558)."""
+        return os.path.join(self.artefact_dir, "synth_stat.json")
 
     def _or_script_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.tcl")
@@ -190,6 +195,17 @@ class OpenRoadSynth:
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
+    def _stat_json_cmd(self, liberty: str | None) -> str:
+        """The `stat -json` line that feeds the phys model's module rows (#558).
+
+        Identical to the Yosys backend's, and for the same reasons: `-json`
+        prints to the console so it needs `tee -o`, and `-q` keeps the
+        document out of `synth_yosys.log`, which stage 1 scrapes for its
+        cell count and for `ERROR:` lines.
+        """
+        liberty_arg = f" -liberty {liberty}" if liberty else ""
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+
     def _write_yosys_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
         lib_paths = self._resolve_lib_paths()
@@ -238,10 +254,12 @@ class OpenRoadSynth:
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
             lines.append(f"stat -liberty {lib_paths[0]}")
+            lines.append(self._stat_json_cmd(lib_paths[0]))
         else:
             lines.append(
                 f"write_rtlil {os.path.join(self.artefact_dir, 'synth.rtlil')}"
             )
+            lines.append(self._stat_json_cmd(None))
 
         script = "\n".join(lines) + "\n"
         script_path = self._yosys_script_path()
@@ -671,6 +689,7 @@ class OpenRoadSynth:
             tns_ps=tns_ps,
             log=log_path,
         )
+        phys_model = self._publish_phys_model(area_um2=area_um2, gate_count=gate_count)
         return SynthPassResults(
             name=self.name + "/results",
             area_um2=area_um2,
@@ -678,7 +697,41 @@ class OpenRoadSynth:
             wns_ps=wns_ps,
             tns_ps=tns_ps,
             static_function_findings=self.static_function_findings or None,
+            phys_model=phys_model,
         )
+
+    def _publish_phys_model(
+        self, *, area_um2: float | None, gate_count: int | None
+    ) -> str | None:
+        """Write `phys-model.json` + its manifest for a run that passed (#558).
+
+        Stage 1 owns the per-module breakdown -- the cell counts and areas are
+        Yosys' -- while the design totals recorded alongside them are stage
+        2's, which is the pairing this backend already reports. Never fails
+        the synthesis: see the Yosys backend's copy for why a by-product does
+        not get to veto a product.
+        """
+        published = publish_synth(
+            artefact_dir=self.artefact_dir,
+            top=self.synth_cfg.get_top(),
+            backend="openroad",
+            run=self.synth_cfg.get_name(),
+            stats_path=self._stats_path(),
+            netlist_path=self._yosys_netlist_path(),
+            log_path=self._or_log_path(),
+            area_um2=area_um2,
+            gate_count=gate_count,
+        )
+        if published["error"] is not None or published["rows"] is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_model_incomplete",
+                synth=self.synth_cfg.get_name(),
+                stats=self._stats_path(),
+                error=published["error"],
+            )
+        return published["model"]
 
     # ------------------------------------------------------------------
     # Entry point
@@ -696,11 +749,17 @@ class OpenRoadSynth:
         missing Liberty or LEF, a filelist error, and the static-lifetime and
         conflicting-driver gates, which fail before or without reading the
         netlist — leaves no stale product behind.
+
+        `synth_stat.json` goes with them: it is read back inside this same
+        `run()` to build the phys model, so a stage 1 that exits 0 without
+        reaching its trailing `tee ... stat -json` must not have the previous
+        run's per-module areas published as this one's (#558).
         """
         stale = clear_stale_artefacts(
             [
                 self._yosys_netlist_path(),
                 os.path.join(self.artefact_dir, "synth.rtlil"),
+                self._stats_path(),
             ],
             owner=self.synth_cfg.get_name(),
         )
