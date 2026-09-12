@@ -1,7 +1,7 @@
 /* rtl-buddy hub theme — single source of design tokens for every hub app
- * (landing, view SPA, graph pane, cov pane). Served same-origin by the hub
- * at /hub/theme.css, so consuming it keeps a pane self-contained in the
- * sense that matters: no route off localhost.
+ * (landing, view SPA, graph pane, cov pane, phys pane). Served same-origin
+ * by the hub at /hub/theme.css, so consuming it keeps a pane self-contained
+ * in the sense that matters: no route off localhost.
  *
  * LIGHT is the default; dark activates on prefers-color-scheme: dark or an
  * explicit data-theme attribute (the attribute wins in both directions).
@@ -59,6 +59,20 @@
   --cov-0:    hsl(0,   70%, 82%);
   --cov-50:   hsl(60,  70%, 82%);
   --cov-100:  hsl(120, 70%, 82%);
+
+  /* -- heat ramp (area + power; the phys pane, rtl_buddy#558) --------- */
+  /* SEQUENTIAL, unlike the coverage ramp above, because the quantity is:
+   * coverage has a bad end and a good end and earns a red-to-green hue
+   * sweep, while area and power only have "more". So the hue is fixed
+   * and the ramp runs on lightness — continuous fill:
+   *   hsl(var(--heat-h), var(--heat-s), calc(--heat-l0 -> --heat-l1))
+   * interpolated by a 0..1 fraction the consumer sets, which keeps the
+   * two endpoints here rather than in a pane's script.            */
+  --heat-h:    18;         /* one warm hue for the whole ramp */
+  --heat-s:    85%;
+  --heat-l0:   96%;        /* a row that is a rounding error */
+  --heat-l1:   66%;        /* the row that owns the design */
+  --heat-none: #e5e7eb;    /* not measured — same grey as --cov-none */
 
   /* -- brand (rtl-buddy-art: chip logo + series-3 mascot) -------------- */
   /* Identity marks ONLY — the wordmark, the logo glyph, the favicon.
@@ -129,6 +143,15 @@
     --cov-50:   hsl(60,  70%, 38%);
     --cov-100:  hsl(120, 70%, 38%);
 
+    /* The heat ramp inverts on dark: "more" is still darker-to-the-eye
+     * on light, but on a dark ground the loud end has to be the LIGHTER
+     * one or the heaviest row disappears into the page. */
+    --heat-h:    18;
+    --heat-s:    60%;
+    --heat-l0:   16%;
+    --heat-l1:   42%;
+    --heat-none: #2a313d;
+
     --shadow-1: 0 4px 12px rgba(15, 23, 42, .35);
     --shadow-2: 0 8px 20px rgba(15, 23, 42, .45);
   }
@@ -180,6 +203,11 @@
   --cov-0:              hsl(0,   70%, 82%);
   --cov-50:             hsl(60,  70%, 82%);
   --cov-100:            hsl(120, 70%, 82%);
+  --heat-h:             18;
+  --heat-s:             85%;
+  --heat-l0:            96%;
+  --heat-l1:            66%;
+  --heat-none:          #e5e7eb;
   --shadow-1:           0 4px 12px rgba(15, 23, 42, .10);
   --shadow-2:           0 8px 20px rgba(15, 23, 42, .18);
 }
@@ -217,6 +245,11 @@
   --cov-0:              hsl(0,   70%, 38%);
   --cov-50:             hsl(60,  70%, 38%);
   --cov-100:            hsl(120, 70%, 38%);
+  --heat-h:             18;
+  --heat-s:             60%;
+  --heat-l0:            16%;
+  --heat-l1:            42%;
+  --heat-none:          #2a313d;
   --shadow-1:           0 4px 12px rgba(15, 23, 42, .35);
   --shadow-2:           0 8px 20px rgba(15, 23, 42, .45);
 }
