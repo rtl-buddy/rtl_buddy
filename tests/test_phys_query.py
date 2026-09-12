@@ -42,6 +42,7 @@ from rtl_buddy.phys.query import (
     module_names,
     module_payload,
     resolve_manifest_path,
+    resolve_module_name,
     summary_payload,
 )
 
@@ -693,6 +694,69 @@ def test_module_names_span_both_halves(project):
 
 def test_module_name_matching_is_case_insensitive(project):
     assert module_payload(load_context(project), "SUB")["module"] == "sub"
+
+
+def _two_case_variants() -> dict:
+    """A model that spells one word two ways.
+
+    Verilog is case-sensitive and a Liberty library need not agree with
+    the RTL about case, so an RTL module `CPU` and a cell `cpu` are both
+    ordinary names — here one in each namespace, which is the shape that
+    hides the collision best.
+    """
+    return {
+        "modules": [{"module": "CPU", "cell_count": 120, "area_um2": 480.5}],
+        "instances": [{"instance_path": "u_cpu/_1_", "module": "cpu", "total_uw": 2.0}],
+    }
+
+
+@pytest.mark.parametrize("asked", ["CPU", "cpu"])
+def test_an_exact_module_name_beats_a_case_variant(asked):
+    """Exact first, always: the case fallback exists for the name the user
+    mistyped the case of, not to reinterpret one they spelled correctly."""
+    assert resolve_module_name(_two_case_variants(), asked) == asked
+
+
+def test_an_ambiguous_case_insensitive_module_name_is_refused():
+    """The finding (#561 review, Codex P2). The variants collapsed into one
+    lowercase key and the lookup answered with whichever the dict had kept
+    — one block's cells and area reported under another's name, silently."""
+    with pytest.raises(PhysQueryError) as excinfo:
+        resolve_module_name(_two_case_variants(), "Cpu")
+
+    assert excinfo.value.candidates == ["CPU", "cpu"]
+    assert "ambiguous" in str(excinfo.value)
+
+
+def test_case_variants_within_one_half_are_refused_too(project):
+    """Nothing about the split across namespaces is load-bearing: two RTL
+    modules differing only in case collapse the same way."""
+    model = {
+        "modules": [{"module": "Blk", "cell_count": 1}, {"module": "blk"}],
+        "instances": None,
+    }
+
+    with pytest.raises(PhysQueryError) as excinfo:
+        resolve_module_name(model, "BLK", where="phys-model.json")
+
+    assert excinfo.value.candidates == ["Blk", "blk"]
+    assert "phys-model.json" in str(excinfo.value)
+
+
+def test_an_ambiguous_name_is_refused_through_the_payload(project):
+    """And it reaches the surfaces as a query error, not as an answer."""
+    phys_dir = _write_run(
+        project,
+        "case_clash",
+        modules=[{"module": "CPU", "cell_count": 120, "area_um2": 480.5}],
+        instances=[{"instance_path": "u_cpu/_1_", "module": "cpu", "total_uw": 2.0}],
+        mtime=3_000_000,
+    )
+    ctx = load_context(project, phys_dir=phys_dir)
+
+    with pytest.raises(PhysQueryError):
+        module_payload(ctx, "Cpu")
+    assert module_payload(ctx, "cpu")["namespaces"] == ["liberty"]
 
 
 def test_module_payload_over_a_synth_only_model_has_no_instances(project):

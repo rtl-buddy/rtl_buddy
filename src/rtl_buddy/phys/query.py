@@ -744,13 +744,32 @@ def resolve_module_name(model: dict, module: str, *, where=None) -> str:
     block, and the near-miss list is the cheaper fix. When the model is
     half-filled the message says which command would add the missing
     half, since that is the other way a name goes missing.
+
+    An exact match is taken first and case is only a fallback, and that
+    fallback applies only where it is unambiguous. Verilog is
+    case-sensitive and a Liberty library need not agree with the RTL
+    about case, so ``CPU`` and ``cpu`` can both be real names in one
+    model — in one half, or one in each (see :func:`namespaces_of`). A
+    single lowercase key cannot hold both, and the old lookup silently
+    answered with whichever the dict had kept, reporting one block's
+    cells and area under the other's name. Two or more case-variants is
+    therefore a refusal that lists them as candidates: the user knows
+    which they meant and spelling it exactly gets it, where a guess here
+    is wrong half the time and says nothing about being a guess
+    (#561 review).
     """
     known = module_names(model)
     if module in known:
         return module
-    lowered = {name.lower(): name for name in known}
-    if module.lower() in lowered:
-        return lowered[module.lower()]
+    variants = [name for name in known if name.lower() == module.lower()]
+    if len(variants) == 1:
+        return variants[0]
+    if variants:
+        raise PhysQueryError(
+            f"phys: {module!r} is ambiguous in {where or 'the physical model'}: "
+            f"{len(variants)} modules differ from it only by case",
+            candidates=variants,
+        )
     raise PhysQueryError(
         f"phys: no module {module!r} in {where or 'the physical model'}"
         f"{_missing_half_hint(model)}",
