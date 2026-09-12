@@ -56,6 +56,7 @@ from .state import (
     DiagnosticsBundle,
     GraphFocus,
     HubState,
+    PhysFocus,
     Selection,
     SignalSelection,
     WaveScope,
@@ -76,6 +77,7 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "wave_values_changed",
         "graph_focus",
         "cov_focus",
+        "phys_focus",
     }
 )
 """Event ``type`` strings that broadcast to all clients except origin.
@@ -605,6 +607,12 @@ class HubServer:
                     line=env.payload.get("line"),
                     item=env.payload.get("item"),
                 )
+            elif env.type == "phys_focus":
+                self.state.phys_focus = PhysFocus(
+                    target=env.payload["target"],
+                    origin=env.origin,
+                    metric=env.payload.get("metric"),
+                )
             elif env.type == "diagnostics_set":
                 source = env.payload["source"]
                 items = tuple(env.payload["items"])
@@ -1034,6 +1042,18 @@ class HubServer:
                     type="cov_focus",
                     id=new_id(),
                     payload=s.cov_focus.payload(),
+                ),
+            )
+
+        if s.phys_focus is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.phys_focus.origin,
+                    kind=Kind.EVENT,
+                    type="phys_focus",
+                    id=new_id(),
+                    payload=s.phys_focus.payload(),
                 ),
             )
 
