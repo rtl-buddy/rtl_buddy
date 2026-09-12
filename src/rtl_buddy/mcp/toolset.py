@@ -477,13 +477,34 @@ class Toolset:
 
     def _h_phys_module(self, args: dict) -> dict:
         return phys_query.module_payload(
-            self._phys_context(args), str(_req(args, "module"))
+            self._phys_context(args),
+            str(_req(args, "module")),
+            limit=self._phys_limit(args),
         )
 
     def _h_phys_instance(self, args: dict) -> dict:
         return phys_query.instance_payload(
-            self._phys_context(args), str(_req(args, "path"))
+            self._phys_context(args),
+            str(_req(args, "path")),
+            limit=self._phys_limit(args),
         )
+
+    @staticmethod
+    def _phys_limit(args: dict) -> int:
+        """The row cap a physical tool applies, defaulting like the CLI.
+
+        A HEAD by default, not the complete list. These lists are as long
+        as the design: every instance of a Liberty cell on a mapped run
+        is six figures of rows, and a tool that returns all of them by
+        default spends a context window on the tail of a ranking nobody
+        asked for. The payloads say what happened — the applied ``limit``
+        rides on every one of them next to the untruncated
+        ``instance_count``/``child_count``, and the sums (``power``,
+        ``rollup``) cover every matching row, listed or not — so a
+        truncated answer is never mistaken for the whole one, and an
+        agent that wants the whole one passes ``0``.
+        """
+        return int(args.get("limit", phys_query.DEFAULT_RANK_LIMIT))
 
     # ------------------------------------------------------------------
     # hierarchy handlers (rtl-buddy-view, subprocess)
@@ -830,6 +851,25 @@ _PHYS_MANIFEST_PROP = {
 }
 
 
+def _phys_limit_prop(rows: str) -> dict:
+    """The ``limit`` input a physical tool takes, worded for its own list.
+
+    One shape for all three, and the same semantics as ``--limit`` on the
+    CLI verb each one wraps, default included: the head of a ranking,
+    ``0`` for the complete list.
+    """
+    return {
+        "type": "integer",
+        "description": (
+            f"{rows}, heaviest/hottest first (default "
+            f"{phys_query.DEFAULT_RANK_LIMIT}; 0 for all). The payload "
+            "carries the limit it applied and the untruncated count "
+            "beside it, so a headed list says that it is one."
+        ),
+        "minimum": 0,
+    }
+
+
 def build_toolset(
     project_root: str | os.PathLike,
     *,
@@ -1128,14 +1168,7 @@ def build_toolset(
             ),
             input_schema=_obj(
                 {
-                    "limit": {
-                        "type": "integer",
-                        "description": (
-                            "Rows per ranking, heaviest/hottest first (default "
-                            f"{phys_query.DEFAULT_RANK_LIMIT}; 0 for all)."
-                        ),
-                        "minimum": 0,
-                    },
+                    "limit": _phys_limit_prop("Rows per ranking"),
                     "phys_dir": _PHYS_DIR_PROP,
                     "manifest": _PHYS_MANIFEST_PROP,
                 }
@@ -1154,23 +1187,31 @@ def build_toolset(
                 "with the power they sum to. Reads artefacts already on disk "
                 "— no EDA tool runs. The two halves spell 'module' in two "
                 "namespaces: RTL module names in the synthesis half, Liberty "
-                "cell names on the power half's leaves. So this answers "
+                "cell names on the power half's leaves. An RTL module name "
+                "still gets its synthesis row — its cells and its area are "
+                "measured for it — but the POWER is attributed by that join, "
+                "so power and instances answer "
                 "Liberty-cell questions ('how much do the DFFs burn') and "
-                "nothing else — NOT 'how much power does u_cpu burn', and a "
+                "only those — NOT 'how much power does u_cpu burn', and a "
                 "flat netlist is no exception: the join matches the power "
                 "half's 'module' field as it stands, so no leaf row carries "
                 "an RTL module name, the top's included, and flattening the "
                 "design changes the hierarchy rather than the namespace. When "
                 "that is what happened the payload's 'instance_join' says so; "
                 "do not report the empty instance list as 'this block burns "
-                "no power'. 'namespaces' says which "
+                "no power', and do not read it back onto the cells and area, "
+                "which stand. 'namespaces' says which "
                 "of the two the name was found in, and when it is found in "
                 "BOTH the payload's row and its instances are measurements of "
                 "two different things under one word — 'instance_join' says "
                 "that too; report them separately, never as one module's "
                 "totals. Either half may be "
                 "absent: the payload reports what it has and names the "
-                "command that would supply the rest. An unknown name comes "
+                "command that would supply the rest. 'instances' is headed at "
+                "'limit' (default "
+                f"{phys_query.DEFAULT_RANK_LIMIT}, 0 for all) while "
+                "'instance_count' and the 'power' sum cover every matching "
+                "row. An unknown name comes "
                 "back as ok: false with 'candidates'."
             ),
             input_schema=_obj(
@@ -1183,6 +1224,7 @@ def build_toolset(
                             "'modules' ranking."
                         ),
                     },
+                    "limit": _phys_limit_prop("Instance rows to list"),
                     "phys_dir": _PHYS_DIR_PROP,
                     "manifest": _PHYS_MANIFEST_PROP,
                 },
@@ -1205,7 +1247,11 @@ def build_toolset(
                 "POWER ONLY: the rollup carries the four power columns and a "
                 "leaf count, and no area — the model has no per-cell area, so "
                 "there is nothing to sum, and area per instance or per "
-                "subtree is not a question this can answer yet. Instance rows "
+                "subtree is not a question this can answer yet. 'children' "
+                "is headed at 'limit' (default "
+                f"{phys_query.DEFAULT_RANK_LIMIT}, 0 for all) while "
+                "'child_count' and 'rollup' cover every leaf under the path, "
+                "listed or not. Instance rows "
                 "come from the power half alone: a synthesis-only model comes "
                 "back as ok: false naming `rb power`, and an unknown path "
                 "comes back with 'candidates'."
@@ -1222,6 +1268,7 @@ def build_toolset(
                             "'instances' ranking."
                         ),
                     },
+                    "limit": _phys_limit_prop("Child rows to list"),
                     "phys_dir": _PHYS_DIR_PROP,
                     "manifest": _PHYS_MANIFEST_PROP,
                 },

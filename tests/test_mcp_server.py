@@ -664,6 +664,83 @@ def test_phys_module_does_not_claim_it_answers_a_flat_netlists_top(
     assert "flattening the design changes the hierarchy rather than the " in description
 
 
+def test_phys_module_scopes_the_liberty_only_claim_to_the_power(
+    mcp_project: Path,
+):
+    """ "Liberty-cell questions and nothing else" overshot: an RTL module
+    name is measured by the synthesis half — its cells and its area are
+    its own — and it is the power attribution, which is made by the join,
+    that the Liberty namespace bounds. An agent that read the old
+    sentence had no reason to call the tool for an RTL block at all."""
+    description = _toolset(mcp_project).spec("phys_module").description
+
+    assert "and nothing else" not in description
+    assert "still gets its synthesis row" in description
+    assert "the POWER is attributed by that join" in description
+    # And the empty instance list is not evidence against the row above
+    # it.
+    assert "do not read it back onto the cells and area, which stand" in description
+
+
+def test_the_phys_detail_tools_head_their_lists_by_default(phys_project: Path):
+    """A complete list by default is a context window spent on the tail of
+    a ranking nobody asked for: every instance of a Liberty cell on a
+    mapped run is six figures of rows. The payloads are self-describing —
+    the applied limit rides on them next to the untruncated count and the
+    sums cover every row — so the default heads them and an agent that
+    wants all of them says so."""
+    from rtl_buddy.phys.query import DEFAULT_RANK_LIMIT
+
+    ts = _toolset(phys_project)
+
+    for tool, args, listed, counted in (
+        ("phys_module", {"module": "sub"}, "instances", "instance_count"),
+        ("phys_instance", {"path": "u_sub"}, "children", "child_count"),
+    ):
+        default = ts.call(tool, dict(args))["payload"]
+        headed = ts.call(tool, dict(args, limit=1))["payload"]
+        every = ts.call(tool, dict(args, limit=0))["payload"]
+
+        assert default["limit"] == DEFAULT_RANK_LIMIT
+        assert default[listed] == every[listed]  # 2 rows, well under the cap
+        assert len(headed[listed]) == 1
+        # Self-describing: the count is of every matching row, not of the
+        # rows that fitted, and the sum is too.
+        assert headed[counted] == 2
+        assert headed["limit"] == 1
+
+    # The sums do not shrink with the list — a subtree total that counted
+    # only the listed rows would be a different number per limit.
+    hot = ts.call("phys_instance", {"path": "u_sub", "limit": 1})["payload"]
+    assert hot["rollup"]["instances"] == 2
+    assert hot["rollup"]["total_uw"] == pytest.approx(3.171)
+    assert ts.call("phys_module", {"module": "sub", "limit": 1})["payload"]["power"][
+        "total_uw"
+    ] == pytest.approx(3.171)
+
+
+def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Path):
+    """The input is only useful if the schema says the default is a head
+    and that 0 is the way out of it."""
+    from rtl_buddy.phys.query import DEFAULT_RANK_LIMIT
+
+    ts = _toolset(mcp_project)
+
+    for tool, listed in (
+        ("phys_module", "Instance rows to list"),
+        ("phys_instance", "Child rows to list"),
+    ):
+        schema = ts.spec(tool).input_schema
+        limit = schema["properties"]["limit"]
+        assert limit["type"] == "integer"
+        assert limit["minimum"] == 0
+        assert limit["description"].startswith(listed)
+        assert f"default {DEFAULT_RANK_LIMIT}; 0 for all" in limit["description"]
+        # Not required: the default is the point.
+        assert "limit" not in schema.get("required", [])
+        assert f"(default {DEFAULT_RANK_LIMIT}, 0 for all)" in ts.spec(tool).description
+
+
 def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
     """Same builder as ``rb --machine phys summary``, not a second shape."""
     from rtl_buddy.phys.query import load_context, summary_payload
@@ -718,16 +795,18 @@ def test_phys_module_joins_the_synthesis_row_to_the_instances_of_it(
     from rtl_buddy.phys.query import load_context, module_payload
 
     ts = _toolset(phys_project)
-    envelope = ts.call("phys_module", {"module": "sub"})
+    envelope = ts.call("phys_module", {"module": "sub", "limit": 0})
 
     assert envelope["ok"] is True
-    assert envelope["payload"] == module_payload(load_context(ts.project_root), "sub")
+    assert envelope["payload"] == module_payload(
+        load_context(ts.project_root), "sub", limit=0
+    )
     assert envelope["payload"]["row"]["cell_count"] == 40
     assert envelope["payload"]["instance_count"] == 2
-    # The tool takes no limit, so what it wraps is the complete list —
-    # `rb phys module --limit` heads the CLI's payload (#561 review,
-    # Codex P2) and must not head this one by the same builder.
-    assert envelope["payload"]["limit"] is None
+    # `limit: 0` is the complete list, the same word the CLI verb takes —
+    # and the same builder, so what the tool wraps is the CLI's payload
+    # and not a second shape (#561 review, Codex P2).
+    assert envelope["payload"]["limit"] == 0
     assert len(envelope["payload"]["instances"]) == 2
     assert envelope["payload"]["power"]["total_uw"] == pytest.approx(3.171)
 
@@ -736,17 +815,17 @@ def test_phys_instance_rolls_up_the_subtree_under_a_path(phys_project: Path):
     from rtl_buddy.phys.query import instance_payload, load_context
 
     ts = _toolset(phys_project)
-    envelope = ts.call("phys_instance", {"path": "u_sub"})
+    envelope = ts.call("phys_instance", {"path": "u_sub", "limit": 0})
 
     assert envelope["ok"] is True
     assert envelope["payload"] == instance_payload(
-        load_context(ts.project_root), "u_sub"
+        load_context(ts.project_root), "u_sub", limit=0
     )
     assert envelope["payload"]["match"] == "prefix"
     assert envelope["payload"]["rollup"]["instances"] == 2
     assert envelope["payload"]["rollup"]["total_uw"] == pytest.approx(3.171)
     # Complete, for the reason `phys_module`'s passthrough is.
-    assert envelope["payload"]["limit"] is None
+    assert envelope["payload"]["limit"] == 0
     assert len(envelope["payload"]["children"]) == envelope["payload"]["child_count"]
 
 
