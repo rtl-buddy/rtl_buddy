@@ -518,18 +518,34 @@ def test_diagnostics_set_rejects_line_zero():
         )
 
 
-def test_vendored_schema_matches_source_when_view_repo_present():
-    """Schema is vendored — drift detection when the view repo is a sibling.
+#: Directory names an owner checkout may go by, newest first. The repo
+#: was renamed ``rtl-buddy-view`` → ``rtl-buddy-sch``, and checkouts
+#: predating that keep the old directory name (some deliberately — other
+#: sibling-path tests in that repo look for ``../rtl_buddy`` and are
+#: indifferent to its own folder). Probing both is the difference between
+#: a drift check and a silent skip.
+_OWNER_REPO_DIRS = ("rtl-buddy-sch", "rtl-buddy-view")
 
-    The source of truth lives in ``rtl-buddy/rtl-buddy-view``. CI for
-    rtl_buddy does not clone that repo, so this test no-ops there; it
-    fires locally when both checkouts are side-by-side.
+
+def test_vendored_schema_matches_source_when_view_repo_present():
+    """Schema is vendored — drift detection when the owner repo is a sibling.
+
+    The source of truth lives in ``rtl-buddy/rtl-buddy-sch`` (formerly
+    ``rtl-buddy-view``). CI for rtl_buddy does not clone that repo, so
+    this test no-ops there; it fires locally when both checkouts are
+    side-by-side.
     """
 
-    sibling = Path(__file__).resolve().parents[2] / "rtl-buddy-view"
-    src_schema = sibling / "schemas" / "hub-protocol-v1.json"
-    if not src_schema.is_file():
-        pytest.skip("rtl-buddy-view sibling checkout not present")
+    parent = Path(__file__).resolve().parents[2]
+    for name in _OWNER_REPO_DIRS:
+        src_schema = parent / name / "schemas" / "hub-protocol-v1.json"
+        if src_schema.is_file():
+            break
+    else:
+        pytest.skip(
+            "no rtl-buddy-sch sibling checkout "
+            f"(looked for {' / '.join(_OWNER_REPO_DIRS)})"
+        )
 
     vendored = (
         Path(__file__).resolve().parents[1]
@@ -540,6 +556,6 @@ def test_vendored_schema_matches_source_when_view_repo_present():
         / "hub-protocol-v1.json"
     )
     assert vendored.read_bytes() == src_schema.read_bytes(), (
-        "vendored schema has drifted from the rtl-buddy-view source. "
-        "Re-copy and commit; the wire contract is owned by Phase 10a."
+        f"vendored schema has drifted from the source in {src_schema.parent.parent}. "
+        "Re-copy and commit; the wire contract is owned by rtl-buddy-sch."
     )
