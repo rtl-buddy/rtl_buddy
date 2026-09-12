@@ -1663,6 +1663,19 @@
     // Separators are levelled onto the wire's dots and the design top is
     // put back on the front, because the schematic's coordinate is
     // rooted at the top and OpenSTA's row is not; see `withTop`.
+    //
+    // The top it roots at is the PHYSICAL MODEL's, and that is a known
+    // limit rather than an oversight: nothing on the wire says which
+    // view `/sch` is displaying, so a pane holding a model of `blk`
+    // cannot address a schematic that is showing `tb_blk` (where the
+    // same instance is `tb_blk.dut.u_sub`) or a different design
+    // altogether. Those views soft-miss — the path names no instance
+    // there, the schematic selects nothing, and this pane's status line
+    // reports the send it made, since a broadcast has no way to hear
+    // that. Rooting at the model's own top is the only claim the pane
+    // can make truthfully from what it holds; addressing one instance
+    // across two hierarchies is the hierarchy join, Phase 5 of the
+    // physical-metrics epic (rtl-buddy/rtl_buddy#558).
     var wire = withTop(path, designTop());
     if (emit('selection_changed', { instance_path: wire })) {
       note('select ' + wire +

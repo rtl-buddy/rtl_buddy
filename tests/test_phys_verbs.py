@@ -323,6 +323,43 @@ def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
     assert document in str(rendered.exception)
 
 
+@pytest.mark.parametrize(
+    "document, field, malformed, described",
+    [
+        (MANIFEST_FILENAME, "synth", [], "an array"),
+        ("phys-model.json", "modules", 7, "a number"),
+        ("phys-model.json", "totals", "x", "a string"),
+        (
+            "phys-model.json",
+            "instances",
+            ["u_sub/_64_"],
+            "an array whose rows are not all objects",
+        ),
+    ],
+)
+def test_a_document_whose_blocks_are_the_wrong_shape_yields_an_error_envelope(
+    phys_project, document, field, malformed, described
+):
+    """The finding (#561 review, Codex P2). The version check passes a
+    document whose blocks are the wrong shape straight into the builders,
+    where the failure is a `TypeError` or an `AttributeError` — a traceback
+    and no envelope, which is the one thing an agent surface cannot read."""
+    path = phys_project / "verif" / "blk" / "artefacts" / "both" / document
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body[field] = malformed
+    path.write_text(json.dumps(body), encoding="utf-8")
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "summary"])
+
+    envelope = _machine(result)
+    assert envelope["exit_code"] == 2
+    error = envelope["payload"]["error"]
+    assert document in error
+    assert f"`{field}`" in error
+    assert described in error
+
+
 # --- module -----------------------------------------------------------------
 
 
