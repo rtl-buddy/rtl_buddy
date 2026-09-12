@@ -23,6 +23,7 @@ from rtl_buddy.phys.manifest import (
     load_manifest,
     merge_manifest,
     project_root_for,
+    project_root_for_dir,
     resolve,
     write_manifest,
 )
@@ -738,6 +739,71 @@ def test_discovery_reaches_a_manifest_behind_a_symlinked_artefact_dir(tmp_path):
     found = discover_manifests(root)
 
     assert found == [str(suite / "artefacts" / "demo_synth" / MANIFEST_FILENAME)]
+
+
+def _project_with_symlinked_artefacts(tmp_path):
+    """A project whose ``artefacts/`` is a link onto scratch storage.
+
+    Returns the root and the artefact directory *as the project reaches
+    it* — the path every producer holds, and the one the manifest's paths
+    have to be expressed in.
+    """
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    suite = root / "verif" / "demo"
+    suite.mkdir(parents=True)
+    physical = tmp_path / "scratch" / "artefacts"
+    (physical / "demo_synth").mkdir(parents=True)
+    (suite / "artefacts").symlink_to(physical, target_is_directory=True)
+    return root, suite / "artefacts" / "demo_synth"
+
+
+def test_manifest_paths_stay_project_relative_through_a_symlinked_artefacts_dir(
+    tmp_path,
+):
+    """The finding (#560 round-9 review, Codex P2). Resolving both operands
+    put the scratch path on both sides of the comparison, so every path came
+    out absolute and host-specific — breaking the project-relative contract
+    for exactly the layout discovery goes out of its way to support."""
+    root, artefacts = _project_with_symlinked_artefacts(tmp_path)
+    (artefacts / "synth.log").write_text("Chip area: 5.586\n")
+    model_path = write_model(build_synth_model(top="demo_top"), artefacts)
+
+    manifest = build_manifest(
+        project_root=project_root_for_dir(artefacts),
+        phys_dir=artefacts,
+        command="synth",
+        model_path=model_path,
+        synth={"backend": "yosys", "log": str(artefacts / "synth.log")},
+    )
+
+    assert manifest["phys_dir"] == "verif/demo/artefacts/demo_synth"
+    assert manifest["model"] == "verif/demo/artefacts/demo_synth/phys-model.json"
+    assert manifest["synth"]["log"] == "verif/demo/artefacts/demo_synth/synth.log"
+
+
+def test_a_symlinked_artefacts_dir_still_round_trips_back_to_the_files(tmp_path):
+    """The other end of the same contract: the root a written manifest is
+    read back through is the one its paths were written against, so
+    `resolve` lands on the file through the link rather than counting parts
+    off a scratch path that has none of them."""
+    root, artefacts = _project_with_symlinked_artefacts(tmp_path)
+    model_path = write_model(build_synth_model(top="demo_top"), artefacts)
+    manifest_path = write_manifest(
+        build_manifest(
+            project_root=project_root_for_dir(artefacts),
+            phys_dir=artefacts,
+            command="synth",
+            model_path=model_path,
+            synth={"backend": "yosys"},
+        ),
+        artefacts,
+    )
+
+    assert project_root_for_dir(artefacts) == str(root)
+    assert project_root_for(manifest_path) == str(root)
+    resolved = resolve(manifest_path, "verif/demo/artefacts/demo_synth/phys-model.json")
+    assert os.path.samefile(resolved, model_path)
 
 
 def test_discovery_terminates_on_a_symlink_loop(tmp_path):
