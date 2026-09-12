@@ -65,4 +65,4 @@ An unprefixed target is read as an instance path, and the hub replays the latest
 
 Each payload also carries `halves` and `missing_halves`, which report which halves the model has and which command fills each one. A `null` value means the run did not measure it; `0` means it measured zero.
 
-`rb mcp` exposes the same query builders as `phys_summary`, `phys_module`, and `phys_instance`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. See [The MCP server](graph.md#the-mcp-server).
+`rb mcp` exposes the same query builders as `phys_summary`, `phys_module`, and `phys_instance`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. A `phys_focus` tool mirroring `rb hub send phys-focus` joins them when a live hub is discovered. See [The MCP server](graph.md#the-mcp-server).

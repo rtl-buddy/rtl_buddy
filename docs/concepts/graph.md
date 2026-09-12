@@ -249,7 +249,7 @@ rb mcp --list-tools
 
 Graph, test-status, coverage, physical-metrics, and hierarchy tools mirror their `rb --machine` payloads. Each call rereads the graph, coverage, and physical artefact files, so no daemon is required and updates are visible without restarting the MCP server.
 
-When a live hub is discoverable, the server also advertises tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage focus. Without a hub those tools are omitted rather than exposed in a permanently failing state.
+When a live hub is discoverable, the server also advertises tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage and physical focus. Without a hub those tools are omitted rather than exposed in a permanently failing state.
 
 ## Load graph.json directly
 

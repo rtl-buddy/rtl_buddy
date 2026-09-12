@@ -75,6 +75,7 @@ HUB_TOOL_NAMES = (
     "hub_resolve",
     "hub_diagnose",
     "cov_focus",
+    "phys_focus",
 )
 
 _SEVERITIES = ("error", "warning", "info", "hint")
@@ -83,6 +84,12 @@ _SEVERITIES = ("error", "warning", "info", "hint")
 #: literal ``rb hub send cov-focus`` spells, and for the same reason:
 #: the contract is the hub's schema, not this process's coverage model.
 _COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
+
+#: ``phys_focus.metric`` enum, mirroring the wire schema — the same
+#: literal ``rb hub send phys-focus`` spells, and for the same reason.
+#: ``dynamic`` is in the list although no model column carries it: it is
+#: internal + switching, summed by the pane.
+_PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
 
 
 def _tool_version() -> str:
@@ -708,6 +715,23 @@ class Toolset:
                 raise ToolError("cov_focus: 'item' must be non-empty")
             payload["item"] = item
         return self._hub_emit("cov_focus", payload)
+
+    def _h_phys_focus(self, args: dict) -> dict:
+        # Emit what was validated, stripped, with the optional key
+        # omitted rather than sent as null — the same three rules
+        # ``rb hub send phys-focus`` follows, because the pane matches
+        # ``target`` as a string and the wire schema is
+        # additionalProperties:false with no nullable hints.
+        payload: dict[str, Any] = {"target": str(_req(args, "target")).strip()}
+        metric = args.get("metric")
+        if metric is not None:
+            if metric not in _PHYS_METRICS:
+                raise ToolError(
+                    f"phys_focus: metric must be one of "
+                    f"{'/'.join(_PHYS_METRICS)}, got {metric!r}"
+                )
+            payload["metric"] = metric
+        return self._hub_emit("phys_focus", payload)
 
 
 def _req(args: dict, key: str):
@@ -1493,6 +1517,45 @@ def build_toolset(
                     ["target"],
                 ),
                 handler=ts._h_cov_focus,
+            )
+        )
+        register(
+            ToolSpec(
+                name="phys_focus",
+                title="Point the live synth+power pane at a target",
+                command="rb hub send phys-focus",
+                description=(
+                    "Broadcast a physical focus so the hub's /phy pane shows "
+                    "what you are talking about. Target is prefixed: "
+                    "'module:alu' or 'instance:u_cpu/u_alu' (an unprefixed "
+                    "string is read as an instance path); metric foregrounds "
+                    "one physical metric. Use the names phys_summary, "
+                    "phys_module and phys_instance return. A target the "
+                    "pane's model does not contain is a soft miss, and the "
+                    "hub replays the latest focus to a pane that connects "
+                    "later, so sending this before the tab is open works."
+                ),
+                input_schema=_obj(
+                    {
+                        "target": {
+                            "type": "string",
+                            "description": (
+                                "module:<name>, instance:<hierarchical path>, "
+                                "or a bare instance path."
+                            ),
+                        },
+                        "metric": {
+                            "type": "string",
+                            "enum": list(_PHYS_METRICS),
+                            "description": (
+                                "Physical metric to foreground. 'dynamic' is "
+                                "internal + switching, summed by the pane."
+                            ),
+                        },
+                    },
+                    ["target"],
+                ),
+                handler=ts._h_phys_focus,
             )
         )
 

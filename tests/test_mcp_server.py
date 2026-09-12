@@ -819,6 +819,108 @@ def test_a_project_with_no_physical_run_names_the_commands_that_make_one(
     assert "rb power" in envelope["error"]
 
 
+def test_phys_focus_needs_a_hub_and_the_reads_do_not(mcp_project: Path):
+    """Pointing a pane is the one physical question a headless process
+    cannot answer; the three reads answer from disk."""
+    headless = _toolset(mcp_project)
+    live = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+
+    assert "phys_focus" not in headless.names()
+    assert "phys_focus" in live.names()
+    assert live.spec("phys_focus").command == "rb hub send phys-focus"
+
+
+def test_phys_focus_omits_the_metric_it_was_not_given(
+    mcp_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``additionalProperties: false`` and no nullable hints on the wire."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+    sent: dict = {}
+    monkeypatch.setattr(
+        ts,
+        "_hub_emit",
+        lambda type_, payload: sent.update({"type": type_, "payload": payload}) or {},
+    )
+
+    ts.call("phys_focus", {"target": "module:sub"})
+
+    assert sent["type"] == "phys_focus"
+    assert sent["payload"] == {"target": "module:sub"}
+
+
+def test_phys_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
+    mcp_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Padded input, one payload: the MCP tool and ``rb hub send``.
+
+    The pane matches ``target`` as a string, so a trailing space is a
+    miss rather than a near miss, and a rule spelled one way on one
+    surface and another way on the other is observable on the wire.
+    Both validate *and* emit the stripped value.
+    """
+    from rtl_buddy.hub import send as hub_send
+
+    padded = {"target": "  instance:u_sub/_64_  ", "metric": "dynamic"}
+
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+    from_mcp: dict = {}
+    monkeypatch.setattr(
+        ts,
+        "_hub_emit",
+        lambda type_, payload: (
+            from_mcp.update({"type": type_, "payload": payload}) or {}
+        ),
+    )
+    ts.call("phys_focus", dict(padded))
+
+    from_cli: dict = {}
+
+    class _Recorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def emit(self, type_, payload):
+            from_cli.update({"type": type_, "payload": payload})
+
+    monkeypatch.setattr(hub_send, "_open_or_exit", _Recorder)
+    hub_send.cmd_phys_focus(padded["target"], metric=padded["metric"])
+
+    assert from_mcp == from_cli
+    assert from_cli == {
+        "type": "phys_focus",
+        "payload": {"target": "instance:u_sub/_64_", "metric": "dynamic"},
+    }
+
+
+def test_phys_focus_validates_before_dialling(mcp_project: Path):
+    """Port 1 refuses connections: reaching it would mean no validation.
+
+    ``switching`` is a real model column and still not a pane metric —
+    the enum is the hub's wire schema, not this process's vocabulary.
+    """
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
+
+    envelope = ts.call("phys_focus", {"target": "module:sub", "metric": "switching"})
+
+    assert envelope["ok"] is False
+    assert "metric" in envelope["error"]
+    assert "cells/area/leakage/dynamic/total" in envelope["error"]
+
+
+def test_phys_focus_reports_a_dead_hub_rather_than_crashing(mcp_project: Path):
+    """The handle said yes at start; the socket may still say no."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
+
+    envelope = ts.call("phys_focus", {"target": "module:sub"})
+
+    assert envelope["ok"] is False
+    assert "hub" in envelope["error"].lower()
+    assert envelope["meta"]["command"] == "rb hub send phys-focus"
+
+
 # ---------------------------------------------------------------------------
 # Failure is an answer, not an exception
 # ---------------------------------------------------------------------------
