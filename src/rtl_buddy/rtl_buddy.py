@@ -6771,6 +6771,26 @@ class RtlBuddy:
                 markup=False,
             )
 
+    @staticmethod
+    def _phys_instance_join_note(payload) -> None:
+        """Say when an empty instance list is a namespace miss, not a fact.
+
+        The model's two halves spell `module` differently — RTL module
+        names on the synthesis rows, Liberty cell names on the leaves —
+        so an RTL module on a mapped hierarchical design matches nothing,
+        and a bare empty table would read as "this block burns no power".
+        The payload carries the sentence; printing it here keeps every
+        surface saying the same thing.
+        """
+        note = payload.get("instance_join")
+        if note:
+            emit_console_text(
+                f"\n{note}",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+
     def _phys_instance_rows(self, rows):
         """Instance rows as summary-table rows, powers already formatted."""
         return [
@@ -6814,6 +6834,7 @@ class RtlBuddy:
             int,
             typer.Option(
                 "--limit",
+                min=0,
                 help="rows per ranking, heaviest/hottest first (0 for all)",
             ),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
@@ -6899,7 +6920,9 @@ class RtlBuddy:
         limit: Annotated[
             int,
             typer.Option(
-                "--limit", help="instances to list, hottest first (0 for all)"
+                "--limit",
+                min=0,
+                help="instances to list, hottest first (0 for all)",
             ),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
         phys_dir: Annotated[
@@ -6949,6 +6972,7 @@ class RtlBuddy:
             logger=logger,
         )
         self._phys_missing_half_notes(payload)
+        self._phys_instance_join_note(payload)
         instances = payload["instances"] or []
         if instances:
             shown = instances if limit <= 0 else instances[:limit]
@@ -6985,7 +7009,7 @@ class RtlBuddy:
         ],
         limit: Annotated[
             int,
-            typer.Option("--limit", help="children to list (0 for all)"),
+            typer.Option("--limit", min=0, help="children to list (0 for all)"),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
         phys_dir: Annotated[
             str | None,

@@ -24,12 +24,14 @@ from rtl_buddy.phys.model import (
     write_model,
 )
 from rtl_buddy.phys.query import (
+    INSTANCE_JOIN_LIBERTY_ONLY,
     PHYS_QUERY_SCHEMA_VERSION,
     PhysQueryError,
     heaviest_modules,
     hottest_instances,
     instance_payload,
     is_descendant,
+    level_path,
     load_context,
     module_names,
     module_payload,
@@ -90,7 +92,11 @@ def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None
             leakage_w=0.58e-6,
             total_w=13.171e-6,
         )
-        model = merge_model(model, power) if model is not None else power
+        model = (
+            merge_model(model, power, own_half="instances")
+            if model is not None
+            else power
+        )
     model_path = write_model(model, phys_dir)
 
     command = "power" if instances is not None else "synth"
@@ -331,6 +337,37 @@ def test_module_payload_over_a_synth_only_model_has_no_instances(project):
     assert payload["missing_halves"] == ["instances"]
 
 
+def test_a_module_only_the_synth_half_knows_says_the_join_cannot_see_it(project):
+    """ "No instances" and "the join misses" are different answers.
+
+    `blk` is the top: the synthesis half has a row for it, and the power
+    half — which is populated — names Liberty cells on its leaves, so
+    nothing can ever match. Without the note the empty table reads as
+    "the top burns no power".
+    """
+    payload = module_payload(load_context(project), "blk")
+
+    assert payload["instances"] == []
+    assert payload["instance_count"] == 0
+    assert payload["instance_join"] == INSTANCE_JOIN_LIBERTY_ONLY
+    assert "liberty-cell names only" in payload["instance_join"]
+
+
+def test_a_module_the_join_does_reach_carries_no_note(project):
+    """A Liberty cell name matches, so there is nothing to qualify."""
+    assert module_payload(load_context(project), "sub")["instance_join"] is None
+
+
+def test_a_synth_only_model_carries_no_join_note(project):
+    """With no power half at all, `missing_halves` is the honest signal
+    and a join note would only compete with it."""
+    ctx = load_context(
+        project, phys_dir=project / "verif" / "blk" / "artefacts" / "old_synth"
+    )
+
+    assert module_payload(ctx, "blk")["instance_join"] is None
+
+
 def test_unknown_module_reports_near_misses(project):
     with pytest.raises(PhysQueryError) as excinfo:
         module_payload(load_context(project), "subb")
@@ -387,6 +424,46 @@ def test_a_prefix_must_end_on_a_separator(project):
     assert is_descendant("u_sub.x", "u_sub")
     assert not is_descendant("u_subsystem/_1_", "u_sub")
     assert not is_descendant("u_sub", "u_sub")
+
+
+def test_descendancy_is_decided_on_levelled_paths():
+    """Which separator a path is spelled with is the tool's choice, so it
+    cannot be allowed to decide whether two paths are the same instance."""
+    assert level_path("u_top.u_sub/_64_") == "u_top/u_sub/_64_"
+    assert is_descendant("u_top/u_sub/_64_", "u_top.u_sub")
+    assert is_descendant("u_top.u_sub._64_", "u_top/u_sub")
+    # The boundary rule survives levelling.
+    assert not is_descendant("u_subsystem._1_", "u_sub")
+
+
+def test_a_dotted_query_finds_slash_stored_rows(project):
+    """The model stores OpenSTA's `/`; the pane and the RTL side spell the
+    same path with `.`, and a user pasting one must still get the row."""
+    ctx = load_context(project)
+
+    exact = instance_payload(ctx, "u_sub._64_")
+    assert exact["match"] == "exact"
+    assert exact["instance"]["instance_path"] == "u_sub/_64_"
+    # The payload echoes what the user asked, not the model's spelling.
+    assert exact["instance_path"] == "u_sub._64_"
+
+    subtree = instance_payload(ctx, "u_sub")
+    assert [row["instance_path"] for row in subtree["children"]] == [
+        "u_sub/_64_",
+        "u_sub/u_leaf/_12_",
+    ]
+
+
+def test_a_slash_query_finds_dot_stored_rows(project):
+    ctx = load_context(project)
+    ctx.model["instances"] = [
+        {"instance_path": "u_top.u_sub._64_", "module": "sub", "total_uw": 1.0}
+    ]
+
+    payload = instance_payload(ctx, "u_top/u_sub")
+
+    assert payload["match"] == "prefix"
+    assert [row["instance_path"] for row in payload["children"]] == ["u_top.u_sub._64_"]
 
 
 def test_unknown_instance_reports_near_misses(project):
