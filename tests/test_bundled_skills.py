@@ -35,6 +35,14 @@ def test_bundled_skills_keep_critical_operational_guidance():
     assert "strict `XPASS`" in primary
     assert "including `NA`/`XFAIL`" in primary
 
+    graph = _bundled_skill_text("rtl-buddy-graph")
+    # The hub-gated tool has to be described as hub-gated: an agent that
+    # reads `phys_focus` as always-available reports a missing tool as a
+    # broken install rather than as "no hub is running".
+    assert "`phys_focus` is served only when a live hub" in graph
+    assert "soft miss" in graph
+    assert "instance_join" in graph
+
     tests = _bundled_skill_text("rtl-buddy-test")
     assert "result.json" in tests
     assert "multi-select when available" in tests

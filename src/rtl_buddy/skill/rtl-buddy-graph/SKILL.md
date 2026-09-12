@@ -52,5 +52,14 @@ half, Liberty cell names (`DFF_X1`) on the power half's leaves. So it answers
 an empty instance list as "this block burns no power"; read
 `rb --machine docs show concepts/phys` first.
 
+`phys_focus` is served only when a live hub was discovered at start-up — with
+no hub running it is absent, not failing, and the three read tools answer
+without one. It points the hub's `/phy` pane at `module:<name>` or
+`instance:<path>` (an unprefixed string is read as an instance path), so the
+row you are discussing is the row on the user's screen; use the names the read
+tools returned. A target the model does not contain is a soft miss, and the
+hub replays the latest focus to a pane that connects later, so sending it
+before the tab is open works.
+
 For interactive graph, coverage, source, and waveform coordination, read
 `rb --machine docs show concepts/hub` before sending hub commands.
