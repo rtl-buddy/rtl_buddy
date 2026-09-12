@@ -276,6 +276,27 @@ def test_new_id_is_uuid4():
 # ---------------------------------------------------------------------------
 
 
+def test_origin_enum_matches_vendored_schema():
+    """``Origin`` is a hand-copy of the schema's vocabulary — pin it.
+
+    The vendored schema is the wire contract and ``decode`` validates
+    against it, but the *Python* vocabulary is this enum. Re-syncing the
+    schema (say, after rtl-buddy-sch adds a peer) without extending
+    ``Origin`` leaves a hole that schema validation cannot see: the
+    envelope passes ``_validate`` and then ``Origin(obj["origin"])``
+    raises ``ValueError`` on the first message from the new peer.
+
+    The cross-repo checklist this backstops lives in rtl-buddy-sch's
+    ``docs/hub-protocol.md`` §13.
+    """
+
+    enum = protocol.schema()["properties"]["origin"]["enum"]
+    # Guard the guard: a schema refactor that moved the enum would make
+    # the comparison below pass against nothing.
+    assert isinstance(enum, list) and enum, "schema has no origin enum"
+    assert [o.value for o in Origin] == enum
+
+
 def test_vendored_schema_has_expected_types():
     """Catch accidental schema drift: every spec ``type`` is present."""
 
