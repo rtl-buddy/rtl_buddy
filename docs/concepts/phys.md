@@ -64,3 +64,5 @@ An unprefixed target is read as an instance path, and the hub replays the latest
 `--machine` emits the payload the verb built, carrying its own `schema_version`, the project-relative manifest and model paths, the run header, the artefact block, and the verb's data: rankings for `summary`, the module row plus its instances for `module`, and the row or subtree plus its rollup for `instance`.
 
 Each payload also carries `halves` and `missing_halves`, which report which halves the model has and which command fills each one. A `null` value means the run did not measure it; `0` means it measured zero.
+
+`rb mcp` exposes the same query builders as `phys_summary`, `phys_module`, and `phys_instance`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. See [The MCP server](graph.md#the-mcp-server).
