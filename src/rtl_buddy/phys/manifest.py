@@ -82,6 +82,7 @@ MANIFEST_SCHEMA_VERSION = 1
 # where the artefact-clearing helpers protect it from a co-named run's
 # suffix clear (#469). Re-exported here, where consumers already look.
 from ..tools.artifact_paths import (  # noqa: E402
+    ARTIFACT_DIRNAME,
     PHYS_MANIFEST_NAME as MANIFEST_FILENAME,
 )
 
@@ -396,6 +397,22 @@ def project_root_for(manifest_path) -> str | None:
     return str(root)
 
 
+def _may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:
+    """Whether a symlinked directory is part of the artefact layout.
+
+    The boundary :func:`discover_manifests` documents, factored out
+    because it is the whole of the rule and reads better named.
+
+    ``link`` is the link itself, ``rel_parts`` the components of its path
+    below the project root (its own basename last), ``root_real`` the
+    resolved project root.
+    """
+    if ARTIFACT_DIRNAME not in rel_parts:
+        return False
+    link_real = os.path.realpath(link)
+    return not (root_real == link_real or root_real.startswith(link_real + os.sep))
+
+
 def discover_manifests(project_root) -> list[str]:
     """Every ``phys-manifest.json`` under a project, newest first.
 
@@ -406,17 +423,30 @@ def discover_manifests(project_root) -> list[str]:
     directories are skipped; ties break on the path so the order is
     deterministic on a tree with identical timestamps.
 
-    Symlinked directories are followed. A suite whose ``artefacts/`` is a
-    link to scratch storage is an ordinary, documented setup — the same
-    one the filelist writer is pinned against — and ``os.walk``'s default
-    would walk straight past every run published into it, reporting a
-    project with no physical data at all. Following costs a loop risk,
-    so each directory is admitted once by its real path: a link back to
-    an ancestor lands on a path already seen, is not descended into, and
-    the walk terminates. That guard also keeps a run reachable by two
-    paths from being listed twice.
+    **Symlinked directories are followed only inside the artefact
+    layout.** A suite whose ``artefacts/`` is a link to scratch storage
+    is an ordinary, documented setup — the same one the filelist writer
+    is pinned against — and a walk that did not follow it would report a
+    project with no physical data at all. Following *every* link is the
+    other error: a ``vendor/`` link, or a link to ``$HOME``, drags an
+    unrelated tree into the project's walk, which is slow and — worse —
+    reports someone else's ``phys-manifest.json`` as this project's own
+    run. So a link is descended into only when
+    :data:`~rtl_buddy.tools.artifact_paths.ARTIFACT_DIRNAME` is already a
+    component of its path below the project root — its own basename
+    (``<suite>/artefacts -> scratch``, the supported case) or an
+    ``artefacts`` above it (a run directory inside an ``artefacts/``
+    subtree linked out individually). Real directories are walked as
+    before; the boundary is only about links.
+
+    Two guards sit under that rule. A link whose realpath is the project
+    root or an ancestor of it is refused outright, so no admitted link
+    can circle back over the whole tree (or over ``/``). And each
+    directory is admitted once by its real path, so a run reachable by
+    two paths is listed once and any remaining cycle terminates.
     """
     root = Path(project_root)
+    root_real = os.path.realpath(root)
     found: list[tuple[float, str]] = []
     seen: set[str] = set()
     skip = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache"}
@@ -426,9 +456,17 @@ def discover_manifests(project_root) -> list[str]:
             dirnames[:] = []
             continue
         seen.add(real)
-        dirnames[:] = [
-            d for d in dirnames if d not in skip and not d.startswith("obj_dir")
-        ]
+        kept: list[str] = []
+        for d in dirnames:
+            if d in skip or d.startswith("obj_dir"):
+                continue
+            child = os.path.join(dirpath, d)
+            if os.path.islink(child) and not _may_follow_link(
+                child, Path(os.path.relpath(child, root)).parts, root_real
+            ):
+                continue
+            kept.append(d)
+        dirnames[:] = kept
         if MANIFEST_FILENAME not in filenames:
             continue
         path = os.path.join(dirpath, MANIFEST_FILENAME)

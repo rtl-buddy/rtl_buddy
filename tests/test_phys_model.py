@@ -817,6 +817,59 @@ def test_discovery_terminates_on_a_symlink_loop(tmp_path):
     assert discover_manifests(root) == [str(artefacts / MANIFEST_FILENAME)]
 
 
+def test_discovery_does_not_enter_a_symlink_outside_the_artefact_layout(tmp_path):
+    """The finding (#560 round-10 review, Codex P2). Following *every*
+    directory link made a `vendor/` link — or one to `$HOME` — part of the
+    project's walk, so an unrelated tree was scanned and its
+    `phys-manifest.json` reported as this project's own run."""
+    root, artefacts = _project(tmp_path)
+    write_manifest(_synth_manifest(root, artefacts, None), artefacts)
+    unrelated = tmp_path / "elsewhere"
+    (unrelated / "nested" / "artefacts" / "other_synth").mkdir(parents=True)
+    write_manifest(
+        _synth_manifest(unrelated, unrelated, None),
+        unrelated,
+    )
+    write_manifest(
+        _synth_manifest(unrelated, unrelated, None),
+        unrelated / "nested" / "artefacts" / "other_synth",
+    )
+    (root / "vendor").symlink_to(unrelated, target_is_directory=True)
+
+    # Neither the manifest at the link's top nor the one buried inside it:
+    # the link is not entered at all, so nothing under it is even scanned.
+    assert discover_manifests(root) == [str(artefacts / MANIFEST_FILENAME)]
+
+
+def test_discovery_follows_a_link_from_inside_an_artefacts_subtree(tmp_path):
+    """The other half of the boundary: a single run directory linked out of
+    an `artefacts/` tree is still the documented layout, so it is followed
+    even though the link's own name is not `artefacts`."""
+    root, artefacts = _project(tmp_path)
+    scratch = tmp_path / "scratch" / "big_run"
+    scratch.mkdir(parents=True)
+    write_manifest(_synth_manifest(root, scratch, None), scratch)
+    (artefacts.parent / "big_run").symlink_to(scratch, target_is_directory=True)
+
+    assert discover_manifests(root) == [
+        str(artefacts.parent / "big_run" / MANIFEST_FILENAME)
+    ]
+
+
+def test_discovery_refuses_a_link_onto_an_ancestor_of_the_project(tmp_path):
+    """Inside the artefact layout a link is followed, so the loop guard has
+    to stand on its own: a link to the directory the project itself lives in
+    would otherwise pull every sibling project into the walk."""
+    root, artefacts = _project(tmp_path)
+    write_manifest(_synth_manifest(root, artefacts, None), artefacts)
+    sibling = tmp_path / "other_project"
+    sibling.mkdir()
+    write_manifest(_synth_manifest(sibling, sibling, None), sibling)
+    (artefacts / "up").symlink_to(tmp_path, target_is_directory=True)
+
+    assert discover_manifests(root) == [str(artefacts / MANIFEST_FILENAME)]
+
+
 # ---------------------------------------------------------------------------
 # publish — the entry point the backends call
 # ---------------------------------------------------------------------------
