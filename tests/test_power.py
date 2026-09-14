@@ -922,42 +922,168 @@ def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
     assert manifest["synth"]["backend"] is None
 
 
+RESYNTHESISED = "module demo_top(); // resynthesised\nendmodule\n"
+
+
+def test_the_script_reads_this_runs_own_copy_of_the_netlist(tmp_path):
+    """The finding (#560 round-11 review, Codex P1). Hashing the upstream
+    netlist leaves a window however tightly it is drawn, so the analysis does
+    not read the upstream netlist at all: it reads a copy in its own artefact
+    directory, which is the file it hashes."""
+    backend = _make_power_backend(tmp_path)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert f"read_verilog {backend._netlist_snapshot_path()}" in script
+    assert f"read_verilog {tmp_path / 'synth_netlist.v'}" not in script
+
+
+@pytest.mark.parametrize("swap_at", ["before_openroad", "during_openroad"])
 def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, swap_at
 ):
-    """The finding (#560 round-9 review, Codex P1). The hash is captured
-    where the run hands the netlist to OpenROAD, not at publish time minutes
-    later — otherwise a `rb synth` that rewrites the upstream netlist while
-    the analysis works records as "measured" bytes this run never saw, and
-    the merge reads the mismatch it exists to catch as a match."""
+    """The hash names the bytes OpenROAD parsed, whenever the swap lands.
+
+    A `rb synth` into the upstream artefact directory can rewrite the netlist
+    at any moment after the script is written: before the copy is taken, or
+    while OpenROAD is reading it. Either way the run measures one file — its
+    own copy — and records the hash of that file, so the merge cannot read a
+    real mismatch as a match (#560 round-9, closed by construction in
+    round-11)."""
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.tools import power_openroad
 
     backend = _make_power_backend(tmp_path)
     netlist = tmp_path / "synth_netlist.v"
-    handed_to_openroad = hashlib.sha256(netlist.read_bytes()).hexdigest()
+    snapshot = Path(backend._netlist_snapshot_path())
     monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
     monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
 
+    if swap_at == "before_openroad":
+        # The clear runs between the script write and the copy, so a swap
+        # here lands in the one gap left after `_write_script` named the
+        # copy the script reads.
+        clear = backend._clear_stale_report
+
+        def _clear_then_resynthesise():
+            clear()
+            netlist.write_text(RESYNTHESISED)
+
+        backend._clear_stale_report = _clear_then_resynthesise
+
+    seen = {}
+
     def _fake_run(cmd, **kwargs):
+        # What OpenROAD was handed: the script, and the file it names.
+        seen["script"] = Path(cmd[-1]).read_text()
+        seen["read"] = snapshot.read_bytes()
+        if swap_at == "during_openroad":
+            netlist.write_text(RESYNTHESISED)
+        # Unmoved by the swap — the copy is inside this run's own artefact
+        # directory, which no other command writes into.
+        seen["read_after"] = snapshot.read_bytes()
         Path(cmd[cmd.index("-log") + 1]).write_text("")
         Path(backend._report_path()).write_text(_TOTAL_RPT)
         Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
-        # A `rb synth` into the upstream artefact directory, landing while
-        # OpenROAD is still reading the netlist it was given.
-        netlist.write_text("module demo_top(); // resynthesised\nendmodule\n")
         return MagicMock(returncode=0)
 
     monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
 
     result = backend.run()
 
+    assert f"read_verilog {snapshot}" in seen["script"]
+    assert seen["read_after"] == seen["read"]
     recorded = load_model(result.results["phys_model"])["provenance"]["power"]
-    assert recorded["netlist_sha256"] == handed_to_openroad
-    assert (
-        recorded["netlist_sha256"] != hashlib.sha256(netlist.read_bytes()).hexdigest()
-    )
+    assert recorded["netlist_sha256"] == hashlib.sha256(seen["read"]).hexdigest()
+    if swap_at == "during_openroad":
+        # The upstream netlist has moved on; the hash still names what was
+        # measured, so a later `rb synth` sees the mismatch.
+        assert (
+            recorded["netlist_sha256"]
+            != hashlib.sha256(netlist.read_bytes()).hexdigest()
+        )
+
+
+def test_a_netlist_that_cannot_be_staged_fails_the_run(tmp_path, monkeypatch):
+    """The generated script names the copy, so a copy that did not happen
+    leaves `read_verilog` nothing to read: this is a failed run, not a
+    by-product warning. The staging file goes with it — a half-written
+    `power_netlist.v` must never be readable as a netlist."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _no_space(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(power_openroad.shutil, "copyfile", _no_space)
+
+    def _unreachable(*_a, **_k):
+        raise AssertionError("OpenROAD must not run without the netlist copy")
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _unreachable)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "could not stage the netlist" in res.results["desc"]
+    assert not Path(backend._netlist_snapshot_path()).exists()
+    assert not Path(backend._netlist_snapshot_path() + ".tmp").exists()
+
+
+def test_a_previous_runs_netlist_copy_does_not_survive_a_failed_rerun(
+    tmp_path, monkeypatch
+):
+    """The copy is the largest thing this flow writes and nothing reads it
+    once OpenROAD has, so it is cleared like the reports beside it."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert not Path(backend._netlist_snapshot_path()).exists()
+
+
+def test_a_post_pnr_run_snapshots_nothing_and_records_no_hash(tmp_path):
+    """`netlist-source: pnr` reads a routed database, not a netlist. There
+    are no bytes to copy and none to identify, which is what it recorded
+    before the copy existed."""
+    odb = tmp_path / "demo_top.routed.odb"
+    odb.write_bytes(b"\x00routed\n")
+    sdc = tmp_path / "constraints.sdc"
+
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.netlist_source = "pnr"
+    backend._resolve_inputs = lambda: {
+        "netlist": None,
+        "odb": str(odb),
+        "sdc": str(sdc),
+        "top": "demo_top",
+    }
+
+    script = Path(backend._write_script()).read_text()
+
+    assert f"read_db {odb}" in script
+    assert "read_verilog" not in script
+    assert backend._snapshot_netlist() is None
+    assert backend._netlist_sha256 is None
+    assert not Path(backend._netlist_snapshot_path()).exists()
 
 
 def test_a_power_run_without_the_per_instance_report_still_passes(
