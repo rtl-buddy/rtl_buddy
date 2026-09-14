@@ -84,7 +84,16 @@ _COLLIDING_INSTANCES = [{**row, "module": "sub"} for row in _INSTANCES]
 _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
-def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None):
+def _write_run(
+    root: Path,
+    run: str,
+    *,
+    modules=None,
+    instances=None,
+    mtime=None,
+    netlist_sha256=_FIXTURE_NETLIST_SHA256,
+    netlist_source="synth",
+):
     """One run's artefacts, written by the phase-1 producers."""
     phys_dir = root / "verif" / "blk" / "artefacts" / run
     phys_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +105,7 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
             modules=modules,
             area_um2=576.5,
             gate_count=160,
-            netlist_sha256=_FIXTURE_NETLIST_SHA256,
+            netlist_sha256=netlist_sha256,
         )
     if instances is not None:
         power = build_power_model(
@@ -106,7 +115,7 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
             switching_w=0.3175e-6,
             leakage_w=0.08e-6,
             total_w=3.171e-6,
-            netlist_sha256=_FIXTURE_NETLIST_SHA256,
+            netlist_sha256=netlist_sha256,
         )
         model = (
             merge_model(model, power, own_half="instances")
@@ -141,7 +150,7 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
                 else {
                     "backend": "openroad",
                     "run": run,
-                    "netlist_source": "synth",
+                    "netlist_source": netlist_source,
                     "report": phys_dir / "power.rpt",
                     "instances": phys_dir / "power_instances.rpt",
                     "cells": phys_dir / "power_instances.cells",
@@ -176,6 +185,16 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", root)
     _write_run(root, "old_synth", modules=_MODULES, mtime=1_000_000)
     _write_run(root, "power_only", instances=_INSTANCES, mtime=1_500_000)
+    # A power run off a routed database: no netlist to hash, so nothing a
+    # later synthesis could pair its own netlist with.
+    _write_run(
+        root,
+        "pnr_power",
+        instances=_INSTANCES,
+        mtime=1_600_000,
+        netlist_sha256=None,
+        netlist_source="pnr",
+    )
     _write_run(
         root,
         "collision",
@@ -186,6 +205,12 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _write_run(root, "both", modules=_MODULES, instances=_INSTANCES, mtime=2_000_000)
     monkeypatch.chdir(root)
     return root
+
+
+def _flat(output: str) -> str:
+    """The console output with Rich's 80-column wrapping folded away, so a
+    sentence longer than a line can still be asserted on as one."""
+    return " ".join(output.split())
 
 
 def _machine(result) -> dict:
@@ -670,6 +695,45 @@ def test_phys_instance_on_a_synth_only_model_names_the_power_command(phys_projec
     envelope = _machine(result)
     assert envelope["exit_code"] == 2
     assert "rb power" in envelope["payload"]["error"]
+
+
+def test_the_missing_half_note_offers_the_merge_only_when_it_can_happen(
+    phys_project,
+):
+    """A power half that recorded a netlist hash is one a later `rb synth`
+    can merge onto, so the plain note is the true one."""
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        ["phys", "instance", "u_sub", "--phys-dir", "verif/blk/artefacts/power_only"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "no per-module rows in this model - run `rb synth` into the same "
+        "artefact directory to add them" in _flat(result.output)
+    )
+
+
+def test_the_missing_half_note_never_promises_an_impossible_merge(phys_project):
+    """The finding (#561 round-10 review, Codex P2). A `netlist-source: pnr`
+    power half records no netlist hash, so the symmetric provenance gate
+    makes a later `rb synth` *replace* the model rather than complete it —
+    and the note was sending the reader to destroy the rows they have."""
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        ["phys", "instance", "u_sub", "--phys-dir", "verif/blk/artefacts/pnr_power"],
+    )
+
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    assert "run `rb synth` into the same artefact directory" not in flat
+    assert "would replace it rather than complete it" in flat
+    assert "the power half records no netlist hash to pair on" in flat
+    assert "re-run `rb power` on the netlist it writes" in flat
 
 
 def test_phys_instance_says_which_half_is_missing(phys_project):

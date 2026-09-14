@@ -176,7 +176,7 @@ Open `/phy` after `rb synth` or `rb power`. `GET /phy.json` uses the same builde
 
 The pane switches between `cells`, `area`, `leakage`, `dynamic`, and `total`. `dynamic` is internal plus switching, summed in the browser: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows and flags a disagreement rather than reconciling it, because the two numbers come from different scrapes.
 
-A model with only one half keeps working. The pane names the command that fills the other one, and `rb hub send phys-focus` still drives whichever half is present.
+A model with only one half keeps working. The pane names the command that fills the other one — unless that command could not merge with the half already there: a power half taken from a routed database (`netlist-source: pnr`) records no netlist hash, so a later `rb synth` would replace the model rather than complete it, and the banner says to synthesise first and re-run `rb power` on the netlist it writes. `rb hub send phys-focus` still drives whichever half is present.
 
 Reload re-reads whichever model discovery now points at. A reload that lands on the same model keeps your metric, sort, filter, module lens and selected instance; one that lands on a *different* model — another run became the newest, the design was re-topped — keeps the controls but drops the lens and the selection, which were statements about rows that are gone. A `phys-focus` sent while the pane was loading still applies to whatever model arrives.
 

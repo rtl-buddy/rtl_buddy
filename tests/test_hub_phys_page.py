@@ -287,6 +287,7 @@ def test_a_half_the_run_did_not_produce_is_named_not_guessed(tmp_path: Path):
         "present": False,
         "rows": None,
         "produced_by": "rb synth",
+        "netlist_hash": False,
     }
     assert payload["missing_halves"] == ["modules"]
     assert payload["counts"]["modules"] is None
@@ -955,6 +956,98 @@ def test_a_failed_load_forgets_the_model_it_was_showing():
     # the mechanism that already exists for the fetch they beat.
     assert "state.pending = payload;" in js
     assert "state.pendingSelection = ip;" in js
+
+
+def test_the_banner_offers_the_merge_only_when_the_halves_could_pair():
+    """The finding (#562 round-10 review, Codex P2, the pane half of it).
+    A `netlist-source: pnr` power half records no netlist hash, so the
+    provenance gate makes a later `rb synth` REPLACE the model rather than
+    complete it — and the banner was telling the reader to run exactly
+    that "to fill modules"."""
+
+    out = _node(
+        _marked_js("half-advice")
+        + """
+        var paired = { halves: { instances: { present: true, netlist_hash: true } } };
+        var fromPnr = { halves: { instances: { present: true, netlist_hash: false } } };
+        var neither = { halves: {
+          modules: { present: false, netlist_hash: false },
+          instances: { present: false, netlist_hash: false }
+        } };
+        console.log(JSON.stringify([
+          halfAdvice(paired, 'modules'),
+          halfAdvice(fromPnr, 'modules'),
+          halfAdvice(neither, 'modules'),
+          halfAdvice({ halves: { modules: { present: true, netlist_hash: false } } },
+                     'instances'),
+          halfAdvice(null, 'modules')
+        ]));
+        """
+    )
+    paired, from_pnr, neither, reverse, empty = json.loads(out)
+    assert paired == {"other": "instances", "pairable": True}
+    assert from_pnr == {"other": "instances", "pairable": False}
+    # Nothing to preserve, so nothing to warn about: the plain advice is
+    # the true one when the other half is absent too.
+    assert neither == {"other": "instances", "pairable": True}
+    # Symmetric, because the gate is: a synthesis half with no hash is one
+    # a later `rb power` cannot merge onto either.
+    assert reverse == {"other": "modules", "pairable": False}
+    assert empty == {"other": "instances", "pairable": True}
+
+    # And the banner spends the answer on two different sentences, the
+    # unpairable one naming what does work.
+    js = _page_js()
+    body = js.split("function renderBanner() {")[1].split("\n  }")[0]
+    assert "into the same artefact directory to fill" in body
+    assert "would replace this model rather than complete it" in body
+    assert "half records no netlist hash to pair on" in body
+    assert "on the netlist it writes, so both halves measure the same one." in body
+
+
+def test_a_superseded_reload_neither_installs_nor_blanks(tmp_path: Path):
+    """The finding (#562 round-10 review, Codex P2). Nothing serialises the
+    fetches, so two `/phy.json` responses can land out of order: the older
+    one wins by landing last, installing a run the reader has replaced —
+    or, when it is the older one that failed, blanking a fresh model and
+    claiming there is nothing to show."""
+
+    out = _node(
+        _marked_js("load-generation")
+        + """
+        var state = { generation: 0 };
+        var first = nextGeneration(state);
+        var second = nextGeneration(state);
+        console.log(JSON.stringify({
+          tokens: [first, second],
+          stale: applies(state, first),
+          current: applies(state, second)
+        }));
+        """
+    )
+    seen = json.loads(out)
+    assert seen["tokens"] == [1, 2]
+    assert seen["stale"] is False
+    assert seen["current"] is True
+
+    js = _page_js()
+    body = js.split("function load() {")[1].split("\n  }")[0]
+    # The token is taken before the request goes out, so the response
+    # carries the load it belongs to.
+    assert "var generation = nextGeneration(state);" in body
+    assert body.index("nextGeneration(state)") < body.index("fetch(PHY_URL")
+    # Both arms guard, and the failure arm above all: a stale failure is
+    # the one that destroys data the reader can see.
+    assert body.count("if (!applies(state, generation)) { return; }") == 2
+    success = body.split("}).then(function (res) {")[1]
+    assert success.index("applies(state, generation)") < success.index("showEmpty(")
+    assert success.index("applies(state, generation)") < success.index("ingest(")
+    failure = body.split("}).catch(function (e) {")[1]
+    assert failure.index("applies(state, generation)") < failure.index("showEmpty(")
+    # The generation is not payload state: a failed load must not reset
+    # the counter a later response is still checked against.
+    forget = js.split("function forgetModel() {")[1].split("\n  }")[0]
+    assert "generation" not in forget
 
 
 def test_the_instances_column_is_a_dash_outside_the_liberty_namespace():
