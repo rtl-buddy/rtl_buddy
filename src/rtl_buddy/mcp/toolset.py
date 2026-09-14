@@ -472,7 +472,7 @@ class Toolset:
     def _h_phys_summary(self, args: dict) -> dict:
         return phys_query.summary_payload(
             self._phys_context(args),
-            limit=int(args.get("limit", phys_query.DEFAULT_RANK_LIMIT)),
+            limit=self._phys_limit(args),
         )
 
     def _h_phys_module(self, args: dict) -> dict:
@@ -503,8 +503,26 @@ class Toolset:
         ``rollup``) cover every matching row, listed or not — so a
         truncated answer is never mistaken for the whole one, and an
         agent that wants the whole one passes ``0``.
+
+        **A negative limit is refused, not obeyed.** The schema says
+        ``minimum: 0`` and nothing enforces it: the server hands the
+        arguments an MCP host sent straight to the handler, so a schema
+        constraint is documentation until a handler checks it. Below the
+        floor the cap does not merely clamp -- :func:`truncate` reads
+        anything ``<= 0`` as "no head at all" -- so ``limit: -1`` asks
+        for one row fewer than none and is answered with every row in
+        the design, which is both the opposite of what the caller wrote
+        and the one answer this default exists to prevent. ``0`` still
+        means all of them, because that is what the input's description
+        promises.
         """
-        return int(args.get("limit", phys_query.DEFAULT_RANK_LIMIT))
+        limit = int(args.get("limit", phys_query.DEFAULT_RANK_LIMIT))
+        if limit < 0:
+            raise ToolError(
+                f"limit must be 0 or greater, not {limit}; "
+                "0 lists every row and a positive number heads the list"
+            )
+        return limit
 
     # ------------------------------------------------------------------
     # hierarchy handlers (rtl-buddy-view, subprocess)
