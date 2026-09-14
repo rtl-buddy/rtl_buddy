@@ -93,12 +93,25 @@ class DummyTestbench:
 class DummyPreprocTestCfg:
     pd = None
     uvm = None
+    resolved_seed = None
 
     def __init__(self, script_path):
         self._script_path = script_path
 
     def get_name(self):
         return "basic"
+
+    def get_seed(self):
+        return None
+
+    def get_sim_rand_seed_plusarg(self):
+        return None
+
+    def get_resolved_seed(self):
+        return self.resolved_seed
+
+    def set_resolved_seed(self, seed):
+        self.resolved_seed = seed
 
     def get_builder_name(self):
         return None

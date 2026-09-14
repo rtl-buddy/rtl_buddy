@@ -141,6 +141,15 @@ class DummyTestCfg:
     def get_preproc_path(self):
         return None
 
+    def get_seed(self):
+        return None
+
+    def get_sim_rand_seed_plusarg(self):
+        return None
+
+    def set_resolved_seed(self, seed):
+        self.resolved_seed = seed
+
 
 def _make_sim(
     tmp_path,

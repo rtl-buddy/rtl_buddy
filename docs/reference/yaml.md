@@ -462,6 +462,8 @@ Test fields:
 | `plusargs` | Optional map | `KEY: VALUE` becomes `+KEY=VALUE`; a null value becomes `+KEY` |
 | `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE`; a null value becomes `+define+KEY` |
 | `sim_timeout` | Default 60 | Seconds per simulation run |
+| `seed` | Optional | Exact sim seed (non-negative integer), or `default` to keep the builder's `sim-rand-seed` under a run's `--seed`/`--rnd-new` policy — for stimulus whose timing or command cycle must not change with the seed policy |
+| `sim-rand-seed-plusarg` | Optional | Plusarg name the resolved seed is injected into as `+NAME=SEED` before `preproc` runs; the hook reads it via `test_cfg.get_plusarg()`/`get_resolved_seed()`, so generated stimulus and the simulator share one seed |
 | `uvm.max_warns` / `uvm.max_errors` | Optional | Thresholds whose excess fails the test |
 | `sweep.path` | Optional | Expansion hook path |
 | `preproc.path` | Optional | Precompile hook path |

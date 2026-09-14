@@ -78,6 +78,10 @@ class TestJobSpec:
     run_id: int | None = None
     seed_mode: SeedMode = SeedMode.DEFAULT
     replay_run_id: int | None = None
+    # The invocation's master seed (--seed, #566). Also carried on the plan
+    # manifest; the argv flag keeps the job's resolution working when the
+    # plan falls back to hook expansion.
+    master_seed: int | None = None
     builder_mode: str = "reg"
     builder_override: str | None = None
     extra_sim_timeout: int | None = None

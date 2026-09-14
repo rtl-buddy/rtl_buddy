@@ -28,7 +28,7 @@ from stat import S_ISREG
 
 logger = logging.getLogger(__name__)
 from ..hooks import exec_hook_script
-from ..seed_mode import SeedMode
+from ..seed_mode import SeedMode, derive_seed
 
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
@@ -1246,6 +1246,11 @@ class VlogSim:
     Verilog Sim Compile and Execution
     """
 
+    # The seed the last execute() actually ran with, stamped into the run's
+    # result record by post(). A class-level default: tests that drive
+    # post() on a __new__-constructed sim never set it.
+    last_seed = None
+
     # TODO: Replace suite_cfg, test_name with test_info and testbench
     def __init__(
         self,
@@ -1256,11 +1261,14 @@ class VlogSim:
         sim_mode,
         run_id=None,
         replay_run_id=None,
+        seed_mode: SeedMode = SeedMode.DEFAULT,
         suite_dir=None,
         share_build=False,
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        master_seed=None,
+        seed_identity=None,
     ):
         """
         compile and execute sim for given test
@@ -1277,6 +1285,19 @@ class VlogSim:
         self.test_name = self.test_cfg.get_name()
         self.run_id = run_id
         self.replay_run_id = replay_run_id
+        # Seed policy for this run (#566). ``seed_mode`` mirrors what
+        # execute() is called with; the sim keeps its own copy so pre() can
+        # resolve the seed before the preproc hook — and the configured
+        # `sim-rand-seed-plusarg` — need it. ``master_seed``/``seed_identity``
+        # carry the invocation's master seed and the suite identity the
+        # per-test seed derives from.
+        self.seed_mode = seed_mode
+        self.master_seed = master_seed
+        self.seed_identity = seed_identity
+        # Seeds resolved at PRE keyed by run_id: a NEW-mode draw made for
+        # the hook is the value that run's execute() must reuse, or the
+        # preproc would see a seed no simulation ran with.
+        self._seed_stash = {}
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
         # Why the last stamp check said no, in one phrase, or None. Read by
@@ -2568,12 +2589,27 @@ class VlogSim:
         Defaulting there would tell the hook it was preparing run 1 and hand
         it run 1's directory, which runs 2..N never read.
         """
+        if run_id is _UNSET:
+            run_id = self.run_id
+
+        # Resolve this invocation's seed BEFORE the hook — a preproc
+        # generating stimulus reads test_cfg.get_resolved_seed() (or the
+        # `sim-rand-seed-plusarg` name) and must see the value the simulator
+        # will run with (#566). Under run_multiple the hook runs once for
+        # every run_id, so the seed resolved here is the runner's own
+        # (run_ids[0]); that run's execute() reuses the stash, later runs
+        # re-resolve their own. A missing replay file resolves to None and
+        # is left for execute()'s error path rather than failing PRE.
+        seed, _source = self._resolve_seed(
+            self.run_id, self.seed_mode, self.replay_run_id
+        )
+        self._seed_stash[self.run_id] = seed
+        self._apply_resolved_seed(seed)
+
         script_path = self.test_cfg.get_preproc_path()
         if script_path is None:
             log_event(logger, logging.DEBUG, "preproc.skipped", test=self.test_name)
             return None
-        if run_id is _UNSET:
-            run_id = self.run_id
 
         # This run's stale retry transcript goes before the hook runs, not
         # only at compile() (#498 review): a reused run directory whose PRE
@@ -3885,6 +3921,66 @@ class VlogSim:
                 self._record_build_stamp(stamp_dir)
         return result.returncode
 
+    def _resolve_seed(self, run_id, seed_mode, replay_run_id):
+        """Pick the seed a run simulates with; ``(seed, source)``.
+
+        ``source`` is one of ``"replay"``, ``"pin"``, ``"default"``,
+        ``"derived"``, ``"new"``, ``"config"`` — the resolution order:
+
+        - REPLAY reads the earlier run's ``test.randseed`` and returns
+          ``(None, "replay")`` when it is missing or invalid, leaving the
+          failure report to :meth:`execute` (which owns the run's log
+          paths);
+        - a `seed:` int in tests.yaml pins the test under every policy, and
+          `seed: default` opts it out — both keep timing/command-cycle
+          stimulus stable across a run's seed policy (#566);
+        - a master seed derives the value deterministically from the
+          suite's identity, the expanded test name, and the run id, so it
+          never depends on dispatch order or which process computes it;
+        - NEW draws a fresh random seed;
+        - DEFAULT uses the builder's ``sim-rand-seed``.
+        """
+        if seed_mode == SeedMode.REPLAY:
+            seed_source_run_id = replay_run_id if replay_run_id is not None else run_id
+            seed_source_path = self._get_randseed_path(run_id=seed_source_run_id)
+            try:
+                return int(open(seed_source_path).readline().strip()), "replay"
+            except (FileNotFoundError, ValueError):
+                return None, "replay"
+        directive = self.test_cfg.get_seed()
+        if isinstance(directive, int):
+            return directive, "pin"
+        if directive == "default":
+            return self.rtl_builder_cfg.get_seed(), "default"
+        if self.master_seed is not None:
+            return (
+                derive_seed(
+                    self.master_seed,
+                    self.seed_identity or "",
+                    self.test_name,
+                    run_id,
+                ),
+                "derived",
+            )
+        if seed_mode == SeedMode.NEW:
+            return random.randrange(1000000), "new"
+        return self.rtl_builder_cfg.get_seed(), "config"
+
+    def _apply_resolved_seed(self, seed):
+        """Record the resolved seed on the test config.
+
+        Sets ``resolved_seed`` and — when the test configures
+        `sim-rand-seed-plusarg` — injects it into the plusargs, so a preproc
+        hook and the simv command line both see the value the random engine
+        is seeded with (#566).
+        """
+        if seed is None:
+            return
+        self.test_cfg.set_resolved_seed(seed)
+        plusarg = self.test_cfg.get_sim_rand_seed_plusarg()
+        if plusarg is not None:
+            self.test_cfg.set_plusarg(plusarg, seed)
+
     def execute(
         self, run_id=None, seed_mode: SeedMode = SeedMode.DEFAULT, replay_run_id=None
     ):
@@ -3896,6 +3992,9 @@ class VlogSim:
           - "default": use builder-config seed
           - "new": generate a fresh random seed
           - "replay": read seed from a previous run's .randseed file
+
+        A test's `seed:` pin or "default" opt-out overrides the mode, and a
+        master seed (--seed) derives the value deterministically (#566).
         """
         run_id = self.run_id if run_id is None else run_id
         replay_run_id = self.replay_run_id if replay_run_id is None else replay_run_id
@@ -3906,33 +4005,37 @@ class VlogSim:
 
         run_cmd = [self._get_simv_path()]
 
-        if seed_mode == SeedMode.REPLAY:
+        # A NEW-mode draw PRE already made for this run_id is the one this
+        # execute() must use — the preproc generated stimulus from it.
+        if seed_mode == SeedMode.NEW and self._seed_stash.get(run_id) is not None:
+            seed, seed_source = self._seed_stash[run_id], "new"
+        else:
+            seed, seed_source = self._resolve_seed(run_id, seed_mode, replay_run_id)
+
+        if seed is None:
+            # REPLAY only: the recorded .randseed is absent or invalid.
             seed_source_run_id = replay_run_id if replay_run_id is not None else run_id
             seed_source_path = self._get_randseed_path(run_id=seed_source_run_id)
-            try:
-                seed = int(open(seed_source_path).readline().strip())
-            except (FileNotFoundError, ValueError):
-                err_msg = f"Replay seed missing or invalid at {seed_source_path}"
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "sim.replay_seed_missing",
-                    test=self.test_name,
-                    seed_path=seed_source_path,
-                )
-                with open(log_path, "w+") as test_out_fp:
-                    test_out_fp.write("FAIL replay seed missing\n")
-                    test_out_fp.write(f"ERR: {err_msg}\n")
-                with open(err_path, "w+") as test_err_fp:
-                    test_err_fp.write(err_msg + "\n")
-                # Convenience latest-run links: never fail a test over one.
-                with contextlib.suppress(OSError):
-                    force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-                    force_symlink(log_path, self._get_suite_symlink_path("test.log"))
-                return 1
+            err_msg = f"Replay seed missing or invalid at {seed_source_path}"
+            log_event(
+                logger,
+                logging.ERROR,
+                "sim.replay_seed_missing",
+                test=self.test_name,
+                seed_path=seed_source_path,
+            )
+            with open(log_path, "w+") as test_out_fp:
+                test_out_fp.write("FAIL replay seed missing\n")
+                test_out_fp.write(f"ERR: {err_msg}\n")
+            with open(err_path, "w+") as test_err_fp:
+                test_err_fp.write(err_msg + "\n")
+            # Convenience latest-run links: never fail a test over one.
+            with contextlib.suppress(OSError):
+                force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+                force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+            return 1
 
-        elif seed_mode == SeedMode.NEW:
-            seed = random.randrange(1000000)
+        if seed_source == "new":
             log_event(
                 logger,
                 logging.INFO,
@@ -3941,9 +4044,21 @@ class VlogSim:
                 run_id=run_id,
                 seed=seed,
             )
-
-        else:
-            seed = self.rtl_builder_cfg.get_seed()
+        elif seed_source == "derived":
+            log_event(
+                logger,
+                logging.INFO,
+                "sim.seed_derived",
+                test=self.test_name,
+                run_id=run_id,
+                master_seed=self.master_seed,
+                seed=seed,
+            )
+        # Refresh resolved_seed (and the configured plusarg) so the run's
+        # own value is what post() and a re-read of test_cfg see — under
+        # run_multiple each run_id re-resolves here.
+        self._apply_resolved_seed(seed)
+        self.last_seed = seed
 
         # add test plus-defines
         run_cmd += self.rtl_builder_cfg.get_run_time_opts(
@@ -4153,6 +4268,10 @@ class VlogSim:
                 assertions_enabled=assertions_enabled,
             )
         results = self.vlog_post.get_results()
+        # The seed the run actually ran with (#566): lands in the result
+        # JSON/envelope under "seed" so a regression report can replay one
+        # test exactly. None when execute() never ran (build-failure skips).
+        results.results["seed"] = self.last_seed
         if self._coverage_enabled():
             cov = VlogCov(
                 simulator_name=self._get_simulator_family(),

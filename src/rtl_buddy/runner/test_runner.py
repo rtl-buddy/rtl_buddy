@@ -47,6 +47,8 @@ class TestRunner:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        master_seed=None,
+        seed_identity=None,
     ):
         """
         Run tests based on config
@@ -77,6 +79,11 @@ class TestRunner:
         # what acts on it, and this is what creates the sim instance.
         self.rebuild = rebuild
         self.build_result_json = build_result_json
+        # Master-seed run (#566): when set, every run's seed derives from it
+        # and the suite's identity — resolved inside the sim before PRE so a
+        # preproc hook sees it.
+        self.master_seed = master_seed
+        self.seed_identity = seed_identity
         # Set by prepare(); the phases after it all drive this one instance,
         # because a preproc hook may mutate test_cfg and the compile key is
         # only knowable afterwards, on the sim that saw the mutation.
@@ -102,7 +109,10 @@ class TestRunner:
             sim_mode=sim_mode,
             run_id=self.run_id,
             replay_run_id=self.replay_run_id,
+            seed_mode=self.seed_mode,
             suite_dir=self.suite_dir,
+            master_seed=self.master_seed,
+            seed_identity=self.seed_identity,
             share_build=self.share_build,
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,

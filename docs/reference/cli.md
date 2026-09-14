@@ -129,6 +129,11 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │ --rnd-new                      -n               use a randomly generated seed        │
 │                                                 instead of root config seed          │
 │ --rnd-last                     -l               reuse last generated seed            │
+│ --seed                                 INTEGER  master seed: derive each test's sim  │
+│                                                 seed deterministically from it       │
+│                                                 (re-pass the same value to replay a  │
+│                                                 run; incompatible with               │
+│                                                 --rnd-new/--rnd-last)                │
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
@@ -219,6 +224,10 @@ Usage: rtl-buddy regression [OPTIONS]
 │ --rebuild                                       recompile even when a valid build    │
 │                                                 already exists (implies nothing      │
 │                                                 about --share-build)                 │
+│ --seed                                 INTEGER  master seed: derive every test's sim │
+│                                                 seed deterministically from it       │
+│                                                 (re-pass the same value to replay    │
+│                                                 the regression)                      │
 │ --dispatch                             TEXT     execution backend for test runs      │
 │                                                 (local, local-parallel, slurm)       │
 │                                                 [default: (cfg-dispatch backend,     │

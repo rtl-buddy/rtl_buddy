@@ -31,6 +31,8 @@ def write_plan(
     suite_config_path: str,
     configs: list[TestConfig],
     run_token: str,
+    master_seed: int | None = None,
+    seed_identity: str | None = None,
 ) -> Path:
     """Write the dispatch plan for one suite; return ``path``.
 
@@ -50,6 +52,10 @@ def write_plan(
         "schema_version": PLAN_SCHEMA_VERSION,
         "suite_config": suite_config_path,
         "run_token": run_token,
+        # The invocation's master seed and the identity per-test seeds
+        # derive from (#566); both None on a non-seeded run.
+        "master_seed": master_seed,
+        "seed_identity": seed_identity,
         # Ordered list (not a dict) so the build job compiles in the head's
         # expansion order; sim-job lookup builds its own index by name.
         "tests": [cfg.to_plan_dict() for cfg in configs],
@@ -87,6 +93,16 @@ def read_plan_token(path: Path) -> str | None:
     stale envelope by identity instead of by absence (#362).
     """
     return _load(path).get("run_token")
+
+
+def read_plan_seed(path: Path) -> tuple[int | None, str | None]:
+    """The plan's ``(master_seed, seed_identity)`` pair (#566).
+
+    Both ``None`` on a non-seeded run or a plan written by an older
+    rtl_buddy.
+    """
+    payload = _load(path)
+    return payload.get("master_seed"), payload.get("seed_identity")
 
 
 def read_plan_config(path: Path, test_name: str) -> TestConfig | None:

@@ -1080,6 +1080,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'sim'}: hierarchical seed file missing at {fields.get('seed_path')}"
         case "sim.seed_generated":
             return f"{target or 'sim'}: generated seed {fields.get('seed')}"
+        case "sim.seed_derived":
+            return (
+                f"{fields.get('test')}: derived seed {fields.get('seed')} "
+                f"from master seed {fields.get('master_seed')}"
+            )
         case "sim.timeout_override":
             return f"{target or 'sim'}: using timeout override {fields.get('timeout_sec')}s"
         case "sim.timeout_extended":

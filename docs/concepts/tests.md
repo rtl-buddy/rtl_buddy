@@ -197,6 +197,17 @@ rb randtest smoke 20
 
 `--rnd-new` records a generated seed; `--rnd-last` reuses it. `randtest` runs repeated seeded iterations. See the [CLI reference](../reference/cli.md#randtest) for replay and selection options.
 
+## One master seed for a whole run
+
+```bash
+rb test --seed 31337
+rb regression --seed 31337
+```
+
+`--seed` derives each expanded test's sim seed deterministically from the master seed, the suite config's path, the test name, and the run id — never dispatch order or job timing. The same `--seed` replays a run exactly, locally or under `--dispatch slurm`, without reading old artefacts. A test can pin its own value with `seed: <int>` or hold the builder's `sim-rand-seed` with `seed: default` in `tests.yaml`.
+
+A `preproc` hook that generates stimulus sees the resolved seed on `test_cfg` (`get_resolved_seed()`); set `sim-rand-seed-plusarg: NAME` on the test to also receive it as `+NAME=SEED` on the simulator command line, so Python-side and RTL-side randomness share one value. The run's seed lands in `test.randseed`, each result envelope, and the `sim.seed_derived` log event; `rb test`/`rb regression` summaries and `--machine` payloads record the master seed once.
+
 ## Inspect artefacts
 
 Single runs write under `artefacts/<test>/`; repeated runs use `run-NNNN/` subdirectories. Common files are:

@@ -194,6 +194,21 @@ class TestConfig:
     xfail: bool = False
     xfail_strict: bool = False
     default_timeout: int = 60  # NOTE: potential for config through root config
+    # `seed:` directive from tests.yaml: an int pins this test to that exact
+    # sim seed; "default" opts the test out of `--seed` derivation and
+    # `--rnd-new` (its builder-config seed runs) for stimulus whose timing
+    # must stay stable across a seed policy. None follows the run's policy.
+    seed: int | str | None = None
+    # `sim-rand-seed-plusarg:` names the plusarg the resolved seed is
+    # injected into before PRE runs — a preproc hook reads it via
+    # get_plusarg()/get_resolved_seed() and the simulator sees
+    # `+<name>=<seed>`, so Python/NumPy stimulus and the random engine share
+    # one value (#566).
+    sim_rand_seed_plusarg: str | None = None
+    # The seed this invocation resolved for the run, set by the sim before
+    # PRE so the preproc hook can read it; carried in the dispatch plan as
+    # provenance for which seed a planned test ran with.
+    resolved_seed: int | None = None
 
     def get_name(self):
         """
@@ -243,6 +258,47 @@ class TestConfig:
           TestbenchConfig: Testbench configuration containing HDL filelist.
         """
         return self.tb
+
+    def get_seed(self):
+        """
+        Retrieve the test's configured `seed:` directive.
+
+        Returns:
+          int | str | None: the pinned seed, "default" to opt out of the
+            run's seed policy, or None to follow it.
+        """
+        return self.seed
+
+    def get_sim_rand_seed_plusarg(self):
+        """
+        Retrieve the configured `sim-rand-seed-plusarg:` name.
+
+        Returns:
+          str | None: plusarg name the resolved seed is injected into, or
+            None when not configured.
+        """
+        return self.sim_rand_seed_plusarg
+
+    def get_resolved_seed(self):
+        """
+        Retrieve the seed this invocation resolved for the run.
+
+        Set before PRE so a preproc hook generating stimulus uses the same
+        seed the simulator runs with.
+
+        Returns:
+          int | None: the resolved seed, or None before resolution.
+        """
+        return self.resolved_seed
+
+    def set_resolved_seed(self, seed):
+        """
+        Record the seed this invocation resolved for the run.
+
+        Args:
+          seed (int | None): the resolved seed.
+        """
+        self.resolved_seed = seed
 
     def get_plusarg(self, key):
         """
@@ -485,6 +541,9 @@ class TestConfig:
             "xfail": self.xfail,
             "xfail_strict": self.xfail_strict,
             "default_timeout": self.default_timeout,
+            "seed": self.seed,
+            "sim_rand_seed_plusarg": self.sim_rand_seed_plusarg,
+            "resolved_seed": self.resolved_seed,
         }
 
     @classmethod
@@ -517,6 +576,9 @@ class TestConfig:
             xfail=d["xfail"],
             xfail_strict=d["xfail_strict"],
             default_timeout=d["default_timeout"],
+            seed=d.get("seed"),
+            sim_rand_seed_plusarg=d.get("sim_rand_seed_plusarg"),
+            resolved_seed=d.get("resolved_seed"),
         )
 
     def __str__(self):
@@ -553,6 +615,10 @@ class TestConfigFile:
     xfail: bool = False
     xfail_strict: bool = False
     resources: DispatchResourcesFile | None = None
+    seed: int | str | None = None
+    sim_rand_seed_plusarg: str | None = field(
+        rename="sim-rand-seed-plusarg", default=None
+    )
 
     def initialise(self, config_dir, tbs, suite_builder=None):
         tb = tbs[self.tb]
@@ -564,6 +630,23 @@ class TestConfigFile:
         # time so VlogSim.pre() / _expand_tests_with_sweep can open()
         # them regardless of the process cwd — required since #216,
         # which stopped changing cwd into the suite dir.
+        # `seed:` is an int pin or the literal "default" (opt out of the
+        # run's seed policy); anything else is a typo worth failing on at
+        # load rather than silently mis-seeding a run.
+        valid_seed = (
+            (
+                isinstance(self.seed, int)
+                and not isinstance(self.seed, bool)
+                and self.seed >= 0
+            )
+            or self.seed is None
+            or self.seed == "default"
+        )
+        if not valid_seed:
+            raise FatalRtlBuddyError(
+                f"test {self.name!r}: seed must be a non-negative integer "
+                f"or 'default' (got {self.seed!r})"
+            )
         preproc_path = _resolve_hook_path(self.preproc_path, config_dir)
         postproc_path = _resolve_hook_path(self.postproc_path, config_dir)
         sweep_path = _resolve_hook_path(self.sweep_path, config_dir)
@@ -586,6 +669,8 @@ class TestConfigFile:
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
             resources=self.resources,
+            seed=self.seed,
+            sim_rand_seed_plusarg=self.sim_rand_seed_plusarg,
         )
 
 

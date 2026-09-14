@@ -98,6 +98,7 @@ from .dispatch.base import BuildJobSpec, ElabJobSpec, TestJobSpec, telemetry_key
 from .dispatch.plan import (
     read_plan_config,
     read_plan_configs,
+    read_plan_seed,
     read_plan_token,
     write_plan,
 )
@@ -138,7 +139,7 @@ from .runner.power_runner import PowerRunner
 from .runner.power_results import PowerSkipResults
 from .runner.synth_runner import SynthRunner
 from .runner.synth_results import SynthSkipResults
-from .seed_mode import SeedMode
+from .seed_mode import SeedMode, seed_identity_for
 from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
 from .tools.axi_profile_rtl_buddy import (
@@ -1386,6 +1387,16 @@ class RtlBuddy:
                 "-l", "--rnd-last", help="reuse last generated seed", show_default=False
             ),
         ] = None,
+        seed: Annotated[
+            int | None,
+            typer.Option(
+                "--seed",
+                help="master seed: derive each test's sim seed "
+                "deterministically from it (re-pass the same value to "
+                "replay a run; incompatible with --rnd-new/--rnd-last)",
+                show_default=False,
+            ),
+        ] = None,
         share_build: Annotated[
             bool,
             typer.Option(
@@ -1460,6 +1471,16 @@ class RtlBuddy:
             )
         if test_names and test_filter is not None:
             raise FatalRtlBuddyError("test names and --filter are mutually exclusive")
+        if seed is not None:
+            if rnd_new or rnd_last:
+                raise FatalRtlBuddyError(
+                    "--seed is mutually exclusive with --rnd-new and --rnd-last: "
+                    "the master seed already determines every test's seed."
+                )
+            if seed < 0:
+                raise FatalRtlBuddyError(
+                    f"--seed must be a non-negative integer (got {seed})"
+                )
         merge_mode_count = sum(
             1
             for enabled in [
@@ -1529,6 +1550,7 @@ class RtlBuddy:
             command="test",
             test="all" if test_selection is None else ", ".join(test_selection),
             test_config=test_config,
+            seed=seed,
         )
 
         seed_mode: SeedMode = SeedMode.DEFAULT
@@ -1539,6 +1561,14 @@ class RtlBuddy:
             seed_mode = SeedMode.REPLAY
         self.share_build = share_build
         self.rebuild = rebuild
+        # The identity per-test seeds derive from under --seed (#566): the
+        # suite config's path relative to the invocation root — the stable
+        # part of where the suite lives across checkouts.
+        seed_identity = (
+            seed_identity_for(str(ctx.primary_config), self.invocation_cwd)
+            if seed is not None
+            else None
+        )
 
         # `rb test` enters the same planning path `rb regression --dispatch`
         # already uses (#440): one plan, one build job, and one gated sim job
@@ -1568,6 +1598,8 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 reg_level=reg_level,
                 start_level=start_level,
+                master_seed=seed,
+                seed_identity=seed_identity,
             )
         else:
             # Same two preconditions the dispatched regression states: no
@@ -1597,6 +1629,8 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 reg_level=reg_level,
                 start_level=start_level,
+                master_seed=seed,
+                seed_identity=seed_identity,
             )
             self._announce_dispatched_suite(
                 state,
@@ -1630,6 +1664,8 @@ class RtlBuddy:
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
         metadata = [self._builder_metadata_line(self.suite_cfg, test_selection)]
+        if seed is not None:
+            metadata.append(f"Master Seed: {seed}")
         cov_metadata, coverage_payload = self.coverage.build_metadata(
             suite_results,
             outdir=str(ctx.command_root),
@@ -1662,6 +1698,8 @@ class RtlBuddy:
             coverage = self._machine_coverage_payload(coverage_payload)
             if coverage is not None:
                 payload["coverage"] = coverage
+            if seed is not None:
+                payload["master_seed"] = seed
             if dispatch_backend is not None:
                 payload["reservation_advice"] = [
                     finding.as_event() for finding in reservation_findings
@@ -1961,6 +1999,15 @@ class RtlBuddy:
                 show_default="--run-id when --seed-mode replay",
             ),
         ] = None,
+        seed: Annotated[
+            int | None,
+            typer.Option(
+                "--seed",
+                help="master seed to derive this test's sim seed from "
+                "(#566); --plan overrides with the head's recorded value",
+                show_default=False,
+            ),
+        ] = None,
         share_build: Annotated[
             bool,
             typer.Option(
@@ -2061,11 +2108,26 @@ class RtlBuddy:
         # the envelope as stale, which still surfaces after it is written
         # (#362).
         run_token = None
+        plan_master_seed = None
+        plan_seed_identity = None
         if plan is not None:
             try:
                 run_token = read_plan_token(self._abs_invocation_path(plan))
             except FatalRtlBuddyError:
                 run_token = None
+            # Same read path and same tolerance: a seed-bearing plan is the
+            # head's record of the master seed this run was dispatched
+            # under — it wins over the argv flag so a job can never disagree
+            # with the head's expansion about which master is authoritative
+            # (#566).
+            try:
+                plan_master_seed, plan_seed_identity = read_plan_seed(
+                    self._abs_invocation_path(plan)
+                )
+            except FatalRtlBuddyError:
+                plan_master_seed, plan_seed_identity = None, None
+        master_seed = plan_master_seed if plan_master_seed is not None else seed
+        seed_identity = plan_seed_identity
         # The artifact-dir envelope this job also writes (#379) carries the
         # head's token too, so the two records of one run agree on identity.
         if run_token is not None:
@@ -2082,6 +2144,8 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 test_runner_mode={"sim_to_stdout": False},
                 suite_dir=suite_dir,
+                master_seed=master_seed,
+                seed_identity=seed_identity,
             )
             res = run_results[0]
             reported_name = test_cfg.get_name()
@@ -2243,11 +2307,16 @@ class RtlBuddy:
             # Head-expanded plan: the sweep hook already ran once on the
             # head, so just rebuild each config — no skip/level logic here
             # (the head already applied it when writing the plan).
-            configs = read_plan_configs(self._abs_invocation_path(plan))
+            plan_path = self._abs_invocation_path(plan)
+            configs = read_plan_configs(plan_path)
+            # PRE resolves the seed the sim job will run with (#566), so the
+            # build job's preproc must see the head's master seed too.
+            job_master_seed, job_seed_identity = read_plan_seed(plan_path)
         else:
             # Standalone invocation: expand here. _iter_suite_runnables
             # applies level filtering + sweep expansion (config-only, no
             # compile); its skip/setup rows are irrelevant to a build job.
+            job_master_seed, job_seed_identity = None, None
             discard = []
             configs = list(
                 self._iter_suite_runnables(
@@ -2284,6 +2353,8 @@ class RtlBuddy:
                 # per-process memo makes the whole suite's shared build
                 # rebuild exactly once (#494/#369).
                 rebuild=rebuild,
+                master_seed=job_master_seed,
+                seed_identity=job_seed_identity,
             )
             try:
                 res = runner.prepare()
@@ -2819,6 +2890,8 @@ class RtlBuddy:
         replay_run_id,
         test_runner_mode,
         suite_dir,
+        master_seed=None,
+        seed_identity=None,
     ):
         test_runner = TestRunner(
             name=self.name + "/testrunner",
@@ -2835,6 +2908,8 @@ class RtlBuddy:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            master_seed=master_seed,
+            seed_identity=seed_identity,
         )
 
         if len(run_ids) == 1:
@@ -2990,6 +3065,8 @@ class RtlBuddy:
         """Build one machine-mode result row, attaching structured coverage."""
         res = test_results.results
         row = {"name": test_name, "result": res["result"], "desc": res["desc"]}
+        if res.get("seed") is not None:
+            row["seed"] = res["seed"]
         if suite is not None:
             row["suite"] = suite
         if run_id is not None:
@@ -3041,6 +3118,8 @@ class RtlBuddy:
         run_ids=None,
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
+        master_seed=None,
+        seed_identity=None,
     ):
         if run_ids is None:
             run_ids = [None]
@@ -3067,6 +3146,8 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 test_runner_mode=test_runner_mode,
                 suite_dir=suite_dir,
+                master_seed=master_seed,
+                seed_identity=seed_identity,
             )
             self._append_results(
                 expanded_test_cfg.name,
@@ -3321,6 +3402,8 @@ class RtlBuddy:
         run_ids=None,
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
+        master_seed=None,
+        seed_identity=None,
     ):
         """Plan + build job + array fan-out for one suite; no waiting (#351).
 
@@ -3381,6 +3464,11 @@ class RtlBuddy:
             str(suite_cfg.get_path()),
             [e["cfg"] for e in entries],
             run_token,
+            # Master-seed run (#566): the jobs resolve their configs and the
+            # seed pair from this manifest, and each argv also carries
+            # --seed for the hook-expansion fallback.
+            master_seed=master_seed,
+            seed_identity=seed_identity,
         )
 
         # The suite's own `compile:` block, if any (#497) — the most
@@ -3547,6 +3635,7 @@ class RtlBuddy:
                     run_id=run_id,
                     seed_mode=seed_mode,
                     replay_run_id=replay_run_id,
+                    master_seed=master_seed,
                     builder_mode=self.rtl_builder_mode,
                     builder_override=self._builder_override,
                     extra_sim_timeout=self._extra_sim_timeout_override,
@@ -4797,6 +4886,16 @@ class RtlBuddy:
                 "(implies nothing about --share-build)",
             ),
         ] = False,
+        seed: Annotated[
+            int | None,
+            typer.Option(
+                "--seed",
+                help="master seed: derive every test's sim seed "
+                "deterministically from it (re-pass the same value to "
+                "replay the regression)",
+                show_default=False,
+            ),
+        ] = None,
         dispatch: Annotated[
             str,
             typer.Option(
@@ -4818,6 +4917,10 @@ class RtlBuddy:
         """
         run rtl regression
         """
+        if seed is not None and seed < 0:
+            raise FatalRtlBuddyError(
+                f"--seed must be a non-negative integer (got {seed})"
+            )
         merge_mode_count = sum(
             1
             for enabled in [
@@ -4849,6 +4952,7 @@ class RtlBuddy:
             reg_level=reg_level,
             start_level=start_level,
             share_build=share_build,
+            seed=seed,
         )
 
         start_dir = str(self.invocation_cwd)
@@ -4994,6 +5098,16 @@ class RtlBuddy:
                         dispatch_namespace=prepared["dispatch_namespace"],
                         reg_level=reg_level,
                         start_level=start_level,
+                        # Each suite's own identity mixes into its tests'
+                        # derived seeds — anchored to the regression's
+                        # invocation dir so the same project re-derives the
+                        # same values (#566).
+                        master_seed=seed,
+                        seed_identity=(
+                            seed_identity_for(suite_cfg.get_path(), start_dir)
+                            if seed is not None
+                            else None
+                        ),
                     )
                     self._announce_dispatched_suite(
                         state,
@@ -5072,6 +5186,12 @@ class RtlBuddy:
                     run_ids=[None],
                     seed_mode=SeedMode.DEFAULT,
                     replay_run_id=None,
+                    master_seed=seed,
+                    seed_identity=(
+                        seed_identity_for(suite_cfg.get_path(), start_dir)
+                        if seed is not None
+                        else None
+                    ),
                 )
                 reg_results.append(
                     {
@@ -5103,6 +5223,8 @@ class RtlBuddy:
             self._builder_metadata_line(list(self.reg_cfg.get_suite_configs())),
             f"Builder Mode: {self.rtl_builder_mode}",
         ]
+        if seed is not None:
+            metadata.append(f"Master Seed: {seed}")
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
@@ -5194,6 +5316,8 @@ class RtlBuddy:
             coverage = self._machine_coverage_payload(coverage_payload)
             if coverage is not None:
                 payload["coverage"] = coverage
+            if seed is not None:
+                payload["master_seed"] = seed
             if dispatch_backend is not None:
                 payload["reservation_advice"] = [
                     finding.as_event() for finding in reservation_findings
