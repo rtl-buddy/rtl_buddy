@@ -15,7 +15,11 @@ What these pin:
   with no artefacts at all exits 2 naming the commands that write them.
 
 Console assertions read `result.output` rather than caplog: the CLI's own
-events do not reach a caplog handler.
+events do not reach a caplog handler. Every such assertion of more than
+one word goes through `_flat()` — the console is Rich, Rich wraps at the
+terminal width, and the width is a property of the machine the suite
+runs on, so a sentence asserted verbatim passes on a wide terminal and
+fails in CI with the break landing mid-phrase (#570).
 """
 
 from __future__ import annotations
@@ -208,8 +212,15 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _flat(output: str) -> str:
-    """The console output with Rich's 80-column wrapping folded away, so a
-    sentence longer than a line can still be asserted on as one."""
+    """The console output with Rich's wrapping folded away, so a sentence
+    longer than a line can still be asserted on as one.
+
+    Not an optional convenience: Rich wraps to the *terminal's* width,
+    which is the CI runner's and not the developer's, so `"rb synth" in
+    result.output` is a test that passes locally and fails on a narrower
+    console with the break between the two words (#570). Any assertion
+    on more than one word of console text belongs here.
+    """
     return " ".join(output.split())
 
 
@@ -262,8 +273,8 @@ def test_phys_summary_says_which_half_is_missing(phys_project):
     )
 
     assert result.exit_code == 0, result.output
-    assert "no per-instance rows in this model" in result.output
-    assert "rb power" in result.output
+    assert "no per-instance rows in this model" in _flat(result.output)
+    assert "rb power" in _flat(result.output)
 
 
 def test_phys_summary_limit_truncates_the_rankings(phys_project):
@@ -456,7 +467,7 @@ def test_phys_module_names_both_namespaces_on_a_collision(phys_project):
         ["phys", "module", "sub", "--phys-dir", "verif/blk/artefacts/collision"],
     )
     assert rendered.exit_code == 0, rendered.output
-    assert "name collision" in rendered.output
+    assert "name collision" in _flat(rendered.output)
 
 
 def test_phys_module_renders_its_instances(phys_project):
@@ -465,7 +476,7 @@ def test_phys_module_renders_its_instances(phys_project):
     result = runner.invoke(rb.app, ["phys", "module", "DFF_X1"])
 
     assert result.exit_code == 0, result.output
-    assert "instances of DFF_X1: 2/2" in result.output
+    assert "instances of DFF_X1: 2/2" in _flat(result.output)
     # The table ellipsizes a path too long for the column, as the coverage
     # tables do; the prefix is what a reader matches on.
     assert "u_sub/u_leaf" in result.output
@@ -480,8 +491,8 @@ def test_phys_module_prints_the_join_note_instead_of_a_bare_empty_table(phys_pro
     result = runner.invoke(rb.app, ["phys", "module", "blk"])
 
     assert result.exit_code == 0, result.output
-    assert "liberty-cell names only" in result.output
-    assert "hierarchy join" in result.output
+    assert "liberty-cell names only" in _flat(result.output)
+    assert "hierarchy join" in _flat(result.output)
 
 
 def test_phys_module_carries_the_join_note_in_its_machine_payload(phys_project):
@@ -560,7 +571,7 @@ def test_phys_module_console_counts_the_instances_it_did_not_list(phys_project):
     result = runner.invoke(rb.app, ["phys", "module", "DFF_X1", "--limit", "1"])
 
     assert result.exit_code == 0, result.output
-    assert "instances of DFF_X1: 1/2" in result.output
+    assert "instances of DFF_X1: 1/2" in _flat(result.output)
 
 
 def test_phys_instance_machine_payload_honours_the_limit(phys_project):
@@ -599,7 +610,7 @@ def test_phys_instance_console_says_how_many_children_it_left_out(phys_project):
     result = runner.invoke(rb.app, ["phys", "instance", "u_sub", "--limit", "1"])
 
     assert result.exit_code == 0, result.output
-    assert "1/2 children shown; --limit 0 for all" in result.output
+    assert "1/2 children shown; --limit 0 for all" in _flat(result.output)
 
 
 def test_phys_module_unknown_name_exits_two_with_candidates(phys_project):
@@ -618,7 +629,7 @@ def test_phys_module_prints_candidates_without_machine_mode(phys_project):
     result = runner.invoke(rb.app, ["phys", "module", "subb"])
 
     assert result.exit_code == 2
-    assert "did you mean" in result.output
+    assert "did you mean" in _flat(result.output)
 
 
 # --- instance ---------------------------------------------------------------
@@ -662,9 +673,9 @@ def test_phys_instance_renders_the_rollup(phys_project):
     result = runner.invoke(rb.app, ["phys", "instance", "u_sub"])
 
     assert result.exit_code == 0, result.output
-    assert "prefix match, 2 leaf instance(s)" in result.output
-    assert "rollup (2)" in result.output
-    assert "subtree area" not in result.output
+    assert "prefix match, 2 leaf instance(s)" in _flat(result.output)
+    assert "rollup (2)" in _flat(result.output)
+    assert "subtree area" not in _flat(result.output)
 
 
 def test_phys_instance_unknown_path_exits_two_with_candidates(phys_project):
@@ -748,5 +759,65 @@ def test_phys_instance_says_which_half_is_missing(phys_project):
     )
 
     assert result.exit_code == 0, result.output
-    assert "no per-module rows in this model" in result.output
-    assert "rb synth" in result.output
+    assert "no per-module rows in this model" in _flat(result.output)
+    assert "rb synth" in _flat(result.output)
+
+
+# --- the read verbs write nothing, including the log -------------------------
+
+
+def _log_is_writable_only_by_owner(path: Path) -> bool:
+    """Whether ``chmod`` actually denies this process a write.
+
+    Root ignores the permission bits, and some CI images run as root, so
+    the test below would pass there for the wrong reason (nothing was
+    refused because nothing could be). Checked rather than assumed.
+    """
+    try:
+        with path.open("a"):
+            return False
+    except PermissionError:
+        return True
+
+
+def test_a_read_verb_does_not_open_the_project_log_for_writing(phys_project):
+    """A read verb answers from artefacts on disk and writes nothing —
+    the log included.
+
+    The file handler is opened for writing and a process's first open of
+    a path truncates it, so attaching one here failed a read in a
+    read-only checkout and, worse, silently emptied the log of the run
+    the reader was asking about. `list_only=True` now skips it (#561).
+    """
+    log = phys_project / "rtl_buddy.log"
+    log.write_text("the flow that produced these artefacts said this\n")
+    log.chmod(0o444)
+    if not _log_is_writable_only_by_owner(log):  # pragma: no cover - root CI
+        pytest.skip("this process can write a read-only file (running as root?)")
+    runner, rb = _runner()
+
+    try:
+        result = runner.invoke(rb.app, ["phys", "summary"])
+    finally:
+        log.chmod(0o644)
+
+    assert result.exit_code == 0, result.output
+    assert "verif/blk/artefacts/both/phys-manifest.json" in _flat(result.output)
+    assert log.read_text() == "the flow that produced these artefacts said this\n"
+
+
+def test_a_read_verb_leaves_the_previous_run_s_log_intact(phys_project):
+    """The truncating half of the same bug, on a writable log.
+
+    Asking what the last run measured is the moment its log matters
+    most; a read that empties it takes away the evidence it was called
+    to explain.
+    """
+    log = phys_project / "rtl_buddy.log"
+    log.write_text("power: OpenROAD reported 3.171 uW\n")
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "module", "blk"])
+
+    assert result.exit_code == 0, result.output
+    assert log.read_text() == "power: OpenROAD reported 3.171 uW\n"
