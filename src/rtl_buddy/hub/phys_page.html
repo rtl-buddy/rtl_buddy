@@ -94,6 +94,10 @@
       padding: .25rem .5rem;
     }
     input[type="search"] { min-width: 12rem; }
+    /* The run entries are a sentence apiece — run, top, backends, power
+       mode and activity — so the control is given room and then bounded,
+       rather than being sized by whichever run has the longest name. */
+    #run-select { max-width: 26rem; }
     input[type="search"]:focus, select:focus { outline: 1px solid var(--accent); }
     button {
       background: var(--panel-2); color: var(--fg); font: inherit;
@@ -274,6 +278,9 @@
 <body>
   <header>
     <h1>rtl-buddy-phy <small id="counts"></small></h1>
+    <label class="chk" id="run-picker" title="Which run this pane is showing. A project holds one artefact directory per partition, per corner and per power mode, and they are listed newest first — the entry marked `newest` is what a reload with nothing selected shows. Each entry reads: run · top · backends · power mode (what drove it) · experiment id. Hover an entry for its artefact directory and its configuration fingerprint.">
+      run <select id="run-select"></select>
+    </label>
     <label class="chk" title="Which physical metric this pane is ranked on. `cells` and `area` come from the synthesis half and rank the module table; `leakage` and `total` come from the power half and rank the instance table; `dynamic` is internal + switching, summed here rather than stored — no producer writes that column down. The other table keeps its own default ranking, so both halves stay readable.">
       metric <select id="metric"></select>
     </label>
@@ -382,6 +389,10 @@
 
   var els = {
     counts: document.getElementById('counts'),
+    // The run SELECTOR. `run` below is the <dl> of run facts at the
+    // bottom of the page — two different things, named apart.
+    runPicker: document.getElementById('run-picker'),
+    runSelect: document.getElementById('run-select'),
     metric: document.getElementById('metric'),
     search: document.getElementById('search'),
     optSelect: document.getElementById('opt-select'),
@@ -415,6 +426,7 @@
     searchCleared: false,   // a focus took the search off to show its row
     pending: null,      // phys_focus that arrived before the model did
     pendingSelection: null,  // selection_changed likewise, see focusInstanceFromWire
+    dir: null,          // the run this pane asked for, null for "the newest"
     generation: 0       // which load is the current one — see nextGeneration
   };
 
@@ -618,6 +630,101 @@
     return spaces;
   }
   // <<< namespace-split
+
+  // >>> run-selector
+  // How one run reads in the selector. Pure: entry in, string out.
+  //
+  // The entries come from `/phy.json`'s `runs` block, which is the
+  // `rb phys runs` payload verbatim — so the words here are the payload's
+  // own (`activity.label`, `fingerprint`) rather than a second
+  // vocabulary the pane invented for the same runs.
+  function runBackends(backends) {
+    var names = [];
+    ['synth', 'power'].forEach(function (half) {
+      var name = backends && backends[half];
+      if (name) { names.push(name); }
+    });
+    return names.join('+');
+  }
+
+  // The mode and what drove it: `dynamic (saif csr_smoke)`. A run from
+  // before either was recorded says what it knows rather than inventing
+  // the half it does not, and a run with no power half says nothing.
+  function runPower(entry) {
+    var mode = entry && entry.mode;
+    var label = entry && entry.activity && entry.activity.label;
+    if (mode && label) { return mode + ' (' + label + ')'; }
+    return mode || label || '';
+  }
+
+  // `run · top · backends · mode (activity) · exp-0007`, with every part
+  // that was not recorded left out. Two runs of one design share the
+  // top, so the parts after it are what tell them apart — which is the
+  // whole reason the producers record them.
+  function runLabel(entry) {
+    var parts = [(entry && entry.run) || (entry && entry.phys_dir) || '(unnamed)'];
+    [entry && entry.top, runBackends(entry && entry.backends), runPower(entry),
+     entry && entry.xplr && entry.xplr.id].forEach(function (part) {
+      if (part) { parts.push(part); }
+    });
+    return parts.join(' \u00b7 ');
+  }
+
+  // Which of the listed runs this pane is SHOWING, and which one a
+  // reload with nothing selected would show. Both are marked because
+  // they are different facts and either can be the surprising one: the
+  // pane opens on the newest, and a reader who has switched away needs
+  // to see both where they are and where the default went.
+  function runMarks(entry, shownManifest) {
+    var marks = [];
+    if (shownManifest && entry && entry.manifest === shownManifest) {
+      marks.push('shown');
+    }
+    if (entry && entry.newest) { marks.push('newest'); }
+    return marks.length ? ' [' + marks.join(', ') + ']' : '';
+  }
+
+  // The hover: where the run is, what shaped it, and when. Kept off the
+  // label because the label is scanned and this is looked up — a config
+  // fingerprint in every entry would push the parts that distinguish the
+  // runs off the end of the control.
+  function runTitle(entry) {
+    var lines = [(entry && entry.phys_dir) || ''];
+    [entry && entry.fingerprint,
+     entry && entry.xplr && entry.xplr.label,
+     entry && entry.generated_at,
+     entry && entry.error].forEach(function (line) {
+      if (line) { lines.push(line); }
+    });
+    return lines.join('\n');
+  }
+
+  // The run on screen, as a selector entry.
+  //
+  // The listing is headed (see `runs.count`), so the run being shown can
+  // legitimately not be in it — a reader switches to an older run and
+  // then a batch of newer ones lands. Synthesising its entry from the
+  // payload's own header keeps the control showing what the tables show;
+  // the alternative is a selector whose value silently disagrees with
+  // the page under it.
+  function shownEntry(payload) {
+    if (!payload) { return null; }
+    return {
+      run: payload.run,
+      top: payload.top,
+      phys_dir: (payload.artefacts || {}).phys_dir,
+      manifest: payload.manifest,
+      backends: payload.backends,
+      mode: payload.power_mode,
+      activity: payload.power_activity,
+      xplr: payload.xplr,
+      fingerprint: null,
+      generated_at: payload.generated_at,
+      newest: false,
+      error: null
+    };
+  }
+  // <<< run-selector
 
   // >>> path-normalise
   // The instance-path separator is the TOOL's choice: OpenSTA prints
@@ -1067,19 +1174,52 @@
   }
   // <<< load-generation
 
-  function load() {
+  // Which run to ask for, as a URL. `null` is the newest manifest under
+  // the project — the default `/phy.json` has always served and still
+  // does, so a pane nobody has touched opens on the run that finished
+  // last.
+  function phyUrl(dir) {
+    if (!dir) { return PHY_URL; }
+    return PHY_URL + (PHY_URL.indexOf('?') >= 0 ? '&' : '?') +
+           'dir=' + encodeURIComponent(dir);
+  }
+
+  function load(dir) {
     var generation = nextGeneration(state);
-    note('loading ' + PHY_URL + '…');
-    fetch(PHY_URL, { cache: 'no-store' }).then(function (r) {
+    var requested = dir || null;
+    var url = phyUrl(requested);
+    note('loading ' + url + '…');
+    fetch(url, { cache: 'no-store' }).then(function (r) {
       return r.json().then(function (body) { return { ok: r.ok, body: body }; });
     }).then(function (res) {
       if (!applies(state, generation)) { return; }
-      if (!res.ok) { showEmpty(res.body && res.body.error); return; }
+      if (!res.ok) { loadFailed(requested, res.body && res.body.error); return; }
+      // Only on success: a selection the server refused must not become
+      // the run this pane thinks it is showing, or the next reload would
+      // ask for it again.
+      state.dir = requested;
       ingest(res.body);
     }).catch(function (e) {
       if (!applies(state, generation)) { return; }
-      showEmpty('could not read ' + PHY_URL + ': ' + e);
+      loadFailed(requested, 'could not read ' + url + ': ' + e);
     });
+  }
+
+  // A load that came back 403, 404 or unreadable.
+  //
+  // With a model already on screen this is a REFUSED SWITCH, not an empty
+  // pane: the run the reader picked could not be read, and throwing away
+  // the run they were looking at to say so would cost them both. The
+  // selector is put back on what is actually displayed and the message
+  // goes to the status line. With nothing on screen — the first load —
+  // the empty state is the honest answer, and it names the two commands.
+  function loadFailed(requested, message) {
+    if (state.payload) {
+      renderRunPicker();
+      note(message || 'could not read that run', 'error');
+      return;
+    }
+    showEmpty(message);
   }
 
   // Everything the pane derived from a payload, dropped.
@@ -1112,6 +1252,8 @@
     resetInstanceWindow();
     els.counts.textContent = '';
     els.counts.title = '';
+    clear(els.runSelect);
+    els.runPicker.hidden = true;
     clear(els.metric);
     clear(els.banner);
     clear(els.totals);
@@ -1214,6 +1356,7 @@
     if (state.instance !== null && instanceRow(state.instance) === null) { state.instance = null; }
     resetInstanceWindow();
 
+    renderRunPicker();
     renderMetricPicker();
     renderAll();
 
@@ -1255,6 +1398,41 @@
       if (answerable(METRICS[i])) { return METRICS[i]; }
     }
     return METRICS[0];
+  }
+
+  // The run dropdown, rebuilt from the payload's own `runs` block.
+  //
+  // Hidden below two entries: a control holding the only run there is
+  // reads as a menu that does not work, and the run is named in the
+  // header and the run table either way.
+  function renderRunPicker() {
+    var block = (state.payload && state.payload.runs) || {};
+    var entries = (block.runs || []).slice();
+    var shown = (state.payload || {}).manifest || null;
+    var listed = entries.some(function (entry) { return entry.manifest === shown; });
+    if (!listed) {
+      // The listing is headed, so the run on screen can be off the end
+      // of it; see `shownEntry`.
+      var current = shownEntry(state.payload);
+      if (current) { entries.unshift(current); }
+    }
+    clear(els.runSelect);
+    els.runPicker.hidden = entries.length < 2;
+    entries.forEach(function (entry) {
+      var opt = elem('option', null, runLabel(entry) + runMarks(entry, shown));
+      opt.value = entry.phys_dir || '';
+      opt.title = runTitle(entry);
+      els.runSelect.appendChild(opt);
+      if (entry.manifest === shown) { els.runSelect.value = opt.value; }
+    });
+    // Said, not hidden: a reader who cannot find a run here has to know
+    // that this is a head of the list rather than all of it.
+    if (block.count > entries.length) {
+      var more = elem('option', null,
+        '… ' + (block.count - entries.length) + ' older run(s) — `rb phys runs`');
+      more.disabled = true;
+      els.runSelect.appendChild(more);
+    }
   }
 
   function renderMetricPicker() {
@@ -2043,6 +2221,18 @@
     return true;
   }
 
+  // An inbound `phys_focus` applies to the run this pane is SHOWING.
+  //
+  // That is the whole of the routing rule, and it is deliberately
+  // hub-local: `phys_focus` carries a target and a metric and says
+  // nothing about which run (#568). A sender addresses "the physical
+  // pane", the pane addresses one run at a time, and the reader is the
+  // one who chose it — a wire field naming a run would let a sender
+  // silently move a view its user is working in, and would need the
+  // lockstep schema bump the protocol reserves for changes that earn
+  // one. A target that names no row in the displayed run soft-misses
+  // and says so, exactly as it did before there was anything to select:
+  // switching runs is a gesture in the pane, not a message on the wire.
   function applyFocus(payload) {
     if (!state.payload) {
       // The hub replays a cached focus on connect, which routinely wins
@@ -2078,6 +2268,14 @@
   // wiring
   // ---------------------------------------------------------------
 
+  els.runSelect.addEventListener('change', function () {
+    // A switch is a re-fetch, not a client-side filter: the pane holds
+    // one model at a time and the rows of another run are not in this
+    // body. It flows through the ordinary ingest, so `modelIdentity`
+    // sees a different publication and drops the lens and the selection
+    // that were statements about the run being left.
+    load(els.runSelect.value);
+  });
   els.metric.addEventListener('change', function () {
     setMetric(els.metric.value);
   });
@@ -2087,7 +2285,13 @@
     renderModules();
     renderInstances();
   });
-  document.getElementById('reload').addEventListener('click', load);
+  // Reload re-reads the run being SHOWN, not the newest: a reader who
+  // selected a partition and then re-ran it is asking about that one.
+  // Selecting `newest` in the dropdown is how they go back to following
+  // discovery.
+  document.getElementById('reload').addEventListener('click', function () {
+    load(state.dir);
+  });
   // The strip's status word doubles as the take-back control while this
   // tab is superseded; `takeBack` no-ops in every other state, so the
   // listener is bound once here rather than added and removed.
@@ -2098,7 +2302,7 @@
 
   relabelSwitcher();
   connect();
-  load();
+  load(null);
 })();
 </script>
 </body>

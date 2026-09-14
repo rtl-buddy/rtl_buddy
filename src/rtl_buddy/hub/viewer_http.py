@@ -27,6 +27,7 @@ end-to-end so client code can be wired against it today.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -548,7 +549,7 @@ class ViewerServer:
             return self._handle_phys_page(connection)
 
         if path == phys_page.PHYS_JSON_ROUTE:
-            return await self._handle_phys_json(connection)
+            return await self._handle_phys_json(connection, query)
 
         if path == "/models":
             return await self._handle_models(connection)
@@ -831,12 +832,23 @@ class ViewerServer:
             content_type="text/html; charset=utf-8",
         )
 
-    async def _handle_phys_json(self, connection: ServerConnection) -> Response:
-        """``GET /phy.json`` — the newest run's physical model.
+    async def _handle_phys_json(
+        self, connection: ServerConnection, query: dict[str, list[str]]
+    ) -> Response:
+        """``GET /phy.json`` — one run's physical model.
 
         Read off disk on every request, like ``/cov.json``: the point of
         the reload button is that a synthesis finishing in another
         terminal shows up here.
+
+        ``?dir=<project-relative phys_dir>`` selects a run (#568); bare
+        ``/phy.json`` stays the newest manifest, so nothing about the
+        default changes. The value is validated against the project root
+        before anything is read — ``403`` outside it, ``404`` for a
+        directory with no manifest — by
+        :func:`rtl_buddy.hub.phys_page.contained_phys_dir`, which is
+        where the rule and its one documented divergence from the
+        coverage source route live.
         """
 
         if self.project_root is None:
@@ -849,7 +861,11 @@ class ViewerServer:
                 content_type="application/json",
             )
         status, body = await asyncio.to_thread(
-            phys_page.phys_payload_bytes, self.project_root
+            functools.partial(
+                phys_page.phys_payload_bytes,
+                self.project_root,
+                requested_dir=query.get(phys_page.PHYS_DIR_PARAM, [None])[0],
+            )
         )
         return _http_response(connection, status, body, content_type="application/json")
 

@@ -11,7 +11,7 @@ Phase 1 of #558 turned the artefacts into a model
 (:mod:`rtl_buddy.phys.query`); this module is the browser end, cast in
 the same mould as :mod:`~rtl_buddy.hub.cov_page`:
 
-* :func:`build_phys_payload` — the run's model + manifest as one JSON
+* :func:`build_phys_payload` — one run's model + manifest as one JSON
   body at ``GET /phy.json``, assembled by
   :func:`rtl_buddy.phys.query.summary_payload`, i.e. **the same builder
   ``rb phys summary`` uses**. The pane and the CLI can therefore
@@ -42,6 +42,30 @@ the rankings sort over ``model[half] or []``; ``halves`` and
 ``missing_halves`` are what distinguish "no synthesis ran here" from "a
 synthesis ran and the design has no cells". The pane reads those, not
 the row count, for its missing-half banner.
+
+**Which run, and who chooses it (#568).** A project holds one artefact
+directory per partition, per corner and per power mode, and the pane
+used to show whichever manifest happened to be newest at reload — with
+no way back to the one you were reading. ``?dir=<project-relative
+phys_dir>`` now selects a run; bare ``/phy.json`` still serves the
+newest, so nothing about the default changed. The value is validated
+against the project root before anything is read
+(:func:`contained_phys_dir`) — the query string is an untrusted input
+and a browser tab is reachable by anything that can reach the port.
+
+The menu the reader picks from rides in the body as ``runs``, the
+``rb phys runs`` payload verbatim. One request, because a menu fetched
+separately is empty for a round-trip and absent when that request is
+the one that fails; and cheap, because that listing reads a manifest per
+run and no model at all.
+
+**Focus routing is hub-local.** ``phys_focus`` is unchanged on the wire:
+it carries a target and a metric and says nothing about a run, and the
+pane applies it to whichever run it is displaying. A sender addresses
+"the physical pane"; the pane addresses one run at a time; the reader is
+the one who chose it. A run field on the wire would let a sender move a
+view its user is working in, and would cost the lockstep schema bump the
+protocol reserves for changes that earn one.
 
 The page is a hub *peer* registering as ``origin=phys``
 (:class:`~rtl_buddy.hub.protocol.Origin`), so it is open alongside the
@@ -79,6 +103,20 @@ PAGE_SCHEMA_VERSION = 1
 #: Route serving the run's physical model.
 PHYS_JSON_ROUTE = "/phy.json"
 
+#: The query parameter that selects one run at :data:`PHYS_JSON_ROUTE`
+#: (#568). Its value is a run's project-relative ``phys_dir``, exactly as
+#: the ``runs`` block below spells it, so the pane hands back what it was
+#: given rather than composing a path of its own.
+PHYS_DIR_PARAM = "dir"
+
+#: How many runs the payload's ``runs`` block carries. The pane needs a
+#: menu, not an inventory: a dropdown is scrolled, not searched, and a
+#: project with more runs than this has an ordering — newest first — that
+#: puts the ones anybody is switching between at the top. The block
+#: carries the untruncated count beside the list, so the pane can say
+#: that it is a head. `rb phys runs` is where the rest are.
+RUNS_LIMIT = 50
+
 #: Route serving the interactive page.
 PHYS_PAGE_ROUTE = "/phy"
 
@@ -109,6 +147,7 @@ def build_phys_payload(
     *,
     phys_dir: str | os.PathLike | None = None,
     manifest: str | os.PathLike | None = None,
+    runs_limit: int | None = RUNS_LIMIT,
 ) -> dict:
     """The newest run's physical model + manifest, as one JSON body.
 
@@ -125,13 +164,32 @@ def build_phys_payload(
     why the verb truncates; a table that cannot show the row you are
     looking for is just broken, which is why the pane does not.
 
+    The body also carries a ``runs`` block — the ``rb phys runs``
+    payload verbatim, headed at :data:`RUNS_LIMIT` (#568). It rides here
+    rather than behind a second endpoint because the pane needs it on
+    every load: the run selector has to be populated before a reader can
+    choose, and a menu fetched separately is a menu that is empty for a
+    round-trip and missing entirely when that request is the one that
+    fails. It costs one small read per run and no model, which is what
+    the manifests' identity blocks were put there for.
+
     Raises :class:`~rtl_buddy.phys.query.PhysQueryError` when there is
     nothing to serve; its message already names the commands that
     produce some, which is the actionable half of the 404.
     """
 
+    runs = phys_query.runs_payload(project_root, limit=runs_limit)
+    if phys_dir is None and manifest is None and runs["runs"]:
+        # The newest entry is the run this route has always served by
+        # default, and the listing has just walked the tree to find it.
+        # Handing it over rather than letting `load_context` discover it
+        # again is one project walk per request instead of two; an empty
+        # listing still falls through, so a project with no artefacts
+        # gets the refusal that names the commands.
+        phys_dir = os.path.join(str(project_root), runs["runs"][0]["phys_dir"])
     ctx = phys_query.load_context(project_root, phys_dir=phys_dir, manifest=manifest)
     payload = phys_query.summary_payload(ctx, limit=0)
+    payload["runs"] = runs
     payload["hub"] = {
         "schema_version": PAGE_SCHEMA_VERSION,
         "model": manifest_mod.project_relative(ctx.model_path, ctx.project_root),
@@ -160,11 +218,60 @@ def build_phys_payload(
     return payload
 
 
+def contained_phys_dir(project_root: str | os.PathLike, requested: str):
+    """The absolute artefact directory a ``?dir=`` names, or ``None``.
+
+    The same question ``GET /cov/source`` asks of its ``?path=``, and for
+    the same reason: the argument comes off a query string and a browser
+    tab is reachable by anything that can reach the port. ``None`` is the
+    refusal, which the caller turns into a 403.
+
+    The containment test is made on the **logical** path — absolute-ised,
+    so ``..`` collapses lexically and ``<root>/../secret`` is refused,
+    but with no symlink resolved — and only falls back to the resolved
+    pair. That is the one place this diverges from the coverage route,
+    and it follows the physical layer's own rule
+    (:func:`rtl_buddy.phys.manifest.project_relative`,
+    :func:`~rtl_buddy.phys.manifest.discover_manifests`): a suite whose
+    ``artefacts/`` is a symlink to scratch storage is a supported and
+    documented setup, discovery walks into it, and `rb phys runs` lists
+    the runs it finds there — so resolving first would 403 exactly the
+    directories the selector had just offered. The resolved comparison is
+    still tried second, for the reverse arrangement: a path handed in
+    through a link the project root is not reached through.
+
+    Weaker than the coverage route's resolve-first rule by exactly one
+    case — a symlink *inside* the project pointing out of it — and the
+    grant here is correspondingly narrower: what is read is a
+    ``phys-manifest.json`` in that directory and the model it names, not
+    an arbitrary file.
+    """
+    logical_root = Path(os.path.abspath(str(project_root)))
+    logical = Path(os.path.abspath(os.path.join(logical_root, str(requested))))
+    if _under(logical, logical_root):
+        return logical
+    if _under(
+        Path(os.path.realpath(logical)), Path(os.path.realpath(str(project_root)))
+    ):
+        return logical
+    return None
+
+
+def _under(path: Path, root: Path) -> bool:
+    """Whether ``path`` is ``root`` or sits below it."""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def phys_payload_bytes(
     project_root: str | os.PathLike,
     *,
     phys_dir: str | os.PathLike | None = None,
     manifest: str | os.PathLike | None = None,
+    requested_dir: str | None = None,
 ) -> tuple[int, bytes]:
     """``(status, body)`` for ``GET /phy.json``.
 
@@ -172,7 +279,41 @@ def phys_payload_bytes(
     commands that make some — the shape ``GET /cov.json`` and ``GET
     /graph.json`` both return — rather than an exception escaping into
     the websockets layer's opaque failure body.
+
+    ``requested_dir`` is the route's ``?dir=`` (#568): the
+    project-relative artefact directory of one run, as the payload's
+    ``runs`` block spells it. Absent, the newest manifest is served, and
+    that stays the default — a reader who has selected nothing gets the
+    run that finished last, exactly as before. Present, it is validated
+    against the project root before anything is read
+    (:func:`contained_phys_dir`): outside is ``403``, and a directory
+    with no manifest in it is ``404``, which is the same answer the
+    empty project gets and for the same reason — there is nothing there
+    to serve.
     """
+
+    if requested_dir:
+        selected = contained_phys_dir(project_root, requested_dir)
+        if selected is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "hub.phys_page.dir_outside_project",
+                requested=requested_dir,
+            )
+            return 403, json.dumps(
+                {"error": f"phys: {requested_dir} is outside the project root"}
+            ).encode("utf-8")
+        if not (selected / manifest_mod.MANIFEST_FILENAME).is_file():
+            return 404, json.dumps(
+                {
+                    "error": (
+                        f"phys: no {manifest_mod.MANIFEST_FILENAME} in "
+                        f"{requested_dir}; `rb phys runs` lists the runs there are"
+                    )
+                }
+            ).encode("utf-8")
+        phys_dir = selected
 
     try:
         payload = build_phys_payload(project_root, phys_dir=phys_dir, manifest=manifest)
@@ -244,11 +385,14 @@ it via hatchling's package data (it lives under ``src/rtl_buddy/``)."""
 __all__ = [
     "METRICS",
     "PAGE_SCHEMA_VERSION",
+    "PHYS_DIR_PARAM",
     "PHYS_JSON_ROUTE",
     "PHYS_PAGE_HTML",
     "PHYS_PAGE_ROUTE",
     "PRESENCE_TTL_SECONDS",
+    "RUNS_LIMIT",
     "build_phys_payload",
+    "contained_phys_dir",
     "phys_data_present",
     "phys_payload_bytes",
     "render_phys_html",
