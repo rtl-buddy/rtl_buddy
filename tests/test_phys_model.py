@@ -8,9 +8,12 @@ the reader looks at, with Yosys' RTLIL backslash prefix and its
 inconsistent spacing preserved — those are the parts that break.
 """
 
+import contextlib
 import hashlib
 import json
 import os
+import threading
+import time
 
 import pytest
 
@@ -28,6 +31,7 @@ from rtl_buddy.phys.manifest import (
     write_manifest,
 )
 from rtl_buddy.phys.model import (
+    MODEL_FILENAME,
     MODEL_SCHEMA_VERSION,
     build_power_model,
     build_synth_model,
@@ -1762,3 +1766,154 @@ def test_publish_power_reads_an_unparsable_report_as_no_breakdown(tmp_path):
     model = load_model(published["model"])
     assert model["instances"] is None
     assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+
+# ---------------------------------------------------------------------------
+# Two publishers, one artefact directory (#560)
+# ---------------------------------------------------------------------------
+
+
+def _serialisation_probe(monkeypatch, *, dwell=0.15):
+    """Widen the critical section and record whether two ever share it.
+
+    ``write_model`` is called from inside the lock by both writers here —
+    the publish path and the withdrawal — and from nowhere else, so a
+    counter around it sees exactly the critical sections. The dwell is what
+    makes an unserialised pair actually collide: without the lock the second
+    thread reads the pair while the first is between its two writes, which
+    is the interleaving the finding is about.
+    """
+    from rtl_buddy.phys import model as model_mod
+
+    real = model_mod.write_model
+    seen = {"now": 0, "max": 0}
+    guard = threading.Lock()
+
+    def _tracked(model, artefact_dir):
+        with guard:
+            seen["now"] += 1
+            seen["max"] = max(seen["max"], seen["now"])
+        try:
+            time.sleep(dwell)
+            return real(model, artefact_dir)
+        finally:
+            with guard:
+                seen["now"] -= 1
+
+    monkeypatch.setattr(model_mod, "write_model", _tracked)
+    return seen
+
+
+def _run_together(*calls):
+    """Run each callable in its own thread; return their results in order."""
+    results = [None] * len(calls)
+
+    def _capture(index, call):
+        results[index] = call()
+
+    threads = [
+        threading.Thread(target=_capture, args=(i, call))
+        for i, call in enumerate(calls)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not any(thread.is_alive() for thread in threads), "a publisher hung"
+    return results
+
+
+@pytest.mark.parametrize("power_first", [False, True])
+def test_two_concurrent_publishes_keep_both_halves(tmp_path, monkeypatch, power_first):
+    """The finding (#560 round-11 review, Codex P1). A co-named `rb synth`
+    and `rb power` publish into one artefact directory and each writes both
+    documents. Unserialised, the two read the same pair and write in an
+    interleaved order: crossed tokens, or a token-consistent pair from
+    whichever finished last that silently drops the other's just-published
+    half. Whichever order they arrive in, the directory must end up holding
+    one pair carrying both halves."""
+    _root, artefacts = _project_with_both_inputs(tmp_path)
+    seen = _serialisation_probe(monkeypatch)
+    calls = [
+        lambda: _publish_power_half(artefacts),
+        lambda: _publish_synth_half(artefacts),
+    ]
+    if not power_first:
+        calls.reverse()
+
+    results = _run_together(*calls)
+
+    assert [r["error"] for r in results] == [None, None]
+    model = load_model(artefacts / MODEL_FILENAME)
+    manifest = load_manifest(artefacts / MANIFEST_FILENAME)
+    assert model["publication"] == manifest["publication"]
+    assert len(model["modules"]) == 2
+    assert len(model["instances"]) == 3
+    assert manifest["synth"]["backend"] == "yosys"
+    assert manifest["power"]["backend"] == "openroad"
+    assert seen["max"] == 1
+
+
+def test_a_withdrawal_and_a_publish_do_not_interleave(tmp_path, monkeypatch):
+    """`invalidate_half` rewrites the same two documents, so it takes the same
+    lock: a publish landing inside it would read a pair one of whose halves is
+    already withdrawn and the other not."""
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+    seen = _serialisation_probe(monkeypatch)
+
+    results = _run_together(
+        lambda: invalidate_half(artefacts, "instances"),
+        lambda: _publish_synth_half(artefacts),
+    )
+
+    assert [r["error"] for r in results] == [None, None]
+    model = load_model(artefacts / MODEL_FILENAME)
+    manifest = load_manifest(artefacts / MANIFEST_FILENAME)
+    assert seen["max"] == 1
+    # Whoever wrote last wrote a whole pair, and the synthesis half it
+    # carries is this run's own — never a half-withdrawn document.
+    assert model["publication"] == manifest["publication"]
+    assert len(model["modules"]) == 2
+    assert manifest["synth"]["backend"] == "yosys"
+    # The withdrawal is not lost either way round: either it ran first and
+    # the publish inherited nothing to carry the power half forward, or it
+    # ran second and blanked what the publish had just written.
+    assert model["instances"] is None
+    assert all(manifest["power"][key] is None for key in POWER_KEYS)
+
+
+def test_a_lock_that_cannot_be_taken_is_a_publish_error(tmp_path, monkeypatch):
+    """The resilience rule reaches the lock too: a mutex this publisher
+    cannot take costs the run its by-product and a warning, never the run."""
+    from rtl_buddy.phys import publish as publish_mod
+
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+
+    @contextlib.contextmanager
+    def _held_by_someone_else(_artefact_dir):
+        raise TimeoutError("another publish has held the lock")
+        yield  # pragma: no cover - unreachable, keeps this a context manager
+
+    monkeypatch.setattr(publish_mod, "_publication_lock", _held_by_someone_else)
+
+    published = _publish_synth_half(artefacts)
+    withdrawn = invalidate_half(artefacts, "instances")
+
+    for result in (published, withdrawn):
+        assert "another publish has held the lock" in result["error"]
+        assert result["model"] is None and result["manifest"] is None
+
+
+def test_the_lock_file_is_not_mistaken_for_a_published_document(tmp_path):
+    """It lives beside the pair it guards and outlives the publish that made
+    it, so the readers must ignore it and a suffix clear must spare it."""
+    from rtl_buddy.tools.artifact_paths import (
+        PHYS_PUBLISH_LOCK_NAME,
+        PROTECTED_OUTPUT_PATTERNS,
+    )
+
+    _root, artefacts = _publish_both_halves_dir(tmp_path)
+
+    assert (artefacts / PHYS_PUBLISH_LOCK_NAME).exists()
+    assert PHYS_PUBLISH_LOCK_NAME in PROTECTED_OUTPUT_PATTERNS
+    assert discover_manifests(artefacts) == [str(artefacts / MANIFEST_FILENAME)]

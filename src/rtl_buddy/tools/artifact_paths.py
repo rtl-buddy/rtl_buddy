@@ -56,6 +56,14 @@ COV_MODEL_NAME = "coverage-model.json"
 PHYS_MANIFEST_NAME = "phys-manifest.json"
 PHYS_MODEL_NAME = "phys-model.json"
 
+#: The mutex a physical-metrics publisher holds while it reads, merges and
+#: rewrites that pair (#560). Co-named `rb synth` and `rb power` runs publish
+#: into one artefact directory and each writes *both* documents, so the
+#: read-merge-write has to be one writer at a time or two publishes can
+#: interleave into a pair that drops a half. Named here with the documents it
+#: guards, and protected below for the same reason they are.
+PHYS_PUBLISH_LOCK_NAME = "phys-publish.lock"
+
 #: `rb xplr`'s per-experiment ledger record and its git provenance sidecar,
 #: in ``artefacts/xplr/<exp-id>/``.
 XPLR_RECORD_NAME = "record.json"
@@ -151,6 +159,7 @@ SIBLING_OUTPUT_NAMES = (
     # user points cov_dir at one, and this one hits by construction.
     PHYS_MANIFEST_NAME,
     PHYS_MODEL_NAME,
+    PHYS_PUBLISH_LOCK_NAME,
     # rb xplr (xplr/). One level deeper than any artefact dir a flow clears,
     # in `artefacts/xplr/<exp-id>/`, and the scan never recurses — listed for
     # the same reason as axi-perf.json, so that stays true if the layout

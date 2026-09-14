@@ -64,6 +64,29 @@ rather than narrowing it: the analysis reads its *own* copy of the
 netlist, inside its own artefact directory, so the hashed bytes and the
 parsed bytes are one file no other command can rewrite.
 
+**One writer at a time.** A synthesis and a power run named the same
+thing publish into the same artefact directory, and each writes *both*
+documents. Two of them arriving together would read the same pair, merge
+their own half onto it, and write model and manifest in an interleaved
+order: two tokens crossed between the two documents, or — worse, because
+nothing later can tell — a token-consistent pair from whichever finished
+last, silently missing the half the other had just published. The
+read-merge-write is therefore a critical section, taken in
+:func:`_publication_lock` around every path that rewrites the pair
+(:func:`_publish` and :func:`invalidate_half` alike, since a withdrawal
+races a publish exactly as a publish races a publish).
+
+The lock is a small ``flock`` on :data:`PUBLISH_LOCK_FILENAME` in the
+artefact directory rather than either lock in
+:mod:`rtl_buddy.artifact_lock`: the tree lock is whole-process, held for
+a whole command and fails loud, and the build lock blocks forever by
+design because the alternative to waiting there is a corrupt build.
+Neither shape fits a sub-second mutex inside a by-product that may never
+fail a run. So this one blocks with a bounded timeout, and a lock it
+cannot take — timeout, or a directory it cannot open a lock file in — is
+caught by the same ``try`` every other failure in here is, and reported
+as a publish error for the caller to warn about.
+
 **The failing rerun.** Those six steps run only when the flow gets far
 enough to pass, so a rerun that fails earlier would leave the previous
 run's half published over artefacts its own stale-clear has just
@@ -74,12 +97,69 @@ whatever is already in the directory.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
+import os
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
+from ..tools.artifact_paths import PHYS_PUBLISH_LOCK_NAME as PUBLISH_LOCK_FILENAME
 from . import manifest as manifest_mod
 from . import model as model_mod
 from . import reports
+
+#: How long a publisher waits for the artefact directory's lock, and how
+#: often it retries while it waits. The critical section is two small
+#: reads and two small writes, so a wait of this length means a holder
+#: that has died in a way flock did not notice (an NFS mount that leaks
+#: the lock, say) rather than a queue — and a by-product that gives up
+#: and warns is better than one that hangs a flow's exit.
+PUBLISH_LOCK_TIMEOUT_SEC = 30.0
+PUBLISH_LOCK_POLL_SEC = 0.02
+
+
+@contextlib.contextmanager
+def _publication_lock(artefact_dir) -> Iterator[None]:
+    """Hold this artefact directory's publication mutex, or raise.
+
+    Guards the whole read-merge-write of the model + manifest pair. See
+    the module docstring for why the two locks in
+    :mod:`rtl_buddy.artifact_lock` are the wrong shape for it, and why
+    failing to take this one is a publish error rather than a run
+    failure — everything here runs inside the caller's ``try``.
+
+    A poll loop rather than a blocking ``flock``: the bound is the point,
+    and a blocking wait cannot be given one without a signal. The
+    descriptor is closed on the way out, which is what releases the lock;
+    the file itself stays for the next publisher, empty and harmless.
+
+    Cross-process by construction, and cross-thread too — each entry
+    opens its own descriptor, and ``flock`` contends between open file
+    descriptions rather than between processes.
+    """
+    directory = Path(artefact_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    fd = os.open(directory / PUBLISH_LOCK_FILENAME, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        deadline = time.monotonic() + PUBLISH_LOCK_TIMEOUT_SEC
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"{directory / PUBLISH_LOCK_FILENAME}: another publish "
+                        f"has held the lock for more than "
+                        f"{PUBLISH_LOCK_TIMEOUT_SEC:g}s"
+                    ) from None
+                time.sleep(PUBLISH_LOCK_POLL_SEC)
+            else:
+                break
+        yield
+    finally:
+        os.close(fd)
 
 
 #: Which manifest block each model half is published from, so
@@ -121,6 +201,11 @@ def invalidate_half(artefact_dir, own_half: str) -> dict:
     not be what makes two documents that were never written together
     start claiming they were.
 
+    Takes the same :func:`_publication_lock` a publish does, and for the
+    same reason: this rewrites both documents, so a publish landing in
+    the middle of it would read a pair one of whose halves is already
+    withdrawn and the other not.
+
     Never raises, for the reason the whole module gives — a by-product
     does not get to fail a run; the caller logs ``error`` at DEBUG.
 
@@ -128,30 +213,45 @@ def invalidate_half(artefact_dir, own_half: str) -> dict:
         when that document was not there to rewrite (nothing published
         into this directory yet, which is the common case).
     """
+    nothing = {"model": None, "manifest": None, "error": None}
     try:
-        model = model_mod.load_model_or_none(artefact_dir)
-        manifest = manifest_mod.load_manifest_or_none(artefact_dir)
-        if model is None and manifest is None:
-            return {"model": None, "manifest": None, "error": None}
-        # One token across both, as a publish does: what is being written
-        # here is a pair, and a reader must be able to tell it caught the
-        # two mid-rewrite. `None` when these two were not a pair to begin
-        # with — then each keeps its own token and stays unpaired.
-        publication = (
-            model_mod.new_publication() if _is_publication(model, manifest) else None
-        )
-        model_path = None
-        manifest_path = None
-        if model is not None:
-            blanked = model_mod.blank_half(model, own_half)
-            if publication is not None:
-                blanked["publication"] = publication
-            model_path = model_mod.write_model(blanked, artefact_dir)
-        if manifest is not None:
-            blanked = manifest_mod.blank_block(manifest, _HALF_BLOCK[own_half])
-            if publication is not None:
-                blanked["publication"] = publication
-            manifest_path = manifest_mod.write_manifest(blanked, artefact_dir)
+        # Unlocked look first, so the common case — a directory nothing has
+        # ever published into — neither creates a lock file nor waits on
+        # one. Everything it decides is decided again under the lock.
+        if (
+            model_mod.load_model_or_none(artefact_dir) is None
+            and manifest_mod.load_manifest_or_none(artefact_dir) is None
+        ):
+            return nothing
+        with _publication_lock(artefact_dir):
+            # Re-read inside the critical section: a publish may have
+            # rewritten the pair since the look above, and this withdrawal
+            # must blank what is here now rather than what was.
+            model = model_mod.load_model_or_none(artefact_dir)
+            manifest = manifest_mod.load_manifest_or_none(artefact_dir)
+            if model is None and manifest is None:
+                return nothing
+            # One token across both, as a publish does: what is being written
+            # here is a pair, and a reader must be able to tell it caught the
+            # two mid-rewrite. `None` when these two were not a pair to begin
+            # with — then each keeps its own token and stays unpaired.
+            publication = (
+                model_mod.new_publication()
+                if _is_publication(model, manifest)
+                else None
+            )
+            model_path = None
+            manifest_path = None
+            if model is not None:
+                blanked = model_mod.blank_half(model, own_half)
+                if publication is not None:
+                    blanked["publication"] = publication
+                model_path = model_mod.write_model(blanked, artefact_dir)
+            if manifest is not None:
+                blanked = manifest_mod.blank_block(manifest, _HALF_BLOCK[own_half])
+                if publication is not None:
+                    blanked["publication"] = publication
+                manifest_path = manifest_mod.write_manifest(blanked, artefact_dir)
     except Exception as e:  # noqa: BLE001 - a by-product never fails a run
         return {"model": None, "manifest": None, "error": str(e)}
     return {"model": model_path, "manifest": manifest_path, "error": None}
@@ -313,6 +413,13 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
     the pair the last publish left, or nothing at all —
     :func:`_existing_pair`.
 
+    Reading that pair and writing this one is one critical section, held
+    under :func:`_publication_lock`, so a co-named run publishing at the
+    same moment queues behind this one instead of merging onto the pair
+    this one is halfway through replacing. Building the fresh half stays
+    outside it: parsing this run's own raw artefacts is the slow part and
+    races nothing.
+
     The two merges are handed the same verdict on the half this run does
     not own. The model's is
     :func:`rtl_buddy.phys.model.may_inherit_other_half`; the manifest has
@@ -325,34 +432,37 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
     """
     try:
         publication = model_mod.new_publication()
+        # Outside the lock: parsing this run's own raw artefacts reads
+        # nothing another publisher can be writing, and it is the slow part.
         fresh = build()
         rows = fresh[half_key]
-        existing_model, existing_manifest = _existing_pair(artefact_dir)
-        if not model_mod.may_inherit_other_half(
-            existing_model, fresh, own_half=half_key
-        ):
-            existing_manifest = None
-        model = model_mod.merge_model(existing_model, fresh, own_half=half_key)
-        model["publication"] = publication
-        model_path = model_mod.write_model(model, artefact_dir)
-        project_root = manifest_mod.project_root_for_dir(artefact_dir)
-        half, values = block
-        manifest = manifest_mod.merge_manifest(
-            existing_manifest,
-            manifest_mod.build_manifest(
-                project_root=project_root,
-                phys_dir=artefact_dir,
-                command=command,
-                run=run,
-                top=top,
-                model_path=model_path,
-                totals=model["totals"],
-                **{half: _only_produced(values)},
-            ),
-            own_block=half,
-        )
-        manifest["publication"] = publication
-        manifest_path = manifest_mod.write_manifest(manifest, artefact_dir)
+        with _publication_lock(artefact_dir):
+            existing_model, existing_manifest = _existing_pair(artefact_dir)
+            if not model_mod.may_inherit_other_half(
+                existing_model, fresh, own_half=half_key
+            ):
+                existing_manifest = None
+            model = model_mod.merge_model(existing_model, fresh, own_half=half_key)
+            model["publication"] = publication
+            model_path = model_mod.write_model(model, artefact_dir)
+            project_root = manifest_mod.project_root_for_dir(artefact_dir)
+            half, values = block
+            manifest = manifest_mod.merge_manifest(
+                existing_manifest,
+                manifest_mod.build_manifest(
+                    project_root=project_root,
+                    phys_dir=artefact_dir,
+                    command=command,
+                    run=run,
+                    top=top,
+                    model_path=model_path,
+                    totals=model["totals"],
+                    **{half: _only_produced(values)},
+                ),
+                own_block=half,
+            )
+            manifest["publication"] = publication
+            manifest_path = manifest_mod.write_manifest(manifest, artefact_dir)
     except Exception as e:  # noqa: BLE001 - a by-product never fails a run
         return {"model": None, "manifest": None, "rows": None, "error": str(e)}
     return {
