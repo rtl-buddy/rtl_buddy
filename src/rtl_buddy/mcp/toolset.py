@@ -504,6 +504,17 @@ class Toolset:
         truncated answer is never mistaken for the whole one, and an
         agent that wants the whole one passes ``0``.
 
+        **A limit that is not a number is refused, not raised past the
+        envelope.** The server forwards a host's arguments to the handler
+        as they arrived, so ``limit`` can be ``null``, ``"ten"`` or a
+        list, and :func:`int` answers those with ``TypeError`` or
+        ``ValueError`` -- neither of which :meth:`Toolset.call` catches.
+        The caller would get a protocol-level failure for a bad argument
+        instead of the ``ok: false`` envelope every other bad question
+        gets, and an agent cannot read a traceback for the constraint it
+        broke. A conversion failure is the same class of mistake as a
+        negative limit and is reported the same way.
+
         **A negative limit is refused, not obeyed.** The schema says
         ``minimum: 0`` and nothing enforces it: the server hands the
         arguments an MCP host sent straight to the handler, so a schema
@@ -516,7 +527,14 @@ class Toolset:
         means all of them, because that is what the input's description
         promises.
         """
-        limit = int(args.get("limit", phys_query.DEFAULT_RANK_LIMIT))
+        raw = args.get("limit", phys_query.DEFAULT_RANK_LIMIT)
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            raise ToolError(
+                f"limit must be an integer, not {raw!r}; "
+                "0 lists every row and a positive number heads the list"
+            ) from None
         if limit < 0:
             raise ToolError(
                 f"limit must be 0 or greater, not {limit}; "
