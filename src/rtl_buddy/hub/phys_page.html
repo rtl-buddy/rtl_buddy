@@ -1277,24 +1277,71 @@
     els.counts.title = p.manifest ? 'from ' + p.manifest : '';
   }
 
+  // >>> half-advice
+  // Whether the command that fills a missing half could merge with what
+  // is already here.
+  //
+  // "Run the other command into this directory" is only true when the
+  // two halves can then pair. The merge is gated on the netlist hash
+  // both producers record (`may_inherit_other_half` in phys/model.py),
+  // so a half whose producer recorded none — a `netlist-source: pnr`
+  // power run reads a routed database and has no netlist to hash —
+  // cannot be merged onto: the run that would complete the model
+  // REPLACES it instead, and the banner would be sending the reader to
+  // destroy the rows they still have. `halves[<half>].netlist_hash` is
+  // the payload's echo of that (phys/query.py), and both halves absent
+  // is not the case at all: there is nothing to preserve, so the plain
+  // advice is the true one.
+  function halfAdvice(payload, half) {
+    var halves = (payload || {}).halves || {};
+    var other = half === 'modules' ? 'instances' : 'modules';
+    var present = halves[other] || {};
+    return {
+      other: other,
+      pairable: !(present.present === true && present.netlist_hash !== true)
+    };
+  }
+  // <<< half-advice
+
   function renderBanner() {
     clear(els.banner);
-    var missing = (state.payload && state.payload.missing_halves) || [];
+    var payload = state.payload || {};
+    var missing = payload.missing_halves || [];
     if (!missing.length) { return; }
     var box = elem('div', 'banner');
     box.appendChild(document.createTextNode(
       missing.length > 1
         ? 'This model has neither half yet. '
         : 'This model has no ' + missing[0] + ' half. '));
+    var impossible = false;
     missing.forEach(function (half, index) {
       if (index) { box.appendChild(document.createTextNode(' and ')); }
-      box.appendChild(document.createTextNode('Run '));
+      var advice = halfAdvice(payload, half);
+      if (advice.pairable) {
+        box.appendChild(document.createTextNode('Run '));
+        box.appendChild(elem('code', null, HALF_PRODUCER[half] || '?'));
+        box.appendChild(document.createTextNode(
+          ' into the same artefact directory to fill ' + half));
+        return;
+      }
+      impossible = true;
+      box.appendChild(document.createTextNode('Running '));
       box.appendChild(elem('code', null, HALF_PRODUCER[half] || '?'));
       box.appendChild(document.createTextNode(
-        ' into the same artefact directory to fill ' + half));
+        ' here would replace this model rather than complete it: the ' +
+        advice.other + ' half records no netlist hash to pair on'));
     });
-    box.appendChild(document.createTextNode(
-      '; a run of both, for the same top, merges into one model in either order.'));
+    if (impossible) {
+      box.appendChild(document.createTextNode('. Run '));
+      box.appendChild(elem('code', null, HALF_PRODUCER.modules));
+      box.appendChild(document.createTextNode(', then re-run '));
+      box.appendChild(elem('code', null, HALF_PRODUCER.instances));
+      box.appendChild(document.createTextNode(
+        ' on the netlist it writes, so both halves measure the same one.'));
+    } else {
+      box.appendChild(document.createTextNode(
+        '; a run of both, for the same top, merges into one model in either order.'));
+    }
     els.banner.appendChild(box);
   }
 

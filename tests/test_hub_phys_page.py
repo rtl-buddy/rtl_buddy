@@ -287,6 +287,7 @@ def test_a_half_the_run_did_not_produce_is_named_not_guessed(tmp_path: Path):
         "present": False,
         "rows": None,
         "produced_by": "rb synth",
+        "netlist_hash": False,
     }
     assert payload["missing_halves"] == ["modules"]
     assert payload["counts"]["modules"] is None
@@ -955,6 +956,53 @@ def test_a_failed_load_forgets_the_model_it_was_showing():
     # the mechanism that already exists for the fetch they beat.
     assert "state.pending = payload;" in js
     assert "state.pendingSelection = ip;" in js
+
+
+def test_the_banner_offers_the_merge_only_when_the_halves_could_pair():
+    """The finding (#562 round-10 review, Codex P2, the pane half of it).
+    A `netlist-source: pnr` power half records no netlist hash, so the
+    provenance gate makes a later `rb synth` REPLACE the model rather than
+    complete it — and the banner was telling the reader to run exactly
+    that "to fill modules"."""
+
+    out = _node(
+        _marked_js("half-advice")
+        + """
+        var paired = { halves: { instances: { present: true, netlist_hash: true } } };
+        var fromPnr = { halves: { instances: { present: true, netlist_hash: false } } };
+        var neither = { halves: {
+          modules: { present: false, netlist_hash: false },
+          instances: { present: false, netlist_hash: false }
+        } };
+        console.log(JSON.stringify([
+          halfAdvice(paired, 'modules'),
+          halfAdvice(fromPnr, 'modules'),
+          halfAdvice(neither, 'modules'),
+          halfAdvice({ halves: { modules: { present: true, netlist_hash: false } } },
+                     'instances'),
+          halfAdvice(null, 'modules')
+        ]));
+        """
+    )
+    paired, from_pnr, neither, reverse, empty = json.loads(out)
+    assert paired == {"other": "instances", "pairable": True}
+    assert from_pnr == {"other": "instances", "pairable": False}
+    # Nothing to preserve, so nothing to warn about: the plain advice is
+    # the true one when the other half is absent too.
+    assert neither == {"other": "instances", "pairable": True}
+    # Symmetric, because the gate is: a synthesis half with no hash is one
+    # a later `rb power` cannot merge onto either.
+    assert reverse == {"other": "modules", "pairable": False}
+    assert empty == {"other": "instances", "pairable": True}
+
+    # And the banner spends the answer on two different sentences, the
+    # unpairable one naming what does work.
+    js = _page_js()
+    body = js.split("function renderBanner() {")[1].split("\n  }")[0]
+    assert "into the same artefact directory to fill" in body
+    assert "would replace this model rather than complete it" in body
+    assert "half records no netlist hash to pair on" in body
+    assert "on the netlist it writes, so both halves measure the same one." in body
 
 
 def test_the_instances_column_is_a_dash_outside_the_liberty_namespace():
