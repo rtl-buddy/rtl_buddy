@@ -335,6 +335,63 @@ def test_no_master_seed_keeps_builder_config_seed(tmp_path, monkeypatch):
     assert _seed_arg(captured) == 31310
 
 
+def test_hook_mutating_seed_directive_cannot_diverge_sim(tmp_path, monkeypatch):
+    """A preproc that rewrites `seed:` mid-flight must not split stimulus
+    and simv onto different seeds: PRE's resolution is authoritative."""
+    preproc = tmp_path / "preproc.py"
+    preproc.write_text("test_cfg.seed = 9999\n")
+    captured = []
+    _stub_process_run(monkeypatch, captured)
+    test_cfg = _SeedTestCfg(preproc=str(preproc))
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_cfg=test_cfg,
+        master_seed=7,
+        seed_identity="tests.yaml",
+        seed_mode=SeedMode.DEFAULT,
+    )
+
+    assert sim.pre() is None
+    assert sim.execute() == 0
+    expected = derive_seed(7, "tests.yaml", "basic", None)
+    assert _seed_arg(captured) == expected
+
+
+def test_timed_out_run_records_its_seed(tmp_path, monkeypatch):
+    """A 4444 timeout never reaches post(); the runner must still stamp
+    the launched seed into the result envelope (#566)."""
+    from rtl_buddy.runner.test_runner import TestRunner
+
+    monkeypatch.setattr(vlog_sim_module, "task_status", lambda *a, **k: nullcontext())
+    monkeypatch.setattr(
+        vlog_sim_module,
+        "run_managed_process",
+        lambda *a, **k: ManagedProcessResult(returncode=4444, timed_out=True),
+    )
+    root_cfg = _DummyRootCfg(_DummyBuilderCfg())
+    root_cfg.get_project_rootdir = lambda: str(tmp_path)
+    runner = TestRunner(
+        name="t/testrunner",
+        root_cfg=root_cfg,
+        test_cfg=_SeedTestCfg(),
+        test_runner_mode={"sim_to_stdout": False},
+        rtl_builder_mode="sim",
+        run_depth=None,
+        suite_dir=str(tmp_path),
+        master_seed=7,
+        seed_identity="tests.yaml",
+    )
+    # compile() would invoke the builder; skip straight past it.
+    monkeypatch.setattr(TestRunner, "compile_prepared", lambda self, run_ids=None: None)
+
+    res = runner.run()
+
+    expected = derive_seed(7, "tests.yaml", "basic", None)
+    assert res.results["result"] == "FAIL"
+    assert res.results["seed"] == expected
+
+
 # ---------------------------------------------------------------------------
 # CLI surface
 

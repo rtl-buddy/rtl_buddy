@@ -1294,9 +1294,10 @@ class VlogSim:
         self.seed_mode = seed_mode
         self.master_seed = master_seed
         self.seed_identity = seed_identity
-        # Seeds resolved at PRE keyed by run_id: a NEW-mode draw made for
-        # the hook is the value that run's execute() must reuse, or the
-        # preproc would see a seed no simulation ran with.
+        # (seed, source) pairs resolved at PRE keyed by run_id: the draw or
+        # derivation made for the hook is the value that run's execute()
+        # must reuse for every policy, or a hook that mutates `seed:` would
+        # diverge the simv's seed from the one its stimulus used (#566).
         self._seed_stash = {}
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
@@ -2600,10 +2601,10 @@ class VlogSim:
         # (run_ids[0]); that run's execute() reuses the stash, later runs
         # re-resolve their own. A missing replay file resolves to None and
         # is left for execute()'s error path rather than failing PRE.
-        seed, _source = self._resolve_seed(
+        seed, source = self._resolve_seed(
             self.run_id, self.seed_mode, self.replay_run_id
         )
-        self._seed_stash[self.run_id] = seed
+        self._seed_stash[self.run_id] = (seed, source)
         self._apply_resolved_seed(seed)
 
         script_path = self.test_cfg.get_preproc_path()
@@ -4005,10 +4006,11 @@ class VlogSim:
 
         run_cmd = [self._get_simv_path()]
 
-        # A NEW-mode draw PRE already made for this run_id is the one this
-        # execute() must use — the preproc generated stimulus from it.
-        if seed_mode == SeedMode.NEW and self._seed_stash.get(run_id) is not None:
-            seed, seed_source = self._seed_stash[run_id], "new"
+        # The seed PRE already resolved for this run_id is the one this
+        # execute() must use — the preproc generated stimulus from it, and
+        # it may have mutated the `seed:` directive it was resolved from.
+        if run_id in self._seed_stash:
+            seed, seed_source = self._seed_stash[run_id]
         else:
             seed, seed_source = self._resolve_seed(run_id, seed_mode, replay_run_id)
 

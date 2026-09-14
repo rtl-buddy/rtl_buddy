@@ -344,9 +344,8 @@ class TestRunner:
             replay_run_id=self.replay_run_id,
         )
         if execute_returncode == 4444:
-            return SimTimeoutResults(name=self.name + "/results")
-
-        if self.run_depth == RunDepth.SIM:
+            result = SimTimeoutResults(name=self.name + "/results")
+        elif self.run_depth == RunDepth.SIM:
             log_event(
                 logger,
                 logging.INFO,
@@ -355,13 +354,18 @@ class TestRunner:
                 run_id=self.run_id,
                 stage="sim",
             )
-            return EarlyStopResults(
+            result = EarlyStopResults(
                 name=self.name + "/results", desc="Stopped early at sim"
             )
-
-        # run post-proc
-        results = vlog_sim.post(run_id=self.run_id)
-        return results
+        else:
+            # run post-proc
+            result = vlog_sim.post(run_id=self.run_id)
+        # The seed this run launched with (#566): post() already stamps it
+        # on the normal path; a timeout, a SIM early-stop, and a subclass
+        # post() (Cocotb) never see it without this.
+        if vlog_sim.last_seed is not None:
+            result.results.setdefault("seed", vlog_sim.last_seed)
+        return result
 
     def run_multiple(self, run_ids):
         """
@@ -442,6 +446,11 @@ class TestRunner:
                 )
             else:
                 result = vlog_sim.post(run_id=run_id)
+            # Same reason as in run(): timeout/early-stop runs launch with
+            # a seed but never reach post() to record it (#566). Per-run,
+            # inside the loop — the next execute() overwrites last_seed.
+            if vlog_sim.last_seed is not None:
+                result.results.setdefault("seed", vlog_sim.last_seed)
             # This run's own launch, taken now: the next run's `execute()`
             # restates the executable it launches, and a shared binary
             # replaced between two seeds is two different launches.
