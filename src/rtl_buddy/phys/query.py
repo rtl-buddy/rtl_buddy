@@ -103,7 +103,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from . import manifest as manifest_mod
-from .model import MODEL_SCHEMA_VERSION, load_model
+from .model import MODEL_SCHEMA_VERSION, load_model, provenance_of
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,12 @@ POWER_COLUMNS = ("total_uw", "internal_uw", "switching_uw", "leakage_uw")
 #: one-sided document can say what to run rather than only what is
 #: absent. Keyed by the model's own block names.
 HALF_PRODUCER = {"modules": "rb synth", "instances": "rb power"}
+
+#: Which ``provenance`` block each half's producer fills. The read side of
+#: the model's own pairing (its ``_HALVES`` table), spelled here rather
+#: than reached for privately — ``tests/test_phys_verbs.py`` pins the two
+#: against each other so a third half cannot be added to one alone.
+HALF_PROVENANCE = {"modules": "synth", "instances": "power"}
 
 #: The characters a hierarchical instance path is built from. Both are
 #: admitted because the separator is the *tool's* choice — OpenSTA
@@ -545,14 +551,29 @@ def halves_block(model: dict) -> dict:
     both runs holds both. ``rows`` is the row count when present and
     ``null`` when not — ``0`` is a real answer (a design with no cells)
     and must not read as "missing".
+
+    ``netlist_hash`` is the provenance echo: whether this half's producer
+    recorded the hash of the netlist it measured. It is what a surface
+    needs before telling anyone how to fill the *other* half, because the
+    merge is gated on that hash
+    (:func:`rtl_buddy.phys.model.may_inherit_other_half`). A half without
+    one — a ``netlist-source: pnr`` power run reads a routed database and
+    has no netlist to hash — cannot be paired with, so the run that would
+    otherwise complete the model replaces it instead. A boolean rather
+    than the hash itself: whether there is one is the whole of what a
+    consumer can act on, and the digest belongs to the model.
     """
     block = {}
+    provenance = provenance_of(model)
     for half, command in HALF_PRODUCER.items():
         rows = model.get(half)
         block[half] = {
             "present": rows is not None,
             "rows": None if rows is None else len(rows),
             "produced_by": command,
+            "netlist_hash": (
+                provenance[HALF_PROVENANCE[half]]["netlist_sha256"] is not None
+            ),
         }
     return block
 

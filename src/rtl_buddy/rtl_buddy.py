@@ -6759,13 +6759,42 @@ class RtlBuddy:
 
     @staticmethod
     def _phys_missing_half_notes(payload) -> None:
-        """Say which half is absent and which command would produce it."""
+        """Say which half is absent and what would actually produce it.
+
+        The obvious advice — run the other command into this directory —
+        is only true when the two halves can pair. The merge is gated on
+        the netlist hash both producers record, so a half whose producer
+        recorded none (a `netlist-source: pnr` power run reads a routed
+        database and has no netlist to hash) cannot be merged onto: the
+        run that would complete the model *replaces* it instead, and the
+        note would be sending the user to destroy the very rows they
+        still have. The payload's `halves` block echoes that per half
+        (`netlist_hash`), so the note names what does work — synthesise,
+        then measure the netlist it wrote, so the pair shares one.
+        """
+        halves = payload.get("halves") or {}
         for half in payload.get("missing_halves") or []:
-            produced_by = payload["halves"][half]["produced_by"]
+            entry = halves.get(half) or {}
+            produced_by = entry.get("produced_by")
+            noun = "module" if half == "modules" else "instance"
+            other = "instances" if half == "modules" else "modules"
+            present = halves.get(other) or {}
+            if present.get("present") and not present.get("netlist_hash"):
+                note = (
+                    f"no per-{noun} rows in this model - `{produced_by}` here "
+                    f"would replace it rather than complete it: the "
+                    f"{'power' if other == 'instances' else 'synthesis'} half "
+                    f"records no netlist hash to pair on. Run `rb synth`, then "
+                    f"re-run `rb power` on the netlist it writes, so both "
+                    f"halves measure the same one"
+                )
+            else:
+                note = (
+                    f"no per-{noun} rows in this model - run `{produced_by}` "
+                    f"into the same artefact directory to add them"
+                )
             emit_console_text(
-                f"no per-{'module' if half == 'modules' else 'instance'} rows "
-                f"in this model - run `{produced_by}` into the same artefact "
-                f"directory to add them",
+                note,
                 style="yellow",
                 stream="stdout",
                 markup=False,
