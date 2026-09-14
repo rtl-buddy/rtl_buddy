@@ -1376,8 +1376,11 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
     assert "artefacts/demo_synth/synth_stat.json" in synth
     assert "per-module breakdown" in synth
     # The verbs exist as of this branch, so the message names the one that
-    # would have reported the missing rows.
+    # would have reported the missing rows — and names *what* is missing,
+    # since a power half in the same model still has rows to answer from.
     assert "`rb phys module`" in synth
+    assert "per-module synthesis rows" in synth
+    assert "per-instance power rows in the same model still answer" in synth
 
     power = _human_message(
         "power.phys_model_incomplete",
@@ -1392,6 +1395,8 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
     assert "per-instance breakdown" in power
     assert "disk full" in power
     assert "`rb phys instance`" in power
+    assert "per-instance power rows" in power
+    assert "per-module synthesis rows in the same model still answer" in power
 
 
 # ---------------------------------------------------------------------------
