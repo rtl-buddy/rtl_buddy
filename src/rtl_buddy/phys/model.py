@@ -83,6 +83,15 @@ that half in place would leave a measurement discoverable whose evidence
 is gone — :func:`rtl_buddy.phys.publish.invalidate_half` nulls it
 (:func:`blank_half`) at clear time instead, and the other half stays.
 
+**Identity, beside the measurement.** ``provenance`` also records what
+*shaped* the run: a config fingerprint on both halves, and on the power
+half the mode (``static``/``dynamic``) and the activity behind the
+numbers (:mod:`rtl_buddy.phys.provenance`). None of it is read by the
+merge — the netlist hash decides that, and it is the stronger test —
+but without it two experiments of one design are two documents with the
+same ``top`` and nothing to tell them apart, and a power figure is a
+number with no statement of what it is a number *of*.
+
 **Publication token.** The model and the manifest are two files written
 one after the other, so a reader can pair a fresh model with a stale
 manifest. Both carry the same ``publication`` token
@@ -134,10 +143,19 @@ TOTALS_KEYS = (
     "total_uw",
 )
 
-#: What each half records about the netlist it measured. One key today,
-#: named as a tuple for the same reason :data:`TOTALS_KEYS` is: a half
-#: that recorded nothing still writes it, ``null``.
-PROVENANCE_KEYS = ("netlist_sha256",)
+#: What *both* halves record about the run behind them: the netlist it
+#: measured, and the configuration that shaped it
+#: (:func:`rtl_buddy.phys.provenance.config_block`). Named as a tuple for
+#: the same reason :data:`TOTALS_KEYS` is: a half that recorded nothing
+#: still writes them, ``null``.
+PROVENANCE_KEYS = ("netlist_sha256", "config")
+
+#: What the power half records on top of those (#568): which kind of
+#: power this is, and what drove the switching behind it
+#: (:func:`rtl_buddy.phys.provenance.activity_block`). Power-only because
+#: the concepts are: a synthesis has no mode and no activity, and a block
+#: of nulls saying so would be shape for its own sake.
+POWER_PROVENANCE_KEYS = ("mode", "activity")
 
 #: The two halves of the document, the totals each one owns, and the
 #: ``provenance`` block each one fills. Named once because the merge and
@@ -149,6 +167,16 @@ _HALVES = (
     ("modules", _SYNTH_TOTALS, "synth"),
     ("instances", _POWER_TOTALS, "power"),
 )
+
+#: Every provenance key each block carries, derived from the two tuples
+#: above so the shared keys cannot be re-spelled per block. A reader
+#: normalises against this (:func:`provenance_of`) and so does the
+#: blanking, which is what keeps a key added to one path from being
+#: silently absent on the other.
+BLOCK_PROVENANCE_KEYS = {
+    block: PROVENANCE_KEYS + (POWER_PROVENANCE_KEYS if block == "power" else ())
+    for _half, _totals, block in _HALVES
+}
 
 
 #: The provenance block each half's producer fills, and the one the
@@ -180,8 +208,8 @@ def _empty_totals() -> dict:
 
 def _empty_provenance() -> dict:
     return {
-        block: {key: None for key in PROVENANCE_KEYS}
-        for _half, _totals, block in _HALVES
+        block: {key: None for key in keys}
+        for block, keys in BLOCK_PROVENANCE_KEYS.items()
     }
 
 
@@ -236,6 +264,7 @@ def build_synth_model(
     area_um2: float | None = None,
     gate_count: int | None = None,
     netlist_sha256: str | None = None,
+    config: dict | None = None,
 ) -> dict:
     """The synthesis half: per-module rows plus the design totals.
 
@@ -250,9 +279,18 @@ def build_synth_model(
         which is what a power half already in the directory has to have
         been measured on to be inherited — see :func:`merge_model`.
         ``None`` when the flow wrote no netlist this could read.
+    :param config: the config fingerprint of the synthesis behind these
+        rows (:func:`rtl_buddy.phys.provenance.config_block`) — the
+        platform, the constraints and a digest of the effective tool
+        options. Recorded for *identity*, never for the merge: which
+        netlist a half measured is what decides whether it may be
+        inherited, and a config comparison is weaker than that hash in
+        both directions — one option set can produce two netlists, and
+        two can produce one (#568).
     """
     model = _base(top)
     model["provenance"]["synth"]["netlist_sha256"] = netlist_sha256
+    model["provenance"]["synth"]["config"] = config
     model["modules"] = None if modules is None else [dict(row) for row in modules]
     model["totals"]["area_um2"] = area_um2
     model["totals"]["cell_count"] = gate_count
@@ -268,6 +306,9 @@ def build_power_model(
     leakage_w: float | None = None,
     total_w: float | None = None,
     netlist_sha256: str | None = None,
+    config: dict | None = None,
+    mode: str | None = None,
+    activity: dict | None = None,
 ) -> dict:
     """The power half: per-instance rows plus the design totals.
 
@@ -283,9 +324,24 @@ def build_power_model(
         rows still describe what it just wrote. ``None`` when the run
         read something that is not a netlist at all — a post-PnR routed
         database — or when the file could not be hashed.
+    :param config: the config fingerprint of this analysis; see
+        :func:`build_synth_model`.
+    :param mode: ``"static"`` or ``"dynamic"`` — which kind of power
+        these numbers are. Recorded because the rows cannot say: a
+        leakage-plus-internal total and a SAIF-driven one are different
+        measurements printed in the same column, and a run list that
+        could not tell them apart would present two answers as two
+        revisions of one (#568).
+    :param activity: what drove the switching
+        (:func:`rtl_buddy.phys.provenance.activity_block`) — the
+        defaults, a synthetic toggle/duty pair, or the trace and the
+        test behind it.
     """
     model = _base(top)
     model["provenance"]["power"]["netlist_sha256"] = netlist_sha256
+    model["provenance"]["power"]["config"] = config
+    model["provenance"]["power"]["mode"] = mode
+    model["provenance"]["power"]["activity"] = activity
     model["instances"] = None if instances is None else [dict(row) for row in instances]
     model["totals"]["internal_uw"] = _to_uw(internal_w)
     model["totals"]["switching_uw"] = _to_uw(switching_w)
@@ -418,10 +474,10 @@ def provenance_of(model) -> dict:
     recorded = model.get("provenance") if isinstance(model, dict) else None
     recorded = recorded if isinstance(recorded, dict) else {}
     normalised = {}
-    for _half, _totals, block in _HALVES:
+    for block, keys in BLOCK_PROVENANCE_KEYS.items():
         entry = recorded.get(block)
         entry = entry if isinstance(entry, dict) else {}
-        normalised[block] = {key: entry.get(key) for key in PROVENANCE_KEYS}
+        normalised[block] = {key: entry.get(key) for key in keys}
     return normalised
 
 
@@ -459,7 +515,9 @@ def blank_half(model: dict, own_half: str) -> dict:
         if half != own_half:
             continue
         blanked[half] = None
-        blanked["provenance"][block] = {key: None for key in PROVENANCE_KEYS}
+        blanked["provenance"][block] = {
+            key: None for key in BLOCK_PROVENANCE_KEYS[block]
+        }
         for key in totals_keys:
             blanked["totals"][key] = None
     return blanked

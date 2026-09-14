@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
+from ..phys.provenance import activity_block
 from ..phys.publish import invalidate_half, publish_power, sha256_of
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
@@ -682,11 +683,23 @@ class OpenRoadPower(BasePower):
         `netlist-source: pnr` run resolves no netlist at all -- it reads the
         routed ODB -- so it records none, and nothing is inherited in either
         direction.
+
+        The mode and the activity go in beside them (#568). Without them
+        the model records a µW figure with no statement of what it is a
+        figure OF: static leakage-plus-internal and a SAIF-driven dynamic
+        total print in the same column, and two runs of one design that
+        differ only in their stimulus are one document read twice. Both
+        are the resolved values this run actually dispatched on -- the
+        same `get_mode()` / `get_activity_source()` pair
+        `_emit_activity_cmds` branches on -- so the record cannot claim a
+        source the Tcl did not use.
         """
         try:
             inputs = self._resolve_inputs()
         except Exception:  # noqa: BLE001 - resolution already succeeded once
             inputs = {}
+        activity = self.power_cfg.get_activity()
+        source = self.power_cfg.get_activity_source()
         published = publish_power(
             artefact_dir=self.artefact_dir,
             top=inputs.get("top"),
@@ -694,6 +707,24 @@ class OpenRoadPower(BasePower):
             run=self.power_cfg.get_name(),
             netlist_source=self.power_cfg.get_netlist_source(),
             netlist_sha256=self._netlist_sha256,
+            mode=self.power_cfg.get_mode(),
+            activity=activity_block(
+                source=source,
+                trace=activity.saif or activity.vcd,
+                scope=activity.scope,
+                toggle_rate=activity.default_toggle_rate,
+                duty=activity.default_static_prob,
+            ),
+            platform=self.power_cfg.get_platform(),
+            constraints=self.power_cfg.get_constraints(),
+            options={
+                "tool": self.power_cfg.get_tool_name(),
+                "netlist_source": self.power_cfg.get_netlist_source(),
+                "mode": self.power_cfg.get_mode(),
+                "activity_source": source,
+                "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),
+                "tool_overrides": self.power_cfg.tool_overrides,
+            },
             report_path=self._report_path(),
             instances_path=self._instances_report_path(),
             cells_path=self._instances_cells_path(),

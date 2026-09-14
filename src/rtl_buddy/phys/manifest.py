@@ -60,10 +60,27 @@ Schema (``schema_version`` 1)::
       "totals": {"area_um2": .., "cell_count": .., "internal_uw": ..,
                  "switching_uw": .., "leakage_uw": .., "total_uw": ..},
       "synth": {"backend": "yosys"|"openroad"|null, "run": .., "stats": ..,
-                "netlist": .., "log": ..},
+                "netlist": .., "log": .., "config": {..}|null},
       "power": {"backend": "openroad"|null, "run": .., "netlist_source": ..,
-                "report": .., "instances": .., "cells": .., "log": ..}
+                "report": .., "instances": .., "cells": .., "log": ..,
+                "mode": "static"|"dynamic"|null, "activity": {..}|null,
+                "config": {..}|null}
     }
+
+The ``config``, ``mode`` and ``activity`` entries are the run's
+*identity* (#568), written here as well as into the model's provenance
+so a listing of every run in a project — `rb phys runs`, the pane's run
+selector — can tell partitions, power modes and optimisation
+experiments apart from the manifests alone, without opening a model
+per run. Their shapes are :mod:`rtl_buddy.phys.provenance`'s.
+Documents written before them carry neither key; every reader here
+normalises an absent block to ``null``, which is what the stable-keys
+rule promises anyway. The paths *inside* those two blocks — a
+constraints file, an activity trace — are project-relative like every
+other path in the document, but they are made so one step earlier, by
+:func:`rtl_buddy.phys.publish._publish`: the same blocks go into the
+model, and relativising each document separately is how the two would
+come to spell one path two ways.
 """
 
 from __future__ import annotations
@@ -92,10 +109,21 @@ from ..tools.artifact_paths import (  # noqa: E402
 from .model import _POWER_TOTALS, _SYNTH_TOTALS  # noqa: E402
 
 #: Keys of the ``synth`` block, so a power-only run still writes them all.
-SYNTH_KEYS = ("backend", "run", "stats", "netlist", "log")
+SYNTH_KEYS = ("backend", "run", "stats", "netlist", "log", "config")
 
 #: Keys of the ``power`` block, likewise.
-POWER_KEYS = ("backend", "run", "netlist_source", "report", "instances", "cells", "log")
+POWER_KEYS = (
+    "backend",
+    "run",
+    "netlist_source",
+    "report",
+    "instances",
+    "cells",
+    "log",
+    "mode",
+    "activity",
+    "config",
+)
 
 #: Which block keys hold a path and so need making project-relative. The
 #: rest are plain strings a `rel()` would mangle into a filename.

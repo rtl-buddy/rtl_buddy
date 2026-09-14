@@ -31,6 +31,7 @@ from rtl_buddy.phys.manifest import (
     write_manifest,
 )
 from rtl_buddy.phys.model import (
+    BLOCK_PROVENANCE_KEYS,
     MODEL_FILENAME,
     MODEL_SCHEMA_VERSION,
     build_power_model,
@@ -38,7 +39,16 @@ from rtl_buddy.phys.model import (
     load_model,
     load_model_or_none,
     merge_model,
+    provenance_of,
     write_model,
+)
+from rtl_buddy.phys.provenance import (
+    activity_block,
+    activity_label,
+    experiment_for,
+    normalise_activity,
+    options_digest,
+    trace_test,
 )
 from rtl_buddy.phys.publish import invalidate_half, publish_power, publish_synth
 from rtl_buddy.phys.reports import (
@@ -599,6 +609,11 @@ def test_manifest_paths_are_project_relative_and_keys_stable(tmp_path):
         "stats": "verif/demo/artefacts/demo_synth/synth_stat.json",
         "netlist": "verif/demo/artefacts/demo_synth/synth_netlist.v",
         "log": "verif/demo/artefacts/demo_synth/synth.log",
+        # The identity block a caller that recorded none still writes
+        # (#568): `null` is "this run said nothing about its
+        # configuration", and absent would be indistinguishable from a
+        # key this build does not know.
+        "config": None,
     }
     # The half this run did not produce: present, and null throughout.
     assert manifest["power"] == {key: None for key in POWER_KEYS}
@@ -1920,3 +1935,272 @@ def test_the_lock_file_is_not_mistaken_for_a_published_document(tmp_path):
     assert (artefacts / PHYS_PUBLISH_LOCK_NAME).exists()
     assert PHYS_PUBLISH_LOCK_NAME in PROTECTED_OUTPUT_PATTERNS
     assert discover_manifests(artefacts) == [str(artefacts / MANIFEST_FILENAME)]
+
+
+# ---------------------------------------------------------------------------
+# identity — what shaped the run, beside what it measured (#568)
+# ---------------------------------------------------------------------------
+
+
+def test_a_power_publish_records_its_mode_and_the_activity_behind_it(tmp_path):
+    """The whole point of the block: two runs of one netlist that differ
+    only in stimulus are two measurements, and a µW figure with no mode
+    beside it does not say which of the two it is."""
+    root, artefacts = _project(tmp_path)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    trace = root / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
+    trace.parent.mkdir(parents=True)
+    trace.write_text("(SAIFILE)\n")
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        netlist_source="synth",
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=2.83e-05,
+        mode="dynamic",
+        activity=activity_block(source="saif", trace=trace, scope="tb/u_dut"),
+    )
+
+    recorded = load_model(published["model"])["provenance"]["power"]
+    assert recorded["mode"] == "dynamic"
+    assert recorded["activity"]["source"] == "saif"
+    assert recorded["activity"]["scope"] == "tb/u_dut"
+    # Derived from the artefact layout, not passed in: the producer holds
+    # a path, and the test that wrote it finished in another command.
+    assert recorded["activity"]["test"] == "csr_smoke"
+    # And echoed into the manifest, so a listing of every run in a project
+    # reads one small file each rather than a model apiece.
+    block = load_manifest(published["manifest"])["power"]
+    assert block["mode"] == "dynamic"
+    assert block["activity"] == recorded["activity"]
+
+
+def test_a_static_run_records_defaults_rather_than_a_toggle_rate(tmp_path):
+    """A static analysis emits no activity command at all, so recording the
+    config's toggle/duty pair beside it would claim a stimulus that never
+    drove anything."""
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        mode="static",
+        activity=activity_block(source="default", toggle_rate=0.1, duty=0.5),
+    )
+
+    activity = load_manifest(published["manifest"])["power"]["activity"]
+    assert activity["source"] == "default"
+    assert activity["toggle_rate"] is None and activity["duty"] is None
+    assert activity_label(activity) == "defaults"
+
+
+def test_a_synthetic_run_records_the_toggle_and_duty_that_drove_it():
+    activity = activity_block(source="synthetic", toggle_rate=0.2, duty=0.5)
+    assert activity["toggle_rate"] == 0.2 and activity["duty"] == 0.5
+    assert activity_label(activity) == "toggle 0.2, duty 0.5"
+
+
+def test_a_trace_outside_an_artefact_directory_names_no_test():
+    """The derivation is from rtl_buddy's own layout. A checked-in golden
+    trace sits in a directory that is not a test, and reporting its name as
+    one would be an invention."""
+    assert trace_test("verif/demo/artefacts/csr_smoke/dump.saif") == "csr_smoke"
+    assert trace_test("golden/traces/dump.saif") is None
+    assert trace_test("dump.saif") is None
+    assert trace_test(None) is None
+
+
+def test_a_synth_publish_records_the_configuration_that_shaped_it(tmp_path):
+    """Platform, effort and constraints spelled out; the option set as a
+    digest. Enough to read two experiments of one design apart without
+    decoding their run names."""
+    root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    sdc = root / "verif" / "demo" / "demo.sdc"
+    sdc.write_text("create_clock -period 2.0 [get_ports clk]\n")
+
+    published = publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+        platform="nangate45",
+        effort="timing-opt",
+        constraints=sdc,
+        options={"strategy": "TIMING"},
+    )
+
+    config = load_manifest(published["manifest"])["synth"]["config"]
+    assert config["platform"] == "nangate45"
+    assert config["effort"] == "timing-opt"
+    # Project-relative, like every other path in the document — and the
+    # SAME spelling in the model, because both blocks are relativised once
+    # by the publish rather than by each writer.
+    assert config["constraints"] == "verif/demo/demo.sdc"
+    assert load_model(published["model"])["provenance"]["synth"]["config"] == config
+    assert config["constraints_sha256"] == hashlib.sha256(sdc.read_bytes()).hexdigest()
+    assert config["options_sha256"] == options_digest({"strategy": "TIMING"})
+
+
+def test_two_option_sets_that_resolve_the_same_digest_the_same():
+    """The digest is over the effective values, canonically rendered, so
+    key order is not an experiment and two spellings of one configuration
+    are one."""
+    assert options_digest({"a": 1, "b": 2}) == options_digest({"b": 2, "a": 1})
+    assert options_digest({"strategy": "AREA"}) != options_digest(
+        {"strategy": "TIMING"}
+    )
+    # Nothing recorded is `None`, not a digest of the empty mapping: a
+    # backend that fingerprinted nothing must not look like one that did.
+    assert options_digest(None) is None and options_digest({}) is None
+
+
+def test_a_config_that_differs_does_not_stop_the_halves_from_merging(tmp_path):
+    """Identity is for telling runs apart, never for gating the merge. The
+    netlist hash decides that, and it is the stronger test — the same
+    options can produce two netlists and two option sets can produce one."""
+    _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+        platform="nangate45",
+        options={"strategy": "AREA"},
+    )
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        netlist_source="synth",
+        netlist_sha256=NETLIST_SHA256,
+        instances_path=artefacts / "power_instances.rpt",
+        total_w=2.83e-05,
+        platform="sky130hd",
+        options={"reglvl": 1},
+    )
+
+    model = load_model(published["model"])
+    assert model["modules"] is not None and model["instances"] is not None
+    # Each half keeps its OWN identity: the inherited block travels with
+    # the rows it describes.
+    assert model["provenance"]["synth"]["config"]["platform"] == "nangate45"
+    assert model["provenance"]["power"]["config"]["platform"] == "sky130hd"
+
+
+def test_withdrawing_a_half_withdraws_the_identity_that_went_with_it(tmp_path):
+    """A failed rerun has deleted the artefacts behind its half, so the
+    mode and activity that described them go too — leaving them would say
+    this directory holds a dynamic-power measurement it no longer has."""
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        instances_path=artefacts / "power_instances.rpt",
+        mode="dynamic",
+        activity=activity_block(source="synthetic", toggle_rate=0.1, duty=0.5),
+        platform="nangate45",
+    )
+
+    invalidate_half(artefacts, "instances")
+
+    recorded = load_model(artefacts / "phys-model.json")["provenance"]["power"]
+    assert recorded == {key: None for key in BLOCK_PROVENANCE_KEYS["power"]}
+    block = load_manifest(artefacts / MANIFEST_FILENAME)["power"]
+    assert block["mode"] is None and block["activity"] is None
+    assert block["config"] is None
+
+
+def test_the_power_block_carries_the_two_keys_the_synth_block_does_not():
+    """`mode` and `activity` are power concepts. A synthesis has neither,
+    and a block of nulls saying so would be shape for its own sake."""
+    assert set(BLOCK_PROVENANCE_KEYS["synth"]) == {"netlist_sha256", "config"}
+    assert set(BLOCK_PROVENANCE_KEYS["power"]) == {
+        "netlist_sha256",
+        "config",
+        "mode",
+        "activity",
+    }
+
+
+def test_an_older_document_reads_back_as_nulls_not_as_a_missing_key(tmp_path):
+    """Every reader normalises against the key table, so a model written
+    before #568 answers "not recorded" rather than raising."""
+    _root, artefacts = _project(tmp_path)
+    model = build_power_model(top="demo_top", instances=[])
+    del model["provenance"]["power"]["mode"]
+    del model["provenance"]["power"]["activity"]
+    write_model(model, artefacts)
+
+    recorded = provenance_of(load_model(artefacts / MODEL_FILENAME))
+    assert recorded["power"]["mode"] is None
+    assert recorded["power"]["activity"] is None
+    assert normalise_activity(recorded["power"]["activity"]) is None
+
+
+# --- the xplr experiment a manifest sits under ------------------------------
+
+
+def test_an_experiment_id_is_derived_from_the_ledger_path(tmp_path):
+    """No read at all for the id: the ledger is one directory per
+    experiment, so the path already says which one, and it says so for an
+    experiment whose record has not been written yet."""
+    manifest = tmp_path / "artefacts" / "xplr" / "exp-0007" / "artefacts" / "s"
+    manifest.mkdir(parents=True)
+    found = experiment_for(manifest / MANIFEST_FILENAME)
+    assert found == {"id": "exp-0007", "label": None}
+
+
+def test_an_experiment_label_comes_from_the_record_when_there_is_one(tmp_path):
+    experiment = tmp_path / "artefacts" / "xplr" / "exp-0008"
+    (experiment / "artefacts" / "s").mkdir(parents=True)
+    (experiment / "record.json").write_text(
+        json.dumps({"id": "exp-0008", "hypothesis": "abc9 buys 5% area"})
+    )
+    found = experiment_for(experiment / "artefacts" / "s" / MANIFEST_FILENAME)
+    assert found == {"id": "exp-0008", "label": "abc9 buys 5% area"}
+
+
+def test_a_record_that_cannot_be_read_costs_the_label_and_nothing_else(tmp_path):
+    """A malformed record is `rb xplr`'s to report; it is not a reason to
+    stop identifying the experiment."""
+    experiment = tmp_path / "artefacts" / "xplr" / "exp-0009"
+    (experiment / "artefacts" / "s").mkdir(parents=True)
+    (experiment / "record.json").write_text("{not json")
+    found = experiment_for(experiment / "artefacts" / "s" / MANIFEST_FILENAME)
+    assert found == {"id": "exp-0009", "label": None}
+
+
+def test_the_ledgers_reserved_directories_are_not_experiments(tmp_path):
+    """`artefacts/xplr/worktrees/` is the default worktree root, not an
+    experiment called `worktrees`."""
+    worktree = tmp_path / "artefacts" / "xplr" / "worktrees" / "wt"
+    worktree.mkdir(parents=True)
+    assert experiment_for(worktree / MANIFEST_FILENAME) is None
+
+
+def test_a_manifest_outside_a_ledger_has_no_experiment(tmp_path):
+    plain = tmp_path / "verif" / "demo" / "artefacts" / "demo_synth"
+    plain.mkdir(parents=True)
+    assert experiment_for(plain / MANIFEST_FILENAME) is None

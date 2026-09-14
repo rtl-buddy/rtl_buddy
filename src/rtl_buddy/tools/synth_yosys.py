@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -1030,6 +1031,25 @@ class YosysSynth:
             phys_model=phys_model,
         )
 
+    def _phys_options(self) -> dict:
+        """The effective options the config fingerprint is digested over.
+
+        The resolved `SynthToolOpts` -- tool defaults with the effort's
+        args and the per-synthesis `tool_overrides` already folded in --
+        plus the parameters and defines the elaboration runs with, which
+        shape the netlist exactly as an ABC script does and are the knob
+        a parameter sweep turns. Values only: the digest is of what the
+        run resolved to, not of the files it resolved from, so two
+        configs that spell one setting differently and come out the same
+        are one experiment (#568).
+        """
+        return {
+            "tool": self.tool_cfg.get_name(),
+            "opts": asdict(self._resolve_opts()),
+            "params": self.synth_cfg.get_params(),
+            "defines": self.synth_cfg.get_defines(),
+        }
+
     def _publish_phys_model(
         self, *, area_um2: float | None, gate_count: int | None, mapped: bool
     ) -> str | None:
@@ -1041,6 +1061,14 @@ class YosysSynth:
         something this cannot read, costs the model its `modules` rows and
         earns a warning; the totals scraped from the log are written either
         way, so the document still says what the design came to.
+
+        The identity fields (#568) are the ones that shaped THIS netlist:
+        the platform whose Liberty it mapped against, the effort actually
+        applied, the SDC read for the ABC delay target, and the resolved
+        tool options with the elaboration parameters and defines --
+        everything a second experiment of the same design would differ
+        in. `_resolve_opts` is memoised, so asking it here costs nothing
+        and cannot re-emit the override warnings it logs on first use.
         """
         published = publish_synth(
             artefact_dir=self.artefact_dir,
@@ -1052,6 +1080,10 @@ class YosysSynth:
             log_path=self._log_path(),
             area_um2=area_um2,
             gate_count=gate_count,
+            platform=self.synth_cfg.get_platform(),
+            effort=self.effort_cfg.get_name(),
+            constraints=self.synth_cfg.get_constraints(),
+            options=self._phys_options(),
         )
         if published["error"] is not None or published["rows"] is None:
             log_event(

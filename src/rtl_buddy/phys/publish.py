@@ -64,6 +64,17 @@ rather than narrowing it: the analysis reads its *own* copy of the
 netlist, inside its own artefact directory, so the hashed bytes and the
 parsed bytes are one file no other command can rewrite.
 
+**Recording what shaped the run.** Beside what a run measured, both
+publishes record what it *was* (#568): a config fingerprint — platform,
+constraints, a digest of the effective tool options — and, for a power
+run, its mode and the activity behind the numbers. The blocks are
+:mod:`rtl_buddy.phys.provenance`'s and go into both documents, because
+they answer two different questions in two places: in the model, what
+this breakdown is a breakdown *of*; in the manifest, which of a
+project's runs this is, cheaply enough that a listing of all of them
+reads one small file each. None of it gates the merge — the netlist
+hash above does, and it is the stronger test.
+
 **One writer at a time.** A synthesis and a power run named the same
 thing publish into the same artefact directory, and each writes *both*
 documents. Two of them arriving together would read the same pair, merge
@@ -108,6 +119,7 @@ from pathlib import Path
 from ..tools.artifact_paths import PHYS_PUBLISH_LOCK_NAME as PUBLISH_LOCK_FILENAME
 from . import manifest as manifest_mod
 from . import model as model_mod
+from . import provenance as provenance_mod
 from . import reports
 
 #: How long a publisher waits for the artefact directory's lock, and how
@@ -268,6 +280,10 @@ def publish_synth(
     log_path=None,
     area_um2: float | None = None,
     gate_count: int | None = None,
+    platform: str | None = None,
+    effort: str | None = None,
+    constraints=None,
+    options=None,
 ) -> dict:
     """Write the synthesis half of the model + manifest.
 
@@ -281,12 +297,21 @@ def publish_synth(
         record of which flow produced this half, and the flag
         :func:`~rtl_buddy.phys.manifest.merge_manifest` reads to tell a
         block that was filled from one that was not.
+    :param platform: the ``cfg-pnr-platforms`` entry this synthesis
+        mapped against, ``effort`` the effort level it ran at, and
+        ``constraints`` the SDC it read — the three identity fields a
+        listing spells out. ``options`` is the backend's *resolved*
+        option set, digested rather than stored; see
+        :mod:`rtl_buddy.phys.provenance` for exactly what goes into it.
+        All four are optional: a backend that records none produces a
+        config block of nulls, which reads as "this run said nothing
+        about its configuration" and never as "it had none".
     :returns: ``{"model", "manifest", "rows", "error"}``; the paths are
         ``None`` when ``error`` is set, and ``rows`` is ``None`` when the
         breakdown could not be read — which is the caller's cue to warn.
     """
 
-    def _build():
+    def _build(recorded):
         # An empty list collapses to `None`: a synthesis that ran has at
         # least its top module, so nothing-parsed means the file is
         # unreadable, not that the design has no modules.
@@ -297,6 +322,7 @@ def publish_synth(
             area_um2=area_um2,
             gate_count=gate_count,
             netlist_sha256=sha256_of(netlist_path),
+            **recorded,
         )
 
     return _publish(
@@ -306,6 +332,15 @@ def publish_synth(
         run=run,
         build=_build,
         half_key="modules",
+        provenance={
+            "config": provenance_mod.config_block(
+                platform=platform,
+                effort=effort,
+                constraints=constraints,
+                constraints_sha256=sha256_of(constraints),
+                options=options,
+            )
+        },
         block=(
             "synth",
             {
@@ -335,6 +370,11 @@ def publish_power(
     switching_w: float | None = None,
     leakage_w: float | None = None,
     total_w: float | None = None,
+    mode: str | None = None,
+    activity: dict | None = None,
+    platform: str | None = None,
+    constraints=None,
+    options=None,
 ) -> dict:
     """Write the power half of the model + manifest.
 
@@ -355,11 +395,21 @@ def publish_power(
         reads a routed database and not a netlist, and for a caller that
         could not read the file; nothing is then inherited in either
         direction, which is the strict reading and the safe one.
+    :param mode: ``"static"`` or ``"dynamic"``, and ``activity`` what
+        drove the switching
+        (:func:`rtl_buddy.phys.provenance.activity_block`). Both are
+        recorded because the numbers cannot say it themselves: without
+        them a µW figure in a pane or a run list is a quantity with no
+        statement of what it measures, and two runs differing only in
+        activity are indistinguishable (#568).
+    :param platform: as :func:`publish_synth`'s, with ``constraints``
+        and ``options`` likewise — the identity of the analysis rather
+        than of the synthesis it read.
     :returns: the same ``{"model", "manifest", "rows", "error"}`` shape
         :func:`publish_synth` returns.
     """
 
-    def _build():
+    def _build(recorded):
         cells = _rows(cells_path, reports.parse_instance_cells) or {}
         # An empty parse collapses to `None`, exactly as the synthesis
         # half does: the generated Tcl writes `power_instances.rpt` only
@@ -379,6 +429,7 @@ def publish_power(
             leakage_w=leakage_w,
             total_w=total_w,
             netlist_sha256=netlist_sha256,
+            **recorded,
         )
 
     return _publish(
@@ -388,6 +439,16 @@ def publish_power(
         run=run,
         build=_build,
         half_key="instances",
+        provenance={
+            "config": provenance_mod.config_block(
+                platform=platform,
+                constraints=constraints,
+                constraints_sha256=sha256_of(constraints),
+                options=options,
+            ),
+            "mode": mode,
+            "activity": activity,
+        },
         block=(
             "power",
             {
@@ -403,7 +464,45 @@ def publish_power(
     )
 
 
-def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict:
+#: The path-valued keys inside the identity blocks a producer records.
+#: Named as data because :func:`_relative_provenance` is the only place
+#: that knows a `config` holds a constraints file and an `activity` a
+#: trace, and a producer that grows another path must add it here rather
+#: than relativising it itself — which is how one of the two documents
+#: would come to carry an absolute path.
+_PROVENANCE_PATHS = {"config": ("constraints",), "activity": ("trace",)}
+
+
+def _relative_provenance(provenance: dict | None, project_root) -> dict:
+    """The identity blocks with their paths made project-relative.
+
+    Done once, here, and handed to both documents: the model records the
+    same blocks the manifest does, and relativising them separately in
+    each writer is how the two would end up spelling one constraints
+    file two ways. Everything else passes through untouched — a platform
+    name, a digest and a toggle rate are not paths, and running them
+    through :func:`~rtl_buddy.phys.manifest.project_relative` would
+    mangle them into filenames.
+    """
+    normalised = {}
+    for key, value in (provenance or {}).items():
+        paths = _PROVENANCE_PATHS.get(key)
+        if paths and isinstance(value, dict):
+            value = {
+                inner: (
+                    manifest_mod.project_relative(entry, project_root)
+                    if inner in paths
+                    else entry
+                )
+                for inner, entry in value.items()
+            }
+        normalised[key] = value
+    return normalised
+
+
+def _publish(
+    *, artefact_dir, top, command, run, build, half_key, block, provenance=None
+) -> dict:
     """The shared six steps, with the resilience rule around all of them.
 
     One ``publication`` token is minted per call and stamped into both
@@ -429,12 +528,25 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
     ``instances: null`` while the manifest beside it went on naming the
     power reports and republishing their totals — one publication
     contradicting itself about what this directory holds.
+
+    ``provenance`` is what this run records about *itself* rather than
+    about what it measured — the config fingerprint, and for a power run
+    its mode and activity (#568). It goes into both documents verbatim:
+    into the model's ``provenance`` block for this half (which is why
+    ``build`` takes it) and into the manifest block beside the artefact
+    paths, so a listing of every run in a project can tell them apart
+    without opening a model each. The project root is resolved before
+    the build rather than inside the lock because
+    :func:`_relative_provenance` needs it and it is a walk of the
+    directory's parents, not something another publisher can change.
     """
     try:
         publication = model_mod.new_publication()
+        project_root = manifest_mod.project_root_for_dir(artefact_dir)
+        recorded = _relative_provenance(provenance, project_root)
         # Outside the lock: parsing this run's own raw artefacts reads
         # nothing another publisher can be writing, and it is the slow part.
-        fresh = build()
+        fresh = build(recorded)
         rows = fresh[half_key]
         with _publication_lock(artefact_dir):
             existing_model, existing_manifest = _existing_pair(artefact_dir)
@@ -445,7 +557,6 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
             model = model_mod.merge_model(existing_model, fresh, own_half=half_key)
             model["publication"] = publication
             model_path = model_mod.write_model(model, artefact_dir)
-            project_root = manifest_mod.project_root_for_dir(artefact_dir)
             half, values = block
             manifest = manifest_mod.merge_manifest(
                 existing_manifest,
@@ -457,7 +568,7 @@ def _publish(*, artefact_dir, top, command, run, build, half_key, block) -> dict
                     top=top,
                     model_path=model_path,
                     totals=model["totals"],
-                    **{half: _only_produced(values)},
+                    **{half: {**_only_produced(values), **recorded}},
                 ),
                 own_block=half,
             )

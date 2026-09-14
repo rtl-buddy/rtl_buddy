@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class OpenRoadSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._yosys_opts: SynthToolOpts | None = None
+        self._or_opts: SynthToolOpts | None = None
         self.static_function_findings = 0
 
     # ------------------------------------------------------------------
@@ -535,12 +537,27 @@ class OpenRoadSynth:
             )
         return result
 
+    def _resolve_or_opts(self) -> SynthToolOpts:
+        """Options for the mapping stage -- this backend's own tool config.
+
+        Separate from `_resolve_yosys_opts`, which answers for the
+        elaboration stage: `strategy` (AREA, TIMING, TIMING_GENETIC ...)
+        is read here and is the knob an optimisation experiment turns.
+        Memoised for the reason its sibling is -- resolving the overrides
+        emits validation warnings, and the script writer and the phys
+        model's config fingerprint (#568) must not each pay for a second
+        copy of them.
+        """
+        if self._or_opts is None:
+            self._or_opts = self.tool_cfg.get_opts(
+                self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+            )
+        return self._or_opts
+
     def _write_or_script(self, lef_paths: list[str], lib_paths: list[str]) -> str:
         top = self.synth_cfg.get_top()
         constraints = self.synth_cfg.get_constraints()
-        opts = self.tool_cfg.get_opts(
-            self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
-        )
+        opts = self._resolve_or_opts()
 
         lines = []
         for lef in lef_paths:
@@ -710,6 +727,12 @@ class OpenRoadSynth:
         2's, which is the pairing this backend already reports. Never fails
         the synthesis: see the Yosys backend's copy for why a by-product does
         not get to veto a product.
+
+        The identity fields (#568) name BOTH stages' options, because both
+        shape the netlist: the elaboration frontend and its gates on one
+        side, the mapping strategy on the other, and an experiment may vary
+        either. Both accessors are memoised, so recording them here costs
+        nothing and re-emits no override warning.
         """
         published = publish_synth(
             artefact_dir=self.artefact_dir,
@@ -721,6 +744,16 @@ class OpenRoadSynth:
             log_path=self._or_log_path(),
             area_um2=area_um2,
             gate_count=gate_count,
+            platform=self.synth_cfg.get_platform(),
+            effort=self.effort_cfg.get_name(),
+            constraints=self.synth_cfg.get_constraints(),
+            options={
+                "tool": self.tool_cfg.get_name(),
+                "elaborate": asdict(self._resolve_yosys_opts()),
+                "map": asdict(self._resolve_or_opts()),
+                "params": self.synth_cfg.get_params(),
+                "defines": self.synth_cfg.get_defines(),
+            },
         )
         if published["error"] is not None or published["rows"] is None:
             log_event(
