@@ -324,6 +324,10 @@ def test_a_half_the_run_did_not_produce_is_named_not_guessed(tmp_path: Path):
         "rows": None,
         "produced_by": "rb synth",
         "netlist_hash": False,
+        # A synthesis has no power mode and no activity; the keys are
+        # there so the pane can walk both halves alike (#568).
+        "mode": None,
+        "activity": None,
     }
     assert payload["missing_halves"] == ["modules"]
     assert payload["counts"]["modules"] is None

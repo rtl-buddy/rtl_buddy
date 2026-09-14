@@ -11,6 +11,16 @@ the area*, and *which instance owns the power*. None of them runs a
 tool; all three read ``phys-manifest.json`` and the ``phys-model.json``
 it points at.
 
+``rb phys runs`` is the fourth, and the one that comes before the other
+three: it lists every manifest under the project, newest first, with the
+identity each run recorded (:mod:`rtl_buddy.phys.provenance`) — top,
+backends, power mode and activity, config fingerprint, and the `rb xplr`
+experiment the path names. It is the only builder here that takes no
+context, because its subject is the set of runs rather than one of them,
+and it opens no model: the manifest carries everything a menu needs, and
+a project's fifty runs must cost fifty small reads rather than fifty
+models.
+
 Every payload builder here is a **plain function taking a context and
 returning a dict**, exactly as :mod:`rtl_buddy.cov.query` does it. The
 CLI hands the dict straight to ``_emit_machine_result`` and a later MCP
@@ -103,6 +113,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from . import manifest as manifest_mod
+from . import provenance as provenance_mod
 from .model import MODEL_SCHEMA_VERSION, load_model, provenance_of
 
 logger = logging.getLogger(__name__)
@@ -122,6 +133,14 @@ PUBLICATION_ATTEMPTS = 3
 #: its second write, short enough that a `rb phys summary` on a document
 #: nobody is writing never notices.
 PUBLICATION_RETRY_SECONDS = 0.05
+
+#: Runs listed by ``rb phys runs`` before truncation. Larger than the
+#: row limit because a run list is a *menu*: a project holds tens of
+#: artefact directories, not thousands of leaf instances, and a menu cut
+#: off before the run you are looking for is a menu you cannot use. The
+#: payload carries the applied limit beside the untruncated count, as
+#: every other list here does.
+DEFAULT_RUNS_LIMIT = 20
 
 #: Rows per ranking in ``rb phys summary`` before truncation. A headline,
 #: not a report: the whole breakdown is in the model the payload names,
@@ -562,18 +581,28 @@ def halves_block(model: dict) -> dict:
     otherwise complete the model replaces it instead. A boolean rather
     than the hash itself: whether there is one is the whole of what a
     consumer can act on, and the digest belongs to the model.
+
+    ``mode`` and ``activity`` say what kind of power the ``instances``
+    half holds and what drove it (#568) — the one thing the rows cannot
+    say about themselves, and what makes two runs over one netlist two
+    measurements rather than two readings of one. Both keys are on
+    *both* halves, ``null`` on ``modules``, because a consumer walks this
+    block half by half and a shape that changed between the two would
+    have to be special-cased everywhere it is read; a synthesis has no
+    mode, and says so.
     """
     block = {}
     provenance = provenance_of(model)
     for half, command in HALF_PRODUCER.items():
         rows = model.get(half)
+        recorded = provenance[HALF_PROVENANCE[half]]
         block[half] = {
             "present": rows is not None,
             "rows": None if rows is None else len(rows),
             "produced_by": command,
-            "netlist_hash": (
-                provenance[HALF_PROVENANCE[half]]["netlist_sha256"] is not None
-            ),
+            "netlist_hash": recorded["netlist_sha256"] is not None,
+            "mode": recorded.get("mode"),
+            "activity": provenance_mod.normalise_activity(recorded.get("activity")),
         }
     return block
 
@@ -584,6 +613,23 @@ def missing_halves(model: dict) -> list[str]:
 
 
 def _run_block(ctx: PhysContext) -> dict:
+    """The header every payload here opens with: which run this is.
+
+    Since #568 that means identity as well as location. ``power_mode``
+    and ``power_activity`` say which kind of power the numbers below
+    are — a header naming only the backend presents a static leakage
+    total and a SAIF-driven one as the same measurement. ``config``
+    carries each half's fingerprint, which is what tells two experiments
+    of one design apart when they share a ``top`` and their run names
+    are generated. ``xplr`` names the experiment the manifest sits
+    under, or ``null``; it is derived from the path, so it costs no
+    read.
+
+    All three are read off the *manifest* rather than the model, for the
+    reason the manifest records them at all: they are the same blocks,
+    and the manifest is the document a listing of every run in a project
+    can afford to open.
+    """
     document = ctx.manifest
     synth = document.get("synth") or {}
     power = document.get("power") or {}
@@ -598,6 +644,13 @@ def _run_block(ctx: PhysContext) -> dict:
         "run": document.get("run"),
         "top": document.get("top"),
         "backends": {"synth": synth.get("backend"), "power": power.get("backend")},
+        "power_mode": power.get("mode"),
+        "power_activity": provenance_mod.normalise_activity(power.get("activity")),
+        "config": {
+            "synth": provenance_mod.normalise_config(synth.get("config")),
+            "power": provenance_mod.normalise_config(power.get("config")),
+        },
+        "xplr": provenance_mod.experiment_for(ctx.manifest_path),
         "units": ctx.model.get("units", {}),
     }
 
@@ -610,10 +663,10 @@ def _instance_rows(model: dict) -> list[dict]:
     return list(model.get("instances") or [])
 
 
-def truncate(rows: list[dict], limit: int | None) -> list[dict]:
+def truncate(rows: list, limit: int | None) -> list:
     """The rows a payload lists, given the ``limit`` its caller asked for.
 
-    One rule, named once, because three payloads and two surfaces obey
+    One rule, named once, because four payloads and two surfaces obey
     it: ``None`` means the caller wants the complete list (the builders'
     default, and what the MCP tools pass), ``0`` means the same thing
     said by a CLI flag whose help documents ``0`` as "all", and anything
@@ -1042,3 +1095,140 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
         }
     )
     return payload
+
+
+# ---------------------------------------------------------------------------
+# the run listing (#568)
+# ---------------------------------------------------------------------------
+
+
+def runs_payload(project_root, *, limit: int | None = None) -> dict:
+    """Every run with physical artefacts under a project, newest first.
+
+    The verb the other three needed and did not have. ``--phys-dir``
+    already selects a run, but nothing said what there was to select:
+    a project accumulates one artefact directory per partition, per
+    corner and per power mode, and the only way to see them was to walk
+    the tree by hand and open manifests.
+
+    Ordered by :func:`~rtl_buddy.phys.manifest.discover_manifests` —
+    newest manifest first, exactly the order that decides the default
+    run — so ``runs[0]`` is what the other verbs answer about when no
+    ``--phys-dir`` is given, and every entry says so itself in
+    ``newest``. A consumer that re-sorts the list therefore does not
+    lose the fact.
+
+    **One small file per run.** Only the manifests are read; no model is
+    opened. That is what the identity fields in the manifest are for
+    (#568), and it is what keeps a listing of a project's fifty runs
+    cheap enough to sit in a page load. The cost of it is that the row
+    counts and the totals are not here — those are the model's, and
+    ``rb phys summary`` is one ``--phys-dir`` away.
+
+    **A manifest that cannot be read is listed, not dropped.** Its entry
+    carries ``error`` and nulls elsewhere. Discovery found the file; a
+    listing that silently omitted it would report a project as having
+    fewer runs than it has, which is the one thing a menu must not do.
+    """
+    found = manifest_mod.discover_manifests(project_root)
+    shown = truncate(found, limit)
+    return {
+        "schema_version": PHYS_QUERY_SCHEMA_VERSION,
+        # How many there are, against how many are listed: the same
+        # pairing every other list here reports, so a headed listing is
+        # never mistaken for the whole one.
+        "count": len(found),
+        "limit": limit,
+        "runs": [
+            _run_entry(path, project_root, newest=index == 0)
+            for index, path in enumerate(shown)
+        ],
+    }
+
+
+def _run_entry(manifest_path, project_root, *, newest: bool) -> dict:
+    """One manifest as a row of the run listing.
+
+    Never raises, and never leaves a key out. A listing is a menu: the
+    caller renders it row by row, and a row that is missing half its keys
+    because the document behind it was truncated would fail in the
+    renderer rather than here, where the failure can be named.
+
+    ``phys_dir`` is derived from *where the manifest was found*, not from
+    the document's own ``phys_dir`` field. It is the key a reader hands
+    straight back — to ``--phys-dir``, or to the pane's ``?dir=`` — so it
+    has to be relative to the root this listing was taken under, and it
+    has to be there even for a row whose document could not be read at
+    all.
+    """
+    entry = {
+        "manifest": manifest_mod.project_relative(manifest_path, project_root),
+        "phys_dir": manifest_mod.project_relative(
+            os.path.dirname(os.path.abspath(str(manifest_path))), project_root
+        ),
+        "run": None,
+        "top": None,
+        "run_command": None,
+        "generated_at": None,
+        "backends": {"synth": None, "power": None},
+        "mode": None,
+        "activity": None,
+        "config": {"synth": None, "power": None},
+        # Derived from the path, so it is there even when the document is
+        # not readable — an experiment's run is still that experiment's.
+        "xplr": provenance_mod.experiment_for(manifest_path),
+        "newest": newest,
+        "error": None,
+    }
+    try:
+        document = manifest_mod.load_manifest(manifest_path)
+    except (OSError, ValueError) as exc:
+        entry["error"] = f"cannot read {entry['manifest']}: {exc}"
+        return entry
+    if not isinstance(document, dict):
+        entry["error"] = (
+            f"{entry['manifest']} is not a manifest document: its JSON root "
+            f"is {_json_kind(document)}"
+        )
+        return entry
+    found = document.get("schema_version")
+    if found != manifest_mod.MANIFEST_SCHEMA_VERSION:
+        # Reported per row rather than raised: one unreadable manifest in
+        # a tree must not cost the listing every other run in it.
+        entry["error"] = (
+            f"{entry['manifest']} is a manifest of schema_version "
+            f"{'(absent)' if found is None else found}, and this rtl-buddy "
+            f"reads {manifest_mod.MANIFEST_SCHEMA_VERSION}"
+        )
+        return entry
+    synth = _mapping(document.get("synth"))
+    power = _mapping(document.get("power"))
+    entry.update(
+        {
+            "run": document.get("run"),
+            "top": document.get("top"),
+            "run_command": document.get("command"),
+            "generated_at": document.get("generated_at"),
+            "backends": {
+                "synth": synth.get("backend"),
+                "power": power.get("backend"),
+            },
+            "mode": power.get("mode"),
+            "activity": provenance_mod.normalise_activity(power.get("activity")),
+            "config": {
+                "synth": provenance_mod.normalise_config(synth.get("config")),
+                "power": provenance_mod.normalise_config(power.get("config")),
+            },
+        }
+    )
+    return entry
+
+
+def _mapping(value) -> dict:
+    """``value`` when it is an object, an empty one otherwise.
+
+    The listing's counterpart to :func:`_require_blocks`, which refuses.
+    A run list refuses nothing: a block of the wrong shape costs that row
+    its backend and its identity, and the row still says where the run is.
+    """
+    return value if isinstance(value, dict) else {}

@@ -28,6 +28,7 @@ from rtl_buddy.phys.model import (
     merge_model,
     write_model,
 )
+from rtl_buddy.phys.provenance import activity_block, config_block
 from rtl_buddy.phys.query import (
     INSTANCE_JOIN_LIBERTY_ONLY,
     PHYS_QUERY_SCHEMA_VERSION,
@@ -43,6 +44,7 @@ from rtl_buddy.phys.query import (
     module_payload,
     resolve_manifest_path,
     resolve_module_name,
+    runs_payload,
     summary_payload,
 )
 
@@ -109,9 +111,14 @@ def _write_run(
     mtime=None,
     netlist_sha256=_FIXTURE_NETLIST_SHA256,
     netlist_source="synth",
+    mode=None,
+    activity=None,
+    synth_config=None,
+    power_config=None,
+    phys_dir=None,
 ):
     """One run's artefact directory, written the way the producers do."""
-    phys_dir = root / "verif" / "blk" / "artefacts" / run
+    phys_dir = phys_dir or root / "verif" / "blk" / "artefacts" / run
     phys_dir.mkdir(parents=True, exist_ok=True)
 
     model = None
@@ -122,6 +129,7 @@ def _write_run(
             area_um2=576.5,
             gate_count=162,
             netlist_sha256=netlist_sha256,
+            config=synth_config,
         )
     if instances is not None:
         power = build_power_model(
@@ -132,6 +140,9 @@ def _write_run(
             leakage_w=0.58e-6,
             total_w=13.171e-6,
             netlist_sha256=netlist_sha256,
+            mode=mode,
+            activity=activity,
+            config=power_config,
         )
         model = (
             merge_model(model, power, own_half="instances")
@@ -158,6 +169,7 @@ def _write_run(
                 "stats": phys_dir / "synth_stat.json",
                 "netlist": phys_dir / "synth_netlist.v",
                 "log": phys_dir / "synth.log",
+                "config": synth_config,
             }
         ),
         power=(
@@ -171,6 +183,9 @@ def _write_run(
                 "instances": phys_dir / "power_instances.rpt",
                 "cells": phys_dir / "power_instances.cells",
                 "log": phys_dir / "power.log",
+                "mode": mode,
+                "activity": activity,
+                "config": power_config,
             }
         ),
     )
@@ -580,6 +595,11 @@ def test_summary_of_a_synth_only_model_names_the_missing_half(project):
         "rows": None,
         "produced_by": "rb power",
         "netlist_hash": False,
+        # Present and null on a half that did not run, and on the
+        # synthesis half whichever way (#568): the block is walked half
+        # by half, so both halves keep one shape.
+        "mode": None,
+        "activity": None,
     }
     assert payload["halves"]["modules"]["rows"] == 3
     assert payload["counts"]["instances"] is None
@@ -1035,3 +1055,228 @@ def test_instance_over_a_synth_only_model_names_the_power_command(project):
         instance_payload(ctx, "u_sub")
 
     assert "run `rb power`" in str(excinfo.value)
+
+
+# --- identity: mode, activity, config, experiment (#568) --------------------
+
+
+_SAIF_ACTIVITY = activity_block(
+    source="saif",
+    trace="verif/blk/artefacts/csr_smoke/dump.saif",
+    scope="tb/u_dut",
+)
+
+_TIMING_CONFIG = config_block(
+    platform="nangate45",
+    effort="timing-opt",
+    constraints="verif/blk/blk.sdc",
+    constraints_sha256="a" * 64,
+    options={"strategy": "TIMING"},
+)
+
+
+def _identified_project(tmp_path):
+    """A project whose runs recorded what shaped them."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    _write_run(
+        root,
+        "area_opt",
+        modules=MODULE_ROWS,
+        mtime=1_000_000,
+        synth_config=config_block(
+            platform="nangate45", effort="area-opt", options={"strategy": "AREA"}
+        ),
+    )
+    _write_run(
+        root,
+        "saif_power",
+        instances=INSTANCE_ROWS,
+        mtime=2_000_000,
+        mode="dynamic",
+        activity=_SAIF_ACTIVITY,
+        power_config=_TIMING_CONFIG,
+    )
+    return root
+
+
+def test_the_run_header_says_which_kind_of_power_these_numbers_are(tmp_path):
+    """Without it a µW total is a quantity with no statement of what it
+    measures — leakage plus internal, or a trace-driven dynamic figure."""
+    root = _identified_project(tmp_path)
+    ctx = load_context(
+        root, phys_dir=root / "verif" / "blk" / "artefacts" / "saif_power"
+    )
+
+    payload = summary_payload(ctx)
+
+    assert payload["power_mode"] == "dynamic"
+    assert payload["power_activity"]["source"] == "saif"
+    assert payload["power_activity"]["test"] == "csr_smoke"
+    # Derived on read, so the wording can improve without rewriting a
+    # document already on disk.
+    assert payload["power_activity"]["label"] == "saif csr_smoke"
+
+
+def test_the_halves_block_echoes_the_mode_and_the_activity(tmp_path):
+    root = _identified_project(tmp_path)
+    ctx = load_context(
+        root, phys_dir=root / "verif" / "blk" / "artefacts" / "saif_power"
+    )
+
+    halves = summary_payload(ctx)["halves"]
+
+    assert halves["instances"]["mode"] == "dynamic"
+    assert halves["instances"]["activity"]["label"] == "saif csr_smoke"
+    assert halves["modules"]["mode"] is None
+    assert halves["modules"]["activity"] is None
+
+
+def test_the_run_header_carries_a_config_fingerprint_per_half(tmp_path):
+    """Two experiments of one design share a top; this is what reads them
+    apart when their run names are generated."""
+    root = _identified_project(tmp_path)
+    ctx = load_context(
+        root, phys_dir=root / "verif" / "blk" / "artefacts" / "saif_power"
+    )
+
+    config = summary_payload(ctx)["config"]
+
+    assert config["power"]["platform"] == "nangate45"
+    assert config["power"]["effort"] == "timing-opt"
+    assert config["power"]["summary"].startswith(
+        "nangate45 · timing-opt · sdc aaaaaaaa"
+    )
+    # The half that did not run here recorded nothing, and says so with a
+    # null rather than with a block of empty strings.
+    assert config["synth"] is None
+
+
+def test_a_document_written_before_the_identity_keys_reads_as_null(tmp_path):
+    """Additive means readable-absent: the fixtures that record nothing are
+    older documents, and every field answers "not recorded"."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    _write_run(root, "both", modules=MODULE_ROWS, instances=INSTANCE_ROWS)
+    ctx = load_context(root)
+
+    payload = summary_payload(ctx)
+
+    assert payload["power_mode"] is None
+    assert payload["power_activity"] is None
+    assert payload["config"] == {"synth": None, "power": None}
+    assert payload["xplr"] is None
+
+
+def test_a_manifest_under_the_xplr_ledger_names_its_experiment(tmp_path):
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    _write_run(
+        root,
+        "sweep",
+        modules=MODULE_ROWS,
+        phys_dir=root / "artefacts" / "xplr" / "exp-0003" / "artefacts" / "sweep",
+    )
+    ctx = load_context(root)
+
+    assert summary_payload(ctx)["xplr"] == {"id": "exp-0003", "label": None}
+
+
+# --- rb phys runs -----------------------------------------------------------
+
+
+def test_runs_lists_every_manifest_newest_first(project):
+    payload = runs_payload(project)
+
+    assert payload["schema_version"] == PHYS_QUERY_SCHEMA_VERSION
+    assert payload["count"] == 3
+    assert [entry["run"] for entry in payload["runs"]] == [
+        "both",
+        "collision",
+        "old_synth",
+    ]
+    # The order is the one that decides the default run, so the listing
+    # says which entry that is rather than leaving it to be inferred.
+    assert [entry["newest"] for entry in payload["runs"]] == [True, False, False]
+
+
+def test_a_run_entry_carries_what_a_menu_needs(tmp_path):
+    root = _identified_project(tmp_path)
+
+    entry = runs_payload(root)["runs"][0]
+
+    assert entry["run"] == "saif_power"
+    assert entry["top"] == "blk"
+    assert entry["phys_dir"] == "verif/blk/artefacts/saif_power"
+    assert entry["manifest"] == "verif/blk/artefacts/saif_power/phys-manifest.json"
+    assert entry["backends"] == {"synth": None, "power": "openroad"}
+    assert entry["mode"] == "dynamic"
+    assert entry["activity"]["label"] == "saif csr_smoke"
+    assert entry["config"]["power"]["summary"].startswith("nangate45 · timing-opt")
+    assert entry["generated_at"]
+    assert entry["error"] is None
+
+
+def test_the_listed_phys_dir_is_the_key_that_selects_the_run(tmp_path):
+    """Every entry's ``phys_dir`` is handed straight back to ``--phys-dir``,
+    so it is derived from where the manifest was found rather than from the
+    document, which was written under whatever root its producer saw."""
+    root = _identified_project(tmp_path)
+
+    for entry in runs_payload(root)["runs"]:
+        ctx = load_context(root, phys_dir=root / entry["phys_dir"])
+        assert summary_payload(ctx)["run"] == entry["run"]
+
+
+def test_runs_heads_the_list_at_the_limit_and_says_so(project):
+    payload = runs_payload(project, limit=1)
+
+    assert [entry["run"] for entry in payload["runs"]] == ["both"]
+    assert payload["count"] == 3 and payload["limit"] == 1
+    # `0` is the CLI flag's way of asking for all of them, as it is on
+    # every other list here.
+    assert len(runs_payload(project, limit=0)["runs"]) == 3
+
+
+def test_an_unreadable_manifest_is_listed_with_its_error(project):
+    """Discovery found the file. A menu that dropped the row would report
+    a project as having fewer runs than it has."""
+    (project / "verif" / "blk" / "artefacts" / "both" / MANIFEST_FILENAME).write_text(
+        "{ truncated"
+    )
+
+    entry = next(
+        row
+        for row in runs_payload(project)["runs"]
+        if row["phys_dir"] == "verif/blk/artefacts/both"
+    )
+
+    assert entry["run"] is None
+    assert "cannot read" in entry["error"]
+    # Still selectable and still identified: the path says both.
+    assert entry["phys_dir"] == "verif/blk/artefacts/both"
+
+
+def test_a_manifest_from_another_rtl_buddy_costs_its_row_and_no_other(project):
+    path = project / "verif" / "blk" / "artefacts" / "both" / MANIFEST_FILENAME
+    document = json.loads(path.read_text())
+    document["schema_version"] = MANIFEST_SCHEMA_VERSION + 1
+    path.write_text(json.dumps(document))
+
+    payload = runs_payload(project)
+
+    assert payload["count"] == 3
+    broken = next(row for row in payload["runs"] if row["newest"])
+    assert "schema_version" in broken["error"]
+    assert [row["error"] for row in payload["runs"][1:]] == [None, None]
+
+
+def test_a_project_with_no_artefacts_lists_nothing_rather_than_failing(tmp_path):
+    """The other verbs refuse — they were asked about a run. A menu of no
+    runs is an answer."""
+    assert runs_payload(tmp_path) == {
+        "schema_version": PHYS_QUERY_SCHEMA_VERSION,
+        "count": 0,
+        "limit": None,
+        "runs": [],
+    }
