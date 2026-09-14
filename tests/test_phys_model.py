@@ -2008,6 +2008,31 @@ def test_a_synthetic_run_records_the_toggle_and_duty_that_drove_it():
     assert activity_label(activity) == "toggle 0.2, duty 0.5"
 
 
+def test_a_run_that_reads_no_trace_records_none_even_when_the_config_keeps_one():
+    """`activity.saif` and `activity.scope` survive the edit that makes a
+    run static -- a commented-out `mode: dynamic`, a variant generated from
+    a base that had a trace -- and `get_activity_source()` then answers
+    `default`. No `read_saif` is emitted on that run, so the trace was not
+    read and the test behind it drove nothing; recording all three anyway
+    put a named test beside a leakage number, and told two static runs
+    apart by a file neither of them opened."""
+    retained = dict(trace="verif/demo/artefacts/csr_smoke/dump.saif", scope="tb/u_dut")
+
+    for source in ("default", "synthetic"):
+        block = activity_block(source=source, **retained)
+        assert block["source"] == source
+        assert block["trace"] is None, source
+        assert block["test"] is None, source
+        assert block["scope"] is None, source
+
+    # And the run that did read it records all three -- the gate is on the
+    # source, not on the fields being absent.
+    read = activity_block(source="saif", **retained)
+    assert read["trace"] == retained["trace"]
+    assert read["test"] == "csr_smoke"
+    assert read["scope"] == "tb/u_dut"
+
+
 def test_a_trace_outside_an_artefact_directory_names_no_test():
     """The derivation is from rtl_buddy's own layout. A checked-in golden
     trace sits in a directory that is not a test, and reporting its name as

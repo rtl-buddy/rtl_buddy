@@ -16,7 +16,10 @@ measurements of different things, and until now the model recorded
 neither. :func:`activity_block` writes down what
 :meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source` resolved
 — ``default``, ``synthetic``, ``saif`` or ``vcd`` — together with the
-trace, the scope, and the toggle/duty pair a synthetic run used.
+trace and the scope a run that read one used, and the toggle/duty pair
+a synthetic one used. Each detail is recorded only for the source that
+consumed it: a config keeps fields the run it describes never reads,
+and a block that repeated them would report a stimulus nothing applied.
 
 **The config block** (both halves). Two experiments of one design share
 a ``top``, and auto-generated variants share everything a run name would
@@ -173,14 +176,28 @@ def activity_block(
     cover — but recording them beside a trace would read as "this is
     what drove the numbers", which is exactly the confusion the block
     exists to end.
+
+    ``trace``, ``test`` and ``scope`` are gated the same way, on
+    :data:`TRACE_SOURCES`, and for the same reason. A config keeps its
+    ``activity.saif``/``activity.vcd``/``activity.scope`` across an edit
+    that turns the run static — commenting out ``mode: dynamic``, or a
+    variant generated from a base that had a trace — and
+    :meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source` then
+    resolves ``default``. The Tcl emits no ``read_saif`` at all on that
+    run, so the trace was not read, the test did not drive it, and the
+    scope selected nothing; recording all three anyway put a named test
+    beside a leakage number and made two static runs that differ only in
+    a trace neither of them opened look like two different measurements.
+    A ``synthetic`` run is the same case with the other pair of fields.
     """
-    trace = str(trace) if trace else None
+    reads_trace = source in TRACE_SOURCES
+    trace = str(trace) if trace and reads_trace else None
     synthetic = source == "synthetic"
     return {
         "source": source or None,
         "trace": trace,
         "test": trace_test(trace),
-        "scope": scope or None,
+        "scope": (scope or None) if reads_trace else None,
         "toggle_rate": toggle_rate if synthetic else None,
         "duty": duty if synthetic else None,
     }
