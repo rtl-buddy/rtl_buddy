@@ -2129,7 +2129,11 @@ def test_run_entries_read_as_one_line_that_tells_two_runs_apart():
 def test_the_shown_run_and_the_newest_are_marked_separately():
     """Different facts, and either can be the surprising one: the pane
     opens on the newest, and a reader who has switched away needs to see
-    both where they are and where the default went."""
+    both where they are and where the default went.
+
+    The newest mark says what choosing it *does*, not only what the run
+    is: it is the one entry that puts the pane back on follow-newest
+    rather than pinning a directory (see `runValue`)."""
 
     out = _node(
         _marked_js("run-selector")
@@ -2146,11 +2150,71 @@ def test_the_shown_run_and_the_newest_are_marked_separately():
     )
     assert json.loads(out) == [
         " [shown]",
-        " [newest]",
-        " [shown, newest]",
+        " [newest — follows]",
+        " [shown, newest — follows]",
         "",
         "",
     ]
+
+
+def test_choosing_the_newest_run_keeps_following_discovery():
+    """The bug this pins: selecting the newest entry used to pin its
+    directory, so the pane stopped following the newest the moment a
+    reader chose to be on it — every reload afterwards asked for a
+    directory that a later run had overtaken, and the run they picked
+    *because* it was the latest was the one they stopped seeing new
+    results for.
+
+    The newest entry selects with the empty value, which the load arm
+    reads as "no run named" and fetches bare `/phy.json` for. An
+    explicitly chosen older run still pins."""
+
+    out = _node(
+        _marked_js("run-selector")
+        + _marked_js("run-url")
+        + """
+        var newest = { phys_dir: 'verif/blk/artefacts/nightly', newest: true };
+        var older = { phys_dir: 'verif/blk/artefacts/old', newest: false };
+        var unlisted = { phys_dir: '', newest: false };
+        console.log(JSON.stringify({
+          newest: runValue(newest),
+          older: runValue(older),
+          unlisted: runValue(unlisted),
+          followUrl: phyUrl('/phy.json', requestedDir(runValue(newest))),
+          pinnedUrl: phyUrl('/phy.json', requestedDir(runValue(older))),
+          requested: [requestedDir(''), requestedDir(runValue(older))]
+        }));
+        """
+    )
+    picked = json.loads(out)
+
+    # The newest run is not selected by its directory — it is selected by
+    # the absence of one, which is what "follow discovery" is on the wire.
+    assert picked["newest"] == ""
+    assert picked["followUrl"] == "/phy.json"
+    assert picked["requested"][0] is None
+    # An older run is pinned, exactly as before.
+    assert picked["older"] == "verif/blk/artefacts/old"
+    assert picked["pinnedUrl"] == "/phy.json?dir=verif%2Fblk%2Fartefacts%2Fold"
+    assert picked["requested"][1] == "verif/blk/artefacts/old"
+    assert picked["unlisted"] == ""
+
+
+def test_the_run_url_appends_its_query_to_a_base_that_has_one():
+    """`PHY_URL` is injected, so it is not always the bare route."""
+
+    out = _node(
+        _marked_js("run-url")
+        + """
+        console.log(JSON.stringify([
+          phyUrl('/phy.json?token=x', 'verif/b/artefacts/n'),
+          phyUrl('/phy.json?token=x', null)
+        ]));
+        """
+    )
+    with_query, bare = json.loads(out)
+    assert with_query == "/phy.json?token=x&dir=verif%2Fb%2Fartefacts%2Fn"
+    assert bare == "/phy.json?token=x"
 
 
 def test_the_run_on_screen_is_an_entry_even_when_the_listing_headed_it_off():

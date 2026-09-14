@@ -53,6 +53,14 @@ against the project root before anything is read
 (:func:`contained_phys_dir`) — the query string is an untrusted input
 and a browser tab is reachable by anything that can reach the port.
 
+The two are a pair, and the pane picks between them: the entry marked
+``newest`` selects the *bare* route rather than that run's directory,
+because "the run that is newest right now" and "whichever run is
+newest" are different choices and only the second one keeps working.
+Pinning the newest run's directory the moment a reader chose it would
+mean the run they picked *because* it was the latest is the one they
+stop seeing new results for. An explicitly chosen older run does pin.
+
 The menu the reader picks from rides in the body as ``runs``, the
 ``rb phys runs`` payload verbatim. One request, because a menu fetched
 separately is empty for a round-trip and absent when that request is

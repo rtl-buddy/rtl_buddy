@@ -278,7 +278,7 @@
 <body>
   <header>
     <h1>rtl-buddy-phy <small id="counts"></small></h1>
-    <label class="chk" id="run-picker" title="Which run this pane is showing. A project holds one artefact directory per partition, per corner and per power mode, and they are listed newest first — the entry marked `newest` is what a reload with nothing selected shows. Each entry reads: run · top · backends · power mode (what drove it) · experiment id. Hover an entry for its artefact directory and its configuration fingerprint.">
+    <label class="chk" id="run-picker" title="Which run this pane is showing. A project holds one artefact directory per partition, per corner and per power mode, and they are listed newest first — the entry marked `newest — follows` is the one a fresh tab opens on, and choosing it keeps this pane following whatever run finishes next. Choosing any other pins that run until you pick again. Each entry reads: run · top · backends · power mode (what drove it) · experiment id. Hover an entry for its artefact directory and its configuration fingerprint.">
       run <select id="run-select"></select>
     </label>
     <label class="chk" title="Which physical metric this pane is ranked on. `cells` and `area` come from the synthesis half and rank the module table; `leakage` and `total` come from the power half and rank the instance table; `dynamic` is internal + switching, summed here rather than stored — no producer writes that column down. The other table keeps its own default ranking, so both halves stay readable.">
@@ -676,13 +676,33 @@
   // they are different facts and either can be the surprising one: the
   // pane opens on the newest, and a reader who has switched away needs
   // to see both where they are and where the default went.
+  //
+  // The newest entry is marked as what it selects, not only as what it
+  // is: picking it puts the pane back on bare `/phy.json`, so the next
+  // reload follows discovery to whatever has landed since. "The run
+  // that is newest right now" and "whichever run is newest" are
+  // different choices, and this is the one the control offers.
   function runMarks(entry, shownManifest) {
     var marks = [];
     if (shownManifest && entry && entry.manifest === shownManifest) {
       marks.push('shown');
     }
-    if (entry && entry.newest) { marks.push('newest'); }
+    if (entry && entry.newest) { marks.push('newest — follows'); }
     return marks.length ? ' [' + marks.join(', ') + ']' : '';
+  }
+
+  // What one entry selects with, which is not always its directory.
+  //
+  // The newest run selects with the EMPTY value — "follow discovery" —
+  // because pinning its directory would end the following at the moment
+  // a reader chose it: the run they picked *because* it was the latest
+  // is then the one they stop seeing new results for, and every reload
+  // afterwards asks for a directory that is no longer the newest. An
+  // explicitly chosen older run does pin, which is the whole point of
+  // choosing it.
+  function runValue(entry) {
+    if (entry && entry.newest) { return ''; }
+    return (entry && entry.phys_dir) || '';
   }
 
   // The hover: where the run is, what shaped it, and when. Kept off the
@@ -1235,20 +1255,30 @@
   }
   // <<< load-generation
 
-  // Which run to ask for, as a URL. `null` is the newest manifest under
-  // the project — the default `/phy.json` has always served and still
-  // does, so a pane nobody has touched opens on the run that finished
-  // last.
-  function phyUrl(dir) {
-    if (!dir) { return PHY_URL; }
-    return PHY_URL + (PHY_URL.indexOf('?') >= 0 ? '&' : '?') +
+  // >>> run-url
+  // Which run to ask for, as a URL, and what a selector value means.
+  //
+  // `null` — which is what an empty selector value becomes — is the
+  // newest manifest under the project: the bare `/phy.json` the route
+  // has always served, so a pane nobody has touched opens on the run
+  // that finished last, and a reader who picks the entry marked
+  // `newest` is choosing to keep doing that rather than pinning the
+  // directory that happens to be newest today (see `runValue`).
+  function requestedDir(value) {
+    return value || null;
+  }
+
+  function phyUrl(base, dir) {
+    if (!dir) { return base; }
+    return base + (base.indexOf('?') >= 0 ? '&' : '?') +
            'dir=' + encodeURIComponent(dir);
   }
+  // <<< run-url
 
   function load(dir) {
     var generation = nextGeneration(state);
-    var requested = dir || null;
-    var url = phyUrl(requested);
+    var requested = requestedDir(dir);
+    var url = phyUrl(PHY_URL, requested);
     note('loading ' + url + '…');
     fetch(url, { cache: 'no-store' }).then(function (r) {
       return r.json().then(function (body) { return { ok: r.ok, body: body }; });
@@ -1497,7 +1527,7 @@
     els.runPicker.hidden = entries.length < 2;
     entries.forEach(function (entry) {
       var opt = elem('option', null, runLabel(entry) + runMarks(entry, shown));
-      opt.value = entry.phys_dir || '';
+      opt.value = runValue(entry);
       opt.title = runTitle(entry);
       els.runSelect.appendChild(opt);
       if (entry.manifest === shown) { els.runSelect.value = opt.value; }
