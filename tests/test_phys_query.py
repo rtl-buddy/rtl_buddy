@@ -99,7 +99,17 @@ COLLIDING_INSTANCE_ROWS = [
 _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
-def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None):
+def _write_run(
+    root,
+    run,
+    *,
+    top="blk",
+    modules=None,
+    instances=None,
+    mtime=None,
+    netlist_sha256=_FIXTURE_NETLIST_SHA256,
+    netlist_source="synth",
+):
     """One run's artefact directory, written the way the producers do."""
     phys_dir = root / "verif" / "blk" / "artefacts" / run
     phys_dir.mkdir(parents=True, exist_ok=True)
@@ -111,7 +121,7 @@ def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None
             modules=modules,
             area_um2=576.5,
             gate_count=162,
-            netlist_sha256=_FIXTURE_NETLIST_SHA256,
+            netlist_sha256=netlist_sha256,
         )
     if instances is not None:
         power = build_power_model(
@@ -121,7 +131,7 @@ def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None
             switching_w=1.8175e-6,
             leakage_w=0.58e-6,
             total_w=13.171e-6,
-            netlist_sha256=_FIXTURE_NETLIST_SHA256,
+            netlist_sha256=netlist_sha256,
         )
         model = (
             merge_model(model, power, own_half="instances")
@@ -156,7 +166,7 @@ def _write_run(root, run, *, top="blk", modules=None, instances=None, mtime=None
             else {
                 "backend": "openroad",
                 "run": run,
-                "netlist_source": "synth",
+                "netlist_source": netlist_source,
                 "report": phys_dir / "power.rpt",
                 "instances": phys_dir / "power_instances.rpt",
                 "cells": phys_dir / "power_instances.cells",
@@ -569,11 +579,54 @@ def test_summary_of_a_synth_only_model_names_the_missing_half(project):
         "present": False,
         "rows": None,
         "produced_by": "rb power",
+        "netlist_hash": False,
     }
     assert payload["halves"]["modules"]["rows"] == 3
     assert payload["counts"]["instances"] is None
     assert payload["instances"] == []
     assert payload["backends"]["power"] is None
+
+
+def test_the_halves_block_echoes_whether_each_half_has_a_netlist_hash(tmp_path):
+    """The finding (#561 round-10 review, Codex P2). The merge is gated on
+    the netlist hash both producers record, so a surface telling a reader
+    how to fill the missing half has to know whether the half in hand can
+    be paired with at all."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    _write_run(root, "from_synth", instances=INSTANCE_ROWS, mtime=1_000_000)
+    _write_run(
+        root,
+        "from_pnr",
+        instances=INSTANCE_ROWS,
+        mtime=1_100_000,
+        netlist_sha256=None,
+        netlist_source="pnr",
+    )
+
+    paired = summary_payload(
+        load_context(root, phys_dir=root / "verif" / "blk" / "artefacts" / "from_synth")
+    )
+    from_pnr = summary_payload(
+        load_context(root, phys_dir=root / "verif" / "blk" / "artefacts" / "from_pnr")
+    )
+
+    assert paired["halves"]["instances"]["netlist_hash"] is True
+    assert from_pnr["halves"]["instances"]["netlist_hash"] is False
+    # The absent half never has one, whichever run wrote the document.
+    assert paired["halves"]["modules"]["netlist_hash"] is False
+
+
+def test_each_half_is_paired_with_the_provenance_block_the_model_fills():
+    """`HALF_PROVENANCE` is the read side of the model's own `_HALVES`
+    table, spelled twice; a third half added to one alone would echo the
+    wrong provenance rather than fail."""
+    from rtl_buddy.phys import model as model_mod
+
+    assert query_mod.HALF_PROVENANCE == {
+        half: block for half, _totals, block in model_mod._HALVES
+    }
+    assert set(query_mod.HALF_PROVENANCE) == set(query_mod.HALF_PRODUCER)
 
 
 def test_rankings_sink_the_rows_nobody_measured():

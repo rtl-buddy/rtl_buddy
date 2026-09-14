@@ -1330,7 +1330,9 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "per-module breakdown — the stat -json dump "
                 f"{fields.get('stats')} was not produced or could not be read"
                 f"{why}. The design totals scraped from the log are still "
-                "recorded; `rb phys module` has nothing to report for this run"
+                "recorded; what is missing is this run's per-module synthesis "
+                "rows, so `rb phys module` has no cells or area for it — any "
+                "per-instance power rows in the same model still answer"
             )
         case "power.phys_model_incomplete":
             reason = fields.get("error")
@@ -1340,8 +1342,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "per-instance breakdown — the per-instance report "
                 f"{fields.get('instances')} was not produced or could not be "
                 f"read{why}. The design totals from the report_power Total row "
-                "are still recorded; `rb phys instance` has nothing to report "
-                "for this run"
+                "are still recorded; what is missing is this run's "
+                "per-instance power rows, so `rb phys instance` has nothing to "
+                "answer from — any per-module synthesis rows in the same model "
+                "still answer"
             )
         case "synth_tool_config.unknown_override":
             unknown = fields.get("unknown") or []
