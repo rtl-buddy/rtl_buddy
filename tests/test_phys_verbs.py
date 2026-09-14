@@ -762,3 +762,62 @@ def test_phys_instance_says_which_half_is_missing(phys_project):
     assert "no per-module rows in this model" in _flat(result.output)
     assert "rb synth" in _flat(result.output)
 
+
+# --- the read verbs write nothing, including the log -------------------------
+
+
+def _log_is_writable_only_by_owner(path: Path) -> bool:
+    """Whether ``chmod`` actually denies this process a write.
+
+    Root ignores the permission bits, and some CI images run as root, so
+    the test below would pass there for the wrong reason (nothing was
+    refused because nothing could be). Checked rather than assumed.
+    """
+    try:
+        with path.open("a"):
+            return False
+    except PermissionError:
+        return True
+
+
+def test_a_read_verb_does_not_open_the_project_log_for_writing(phys_project):
+    """A read verb answers from artefacts on disk and writes nothing —
+    the log included.
+
+    The file handler is opened for writing and a process's first open of
+    a path truncates it, so attaching one here failed a read in a
+    read-only checkout and, worse, silently emptied the log of the run
+    the reader was asking about. `list_only=True` now skips it (#561).
+    """
+    log = phys_project / "rtl_buddy.log"
+    log.write_text("the flow that produced these artefacts said this\n")
+    log.chmod(0o444)
+    if not _log_is_writable_only_by_owner(log):  # pragma: no cover - root CI
+        pytest.skip("this process can write a read-only file (running as root?)")
+    runner, rb = _runner()
+
+    try:
+        result = runner.invoke(rb.app, ["phys", "summary"])
+    finally:
+        log.chmod(0o644)
+
+    assert result.exit_code == 0, result.output
+    assert "verif/blk/artefacts/both/phys-manifest.json" in _flat(result.output)
+    assert log.read_text() == "the flow that produced these artefacts said this\n"
+
+
+def test_a_read_verb_leaves_the_previous_run_s_log_intact(phys_project):
+    """The truncating half of the same bug, on a writable log.
+
+    Asking what the last run measured is the moment its log matters
+    most; a read that empties it takes away the evidence it was called
+    to explain.
+    """
+    log = phys_project / "rtl_buddy.log"
+    log.write_text("power: OpenROAD reported 3.171 uW\n")
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "module", "blk"])
+
+    assert result.exit_code == 0, result.output
+    assert log.read_text() == "power: OpenROAD reported 3.171 uW\n"

@@ -1012,6 +1012,24 @@ class RtlBuddy:
         only need to read the suite config; skipping the root-config
         load keeps them usable when the surrounding project config is
         invalid or unrelated to the listed suite.
+
+        **It also leaves the project's log file alone** (#561). A file
+        log is opened for *writing*, and a process's first open of a
+        path truncates it
+        (:func:`~rtl_buddy.logging_utils.attach_file_log`) — which is
+        right for a flow, whose ``rtl_buddy.log`` is that run's log, and
+        wrong for every read. The paths that pass ``list_only`` write
+        nothing else: `rb phys`, `rb cov` and the `rb graph` read verbs
+        answer from artefacts already on disk, `rb xplr` writes only its
+        own ledger, and `--list` prints a config. Opening the log would
+        therefore be the only thing they wrote, and it costs twice — it
+        fails outright in a read-only checkout, and after a flow it
+        destroys the log of the very run being asked about. Append mode
+        fixes neither (an unwritable file is unwritable either way, and
+        a read verb's events are not part of the run's record), so these
+        paths keep the console handler and nothing else. An explicit
+        ``log_path`` still attaches: that is a caller stating where this
+        process's log goes, which is a different question.
         """
         if (primary_config is None) == (command_root is None):
             raise FatalRtlBuddyError(
@@ -1031,12 +1049,12 @@ class RtlBuddy:
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
-        if log_path is None:
-            attach_file_log(ctx.log_path)
-        else:
+        if log_path is not None:
             log_path = Path(log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(log_path)
+        elif not list_only:
+            attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
 
         if list_only:
