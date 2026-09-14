@@ -56,10 +56,13 @@ whatever is at that path *now* — a netlist a concurrent `rb synth` into
 the upstream directory may have replaced while OpenROAD was working,
 which is exactly the mismatch the hash exists to catch, recorded as a
 match. So :func:`publish_power` does not take a path at all: it takes
-the ``netlist_sha256`` its caller captured when it handed the netlist to
-the tool (:meth:`rtl_buddy.tools.power_openroad.OpenRoadPower._write_script`),
+the ``netlist_sha256`` its caller captured of the copy it handed the
+tool (:meth:`rtl_buddy.tools.power_openroad.OpenRoadPower._snapshot_netlist`),
 and a caller that captured none records none, which the merge reads as
-"no evidence" and refuses to inherit on.
+"no evidence" and refuses to inherit on. That caller closes the window
+rather than narrowing it: the analysis reads its *own* copy of the
+netlist, inside its own artefact directory, so the hashed bytes and the
+parsed bytes are one file no other command can rewrite.
 
 **The failing rerun.** Those six steps run only when the flow gets far
 enough to pass, so a rerun that fails earlier would leave the previous
@@ -245,9 +248,10 @@ def publish_power(
         whether these rows still describe the design it writes, and so
         this publish can tell whether the module rows already here
         describe the netlist it read. Taken as a hash rather than a path
-        because the bytes to identify are the ones OpenROAD was given,
-        not the ones at that path when this runs — see the module
-        docstring. ``None`` for a ``netlist-source: pnr`` run, which
+        because the bytes to identify are the ones OpenROAD was given —
+        the run's own copy of the netlist, hashed when it was made — and
+        not whatever is at the upstream path when this runs; see the
+        module docstring. ``None`` for a ``netlist-source: pnr`` run, which
         reads a routed database and not a netlist, and for a caller that
         could not read the file; nothing is then inherited in either
         direction, which is the strict reading and the safe one.
@@ -444,9 +448,10 @@ def sha256_of(path) -> str | None:
     alike.
 
     Public because the power flow calls it itself: the bytes worth
-    identifying there are the ones it hands OpenROAD, which is minutes
-    before it publishes (see the module docstring), so the hash is
-    captured at the hand-off and threaded into :func:`publish_power`.
+    identifying there are the ones it hands OpenROAD — the private copy
+    it stages in its own artefact directory, minutes before it publishes
+    (see the module docstring) — so the hash is captured of that copy
+    and threaded into :func:`publish_power`.
     """
     if path is None:
         return None

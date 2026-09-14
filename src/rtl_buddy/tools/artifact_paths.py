@@ -111,6 +111,11 @@ SIBLING_OUTPUT_NAMES = (
     "cdc.rpt",
     # rb power (tools/power_openroad.py)
     "power.rpt",
+    # The run's private copy of the upstream netlist, hashed and handed to
+    # OpenROAD so the provenance the model records is of the bytes the
+    # analysis actually read (#560). A `.v` here shares a directory with a
+    # co-named run whose suffix clear would otherwise take it mid-analysis.
+    "power_netlist.v",
     # The per-instance half of the same run (#558). The `.cells` sidecar is
     # the instance -> liberty-cell map `report_power` does not print.
     "power_instances.rpt",
