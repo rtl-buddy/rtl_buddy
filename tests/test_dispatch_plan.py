@@ -16,6 +16,7 @@ from rtl_buddy.dispatch.plan import (
     PLAN_SCHEMA_VERSION,
     read_plan_config,
     read_plan_configs,
+    read_plan_master_seed,
     write_plan,
 )
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -69,6 +70,22 @@ def test_read_plan_token_roundtrips_and_defaults(minimal_project: Path):
     legacy = minimal_project / "legacy.json"
     legacy.write_text(json.dumps({"schema_version": PLAN_SCHEMA_VERSION, "tests": []}))
     assert read_plan_token(legacy) is None
+
+
+def test_master_seed_is_recorded_once_at_plan_top_level(minimal_project: Path):
+    configs = _suite_configs(minimal_project)
+    plan = write_plan(
+        minimal_project / "plan.json",
+        "tests.yaml",
+        configs,
+        "nonce-9",
+        master_seed=20260914,
+    )
+
+    payload = json.loads(plan.read_text())
+    assert payload["master_seed"] == 20260914
+    assert read_plan_master_seed(plan) == 20260914
+    assert all("master_seed" not in test for test in payload["tests"])
 
 
 def test_read_rejects_schema_mismatch(minimal_project: Path):

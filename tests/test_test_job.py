@@ -269,6 +269,105 @@ def test_test_job_replay_defaults_replay_run_id_to_run_id(
     assert stub_runner.last_init["replay_run_id"] == 2
 
 
+def test_test_job_preserves_master_and_resolved_seed_from_plan(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.dispatch.plan import write_plan
+
+    suite_cfg = SuiteConfig(path="tests.yaml")
+    cfg = suite_cfg.get_tests("basic")[0]
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+    resolution = cfg.resolve_runtime_seed(
+        master_seed=20260914, suite_identity="tests.yaml", run_id=None
+    )
+    plan = write_plan(
+        minimal_project / "plan.json",
+        "tests.yaml",
+        [cfg],
+        "tok",
+        master_seed=20260914,
+    )
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+
+    def reject_worker_derivation(*args, **kwargs):
+        raise AssertionError("dispatch worker must use the serialized seed")
+
+    rb._resolve_test_seed = reject_worker_derivation
+    result = runner.invoke(
+        rb.app,
+        [
+            "_test-job",
+            "basic",
+            "--result-json",
+            "res.json",
+            "--plan",
+            str(plan),
+            "--seed-mode",
+            "master",
+            "--master-seed",
+            "20260914",
+            "--resolved-seed",
+            str(resolution.seed),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    run_cfg = stub_runner.last_init["test_cfg"]
+    assert run_cfg.get_resolved_seed() == resolution.seed
+    assert run_cfg.get_plusarg("stimulus_seed") == resolution.seed
+    assert stub_runner.last_init["seed_mode"] == SeedMode.MASTER
+
+    envelope = load_result_json(minimal_project / "res.json")
+    assert envelope["result"].results["seed"] == {
+        "master_seed": 20260914,
+        "resolved_seed": resolution.seed,
+        "source": "master",
+        "identity": "tests.yaml::basic::single",
+    }
+
+
+def test_test_job_rejects_resolved_seed_transport_corruption(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.dispatch.plan import write_plan
+
+    suite_cfg = SuiteConfig(path="tests.yaml")
+    cfg = suite_cfg.get_tests("basic")[0]
+    resolution = cfg.resolve_runtime_seed(
+        master_seed=20260914, suite_identity="tests.yaml", run_id=None
+    )
+    plan = write_plan(
+        minimal_project / "plan.json",
+        "tests.yaml",
+        [cfg],
+        "tok",
+        master_seed=20260914,
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "_test-job",
+            "basic",
+            "--result-json",
+            "res.json",
+            "--plan",
+            str(plan),
+            "--seed-mode",
+            "master",
+            "--master-seed",
+            "20260914",
+            "--resolved-seed",
+            str(resolution.seed + 1),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "does not match dispatch plan seed" in str(result.exception)
+
+
 def test_test_job_machine_envelope(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):

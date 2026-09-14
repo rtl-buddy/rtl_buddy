@@ -269,6 +269,99 @@ def test_test_config_plusargs_lazy_init_and_merge():
     assert cfg.get_plusargs() == {"FOO": 1, "BAR": 2, "BAZ": 3}
 
 
+def test_master_seed_is_exposed_as_plusarg_before_preproc():
+    cfg = _make_test_config()
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+
+    resolution = cfg.resolve_runtime_seed(
+        master_seed=20260914,
+        suite_identity="verif/vxp/tests.yaml",
+        run_id=None,
+    )
+
+    assert cfg.get_resolved_seed() == resolution.seed
+    assert cfg.get_plusarg("stimulus_seed") == resolution.seed
+    assert cfg.seed_source == "master"
+
+    cfg.resolved_seed = 999
+    cfg.set_plusarg("stimulus_seed", 999)
+    cfg.ensure_resolved_seed_plusarg()
+    assert cfg.get_resolved_seed() == resolution.seed
+    assert cfg.get_plusarg("stimulus_seed") == resolution.seed
+
+
+def test_fixed_test_seed_opts_out_of_master_rotation():
+    cfg = _make_test_config()
+    cfg.sim_rand_seed = 41
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+
+    first = cfg.resolve_runtime_seed(
+        master_seed=100,
+        suite_identity="verif/timing/tests.yaml",
+        run_id=None,
+    )
+    second = cfg.resolve_runtime_seed(
+        master_seed=200,
+        suite_identity="verif/timing/tests.yaml",
+        run_id=None,
+    )
+
+    assert first.seed == second.seed == 41
+    assert second.source == "fixed"
+    assert cfg.get_plusarg("stimulus_seed") == 41
+
+
+def test_suite_config_loads_runtime_seed_fields(minimal_project: Path):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n"
+            "    sim-rand-seed: 41\n"
+            "    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    cfg = SuiteConfig(str(suite_path)).get_tests("basic")[0]
+
+    assert cfg.sim_rand_seed == 41
+    assert cfg.sim_rand_seed_plusarg == "stimulus_seed"
+
+
+@pytest.mark.parametrize("seed", [0, -1, 1 << 31])
+def test_suite_config_rejects_invalid_fixed_runtime_seed(
+    minimal_project: Path, seed: int
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            f"    sim_timeout:\n    sim-rand-seed: {seed}\n",
+            1,
+        )
+    )
+
+    with pytest.raises(FatalRtlBuddyError, match="sim-rand-seed must be between"):
+        SuiteConfig(str(suite_path))
+
+
+def test_suite_config_rejects_empty_runtime_seed_plusarg(minimal_project: Path):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            '    sim_timeout:\n    sim-rand-seed-plusarg: ""\n',
+            1,
+        )
+    )
+
+    with pytest.raises(
+        FatalRtlBuddyError, match="sim-rand-seed-plusarg must not be empty"
+    ):
+        SuiteConfig(str(suite_path))
+
+
 def test_test_config_plusdefines_lazy_init_and_merge():
     cfg = _make_test_config()
     assert cfg.get_plusdefines() is None
@@ -323,6 +416,11 @@ def test_testconfig_plan_roundtrip():
         resources=DispatchResourcesFile(cpus=4, mem="16G", time="02:00:00"),
         xfail=True,
         xfail_strict=False,
+        sim_rand_seed=17,
+        sim_rand_seed_plusarg="stimulus_seed",
+        resolved_seed=29,
+        seed_source="master",
+        seed_identity="verif/axi/tests.yaml::axi_soak.W64::single",
     )
 
     plan = original.to_plan_dict()
