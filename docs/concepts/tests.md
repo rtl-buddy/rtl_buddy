@@ -206,7 +206,7 @@ rb regression --seed 31337
 
 `--seed` derives each expanded test's sim seed deterministically from the master seed, the suite config's path, the test name, and the run id — never dispatch order or job timing. The same `--seed` replays a run exactly, locally or under `--dispatch slurm`, without reading old artefacts. A test can pin its own value with `seed: <int>` or hold the builder's `sim-rand-seed` with `seed: default` in `tests.yaml`.
 
-A `preproc` hook that generates stimulus sees the resolved seed on `test_cfg` (`get_resolved_seed()`); set `sim-rand-seed-plusarg: NAME` on the test to also receive it as `+NAME=SEED` on the simulator command line, so Python-side and RTL-side randomness share one value. The run's seed lands in `test.randseed`, each result envelope, and the `sim.seed_derived` log event; `rb test`/`rb regression` summaries and `--machine` payloads record the master seed once.
+A `preproc` hook that generates stimulus sees the resolved seed on `test_cfg` (`get_resolved_seed()`); set `sim-rand-seed-plusarg: NAME` on the test to also receive it as `+NAME=SEED` on the simulator command line, so Python-side and RTL-side randomness share one value. When one hook execution serves several runs — a local `randtest` iteration set — the hook sees the run-independent derivation (the same value `rb test` would resolve for that test), and each run's `execute()` still derives its own per-run seed. The run's seed lands in `test.randseed`, each result envelope, and the `sim.seed_derived` log event; `rb test`/`rb regression` summaries and `--machine` payloads record the master seed once.
 
 ## Inspect artefacts
 

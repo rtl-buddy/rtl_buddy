@@ -358,6 +358,30 @@ def test_hook_mutating_seed_directive_cannot_diverge_sim(tmp_path, monkeypatch):
     assert _seed_arg(captured) == expected
 
 
+def test_shared_hook_sees_invocation_level_seed(tmp_path, monkeypatch):
+    """run_multiple runs the preproc ONCE for every run_id (#415), so the
+    hook sees the run-independent derivation — and each execute() still
+    gets its own per-run seed."""
+    captured = []
+    _stub_process_run(monkeypatch, captured)
+    test_cfg = _SeedTestCfg()
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_cfg=test_cfg,
+        master_seed=7,
+        seed_identity="tests.yaml",
+        run_id=1,
+        seed_mode=SeedMode.DEFAULT,
+    )
+
+    assert sim.pre(run_id=None) is None
+    assert test_cfg.resolved_seed == derive_seed(7, "tests.yaml", "basic", None)
+
+    assert sim.execute(run_id=1) == 0
+    assert _seed_arg(captured) == derive_seed(7, "tests.yaml", "basic", 1)
+
+
 def test_timed_out_run_records_its_seed(tmp_path, monkeypatch):
     """A 4444 timeout never reaches post(); the runner must still stamp
     the launched seed into the result envelope (#566)."""

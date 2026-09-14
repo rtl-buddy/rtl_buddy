@@ -2596,15 +2596,21 @@ class VlogSim:
         # Resolve this invocation's seed BEFORE the hook — a preproc
         # generating stimulus reads test_cfg.get_resolved_seed() (or the
         # `sim-rand-seed-plusarg` name) and must see the value the simulator
-        # will run with (#566). Under run_multiple the hook runs once for
-        # every run_id, so the seed resolved here is the runner's own
-        # (run_ids[0]); that run's execute() reuses the stash, later runs
-        # re-resolve their own. A missing replay file resolves to None and
-        # is left for execute()'s error path rather than failing PRE.
-        seed, source = self._resolve_seed(
-            self.run_id, self.seed_mode, self.replay_run_id
-        )
-        self._seed_stash[self.run_id] = (seed, source)
+        # will run with (#566).
+        if run_id is None:
+            # run_multiple runs ONE hook for every run_id (#415), so no
+            # single run's seed is the right one to expose: a stimulus
+            # generated from run 1's seed would be replayed under runs
+            # 2..N's own seeds. The hook instead sees the run-independent
+            # seed — the same value a bare `rb test` of this name derives
+            # under the same master — and NOTHING is stashed, so each
+            # execute() still resolves its own per-run seed.
+            seed, _source = self._resolve_seed(None, self.seed_mode, self.replay_run_id)
+        else:
+            seed, source = self._resolve_seed(
+                run_id, self.seed_mode, self.replay_run_id
+            )
+            self._seed_stash[run_id] = (seed, source)
         self._apply_resolved_seed(seed)
 
         script_path = self.test_cfg.get_preproc_path()
