@@ -69,7 +69,10 @@ no hub running it is absent, not failing, and the three read tools answer
 without one. It points the hub's `/phy` pane at `module:<name>` or
 `instance:<path>` (an unprefixed string is read as an instance path), so the
 row you are discussing is the row on the user's screen; use the names the read
-tools returned. A target the model does not contain is a soft miss, and the
+tools returned, and for an instance one that names a row — the pane resolves
+exact leaf rows only, so `phys_instance`'s echoed path is focusable when its
+`match` is `exact` and not when it is `prefix`, where the `children` entries
+are the rows. A target the model does not contain is a soft miss, and the
 hub replays the latest focus to a pane that connects later, so sending it
 before the tab is open works.
 

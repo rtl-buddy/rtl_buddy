@@ -691,6 +691,27 @@ def test_phys_module_scopes_the_liberty_only_claim_to_the_power(
     assert "do not read it back onto the cells and area, which stand" in description
 
 
+def test_the_phys_tools_say_which_instance_targets_are_focusable(
+    mcp_project: Path,
+):
+    """The finding (#563 round-10 review, Codex P2). The pair of
+    descriptions read as "feed phys_instance's echoed path to phys_focus",
+    and for a subtree that path names no row at all: the pane resolves
+    exact leaf rows, so the focus soft-misses and the agent is left
+    wondering what it did wrong."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+    instance = ts.spec("phys_instance").description
+    focus = ts.spec("phys_focus").description
+
+    assert "'match' says how the path landed" in instance
+    assert "only an exact row is a row" in instance
+    assert "never a subtree prefix" in instance
+
+    assert "the pane resolves exact leaf rows only" in focus
+    assert "focusable when its 'match' is 'exact'" in focus
+    assert "focus one of the 'children' instead" in focus
+
+
 def test_the_phys_detail_tools_head_their_lists_by_default(phys_project: Path):
     """A complete list by default is a context window spent on the tail of
     a ranking nobody asked for: every instance of a Liberty cell on a
