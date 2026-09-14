@@ -771,6 +771,38 @@ def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Pat
         assert f"(default {DEFAULT_RANK_LIMIT}, 0 for all)" in ts.spec(tool).description
 
 
+def test_phys_runs_is_the_rb_phys_runs_payload_verbatim(phys_project: Path):
+    """The menu the other physical tools take their ``phys_dir`` from, and
+    the same builder ``rb --machine phys runs`` prints."""
+    from rtl_buddy.phys.query import DEFAULT_RUNS_LIMIT, runs_payload
+
+    ts = _toolset(phys_project)
+    envelope = ts.call("phys_runs", {})
+
+    assert envelope["ok"] is True
+    assert envelope["meta"]["command"] == "rb phys runs"
+    assert envelope["payload"] == runs_payload(
+        ts.project_root, limit=DEFAULT_RUNS_LIMIT
+    )
+    entry = envelope["payload"]["runs"][0]
+    assert entry["phys_dir"] == "verif/blk_a/artefacts/nightly"
+    assert entry["newest"] is True
+    # And the directory it names is one `phys_summary` accepts back.
+    answered = ts.call("phys_summary", {"phys_dir": entry["phys_dir"]})
+    assert answered["payload"]["run"] == entry["run"]
+
+
+def test_phys_runs_needs_no_hub_and_no_arguments(phys_project: Path):
+    """Stateless, like the other three: a CI node with no hub answers it,
+    and an agent that knows nothing about the project can call it first."""
+    from rtl_buddy.mcp.toolset import STATELESS_TOOL_NAMES
+
+    assert "phys_runs" in STATELESS_TOOL_NAMES
+    ts = _toolset(phys_project)
+    assert ts.spec("phys_runs").input_schema.get("required", []) == []
+    assert ts.call("phys_runs", {"limit": 1})["payload"]["limit"] == 1
+
+
 def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
     """Same builder as ``rb --machine phys summary``, not a second shape."""
     from rtl_buddy.phys.query import load_context, summary_payload
@@ -790,6 +822,11 @@ def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
         "run",
         "top",
         "backends",
+        # The run's identity, beside where it is (#568).
+        "power_mode",
+        "power_activity",
+        "config",
+        "xplr",
         "units",
         "totals",
         "counts",

@@ -36,6 +36,7 @@ from rtl_buddy.phys.model import (
     write_model,
 )
 from rtl_buddy.phys import query as phys_query_mod
+from rtl_buddy.phys.provenance import activity_block, config_block
 from rtl_buddy.phys.query import (
     INSTANCE_JOIN_LIBERTY_ONLY,
     INSTANCE_JOIN_NAME_COLLISION,
@@ -93,6 +94,10 @@ def _write_run(
     mtime=None,
     netlist_sha256=_FIXTURE_NETLIST_SHA256,
     netlist_source="synth",
+    mode=None,
+    activity=None,
+    synth_config=None,
+    power_config=None,
 ):
     """One run's artefacts, written by the phase-1 producers."""
     phys_dir = root / "verif" / "blk" / "artefacts" / run
@@ -106,6 +111,7 @@ def _write_run(
             area_um2=576.5,
             gate_count=160,
             netlist_sha256=netlist_sha256,
+            config=synth_config,
         )
     if instances is not None:
         power = build_power_model(
@@ -116,6 +122,9 @@ def _write_run(
             leakage_w=0.08e-6,
             total_w=3.171e-6,
             netlist_sha256=netlist_sha256,
+            mode=mode,
+            activity=activity,
+            config=power_config,
         )
         model = (
             merge_model(model, power, own_half="instances")
@@ -142,6 +151,7 @@ def _write_run(
                     "stats": phys_dir / "synth_stat.json",
                     "netlist": phys_dir / "synth_netlist.v",
                     "log": phys_dir / "synth.log",
+                    "config": synth_config,
                 }
             ),
             power=(
@@ -155,6 +165,9 @@ def _write_run(
                     "instances": phys_dir / "power_instances.rpt",
                     "cells": phys_dir / "power_instances.cells",
                     "log": phys_dir / "power.log",
+                    "mode": mode,
+                    "activity": activity,
+                    "config": power_config,
                 }
             ),
         ),
@@ -202,7 +215,20 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         instances=_COLLIDING_INSTANCES,
         mtime=1_700_000,
     )
-    _write_run(root, "both", modules=_MODULES, instances=_INSTANCES, mtime=2_000_000)
+    _write_run(
+        root,
+        "both",
+        modules=_MODULES,
+        instances=_INSTANCES,
+        mtime=2_000_000,
+        mode="dynamic",
+        activity=activity_block(
+            source="saif", trace="verif/blk/artefacts/csr_smoke/dump.saif"
+        ),
+        synth_config=config_block(
+            platform="nangate45", effort="timing-opt", options={"strategy": "TIMING"}
+        ),
+    )
     monkeypatch.chdir(root)
     return root
 
@@ -750,3 +776,125 @@ def test_phys_instance_says_which_half_is_missing(phys_project):
     assert result.exit_code == 0, result.output
     assert "no per-module rows in this model" in result.output
     assert "rb synth" in result.output
+
+
+# --- rb phys runs (#568) ----------------------------------------------------
+
+
+def test_phys_runs_lists_every_run_newest_first(phys_project):
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "runs"])
+
+    envelope = _machine(result)
+    assert envelope["command"] == "phys runs"
+    assert envelope["exit_code"] == 0
+    payload = envelope["payload"]
+    assert payload["schema_version"] == phys_query_mod.PHYS_QUERY_SCHEMA_VERSION
+    assert [entry["run"] for entry in payload["runs"]] == [
+        "both",
+        "collision",
+        "pnr_power",
+        "power_only",
+        "old_synth",
+    ]
+    assert payload["count"] == 5
+    newest = payload["runs"][0]
+    assert newest["newest"] is True
+    assert newest["phys_dir"] == "verif/blk/artefacts/both"
+    assert newest["backends"] == {"synth": "yosys", "power": "openroad"}
+
+
+def test_phys_runs_reports_the_power_mode_and_the_experiment_identity(phys_project):
+    """The reason the verb exists: two runs of one design differ by their
+    configuration and their stimulus, not by their top."""
+    runner, rb = _runner()
+
+    payload = _machine(runner.invoke(rb.app, ["--machine", "phys", "runs"]))["payload"]
+
+    newest = payload["runs"][0]
+    assert newest["mode"] == "dynamic"
+    assert newest["activity"]["label"] == "saif csr_smoke"
+    assert newest["fingerprint"].startswith("nangate45 · timing-opt · opts ")
+    # A run that recorded none of it says so with nulls, not with zeros
+    # or with an invented default.
+    older = next(entry for entry in payload["runs"] if entry["run"] == "power_only")
+    assert older["mode"] is None and older["activity"] is None
+    assert older["fingerprint"] is None
+
+
+def test_phys_runs_renders_a_table_naming_the_default_run(phys_project):
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "runs"])
+
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    # The directories are printed under the table, not in it: a table
+    # cell wraps or ellipsises a long path, and this is the one value a
+    # reader copies into the next command.
+    assert "verif/blk/artefacts/both" in flat
+    assert "verif/blk/artefacts/old_synth" in flat
+    assert "* the newest run" in flat
+    assert "rb phys summary --phys-dir" in flat
+
+
+def test_the_backends_cell_names_only_the_halves_that_ran():
+    """`none` in a column about what produced this run's numbers is two
+    words of padding for something the absence already says."""
+    assert RtlBuddy._phys_backends({"synth": "yosys", "power": "openroad"}) == (
+        "yosys+openroad"
+    )
+    assert RtlBuddy._phys_backends({"synth": None, "power": "openroad"}) == "openroad"
+    assert RtlBuddy._phys_backends({"synth": None, "power": None}) == "-"
+
+
+def test_the_power_cell_pairs_the_mode_with_what_drove_it():
+    """The label is the payload's, so the table, the MCP answer and the
+    pane's dropdown say the same words about the same run."""
+    assert (
+        RtlBuddy._phys_power_cell(
+            {"mode": "dynamic", "activity": {"label": "saif csr_smoke"}}
+        )
+        == "dynamic (saif csr_smoke)"
+    )
+    # A document from before the mode was recorded says what it knows
+    # rather than inventing the half it does not.
+    assert RtlBuddy._phys_power_cell({"mode": "static", "activity": None}) == "static"
+    assert RtlBuddy._phys_power_cell({"mode": None, "activity": None}) == "-"
+
+
+def test_phys_runs_heads_the_list_and_says_it_did(phys_project):
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "runs", "--limit", "2"])
+
+    assert result.exit_code == 0, result.output
+    assert "2/5 runs shown; --limit 0 for all" in _flat(result.output)
+
+
+def test_phys_runs_on_a_project_with_no_artefacts_is_not_an_error(
+    tmp_path, monkeypatch
+):
+    """The other three verbs exit 2 — they were asked about a run. This one
+    is asking what runs there are, and "none" is an answer."""
+    root = tmp_path / "empty"
+    root.mkdir()
+    shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", root)
+    monkeypatch.chdir(root)
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "runs"])
+
+    assert result.exit_code == 0, result.output
+    assert "rb synth" in result.output and "rb power" in result.output
+
+
+def test_phys_runs_machine_payload_is_the_builders_verbatim(phys_project):
+    runner, rb = _runner()
+
+    payload = _machine(runner.invoke(rb.app, ["--machine", "phys", "runs"]))["payload"]
+
+    assert payload == phys_query_mod.runs_payload(
+        str(phys_project), limit=phys_query_mod.DEFAULT_RUNS_LIMIT
+    )

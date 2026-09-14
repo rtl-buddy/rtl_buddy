@@ -1177,6 +1177,7 @@ def _run_entry(manifest_path, project_root, *, newest: bool) -> dict:
         # Derived from the path, so it is there even when the document is
         # not readable — an experiment's run is still that experiment's.
         "xplr": provenance_mod.experiment_for(manifest_path),
+        "fingerprint": None,
         "newest": newest,
         "error": None,
     }
@@ -1221,7 +1222,30 @@ def _run_entry(manifest_path, project_root, *, newest: bool) -> dict:
             },
         }
     )
+    entry["fingerprint"] = config_label(entry["config"])
     return entry
+
+
+def config_label(config) -> str | None:
+    """The one config summary a listing shows for a run.
+
+    The synthesis half's when there is one, the power half's otherwise.
+    A run's directory can hold both blocks and they are two different
+    configurations — the synthesis that produced the netlist, and the
+    analysis that measured it — but the netlist is what an optimisation
+    experiment varies, so that is the one a menu row is *about*. A
+    power-only run has no such half and its own configuration is then
+    the whole of what there is to say.
+
+    Derived here rather than in the entry's own block so the CLI table,
+    the MCP payload and the pane's dropdown cannot each pick a different
+    half and disagree about which run is which.
+    """
+    for half in ("synth", "power"):
+        block = (config or {}).get(half) if isinstance(config, dict) else None
+        if isinstance(block, dict) and block.get("summary"):
+            return block["summary"]
+    return None
 
 
 def _mapping(value) -> dict:

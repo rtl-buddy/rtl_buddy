@@ -92,7 +92,7 @@ ACTIVITY_KEYS = ("source", "trace", "test", "scope", "toggle_rate", "duty")
 #: How much of the options sha256 is kept. Long enough that two option
 #: sets in one project will not collide, short enough to sit in a table
 #: column and a dropdown entry beside the platform.
-OPTIONS_DIGEST_CHARS = 16
+OPTIONS_DIGEST_CHARS = 12
 
 #: What joins the parts of a rendered label. One spelling, because the
 #: CLI table, the pane's dropdown and the run header all use it and a

@@ -58,6 +58,7 @@ STATELESS_TOOL_NAMES = (
     "test_status",
     "cov_summary",
     "cov_module",
+    "phys_runs",
     "phys_summary",
     "phys_module",
     "phys_instance",
@@ -467,6 +468,18 @@ class Toolset:
             self.project_root,
             phys_dir=self._rooted(args.get("phys_dir")),
             manifest=self._rooted(args.get("manifest")),
+        )
+
+    def _h_phys_runs(self, args: dict) -> dict:
+        """Every run with physical artefacts under the project.
+
+        Takes no ``phys_dir``: its subject is the set of runs rather than
+        one of them, and it is what an agent calls to find the argument
+        the other three take.
+        """
+        return phys_query.runs_payload(
+            self.project_root,
+            limit=int(args.get("limit", phys_query.DEFAULT_RUNS_LIMIT)),
         )
 
     def _h_phys_summary(self, args: dict) -> dict:
@@ -1147,6 +1160,45 @@ def build_toolset(
                 ["module"],
             ),
             handler=ts._h_cov_module,
+        )
+    )
+    register(
+        ToolSpec(
+            name="phys_runs",
+            title="Physical runs in this project",
+            command="rb phys runs",
+            description=(
+                "Every run that left physical artefacts under this project, "
+                "newest first — the menu the other physical tools take their "
+                "'phys_dir' from. Each entry carries the artefact directory to "
+                "pass back, the run name and top, which backends produced it, "
+                "the power mode and what drove the switching (defaults, a "
+                "synthetic toggle/duty pair, or a SAIF/VCD trace and the test "
+                "behind it), a fingerprint of the configuration that shaped the "
+                "netlist (platform, effort, constraints, a digest of the "
+                "effective tool options), the rb xplr experiment id when the "
+                "run sits under one, and when it was generated. Reads only the "
+                "manifests, runs no EDA tool, and needs no hub. Call this when "
+                "a project has more than one synthesis or power run — two runs "
+                "of one design differ by their configuration and their power "
+                "mode, not by their top."
+            ),
+            input_schema=_obj(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Runs to list, newest first (default "
+                            f"{phys_query.DEFAULT_RUNS_LIMIT}; 0 for all). The "
+                            "payload carries the limit it applied beside the "
+                            "untruncated count, so a headed list says that it "
+                            "is one."
+                        ),
+                        "minimum": 0,
+                    },
+                }
+            ),
+            handler=ts._h_phys_runs,
         )
     )
     register(

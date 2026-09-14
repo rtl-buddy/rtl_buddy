@@ -978,9 +978,25 @@ Usage: rtl-buddy phys [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ runs      every run with physical artefacts under the project, newest first          │
 │ summary   the run's totals, its heaviest modules and its hottest instances           │
 │ module    one module's cells and area, and the instances of it with power            │
 │ instance  one instance's power, or the rolled-up subtree under its path              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys runs
+
+```text
+Usage: rtl-buddy phys runs [OPTIONS]
+
+ every run with physical artefacts under the project, newest first
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER RANGE [x>=0]  runs to list, newest first (0 for all);         │
+│                                      truncates the --machine payload too             │
+│                                      [default: 20]                                   │
+│ --help                               Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
