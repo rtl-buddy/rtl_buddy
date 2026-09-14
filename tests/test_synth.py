@@ -5188,3 +5188,161 @@ def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch
 
     assert isinstance(ys.run(), SynthFailResults)
     assert not stale.exists()
+
+
+# ---------------------------------------------------------------------------
+# what feeds the config digest, per backend and per path (#570)
+# ---------------------------------------------------------------------------
+
+
+def _effort_cfg(name="standard", synth_args="", abc_args="", pre_sta_tcl=""):
+    from rtl_buddy.config.synth import (
+        SynthEffortConfig,
+        SynthEffortConfigFile,
+        SynthEffortOpenroadFile,
+        SynthEffortYosysFile,
+    )
+
+    return SynthEffortConfig(
+        SynthEffortConfigFile(
+            name=name,
+            yosys=SynthEffortYosysFile(synth_args=synth_args, abc_args=abc_args),
+            openroad=SynthEffortOpenroadFile(pre_sta_tcl=pre_sta_tcl),
+        )
+    )
+
+
+def _yosys_digest(tmp_path, *, mapped, tool_overrides=None, effort=None):
+    """The options digest a YosysSynth would publish on `mapped`'s branch."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(tool_overrides=tool_overrides),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+        effort_cfg=effort or _effort_cfg(),
+    )
+    return options_digest(ys._phys_options(mapped=mapped))
+
+
+def test_a_mapped_yosys_run_ignores_abc_args_and_says_so_in_its_digest(tmp_path):
+    """`_write_script` hard-codes the ABC script on the mapped branch --
+    `_ABC_SCRIPT_WITH_TIMING`/`_ABC_SCRIPT_NO_TIMING`, chosen by whether the
+    SDC named a clock -- and never reads `abc_args`. Digesting the resolved
+    dataclass therefore told two byte-identical netlists apart by a string
+    Yosys was never given."""
+    plain = _yosys_digest(tmp_path, mapped=True)
+    with_abc = _yosys_digest(
+        tmp_path, mapped=True, tool_overrides={"yosys": {"abc_args": "-fast"}}
+    )
+    assert plain is not None
+    assert plain == with_abc
+
+    # The unmapped branch does emit `abc <abc_args>`, so there the same
+    # field is a real difference. Which is the point: the subset is per
+    # path, not per backend.
+    assert _yosys_digest(tmp_path, mapped=False) != _yosys_digest(
+        tmp_path, mapped=False, tool_overrides={"yosys": {"abc_args": "-fast"}}
+    )
+    # And the two branches are themselves distinguishable.
+    assert _yosys_digest(tmp_path, mapped=False) != plain
+
+
+def test_a_yosys_run_never_digests_the_strategy_no_yosys_script_reads(tmp_path):
+    """`strategy` is a stage-2 OpenROAD knob. This backend has no stage 2,
+    and no line of its script consumes the field."""
+    for mapped in (True, False):
+        assert _yosys_digest(tmp_path, mapped=mapped) == _yosys_digest(
+            tmp_path, mapped=mapped, tool_overrides={"yosys": {"strategy": "TIMING"}}
+        )
+
+
+def test_a_yosys_run_digests_the_synth_args_its_script_appends(tmp_path):
+    """The counterpart: an input the script does read has to move the
+    digest, or the fingerprint reports two experiments as one."""
+    assert _yosys_digest(tmp_path, mapped=True) != _yosys_digest(
+        tmp_path, mapped=True, tool_overrides={"yosys": {"synth_args": "-flatten"}}
+    )
+    # The effort's value reaches the script through the same resolved
+    # field, so it moves the digest too.
+    assert _yosys_digest(tmp_path, mapped=True) != _yosys_digest(
+        tmp_path, mapped=True, effort=_effort_cfg(synth_args="-flatten")
+    )
+
+
+def _openroad_digest(tmp_path, *, tool_overrides=None, effort=None, strategy=""):
+    """The options digest an OpenRoadSynth would publish."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(tool_overrides=tool_overrides),
+        tool_cfg=_make_or_tool_cfg(strategy=strategy),
+    )
+    or_synth.effort_cfg = effort or _effort_cfg()
+    return options_digest(or_synth._phys_options())
+
+
+def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_path):
+    """`_write_yosys_script` appends `effort_cfg.get_yosys_synth_args()` to
+    `synth -top` and never looks at `opts.synth_args`. The digest used to
+    be the other way round: a `tool_overrides.openroad.synth_args` that
+    changed nothing moved it, and an effort that changed the netlist did
+    not."""
+    base = _openroad_digest(tmp_path)
+    assert base is not None
+
+    # The effort's args are what stage 1 runs with, so they are identity.
+    assert _openroad_digest(tmp_path, effort=_effort_cfg(synth_args="-flatten")) != base
+
+    # The tool option of the same name is not read by either stage.
+    assert (
+        _openroad_digest(
+            tmp_path, tool_overrides={"openroad": {"synth_args": "-flatten"}}
+        )
+        == base
+    )
+    # Nor is `abc_args`, from either source: stage 1's ABC line is
+    # `_ABC_SCRIPT_AREA`, hard-coded.
+    assert (
+        _openroad_digest(tmp_path, tool_overrides={"openroad": {"abc_args": "-fast"}})
+        == base
+    )
+    assert _openroad_digest(tmp_path, effort=_effort_cfg(abc_args="-fast")) == base
+
+
+def test_an_openroad_run_digests_the_strategy_as_the_command_it_selects(tmp_path):
+    """Strategy reaches the script only through `_resynth_cmd`'s table, so
+    the digest records the command and not the string: `TIMING` and
+    `TIMING_ANNEAL` are one run, and anything that selects no resynthesis
+    is another."""
+    annealing = _openroad_digest(tmp_path, strategy="TIMING")
+    assert annealing == _openroad_digest(tmp_path, strategy="timing_anneal")
+    assert annealing != _openroad_digest(tmp_path, strategy="TIMING_GENETIC")
+    assert annealing != _openroad_digest(tmp_path, strategy="AREA")
+    # `AREA` and an unrecognised value both emit nothing, and both runs
+    # produce the same netlist.
+    assert _openroad_digest(tmp_path, strategy="AREA") == _openroad_digest(
+        tmp_path, strategy="whatever"
+    )
+
+
+def test_an_openroad_run_digests_the_pre_sta_tcl_it_actually_runs(tmp_path):
+    """The effort's `pre-sta-tcl` is executed verbatim by
+    `_write_or_script`, and it is content rather than a path, so nothing
+    else in the config block can identify it. Two efforts sharing a name
+    and differing in the Tcl are two experiments."""
+    base = _openroad_digest(tmp_path)
+    floorplan = _openroad_digest(
+        tmp_path, effort=_effort_cfg(pre_sta_tcl="initialize_floorplan\n")
+    )
+    assert base != floorplan
+    assert floorplan != _openroad_digest(
+        tmp_path, effort=_effort_cfg(pre_sta_tcl="global_placement\n")
+    )
+    # Trailing whitespace never reaches OpenROAD -- the writer rstrips it --
+    # so it is not a different experiment.
+    assert floorplan == _openroad_digest(
+        tmp_path, effort=_effort_cfg(pre_sta_tcl="initialize_floorplan\n\n  ")
+    )

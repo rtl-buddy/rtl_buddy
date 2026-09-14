@@ -31,16 +31,48 @@ tool options — enough to read ``nangate45 / timing-opt`` apart from
 **What feeds the options digest**, exactly: the mapping its producer
 hands :func:`options_digest`, rendered as canonical JSON (sorted keys,
 no whitespace, and nothing that JSON cannot render) and sha256'd to
-:data:`OPTIONS_DIGEST_CHARS` hex characters. The synthesis flows pass the *resolved*
-:class:`~rtl_buddy.config.synth.SynthToolOpts` they already compute —
-tool-level defaults with the effort's ``synth-args``/``abc-args`` and
-the per-synthesis ``tool_overrides`` folded in — plus the elaboration
-parameters and defines, which shape the netlist as surely as an ABC
-script does. The power flow passes its tool name, netlist source, mode,
-activity source and register level. The digest is over the *effective*
-values, not the files they came from: two configs that spell one
-setting differently and resolve to the same options are one experiment,
-which is the comparison a reader wants.
+:data:`OPTIONS_DIGEST_CHARS` hex characters.
+
+Each producer hands over what *its own generated script consumes*, and
+no more. That is the whole discipline. A digest over a resolved
+dataclass tells two runs apart by fields the script never looks at,
+which reports a difference the netlist cannot have; and a digest that
+omits what the script does read — an argument the script takes from
+somewhere other than those options — misses a difference the netlist
+does have. Per backend, derived from the script writers:
+
+*Yosys synthesis* (:meth:`YosysSynth._phys_options
+<rtl_buddy.tools.synth_yosys.YosysSynth._phys_options>`). The shared
+elaboration subset (:func:`~rtl_buddy.tools.synth_yosys.elaboration_fingerprint`:
+frontend, the two resolved correctness-gate modes, and under ``slang``
+the plugin path and ``--single-unit``), the resolved ``synth-args``,
+the elaboration parameters and defines, and which branch the script
+took. A **mapped** run adds the ABC delay target parsed out of the SDC
+and drops ``abc-args``, which its hard-coded ABC script ignores; an
+**unmapped** run emits ``abc <abc-args>`` and has no delay target, so
+it does the reverse. ``strategy`` is in neither — no Yosys script line
+reads it.
+
+*OpenROAD synthesis* (:meth:`OpenRoadSynth._publish_phys_model
+<rtl_buddy.tools.synth_openroad.OpenRoadSynth._publish_phys_model>`).
+The same elaboration subset, with ``synth-args`` taken from the
+**effort** and not from the resolved tool options, because that is
+where stage 1 takes it from; ``abc-args`` from neither source, since
+stage 1's ABC script is hard-coded. Stage 2 contributes exactly two
+things — the command ``strategy`` maps to, and the sha256 of the
+effort's pre-STA Tcl — because they are the only inputs
+``_write_or_script`` reads that the config block does not already
+record.
+
+*Power analysis.* Tool name, netlist source, mode, activity source and
+register level.
+
+The digest is over the *effective* values, not the files they came
+from: two configs that spell one setting differently and resolve to the
+same options are one experiment, which is the comparison a reader
+wants. The pre-STA Tcl is hashed rather than embedded for the same
+reason a constraints file is (:func:`text_sha256`) — it is content, it
+has no path, and it is pages long.
 
 That cuts both ways, and it is why the power flow's ``tool_overrides``
 is *not* in there: no power backend reads the field, so two analyses
@@ -270,6 +302,25 @@ def options_digest(options, *, producer: str | None = None) -> str | None:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:OPTIONS_DIGEST_CHARS]
 
 
+def text_sha256(text: str | None) -> str | None:
+    """The sha256 of a script fragment a run was shaped by.
+
+    The counterpart of :func:`rtl_buddy.phys.publish.sha256_of` for
+    content that has no file: an effort's ``pre-sta-tcl`` is Tcl carried
+    inline in the root config, so there is no path to record and nothing
+    to hash by name. It goes into an options mapping as a hash rather
+    than as the text itself because the mapping is digested whole and a
+    floorplan snippet is pages long.
+
+    ``None`` for an empty fragment — a run with no pre-STA Tcl and a run
+    whose pre-STA Tcl is empty are the same run, and a digest of the
+    empty string would report them as two.
+    """
+    if not text:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _unserialisable_keys(options) -> list[str]:
     """Which of ``options``' values JSON would not take, for the DEBUG line.
 
@@ -464,5 +515,6 @@ __all__ = [
     "normalise_activity",
     "normalise_config",
     "options_digest",
+    "text_sha256",
     "trace_test",
 ]

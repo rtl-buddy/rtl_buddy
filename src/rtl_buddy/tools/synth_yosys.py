@@ -3,7 +3,6 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import asdict
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -467,6 +466,45 @@ def emit_frontend_read_cmds(
 
     validate_frontend(opts, root_cfg)
     raise AssertionError("unreachable: validate_frontend rejects other frontends")
+
+
+def elaboration_fingerprint(opts: SynthToolOpts) -> dict:
+    """The elaboration settings a generated Yosys script actually reads.
+
+    Both synthesis backends elaborate through :func:`emit_frontend_read_cmds`
+    and gate the run with the same two mode resolvers, so both fingerprint
+    the same subset of :class:`~rtl_buddy.config.synth.SynthToolOpts` — and
+    fingerprinting it in one place is what keeps the two from drifting apart
+    about what an experiment varied (#568).
+
+    A *subset*, because a digest of the whole dataclass reports differences
+    the netlist cannot have. ``synth_args`` and ``abc_args`` are left to the
+    caller: which of them a script reads, and whether it reads the tool
+    option or the effort's, differs per backend and per path. ``strategy``
+    never appears here at all — it is a stage-2 OpenROAD knob and no Yosys
+    script line consumes it.
+
+    ``plugin_path`` and ``single_unit`` are recorded only under
+    ``frontend: slang``. The verilog branch of the read emitter loads no
+    plugin and warns that it cannot honour one compilation unit, so two
+    verilog runs differing in either produce the same script and are the
+    same experiment.
+
+    The two gates are recorded *resolved* rather than as configured: the
+    default of ``static_functions`` depends on the frontend
+    (:func:`resolve_static_functions_mode`), so an empty setting under
+    slang and an explicit ``error`` are one behaviour and must digest as
+    one.
+    """
+    fed = {
+        "frontend": opts.frontend,
+        "static_functions": resolve_static_functions_mode(opts),
+        "conflicting_drivers": resolve_conflicting_drivers_mode(opts),
+    }
+    if opts.frontend == "slang":
+        fed["plugin_path"] = opts.plugin_path
+        fed["single_unit"] = opts.single_unit
+    return fed
 
 
 def slang_handles_params(opts: SynthToolOpts) -> bool:
@@ -1031,24 +1069,58 @@ class YosysSynth:
             phys_model=phys_model,
         )
 
-    def _phys_options(self) -> dict:
+    def _phys_options(self, *, mapped: bool) -> dict:
         """The effective options the config fingerprint is digested over.
 
-        The resolved `SynthToolOpts` -- tool defaults with the effort's
-        args and the per-synthesis `tool_overrides` already folded in --
-        plus the parameters and defines the elaboration runs with, which
-        shape the netlist exactly as an ABC script does and are the knob
-        a parameter sweep turns. Values only: the digest is of what the
-        run resolved to, not of the files it resolved from, so two
-        configs that spell one setting differently and come out the same
-        are one experiment (#568).
+        What `_write_script` actually reads, not the whole resolved
+        `SynthToolOpts`. A digest over the dataclass tells two runs apart
+        by a field the generated script never looks at, which reports a
+        difference the netlist cannot have -- the same rule that keeps the
+        power flow's `tool_overrides` out of its own mapping (#568).
+
+        Read off this backend's script writer, line by line:
+
+        - `elaborate`: the frontend subset both backends share
+          (:func:`elaboration_fingerprint`).
+        - `synth_args`: the resolved value, which is the effort's
+          `yosys.synth-args` unless a `tool_overrides.<tool>.synth_args`
+          outranks it -- `_resolve_opts` has already folded that in.
+        - `params` and `defines`: the elaboration values, which shape the
+          netlist exactly as an ABC script does and are the knob a
+          parameter sweep turns.
+        - `mapped`: which branch the script took, since the two consume
+          different things below.
+
+        The two branches differ in exactly one field each. **Unmapped**
+        emits `abc {opts.abc_args}`, so `abc_args` is fed. **Mapped**
+        does not: it hard-codes `_ABC_SCRIPT_NO_TIMING` /
+        `_ABC_SCRIPT_WITH_TIMING` and passes ABC the delay target parsed
+        out of the SDC, so `abc_args` is dropped -- a mapped run that
+        sets it runs identically to one that does not -- and the target
+        (`_period_ps`, `null` when the SDC named no clock, which also
+        selects the untimed script) is fed in its place.
+
+        `strategy` is in neither: this backend has no OpenROAD stage and
+        no script line reads it.
+
+        Values only: the digest is of what the run resolved to, not of
+        the files it resolved from, so two configs that spell one setting
+        differently and come out the same are one experiment.
         """
-        return {
+        opts = self._resolve_opts()
+        fed = {
             "tool": self.tool_cfg.get_name(),
-            "opts": asdict(self._resolve_opts()),
+            "mapped": mapped,
+            "elaborate": elaboration_fingerprint(opts),
+            "synth_args": opts.synth_args,
             "params": self.synth_cfg.get_params(),
             "defines": self.synth_cfg.get_defines(),
         }
+        if mapped:
+            fed["abc_period_ps"] = self._period_ps
+        else:
+            fed["abc_args"] = opts.abc_args
+        return fed
 
     def _publish_phys_model(
         self, *, area_um2: float | None, gate_count: int | None, mapped: bool
@@ -1064,11 +1136,12 @@ class YosysSynth:
 
         The identity fields (#568) are the ones that shaped THIS netlist:
         the platform whose Liberty it mapped against, the effort actually
-        applied, the SDC read for the ABC delay target, and the resolved
-        tool options with the elaboration parameters and defines --
+        applied, the SDC read for the ABC delay target, and the options
+        the generated script actually consumed on the branch it took --
         everything a second experiment of the same design would differ
-        in. `_resolve_opts` is memoised, so asking it here costs nothing
-        and cannot re-emit the override warnings it logs on first use.
+        in. See `_phys_options` for the branch-by-branch mapping.
+        `_resolve_opts` is memoised, so asking it here costs nothing and
+        cannot re-emit the override warnings it logs on first use.
         """
         published = publish_synth(
             artefact_dir=self.artefact_dir,
@@ -1083,7 +1156,7 @@ class YosysSynth:
             platform=self.synth_cfg.get_platform(),
             effort=self.effort_cfg.get_name(),
             constraints=self.synth_cfg.get_constraints(),
-            options=self._phys_options(),
+            options=self._phys_options(mapped=mapped),
         )
         if published["error"] is not None or published["rows"] is None:
             log_event(
