@@ -248,19 +248,41 @@ def contained_phys_dir(project_root: str | os.PathLike, requested: str):
     still tried second, for the reverse arrangement: a path handed in
     through a link the project root is not reached through.
 
-    Weaker than the coverage route's resolve-first rule by exactly one
-    case — a symlink *inside* the project pointing out of it — and the
-    grant here is correspondingly narrower: what is read is a
-    ``phys-manifest.json`` in that directory and the model it names, not
-    an arbitrary file.
+    **The divergence is bounded by discovery's own boundary.** A logical
+    path that stays under the root but *resolves* outside it has crossed
+    a link on the way, and not every such link is one of these: an
+    ``artefacts`` link to scratch is the supported layout, while a
+    ``vendor/`` link or a link to ``$HOME`` is an unrelated tree wearing
+    a project-relative name. Discovery already draws that line —
+    :func:`rtl_buddy.phys.manifest.may_follow_link`, an ``artefacts``
+    component on the path below the root, and no link that circles back
+    over the root — and the route asks it the same question rather than
+    inventing a second answer. So the grant is exactly the layout the
+    selector offers: what discovery would have walked into, this will
+    read, and nothing else. The predicate is imported, not restated;
+    two spellings of one boundary drift, and the drift anyone finds
+    first is the one where this is the looser of the two.
+
+    What is read at the end of it is a ``phys-manifest.json`` in that
+    directory and the model it names, not an arbitrary file.
     """
     logical_root = Path(os.path.abspath(str(project_root)))
     logical = Path(os.path.abspath(os.path.join(logical_root, str(requested))))
+    root_real = os.path.realpath(str(project_root))
+    resolved_inside = _under(Path(os.path.realpath(logical)), Path(root_real))
     if _under(logical, logical_root):
-        return logical
-    if _under(
-        Path(os.path.realpath(logical)), Path(os.path.realpath(str(project_root)))
-    ):
+        if resolved_inside:
+            return logical
+        return (
+            logical
+            if manifest_mod.may_follow_link(
+                str(logical),
+                Path(os.path.relpath(logical, logical_root)).parts,
+                root_real,
+            )
+            else None
+        )
+    if resolved_inside:
         return logical
     return None
 

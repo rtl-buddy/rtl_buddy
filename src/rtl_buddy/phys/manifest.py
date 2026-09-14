@@ -425,7 +425,7 @@ def project_root_for(manifest_path) -> str | None:
     return str(root)
 
 
-def _may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:
+def may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:
     """Whether a symlinked directory is part of the artefact layout.
 
     The boundary :func:`discover_manifests` documents, factored out
@@ -434,6 +434,13 @@ def _may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> b
     ``link`` is the link itself, ``rel_parts`` the components of its path
     below the project root (its own basename last), ``root_real`` the
     resolved project root.
+
+    Public because the hub's ``?dir=`` route decides the same question
+    about the same tree (:func:`rtl_buddy.hub.phys_page
+    .contained_phys_dir`). A run the walk refused to enter is a run the
+    route must refuse to read: two spellings of one boundary would
+    eventually disagree, and the disagreement anyone finds first is the
+    one where the route is the looser of the two.
     """
     if ARTIFACT_DIRNAME not in rel_parts:
         return False
@@ -489,7 +496,7 @@ def discover_manifests(project_root) -> list[str]:
             if d in skip or d.startswith("obj_dir"):
                 continue
             child = os.path.join(dirpath, d)
-            if os.path.islink(child) and not _may_follow_link(
+            if os.path.islink(child) and not may_follow_link(
                 child, Path(os.path.relpath(child, root)).parts, root_real
             ):
                 continue

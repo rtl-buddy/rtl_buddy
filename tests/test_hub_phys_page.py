@@ -2076,6 +2076,67 @@ def test_containment_admits_the_artefacts_symlink_layout(tmp_path: Path):
     assert phys_page.contained_phys_dir(root, "../scratch") is None
 
 
+def test_containment_refuses_an_in_project_link_that_leaves_the_project(
+    tmp_path: Path,
+):
+    """The logical test lets a path that stays under the root through
+    without resolving it, which is what keeps the scratch layout above
+    selectable. On its own that is broader than discovery's rule: any
+    link inside the project would do, including one to somewhere the
+    project has nothing to do with.
+
+    So where the logical path passes but resolves outside, the route
+    asks discovery's own predicate — an ``artefacts`` component below
+    the root — and admits only what the walk would have entered. The
+    supported layout is unaffected; a `vendor/` or `$HOME` link is not
+    a run and is not readable through this route."""
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk" / "artefacts").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "nightly").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    (scratch / "nightly").mkdir(parents=True)
+
+    # Not part of the artefact layout: discovery will not walk it.
+    (root / "vendor").symlink_to(elsewhere)
+    # An `artefacts` link inside a suite: the supported one, which
+    # discovery does walk.
+    (root / "verif" / "blk" / "artefacts" / "runs").symlink_to(scratch)
+
+    assert phys_page.contained_phys_dir(root, "vendor/nightly") is None
+    assert phys_page.contained_phys_dir(root, "vendor") is None
+    assert phys_page.contained_phys_dir(root, "verif/blk/artefacts/runs/nightly") == (
+        root / "verif" / "blk" / "artefacts" / "runs" / "nightly"
+    )
+
+
+def test_the_route_and_discovery_draw_one_boundary(tmp_path: Path):
+    """Not two spellings of it. A directory the walk refuses to enter is
+    one the route must refuse to read, and the predicate is the same
+    function in both places."""
+    from rtl_buddy.phys import manifest as manifest_mod
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "nightly").mkdir(parents=True)
+    (root / "verif" / "blk" / "artefacts").symlink_to(outside)
+    (root / "vendor").symlink_to(outside)
+    _write_run(root, "nightly", modules=MODULE_ROWS)
+
+    walked = manifest_mod.discover_manifests(root)
+    assert [os.path.relpath(path, root) for path in walked] == [
+        os.path.join("verif", "blk", "artefacts", "nightly", "phys-manifest.json")
+    ]
+    # The run the walk found is readable; the same bytes under the name
+    # the walk refused are not.
+    assert phys_page.contained_phys_dir(root, "verif/blk/artefacts/nightly")
+    assert phys_page.contained_phys_dir(root, "vendor/nightly") is None
+
+
 def test_the_runs_block_is_bounded_and_says_it_is(tmp_path: Path):
     """A dropdown is scrolled, not searched. The block carries the
     untruncated count, so the pane can say the list is a head."""
