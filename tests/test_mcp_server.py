@@ -813,6 +813,56 @@ def test_a_phys_limit_that_is_not_a_number_is_refused_as_a_tool_error(
     assert ts.call("phys_module", {"module": "sub", "limit": "1"})["ok"] is True
 
 
+def test_a_phys_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
+    phys_project: Path,
+):
+    """The same hole `limit` had, on the other two overrides. A host's
+    arguments reach the handler as they arrived, so `phys_dir` can be a
+    number and `manifest` a list; `Path()` answers those with a `TypeError`
+    that `Toolset.call` does not catch, so a bad argument surfaced as a
+    protocol-level failure rather than the `ok: false` envelope, and the
+    agent got a traceback instead of the constraint it broke."""
+    ts = _toolset(phys_project)
+
+    for key, bad, shown in (
+        ("phys_dir", 3, "3"),
+        ("phys_dir", [], "[]"),
+        ("manifest", [], "[]"),
+        ("manifest", {"path": "x"}, "{'path': 'x'}"),
+        ("phys_dir", True, "True"),
+    ):
+        refused = ts.call("phys_module", {"module": "sub", key: bad})
+
+        assert refused["ok"] is False, (key, bad)
+        # The value it could not read is quoted back, as the limit
+        # refusal quotes its own.
+        assert f"{key} must be a path string, not {shown}" in refused["error"]
+        assert "omit it to read the newest run" in refused["error"]
+        assert "payload" not in refused
+
+    # The guarantee belongs to the shared helper, so it holds for every
+    # physical tool that takes the overrides.
+    for tool, args in (
+        ("phys_summary", {}),
+        ("phys_module", {"module": "sub"}),
+        ("phys_instance", {"path": "u_sub"}),
+    ):
+        assert ts.call(tool, dict(args, phys_dir=3))["ok"] is False, tool
+        assert ts.call(tool, dict(args, manifest=[]))["ok"] is False, tool
+
+
+def test_an_absent_phys_path_override_still_means_discover_the_newest_run(
+    phys_project: Path,
+):
+    """Both overrides are optional, so `None` has to keep meaning "no
+    override" — an explicit `null` from a host included — or the check
+    would refuse the ordinary call it was added to protect."""
+    ts = _toolset(phys_project)
+
+    assert ts.call("phys_summary", {})["ok"] is True
+    assert ts.call("phys_summary", {"phys_dir": None, "manifest": None})["ok"] is True
+
+
 def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Path):
     """The input is only useful if the schema says the default is a head
     and that 0 is the way out of it."""
