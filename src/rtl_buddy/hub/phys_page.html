@@ -1278,6 +1278,9 @@
     if (state.payload) {
       renderRunPicker();
       note(message || 'could not read that run', 'error');
+      // The reader is still looking at the run they had, so a focus
+      // held for the switch that did not happen belongs to it.
+      drainPending();
       return;
     }
     showEmpty(message);
@@ -1423,10 +1426,23 @@
 
     var counts = payload.counts || {};
     note(describeCounts(counts));
-    // Both replays the hub sends on connect land before `/phy.json`
-    // resolves as often as not, so both are stashed rather than dropped.
-    // An explicit `phys_focus` wins over a passive selection when both
-    // are waiting: one is an instruction, the other is commentary.
+    drainPending();
+  }
+
+  // What was held while the pane had no rows to answer with, applied now
+  // that it does.
+  //
+  // Both replays the hub sends on connect land before `/phy.json`
+  // resolves as often as not, and a focus arriving mid-load is held for
+  // the same reason, so all of it is stashed rather than dropped. An
+  // explicit `phys_focus` wins over a passive selection when both are
+  // waiting: one is an instruction, the other is commentary.
+  //
+  // Called from the two places a load STOPS being in flight with a model
+  // on screen: ingest, which installs a new one, and a refused switch,
+  // which leaves the old one standing. Missing the second would strand
+  // a target for the life of the run the reader kept.
+  function drainPending() {
     var focus = state.pending, selection = state.pendingSelection;
     state.pending = null;
     state.pendingSelection = null;

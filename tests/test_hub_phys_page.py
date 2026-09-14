@@ -1438,9 +1438,25 @@ def test_a_focus_arriving_mid_reload_waits_for_the_new_model():
     # was held is resolved against the new model's rows rather than the
     # ones it was waiting out.
     ingest = js.split("function ingest(payload) {")[1].split("\n  }")[0]
-    assert ingest.index("state.payload = payload;") < ingest.index(
-        "var focus = state.pending, selection = state.pendingSelection;"
-    )
+    assert ingest.index("state.payload = payload;") < ingest.index("drainPending();")
+
+
+def test_a_refused_switch_still_answers_the_focus_it_held():
+    """The other way a load stops being in flight with a model on screen.
+
+    A `dir=` the server would not read leaves the reader on the run they
+    already had (`loadFailed`), so a focus held for the switch that did
+    not happen belongs to that run -- stranded for its lifetime if only
+    ingest drained the slots."""
+
+    js = _page_js()
+    failed = js.split("function loadFailed(requested, message) {")[1].split("\n  }")[0]
+    # Only on the arm that keeps the model. The other calls showEmpty,
+    # which drops the payload, and a held target waits for a real one.
+    assert failed.count("drainPending();") == 1
+    assert failed.index("drainPending();") < failed.index("showEmpty(message);")
+    assert js.count("drainPending();") == 2
+    assert "function drainPending() {" in js
 
 
 def test_the_first_hello_is_polite():
