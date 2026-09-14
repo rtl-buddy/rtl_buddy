@@ -749,6 +749,36 @@ def test_the_phys_detail_tools_head_their_lists_by_default(phys_project: Path):
     ] == pytest.approx(3.171)
 
 
+def test_a_negative_phys_limit_is_refused_rather_than_read_as_all(
+    phys_project: Path,
+):
+    """``minimum: 0`` in a schema is documentation until a handler checks
+    it: this server forwards a host's arguments to the handler as they
+    arrived. And below the floor the cap does not clamp -- the shared
+    ``truncate`` reads anything ``<= 0`` as "no head at all" -- so
+    ``limit: -1`` used to ask for one row fewer than none and be
+    answered with every row in the design."""
+    ts = _toolset(phys_project)
+
+    for tool, args in (
+        ("phys_summary", {}),
+        ("phys_module", {"module": "sub"}),
+        ("phys_instance", {"path": "u_sub"}),
+    ):
+        refused = ts.call(tool, dict(args, limit=-1))
+
+        assert refused["ok"] is False, tool
+        # The message names the constraint rather than restating that
+        # something went wrong: an agent that reads it can fix the call.
+        assert "limit must be 0 or greater, not -1" in refused["error"]
+        assert "0 lists every row" in refused["error"]
+        # And nothing was answered from: a refusal is not a payload.
+        assert "payload" not in refused
+
+    # 0 is untouched -- it is the documented way to ask for all of them.
+    assert ts.call("phys_module", {"module": "sub", "limit": 0})["ok"] is True
+
+
 def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Path):
     """The input is only useful if the schema says the default is a head
     and that 0 is the way out of it."""
