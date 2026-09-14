@@ -648,6 +648,84 @@ def test_the_separator_is_levelled_only_on_the_way_to_the_wire():
     ]
 
 
+#: The paths both copies of the levelling rule are pinned against
+#: (#561). It is ONE rule -- a backslash opening a segment runs to the
+#: whitespace that ends it, or to the end of the path -- and only the
+#: canonical separator differs: `/` in `rtl_buddy.phys.query.level_path`,
+#: `.` in the pane's `toWirePath`. The two expectation tables below are
+#: therefore the same list twice, and a change to one copy alone fails
+#: the other's test.
+ESCAPED_PATHS = [
+    r"u_top/\gen[0].u_x",  # the escape a reader actually stores
+    "u_top/\\gen[0].u_x /u_ff",  # terminated, as Verilog spells it
+    r"u_top/\a/b",  # an escape may contain the other separator too
+    r"u_top/x\a/b",  # a backslash mid-segment leads no escape
+    r"u_top.u_sub",  # and nothing about plain paths changes
+]
+
+
+def test_the_wire_levelling_keeps_an_escaped_identifier_whole():
+    r"""`\gen[0].u_x` is one leaf's *name*: neither the `.` nor a `/`
+    inside it is a level, so rewriting one would hand the schematic a
+    path no row can answer to."""
+
+    out = _node(
+        _marked_js("path-normalise")
+        + "console.log(JSON.stringify(%s.map(toWirePath)));" % json.dumps(ESCAPED_PATHS)
+    )
+    assert json.loads(out) == [
+        r"u_top.\gen[0].u_x",
+        r"u_top.\gen[0].u_x.u_ff",
+        r"u_top.\a/b",
+        r"u_top.x\a.b",
+        r"u_top.u_sub",
+    ]
+
+
+def test_the_pane_and_the_query_layer_level_the_same_way():
+    """The anti-drift pin: two copies of one rule, one separator apart."""
+
+    from rtl_buddy.phys.query import level_path
+
+    assert [level_path(path) for path in ESCAPED_PATHS] == [
+        r"u_top/\gen[0].u_x",
+        r"u_top/\gen[0].u_x/u_ff",
+        r"u_top/\a/b",
+        r"u_top/x\a/b",
+        r"u_top/u_sub",
+    ]
+
+
+def test_an_escaped_row_is_still_reachable_from_the_wire():
+    r"""End to end through the edges: a `\gen[0].u_x` leaf, sent out
+    rooted and matched on the way back, is one row rather than none."""
+
+    out = _node(
+        _marked_js("path-normalise")
+        + r"""
+        var rows = [{ instance_path: 'u_top/\\gen[0].u_x' }];
+        function hit(path, rooted) {
+          var row = findByPath(rows, path, 'blk', rooted);
+          return row === null ? null : row.instance_path;
+        }
+        console.log(JSON.stringify([
+          withTop('u_top/\\gen[0].u_x', 'blk'),
+          hit('blk.u_top.\\gen[0].u_x', true),
+          hit('u_top.\\gen[0].u_x', false),
+          hit('u_top/\\gen[0].u_x ', false),
+          hit('u_top.\\gen[0].u_x2', false)
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        r"blk.u_top.\gen[0].u_x",
+        r"u_top/\gen[0].u_x",
+        r"u_top/\gen[0].u_x",
+        r"u_top/\gen[0].u_x",
+        None,
+    ]
+
+
 def test_the_design_top_is_added_on_the_way_out():
     """Model rows are uniformly rootless — an OpenSTA full name is
     relative to the top — and a schematic `instance_path` is rooted. So

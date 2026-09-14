@@ -630,8 +630,39 @@
   // So: the model's spelling is what the tables show and what a
   // `phys_focus` target is matched against, and this is the one
   // translation, applied at the two edges that face the schematic.
+  //
+  // Not inside an ESCAPED IDENTIFIER, though. A name that is not a
+  // legal bare identifier is written `\gen[0].u_x`, terminated by
+  // whitespace, and both a `/` and a `.` in there are part of the NAME
+  // — rewriting one would split a single leaf into two levels and hand
+  // the wire a path no row can answer to. So a backslash that OPENS a
+  // segment runs atomically to the whitespace that ends it, or to the
+  // end of the path when nothing does, and the terminator is dropped so
+  // the Verilog spelling and the stored one compare equal. A backslash
+  // anywhere else is not an escape lead and cannot swallow the levels
+  // after it.
+  //
+  // This is `level_path` in rtl_buddy/phys/query.py, in the wire's
+  // separator instead of the model's (#561). The two are separate
+  // copies on either side of the wire and must not drift: a change here
+  // needs the same change there.
   function toWirePath(path) {
-    return String(path == null ? '' : path).replace(/\//g, '.');
+    var text = String(path == null ? '' : path), out = '', at = true, i = 0;
+    while (i < text.length) {
+      var ch = text.charAt(i);
+      if (at && ch === '\\') {
+        var end = i;
+        while (end < text.length && !/\s/.test(text.charAt(end))) { end++; }
+        out += text.slice(i, end);
+        while (end < text.length && /\s/.test(text.charAt(end))) { end++; }
+        i = end; at = false;
+        continue;
+      }
+      if (ch === '/' || ch === '.') { out += '.'; at = true; }
+      else { out += ch; at = false; }
+      i++;
+    }
+    return out;
   }
 
   // The other half of the same mismatch is the ROOT.
