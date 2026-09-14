@@ -887,6 +887,124 @@ def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None, log=""
     return backend, backend.run()
 
 
+def _run_prepared_power(backend, monkeypatch, *, instances=None, cells=None):
+    """`_run_power_with`, for a backend the caller has already shaped."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        if instances is not None:
+            Path(backend._instances_report_path()).write_text(instances)
+        if cells is not None:
+            Path(backend._instances_cells_path()).write_text(cells)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    return backend.run()
+
+
+def _make_pnr_power_backend(tmp_path, routed_sdc_text):
+    """A `netlist-source: pnr` backend with no explicit `constraints:`.
+
+    Which is the ordinary spelling: the routed SDC is an artefact of the
+    `rb pnr` run this reads, so nobody names it in `power.yaml`.
+    `_resolve_inputs` is the thing that knows where it is, and it is
+    stubbed here exactly as the synth fixture stubs it.
+    """
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.netlist_source = "pnr"
+    backend.power_cfg.constraints = None
+    pnr_artefact = tmp_path / "pnr_artefacts" / "demo_pnr"
+    pnr_artefact.mkdir(parents=True, exist_ok=True)
+    odb = pnr_artefact / "demo_top.routed.odb"
+    odb.write_bytes(b"")
+    routed = pnr_artefact / "demo_top.routed.sdc"
+    routed.write_text(routed_sdc_text)
+    backend._resolve_inputs = lambda: {
+        "netlist": None,
+        "odb": str(odb),
+        "sdc": str(routed),
+        "top": "demo_top",
+    }
+    return backend, routed
+
+
+def test_a_pnr_power_run_records_the_routed_sdc_it_actually_read(tmp_path, monkeypatch):
+    """The config block is what tells two runs apart, and for a `pnr` run
+    the constraints are not in the config at all: with no explicit
+    `constraints:` the analysis reads `<pnr artefact>/<top>.routed.sdc`,
+    the post-CTS constraints the router wrote. Publishing the config
+    field recorded `null` and hashed nothing, so two analyses against
+    two different routed SDCs -- different clock periods, a different
+    CTS -- fingerprinted identically while measuring different timing."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    backend, routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    config = load_model(result.results["phys_model"])["provenance"]["power"]["config"]
+    # Project-relative, as every path in these documents is.
+    assert config["constraints"].endswith("demo_top.routed.sdc")
+    assert config["constraints_sha256"] == sha256_of(routed)
+
+
+def test_two_pnr_runs_with_different_routed_sdcs_read_apart(tmp_path, monkeypatch):
+    """The point of recording it: the hash is what a reader compares."""
+    from rtl_buddy.phys.model import load_model
+
+    hashes = []
+    for period in ("3", "7"):
+        root = tmp_path / f"p{period}"
+        root.mkdir()
+        backend, _ = _make_pnr_power_backend(
+            root, f"create_clock -period {period} [get_ports clk]\n"
+        )
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        hashes.append(recorded["config"]["constraints_sha256"])
+
+    assert hashes[0] and hashes[1] and hashes[0] != hashes[1]
+
+
+def test_the_power_options_digest_ignores_the_field_no_backend_reads(
+    tmp_path, monkeypatch
+):
+    """`tool_overrides` is accepted in `power.yaml` and read by nothing --
+    `PowerConfig.get_tool_overrides()` has no caller -- so two analyses
+    that differ only in it are the same analysis. Digesting it reported a
+    difference the numbers cannot have, and implied the block had been
+    applied."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    for overrides in (None, {"openroad": {"corner": "fast"}}):
+        root = tmp_path / f"cfg{len(digests)}"
+        root.mkdir()
+        backend = _make_power_backend(root)
+        backend.power_cfg.tool_overrides = overrides
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None
+    assert digests[0] == digests[1]
+
+
 def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
     from rtl_buddy.phys.manifest import load_manifest
     from rtl_buddy.phys.model import load_model

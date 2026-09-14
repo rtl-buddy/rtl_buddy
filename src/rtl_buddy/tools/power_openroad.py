@@ -693,6 +693,18 @@ class OpenRoadPower(BasePower):
         same `get_mode()` / `get_activity_source()` pair
         `_emit_activity_cmds` branches on -- so the record cannot claim a
         source the Tcl did not use.
+
+        The constraints recorded are the RESOLVED SDC, `_resolve_inputs`'
+        own `sdc`, and not the config's `constraints:` field. On a
+        `netlist-source: pnr` run they are not the same thing: with no
+        explicit `constraints:` the analysis reads `<pnr
+        artefact>/<top>.routed.sdc`, the post-CTS constraints the router
+        wrote, and the field is empty -- so the config block recorded
+        `null` and its hash with it, and two runs against two different
+        routed SDCs fingerprinted identically while measuring different
+        timing. The rest of the block is what the run dispatched on; this
+        one field was what it was configured with, which is the same
+        value only when the reader spelt it out.
         """
         try:
             inputs = self._resolve_inputs()
@@ -716,14 +728,22 @@ class OpenRoadPower(BasePower):
                 duty=activity.default_static_prob,
             ),
             platform=self.power_cfg.get_platform(),
-            constraints=self.power_cfg.get_constraints(),
+            constraints=inputs.get("sdc"),
             options={
                 "tool": self.power_cfg.get_tool_name(),
                 "netlist_source": self.power_cfg.get_netlist_source(),
                 "mode": self.power_cfg.get_mode(),
                 "activity_source": source,
                 "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),
-                "tool_overrides": self.power_cfg.tool_overrides,
+                # `tool_overrides` is deliberately absent. Nothing in this
+                # backend reads it -- `PowerConfig.get_tool_overrides()` has
+                # no caller at all, so a `power.yaml` that carries the block
+                # runs exactly as one that does not -- and a fingerprint over
+                # a field that shapes nothing tells two identical analyses
+                # apart, which is the one thing the digest exists not to do.
+                # Recording it would also be a quiet claim that it was
+                # applied. If the field is ever wired in, it belongs back
+                # here in the same change.
             },
             report_path=self._report_path(),
             instances_path=self._instances_report_path(),

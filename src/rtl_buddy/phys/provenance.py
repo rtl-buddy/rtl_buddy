@@ -33,11 +33,17 @@ no whitespace, and nothing that JSON cannot render) and sha256'd to
 tool-level defaults with the effort's ``synth-args``/``abc-args`` and
 the per-synthesis ``tool_overrides`` folded in — plus the elaboration
 parameters and defines, which shape the netlist as surely as an ABC
-script does. The power flow passes its tool name, netlist source,
-register level and tool overrides. The digest is over the *effective*
+script does. The power flow passes its tool name, netlist source, mode,
+activity source and register level. The digest is over the *effective*
 values, not the files they came from: two configs that spell one
 setting differently and resolve to the same options are one experiment,
 which is the comparison a reader wants.
+
+That cuts both ways, and it is why the power flow's ``tool_overrides``
+is *not* in there: no power backend reads the field, so two analyses
+that differ only in it are the same analysis, and digesting it would
+report a difference the numbers cannot have. Only what a backend
+actually resolved and used belongs in the mapping it hands over.
 
 Nothing here is a claim about correctness, and nothing here gates the
 merge. The netlist hash in
