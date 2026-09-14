@@ -779,6 +779,40 @@ def test_a_negative_phys_limit_is_refused_rather_than_read_as_all(
     assert ts.call("phys_module", {"module": "sub", "limit": 0})["ok"] is True
 
 
+def test_a_phys_limit_that_is_not_a_number_is_refused_as_a_tool_error(
+    phys_project: Path,
+):
+    """A host's arguments reach the handler as they arrived, so ``limit``
+    can be ``null``, a word, or a list. ``int()`` answers those with
+    ``TypeError``/``ValueError``, which ``Toolset.call`` does not catch:
+    a bad argument would surface as a protocol-level failure instead of
+    the ``ok: false`` envelope every other bad question gets, and a
+    traceback does not tell an agent which constraint it broke."""
+    ts = _toolset(phys_project)
+
+    for bad, shown in ((None, "None"), ("ten", "'ten'"), ([], "[]")):
+        refused = ts.call("phys_module", {"module": "sub", "limit": bad})
+
+        assert refused["ok"] is False, bad
+        # The value it could not read is quoted back, so the caller can
+        # see what it actually sent.
+        assert f"limit must be an integer, not {shown}" in refused["error"]
+        assert "0 lists every row" in refused["error"]
+        assert "payload" not in refused
+
+    # The guarantee belongs to the shared helper, not to one handler, so
+    # it holds for every physical tool that takes a limit.
+    for tool, args in (
+        ("phys_summary", {}),
+        ("phys_module", {"module": "sub"}),
+        ("phys_instance", {"path": "u_sub"}),
+    ):
+        assert ts.call(tool, dict(args, limit=None))["ok"] is False, tool
+
+    # A number that arrived as a string is still a number.
+    assert ts.call("phys_module", {"module": "sub", "limit": "1"})["ok"] is True
+
+
 def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Path):
     """The input is only useful if the schema says the default is a head
     and that 0 is the way out of it."""
