@@ -898,7 +898,8 @@ def test_phys_runs_on_a_project_with_no_artefacts_is_not_an_error(
     result = runner.invoke(rb.app, ["phys", "runs"])
 
     assert result.exit_code == 0, result.output
-    assert "rb synth" in result.output and "rb power" in result.output
+    flat = _flat(result.output)
+    assert "rb synth" in flat and "rb power" in flat
 
 
 def test_phys_runs_machine_payload_is_the_builders_verbatim(phys_project):
