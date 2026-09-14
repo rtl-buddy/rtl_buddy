@@ -16,8 +16,8 @@ measurements of different things, and until now the model recorded
 neither. :func:`activity_block` writes down what
 :meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source` resolved
 — ``default``, ``synthetic``, ``saif`` or ``vcd`` — together with the
-trace and the scope a run that read one used, and the toggle/duty pair
-a synthetic one used. Each detail is recorded only for the source that
+trace, its sha256 and the scope a run that read one used, and the
+toggle/duty pair a synthetic one used. Each detail is recorded only for the source that
 consumed it: a config keeps fields the run it describes never reads,
 and a block that repeated them would report a stimulus nothing applied.
 
@@ -98,9 +98,17 @@ CONFIG_KEYS = (
 #: Every key of the activity block, likewise. ``source`` is the one to
 #: read first: it is
 #: :meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source`'s own
-#: vocabulary, and the other five are the detail behind whichever of the
+#: vocabulary, and the other six are the detail behind whichever of the
 #: four it names.
-ACTIVITY_KEYS = ("source", "trace", "test", "scope", "toggle_rate", "duty")
+ACTIVITY_KEYS = (
+    "source",
+    "trace",
+    "trace_sha256",
+    "test",
+    "scope",
+    "toggle_rate",
+    "duty",
+)
 
 #: How much of the options sha256 is kept. Long enough that two option
 #: sets in one project will not collide, short enough to sit in a table
@@ -157,6 +165,7 @@ def activity_block(
     *,
     source: str | None = None,
     trace=None,
+    trace_sha256: str | None = None,
     scope: str | None = None,
     toggle_rate: float | None = None,
     duty: float | None = None,
@@ -189,6 +198,19 @@ def activity_block(
     beside a leakage number and made two static runs that differ only in
     a trace neither of them opened look like two different measurements.
     A ``synthetic`` run is the same case with the other pair of fields.
+
+    ``trace_sha256`` identifies the trace by its *bytes*, and is taken by
+    the producer for the same reason ``constraints_sha256`` is
+    (:func:`config_block`): a path is a name, and a name is not an
+    identity. ``dump.saif`` is rewritten in place every time its test is
+    rerun, so a power run against a re-captured trace measures different
+    switching under a path that has not changed — and without the hash
+    the two runs' activity blocks are identical, which is the one thing
+    a fingerprint must not say about two different measurements. The
+    label does not carry it (a label is for a table cell, and twelve hex
+    characters of a SAIF are not what a reader is scanning for), but a
+    listing's activity block does, so the identity distinguishes what
+    the label cannot.
     """
     reads_trace = source in TRACE_SOURCES
     trace = str(trace) if trace and reads_trace else None
@@ -196,6 +218,7 @@ def activity_block(
     return {
         "source": source or None,
         "trace": trace,
+        "trace_sha256": trace_sha256 if reads_trace else None,
         "test": trace_test(trace),
         "scope": (scope or None) if reads_trace else None,
         "toggle_rate": toggle_rate if synthetic else None,

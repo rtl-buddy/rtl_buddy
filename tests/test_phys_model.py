@@ -2033,6 +2033,46 @@ def test_a_run_that_reads_no_trace_records_none_even_when_the_config_keeps_one()
     assert read["scope"] == "tb/u_dut"
 
 
+def test_a_trace_is_identified_by_its_bytes_and_not_only_by_its_path():
+    """`rb test` rewrites `dump.saif` in place every time the test behind
+    it runs, so a power analysis against a re-captured trace measures
+    different switching under a path that has not moved. Without the hash
+    the two runs' activity blocks are identical, which is the one thing a
+    fingerprint must not say about two different measurements."""
+    path = "verif/demo/artefacts/csr_smoke/dump.saif"
+
+    first = normalise_activity(
+        activity_block(source="saif", trace=path, trace_sha256="a" * 64)
+    )
+    second = normalise_activity(
+        activity_block(source="saif", trace=path, trace_sha256="b" * 64)
+    )
+
+    assert first["trace_sha256"] == "a" * 64
+    assert first != second
+    # But the label is unchanged: it is a table cell, and twelve hex
+    # characters of a SAIF are not what a reader scans a listing for.
+    assert first["label"] == second["label"] == "saif csr_smoke"
+
+    # Absent evidence stays absent rather than becoming a key that is not
+    # there -- a trace that could not be read, and a document written
+    # before the field existed, both answer null.
+    assert (
+        normalise_activity(activity_block(source="saif", trace=path))["trace_sha256"]
+        is None
+    )
+    assert normalise_activity({"source": "saif"})["trace_sha256"] is None
+
+    # And a run that read no trace records no hash of one, for the same
+    # reason it records no trace.
+    assert (
+        activity_block(source="default", trace=path, trace_sha256="a" * 64)[
+            "trace_sha256"
+        ]
+        is None
+    )
+
+
 def test_a_trace_outside_an_artefact_directory_names_no_test():
     """The derivation is from rtl_buddy's own layout. A checked-in golden
     trace sits in a directory that is not a test, and reporting its name as

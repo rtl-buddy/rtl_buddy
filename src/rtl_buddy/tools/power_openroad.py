@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
-from ..phys.provenance import activity_block
+from ..phys.provenance import TRACE_SOURCES, activity_block
 from ..phys.publish import invalidate_half, publish_power, sha256_of
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
@@ -692,7 +692,11 @@ class OpenRoadPower(BasePower):
         are the resolved values this run actually dispatched on -- the
         same `get_mode()` / `get_activity_source()` pair
         `_emit_activity_cmds` branches on -- so the record cannot claim a
-        source the Tcl did not use.
+        source the Tcl did not use. The trace is identified by its
+        SHA-256 as well as its path: `dump.saif` is rewritten in place by
+        the next run of the test behind it, so the path alone cannot tell
+        a re-captured trace from the one this run measured. One extra
+        read of one file, and only on a run that read it at all.
 
         The constraints recorded are the RESOLVED SDC, `_resolve_inputs`'
         own `sdc`, and not the config's `constraints:` field. On a
@@ -712,6 +716,7 @@ class OpenRoadPower(BasePower):
             inputs = {}
         activity = self.power_cfg.get_activity()
         source = self.power_cfg.get_activity_source()
+        trace = activity.saif or activity.vcd
         published = publish_power(
             artefact_dir=self.artefact_dir,
             top=inputs.get("top"),
@@ -722,7 +727,13 @@ class OpenRoadPower(BasePower):
             mode=self.power_cfg.get_mode(),
             activity=activity_block(
                 source=source,
-                trace=activity.saif or activity.vcd,
+                trace=trace,
+                # Hashed only for a run that read one. `activity_block`
+                # drops a retained trace from a static run's block anyway,
+                # and a VCD is the largest file in an artefact tree --
+                # reading one to identify a file the Tcl never opened
+                # would be a whole pass over it for nothing.
+                trace_sha256=(sha256_of(trace) if source in TRACE_SOURCES else None),
                 scope=activity.scope,
                 toggle_rate=activity.default_toggle_rate,
                 duty=activity.default_static_prob,

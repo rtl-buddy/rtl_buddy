@@ -979,6 +979,88 @@ def test_two_pnr_runs_with_different_routed_sdcs_read_apart(tmp_path, monkeypatc
     assert hashes[0] and hashes[1] and hashes[0] != hashes[1]
 
 
+def test_a_trace_rewritten_in_place_gives_the_run_a_new_identity(tmp_path, monkeypatch):
+    """`rb test` overwrites `artefacts/<test>/dump.saif` every time the
+    test behind it runs, and `rb saif` converts it in place, so the path a
+    `power.yaml` names is a name and not an identity. Two analyses of the
+    same netlist against two captures of one trace are two measurements,
+    and before the hash their activity blocks were byte-identical."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.provenance import activity_label
+    from rtl_buddy.phys.publish import sha256_of
+    from rtl_buddy.config.power import PowerActivity
+
+    backend = _make_power_backend(tmp_path)
+    trace = tmp_path / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
+    trace.parent.mkdir(parents=True)
+    backend.power_cfg.mode = "dynamic"
+    backend.power_cfg.activity = PowerActivity(
+        saif=str(trace),
+        vcd=None,
+        scope="tb/u_dut",
+        default_toggle_rate=0.1,
+        default_static_prob=0.5,
+    )
+
+    blocks = []
+    for capture in ("(SAIFILE first)\n", "(SAIFILE second)\n"):
+        trace.write_text(capture)
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        assert recorded["activity"]["trace_sha256"] == sha256_of(trace)
+        blocks.append(recorded["activity"])
+
+    # Everything a reader sees is the same; the identity is not.
+    assert blocks[0]["trace"] == blocks[1]["trace"]
+    assert blocks[0]["test"] == blocks[1]["test"] == "csr_smoke"
+    assert activity_label(blocks[0]) == activity_label(blocks[1])
+    assert blocks[0]["trace_sha256"] != blocks[1]["trace_sha256"]
+    assert blocks[0] != blocks[1]
+
+
+def test_a_static_run_hashes_no_trace_and_reads_none(tmp_path, monkeypatch):
+    """The fixture's own shape: `mode: static` with a trace still named in
+    the config. The Tcl emits no `read_saif`, so there is nothing to
+    identify -- and a VCD is the largest file in an artefact tree, which
+    is reason enough not to read one the analysis ignored."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.config.power import PowerActivity
+
+    backend = _make_power_backend(tmp_path)
+    trace = tmp_path / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
+    trace.parent.mkdir(parents=True)
+    trace.write_text("(SAIFILE)\n")
+    backend.power_cfg.activity = PowerActivity(
+        saif=str(trace),
+        vcd=None,
+        scope="tb/u_dut",
+        default_toggle_rate=0.1,
+        default_static_prob=0.5,
+    )
+
+    reads = []
+    real_open = open
+
+    def _counting_open(path, *args, **kwargs):
+        if str(path) == str(trace):
+            reads.append(str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _counting_open)
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    activity = load_model(result.results["phys_model"])["provenance"]["power"][
+        "activity"
+    ]
+    assert activity["source"] == "default"
+    assert activity["trace"] is None and activity["trace_sha256"] is None
+    assert reads == []
+
+
 def test_the_power_options_digest_ignores_the_field_no_backend_reads(
     tmp_path, monkeypatch
 ):
