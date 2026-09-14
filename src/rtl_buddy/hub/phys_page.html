@@ -1159,7 +1159,8 @@
   //
   // The publication token when the payload carries one — that is the
   // model's own answer to "were these bytes written by one publish", and
-  // two reads of one publication share it. Otherwise the manifest path
+  // two reads of one publication share it; `build_phys_payload` puts the
+  // model's into the hub block. Otherwise the manifest path
   // and the design top, which is what distinguishes one run's document
   // from another's: discovery follows the newest manifest, so a `rb power`
   // in a second suite, a `--phys-dir` typed into the URL, or a rebuild

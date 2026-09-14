@@ -111,8 +111,15 @@ INSTANCE_ROWS = [
 _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
-def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None):
-    """One run's artefact directory, written the way the producers do."""
+def _write_run(
+    root: Path, run: str, *, modules=None, instances=None, mtime=None, publication=None
+):
+    """One run's artefact directory, written the way the producers do.
+
+    ``publication`` stamps both documents with one token, as a real
+    publish does. Left off, they carry ``None`` — the shape a document
+    written before publications were stamped has.
+    """
 
     phys_dir = root / "verif" / "blk" / "artefacts" / run
     phys_dir.mkdir(parents=True, exist_ok=True)
@@ -141,6 +148,8 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
             if model is not None
             else power
         )
+    if publication is not None:
+        model["publication"] = publication
     model_path = write_model(model, phys_dir)
 
     manifest = build_manifest(
@@ -176,6 +185,8 @@ def _write_run(root: Path, run: str, *, modules=None, instances=None, mtime=None
             }
         ),
     )
+    if publication is not None:
+        manifest["publication"] = publication
     manifest_path = write_manifest(manifest, phys_dir)
     if mtime is not None:
         os.utime(manifest_path, (mtime, mtime))
@@ -227,6 +238,31 @@ def test_payload_is_the_cli_builder_plus_a_hub_block(phys_project: Path):
     assert hub["metrics"] == ["cells", "area", "leakage", "dynamic", "total"]
     assert hub["power_columns"] == list(phys_query.POWER_COLUMNS)
     assert hub["model"].endswith("artefacts/both/phys-model.json")
+    # Stamped by a publish; this fixture writes the documents directly, so
+    # there is no token and the page falls back to manifest path + top.
+    assert hub["publication"] is None
+
+
+def test_payload_carries_the_models_publication_token(tmp_path: Path):
+    """The finding (#562 round-11 review, Codex P1). The page compares
+    reloads by the publication token when there is one, and there never was
+    one: nothing put it in the body, so identity always fell back to the
+    manifest path and the top — and a model republished at the same path
+    under the same top kept a lens and a selection aimed at replaced rows."""
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    _write_run(
+        root,
+        "both",
+        modules=MODULE_ROWS,
+        instances=INSTANCE_ROWS,
+        publication="0123456789abcdef",
+    )
+
+    payload = phys_page.build_phys_payload(root)
+
+    assert payload["hub"]["publication"] == "0123456789abcdef"
 
 
 def test_payload_truncates_nothing(phys_project: Path):
@@ -872,6 +908,41 @@ def test_model_identity_is_the_publication_or_the_document_it_came_from():
         """
     )
     assert json.loads(out) == [True, False, False, True, True, None]
+
+
+def test_a_republished_model_at_the_same_path_is_a_different_model():
+    """The other half of the finding. Once the body carries the token, the
+    preference order in `modelIdentity` engages: a revision switch that
+    republishes the same run under the same top is a new model, which is
+    what makes the ingest drop the lens and the selection."""
+
+    out = _node(
+        _marked_js("model-identity")
+        + """
+        var manifest = 'verif/blk/artefacts/both/phys-manifest.json';
+        var before = { manifest: manifest, top: 'blk', hub: { publication: 'aaa' } };
+        var after = { manifest: manifest, top: 'blk', hub: { publication: 'bbb' } };
+        var reread = { manifest: manifest, top: 'blk', hub: { publication: 'aaa' } };
+        var untokened = { manifest: manifest, top: 'blk', hub: {} };
+        console.log(JSON.stringify([
+          modelIdentity(before) === modelIdentity(after),
+          modelIdentity(before) === modelIdentity(reread),
+          modelIdentity(before) === modelIdentity(untokened),
+          modelIdentity(untokened) === modelIdentity({ manifest: manifest, top: 'blk' })
+        ]));
+        """
+    )
+
+    # A new token is a new model; the same token is the same model; a body
+    # with no token falls back to the document it came from.
+    assert json.loads(out) == [False, True, False, True]
+
+    # And a different identity is exactly what clears the reader's lens and
+    # selection — the branch `test_a_model_change_drops_the_lens_and_the_
+    # selection` pins.
+    body = _page_js().split("function ingest(payload) {")[1]
+    dropped = body.split("if (replaced) {")[1].split("}")[0]
+    assert "state.module = null;" in dropped and "state.instance = null;" in dropped
 
 
 def test_a_model_change_drops_the_lens_and_the_selection():

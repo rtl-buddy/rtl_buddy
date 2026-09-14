@@ -117,7 +117,8 @@ def build_phys_payload(
     module and instance rankings and the artefact block — plus a ``hub``
     block carrying what the page needs to render its chrome without a
     second round-trip (schema version, the metric order, the power
-    columns, and the model path).
+    columns, the model path, and the publication token the page
+    compares reloads by).
 
     ``limit=0`` rather than the CLI's ten: a terminal that printed every
     leaf instance would be a terminal nobody reads to the end, which is
@@ -136,6 +137,19 @@ def build_phys_payload(
         "model": manifest_mod.project_relative(ctx.model_path, ctx.project_root),
         "model_schema_version": ctx.model.get("schema_version"),
         "generator": ctx.model.get("generator"),
+        # Which publish wrote the documents this body was read from. It
+        # is what the page compares reloads by (`modelIdentity`), and it
+        # is the only field that can tell a *re*publication at the same
+        # path under the same top — a revision switch, a rerun — from a
+        # re-read of the model already on screen; without it the pane
+        # keeps a lens and a selection aimed at rows that have been
+        # replaced whenever the names happen to coincide. Read off the
+        # model rather than the manifest because the rows in this body
+        # are the model's, so a pair caught mid-rewrite is named by the
+        # half the reader is actually looking at. `None` for a document
+        # written before publications were stamped, which the page falls
+        # back from to the manifest path and the top.
+        "publication": ctx.model.get("publication"),
         # Ordered, not sorted: this IS the left-to-right order of the
         # pane's metric switcher.
         "metrics": list(METRICS),

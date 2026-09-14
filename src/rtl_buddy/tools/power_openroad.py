@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 import re
@@ -48,10 +49,12 @@ class OpenRoadPower(BasePower):
         artefact_root = Path(suite_dir) / "artefacts" / power_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
-        # The netlist this run measures, identified at the moment it is
-        # handed to OpenROAD rather than when the model is published
-        # minutes later; see `_write_script`. `None` until then, and for
-        # a `netlist-source: pnr` run that never reads a netlist at all.
+        # The upstream netlist this run measures, and the hash of the
+        # private copy OpenROAD is actually given; see
+        # `_snapshot_netlist`. Both `None` until the run resolves them,
+        # and for a `netlist-source: pnr` run that reads a routed
+        # database and never a netlist at all.
+        self._netlist_source_path: str | None = None
         self._netlist_sha256: str | None = None
 
     # ------------------------------------------------------------------
@@ -80,6 +83,67 @@ class OpenRoadPower(BasePower):
         rows have no module column and cannot be joined to the synth half.
         """
         return os.path.join(self.artefact_dir, "power_instances.cells")
+
+    def _netlist_snapshot_path(self) -> str:
+        """This run's own copy of the netlist it hands OpenROAD (#560).
+
+        The analysis reads a netlist another command wrote, in another
+        artefact directory, and records its sha256 as the evidence that
+        these watts and the module rows beside them describe one design.
+        Hashing the upstream path leaves a window however tightly it is
+        drawn: `rb synth` rewriting that file between the hash and
+        OpenROAD's `read_verilog` would have the model name bytes the
+        analysis never measured, and the provenance gate would then read
+        a real mismatch as a match.
+
+        So the netlist is *snapshotted* instead: copied here, hashed
+        here, and read from here. The hash and the bytes OpenROAD parses
+        are then the same file, which no concurrent writer can reach —
+        the upstream directory is not this run's, and this one is.
+
+        The cost is one copy of a netlist that may be megabytes, per
+        power run, in the directory that already holds the run's log and
+        reports; the stale-clear removes it exactly as it removes them.
+        """
+        return os.path.join(self.artefact_dir, "power_netlist.v")
+
+    def _snapshot_netlist(self) -> str | None:
+        """Copy the upstream netlist in, hash the copy, or say why not.
+
+        Called between the stale-clear (which removes the previous run's
+        copy) and OpenROAD, so the file the script names is written once
+        and read once, by this run. Copy-then-rename via a `.tmp`
+        sibling: a crash mid-copy leaves the staging file, never a short
+        `power_netlist.v` that the next reader would take for a netlist.
+
+        A `netlist-source: pnr` run resolves no netlist at all — it reads
+        a routed database — so there is nothing to snapshot and nothing
+        to hash, which is what it recorded before this existed.
+
+        :returns: ``None`` on success (or when there is nothing to do),
+            else a description of the failure. A netlist that cannot be
+            copied into the artefact directory is not a by-product
+            failure to warn about and continue past: the generated
+            script names the copy, so there would be nothing for
+            `read_verilog` to read.
+        """
+        source = self._netlist_source_path
+        self._netlist_sha256 = None
+        if source is None:
+            return None
+        snapshot = Path(self._netlist_snapshot_path())
+        staging = snapshot.with_name(snapshot.name + ".tmp")
+        try:
+            shutil.copyfile(source, staging)
+            os.replace(staging, snapshot)
+        except OSError as e:
+            with contextlib.suppress(OSError):
+                staging.unlink()
+            return f"could not copy {source} to {snapshot}: {e}"
+        # Of the copy, not of the source: these are the bytes OpenROAD
+        # is about to read, and nothing else writes this path.
+        self._netlist_sha256 = sha256_of(snapshot)
+        return None
 
     # ------------------------------------------------------------------
     # Inputs resolution
@@ -257,16 +321,13 @@ class OpenRoadPower(BasePower):
                     f"power run '{self.power_cfg.get_name()}': "
                     f"upstream netlist not found at {netlist} — run `rb synth` first"
                 )
-            # Identify the netlist here, where the run has just checked it
-            # and is about to name it in the script OpenROAD will read —
-            # not at publish time, minutes later. The hash is the model's
-            # only evidence that these watts and the module rows beside
-            # them are about one design (#558), and a `rb synth` into the
-            # upstream artefact directory while OpenROAD works would leave
-            # a publish-time hash describing bytes this run never saw. An
-            # unreadable file records nothing, which the merge reads as no
-            # evidence rather than as a match.
-            self._netlist_sha256 = sha256_of(netlist)
+            # The script reads this run's own copy, not the upstream
+            # path: `_snapshot_netlist` writes it after the stale-clear
+            # below and hashes what it wrote, so the bytes the model
+            # names and the bytes OpenROAD parses are one file that no
+            # concurrent `rb synth` can reach (#560). Recorded here so
+            # that step knows what to copy.
+            self._netlist_source_path = netlist
 
         lines = [
             "# Generated by rtl_buddy power flow",
@@ -287,7 +348,7 @@ class OpenRoadPower(BasePower):
         else:
             lines.extend(
                 [
-                    f"read_verilog {netlist}",
+                    f"read_verilog {self._netlist_snapshot_path()}",
                     f"link_design {top}",
                     f"read_sdc {sdc}",
                 ]
@@ -344,6 +405,12 @@ class OpenRoadPower(BasePower):
         without reaching the `catch` block must not have the last run's
         per-instance watts published as this one's (#469, #558).
 
+        The netlist snapshot goes with them (#560). It is the largest
+        thing this flow writes, nothing reads it after OpenROAD has, and
+        a failed run that left it behind would leave a copy of a netlist
+        no artefact here still describes. `run()` therefore clears
+        *before* `_snapshot_netlist` takes this run's copy, never after.
+
         The model and its manifest stay -- a synthesis may have merged its
         own half into them -- but this flow's half is nulled out, because
         publication happens only on a pass and a failed rerun would otherwise
@@ -355,6 +422,7 @@ class OpenRoadPower(BasePower):
                 self._report_path(),
                 self._instances_report_path(),
                 self._instances_cells_path(),
+                self._netlist_snapshot_path(),
             ],
             owner=self.power_cfg.get_name(),
         )
@@ -471,6 +539,23 @@ class OpenRoadPower(BasePower):
         # stays reachable instead of quoting a previous run's watts (#469).
         self._clear_stale_report()
 
+        # After the clear, before OpenROAD: the script names this run's
+        # own copy of the netlist, and the hash recorded beside the watts
+        # is of that copy (#560).
+        snapshot_error = self._snapshot_netlist()
+        if snapshot_error is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.netlist_snapshot_failed",
+                power=self.power_cfg.get_name(),
+                error=snapshot_error,
+            )
+            return PowerFailResults(
+                name=self.name + "/results",
+                desc=f"could not stage the netlist for OpenROAD: {snapshot_error}",
+            )
+
         log_path = self._log_path()
         env = os.environ.copy()
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -586,15 +671,17 @@ class OpenRoadPower(BasePower):
         synthesis' module rows already in this directory describe the same
         thing and may be merged forward.
 
-        The netlist this run read is identified by the hash `_write_script`
-        took when it handed the file to OpenROAD, not by re-reading the path
-        now: it is what a later synthesis into this directory tests its own
-        output against before carrying these per-instance rows forward, and
-        what this publish tests before carrying any module rows already here
-        forward (#558), so it has to be of the bytes the analysis actually
-        measured. A `netlist-source: pnr` run resolves no netlist at all --
-        it reads the routed ODB -- so it records none, and nothing is
-        inherited in either direction.
+        The netlist this run read is identified by the hash
+        `_snapshot_netlist` took of the private copy it gave OpenROAD, not
+        by re-reading the upstream path now: it is what a later synthesis
+        into this directory tests its own output against before carrying
+        these per-instance rows forward, and what this publish tests before
+        carrying any module rows already here forward (#558), so it has to
+        be of the bytes the analysis actually measured -- which is why the
+        analysis reads a copy nothing else can rewrite (#560). A
+        `netlist-source: pnr` run resolves no netlist at all -- it reads the
+        routed ODB -- so it records none, and nothing is inherited in either
+        direction.
         """
         try:
             inputs = self._resolve_inputs()
