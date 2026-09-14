@@ -1005,6 +1005,51 @@ def test_the_banner_offers_the_merge_only_when_the_halves_could_pair():
     assert "on the netlist it writes, so both halves measure the same one." in body
 
 
+def test_a_superseded_reload_neither_installs_nor_blanks(tmp_path: Path):
+    """The finding (#562 round-10 review, Codex P2). Nothing serialises the
+    fetches, so two `/phy.json` responses can land out of order: the older
+    one wins by landing last, installing a run the reader has replaced —
+    or, when it is the older one that failed, blanking a fresh model and
+    claiming there is nothing to show."""
+
+    out = _node(
+        _marked_js("load-generation")
+        + """
+        var state = { generation: 0 };
+        var first = nextGeneration(state);
+        var second = nextGeneration(state);
+        console.log(JSON.stringify({
+          tokens: [first, second],
+          stale: applies(state, first),
+          current: applies(state, second)
+        }));
+        """
+    )
+    seen = json.loads(out)
+    assert seen["tokens"] == [1, 2]
+    assert seen["stale"] is False
+    assert seen["current"] is True
+
+    js = _page_js()
+    body = js.split("function load() {")[1].split("\n  }")[0]
+    # The token is taken before the request goes out, so the response
+    # carries the load it belongs to.
+    assert "var generation = nextGeneration(state);" in body
+    assert body.index("nextGeneration(state)") < body.index("fetch(PHY_URL")
+    # Both arms guard, and the failure arm above all: a stale failure is
+    # the one that destroys data the reader can see.
+    assert body.count("if (!applies(state, generation)) { return; }") == 2
+    success = body.split("}).then(function (res) {")[1]
+    assert success.index("applies(state, generation)") < success.index("showEmpty(")
+    assert success.index("applies(state, generation)") < success.index("ingest(")
+    failure = body.split("}).catch(function (e) {")[1]
+    assert failure.index("applies(state, generation)") < failure.index("showEmpty(")
+    # The generation is not payload state: a failed load must not reset
+    # the counter a later response is still checked against.
+    forget = js.split("function forgetModel() {")[1].split("\n  }")[0]
+    assert "generation" not in forget
+
+
 def test_the_instances_column_is_a_dash_outside_the_liberty_namespace():
     """`0` in the instances column is a claim about the design, and on a
     mapped hierarchical run it was a false one for nearly every row: the
