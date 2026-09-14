@@ -479,7 +479,12 @@ class Toolset:
         """
         return phys_query.runs_payload(
             self.project_root,
-            limit=int(args.get("limit", phys_query.DEFAULT_RUNS_LIMIT)),
+            # Validated by the same helper the detail tools use, with this
+            # tool's own default: a bare `int()` here would have let
+            # `limit: -1` through `truncate`'s "no head at all" reading and
+            # answered a listing request with every run in the project --
+            # the very failure the helper exists to refuse.
+            limit=self._phys_limit(args, phys_query.DEFAULT_RUNS_LIMIT),
         )
 
     def _h_phys_summary(self, args: dict) -> dict:
@@ -503,8 +508,15 @@ class Toolset:
         )
 
     @staticmethod
-    def _phys_limit(args: dict) -> int:
+    def _phys_limit(args: dict, default: int = phys_query.DEFAULT_RANK_LIMIT) -> int:
         """The row cap a physical tool applies, defaulting like the CLI.
+
+        ``default`` is the caller's, because the tools do not share one:
+        a ranking of instances heads at
+        :data:`~rtl_buddy.phys.query.DEFAULT_RANK_LIMIT` and a listing of
+        runs at :data:`~rtl_buddy.phys.query.DEFAULT_RUNS_LIMIT`. Only the
+        default differs — every tool that takes a ``limit`` comes through
+        here, so the refusals below hold for all of them.
 
         A HEAD by default, not the complete list. These lists are as long
         as the design: every instance of a Liberty cell on a mapped run
@@ -540,7 +552,7 @@ class Toolset:
         means all of them, because that is what the input's description
         promises.
         """
-        raw = args.get("limit", phys_query.DEFAULT_RANK_LIMIT)
+        raw = args.get("limit", default)
         try:
             limit = int(raw)
         except (TypeError, ValueError):

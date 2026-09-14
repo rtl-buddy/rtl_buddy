@@ -867,6 +867,35 @@ def test_phys_runs_needs_no_hub_and_no_arguments(phys_project: Path):
     assert ts.call("phys_runs", {"limit": 1})["payload"]["limit"] == 1
 
 
+def test_phys_runs_validates_its_limit_like_every_other_physical_tool(
+    phys_project: Path,
+):
+    """The listing handler used to call ``int()`` itself and skip the shared
+    guard, so the one tool whose whole job is to be a menu answered
+    ``limit: -1`` with every run in the project -- ``truncate`` reads
+    anything ``<= 0`` as "no head at all". It is also the tool an agent
+    calls first, before it knows the project at all."""
+    from rtl_buddy.phys.query import DEFAULT_RUNS_LIMIT, runs_payload
+
+    ts = _toolset(phys_project)
+
+    refused = ts.call("phys_runs", {"limit": -1})
+    assert refused["ok"] is False
+    assert "limit must be 0 or greater, not -1" in refused["error"]
+    assert "payload" not in refused
+
+    # The same helper, so the same answer for a limit that is not a number.
+    assert ts.call("phys_runs", {"limit": "ten"})["ok"] is False
+
+    # And the tool keeps its own default rather than the ranking tools':
+    # a run listing heads at DEFAULT_RUNS_LIMIT.
+    assert ts.call("phys_runs", {})["payload"] == runs_payload(
+        ts.project_root, limit=DEFAULT_RUNS_LIMIT
+    )
+    # 0 still means all of them.
+    assert ts.call("phys_runs", {"limit": 0})["payload"]["limit"] == 0
+
+
 def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
     """Same builder as ``rb --machine phys summary``, not a second shape."""
     from rtl_buddy.phys.query import load_context, summary_payload
