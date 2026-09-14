@@ -1009,6 +1009,66 @@ def test_descendancy_is_decided_on_levelled_paths():
     assert not is_descendant("u_subsystem._1_", "u_sub")
 
 
+def test_the_readers_store_an_escaped_leaf_without_its_terminator():
+    r"""The premise the levelling rule above is built on, pinned (#561).
+
+    Neither reader can keep a space, so what lands in a row is the
+    backslash-led name with its Verilog terminator gone -- and an escape
+    that is *not* the last segment loses its whole row rather than
+    arriving half-levelled. Asserted here, next to the rule it justifies,
+    so a reader-side change that broke the premise fails on the rule.
+    """
+    from rtl_buddy.phys.reports import parse_instance_cells, parse_instance_power
+
+    report = (
+        "1.0e-06 1.0e-06 1.0e-06 3.0e-06 u_top/\\gen[0].u_x \n"
+        "1.0e-06 1.0e-06 1.0e-06 3.0e-06 u_top/\\gen[1].u_x /u_ff\n"
+    )
+    rows = parse_instance_power(report)
+    assert [row["instance_path"] for row in rows] == [r"u_top/\gen[0].u_x"]
+
+    cells = parse_instance_cells(
+        "u_top/\\gen[0].u_x DFF_X1\nu_top/\\gen[1].u_x /u_ff DFF_X1\n"
+    )
+    assert cells == {r"u_top/\gen[0].u_x": "DFF_X1"}
+
+
+def test_levelling_keeps_an_escaped_identifier_whole():
+    r"""`\gen[0].u_x` is one leaf's *name*: the `.` in it names no level.
+
+    The two readers behind the model both drop the escape's terminating
+    space (#561), so this is the spelling that actually reaches a row.
+    """
+    assert level_path(r"u_top/\gen[0].u_x") == r"u_top/\gen[0].u_x"
+    assert level_path(r"u_top.\gen[0].u_x") == r"u_top/\gen[0].u_x"
+    # Terminated as Verilog spells it: the terminator ends the escape and
+    # is dropped, so a user typing that form matches the stored row.
+    assert level_path("u_top/\\gen[0].u_x /u_ff") == r"u_top/\gen[0].u_x/u_ff"
+    # A backslash that does not open a segment is not an escape lead, so
+    # it cannot swallow the levels after it.
+    assert level_path(r"u_top/x\a.b") == r"u_top/x\a/b"
+
+
+def test_an_escaped_leaf_is_found_and_stays_under_its_real_parent(project):
+    """The row is one child of `u_top`, not a `\\gen[0]` subtree."""
+    ctx = load_context(project)
+    escaped = r"u_top/\gen[0].u_x"
+    ctx.model["instances"] = [
+        {"instance_path": escaped, "module": "DFF_X1", "total_uw": 2.0}
+    ]
+
+    assert is_descendant(escaped, "u_top")
+    assert not is_descendant(escaped, r"u_top/\gen[0]")
+
+    exact = instance_payload(ctx, escaped)
+    assert exact["match"] == "exact"
+    assert exact["instance"]["instance_path"] == escaped
+
+    parent = instance_payload(ctx, "u_top")
+    assert [row["instance_path"] for row in parent["children"]] == [escaped]
+    assert parent["child_count"] == 1
+
+
 def test_a_dotted_query_finds_slash_stored_rows(project):
     """The model stores OpenSTA's `/`; the pane and the RTL side spell the
     same path with `.`, and a user pasting one must still get the row."""

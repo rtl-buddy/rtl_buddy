@@ -427,7 +427,8 @@
     pending: null,      // phys_focus that arrived before the model did
     pendingSelection: null,  // selection_changed likewise, see focusInstanceFromWire
     dir: null,          // the run this pane asked for, null for "the newest"
-    generation: 0       // which load is the current one — see nextGeneration
+    generation: 0,      // which load is the current one — see nextGeneration
+    inFlight: 0         // …and whether its response is still out
   };
 
   // ---------------------------------------------------------------
@@ -737,8 +738,39 @@
   // So: the model's spelling is what the tables show and what a
   // `phys_focus` target is matched against, and this is the one
   // translation, applied at the two edges that face the schematic.
+  //
+  // Not inside an ESCAPED IDENTIFIER, though. A name that is not a
+  // legal bare identifier is written `\gen[0].u_x`, terminated by
+  // whitespace, and both a `/` and a `.` in there are part of the NAME
+  // — rewriting one would split a single leaf into two levels and hand
+  // the wire a path no row can answer to. So a backslash that OPENS a
+  // segment runs atomically to the whitespace that ends it, or to the
+  // end of the path when nothing does, and the terminator is dropped so
+  // the Verilog spelling and the stored one compare equal. A backslash
+  // anywhere else is not an escape lead and cannot swallow the levels
+  // after it.
+  //
+  // This is `level_path` in rtl_buddy/phys/query.py, in the wire's
+  // separator instead of the model's (#561). The two are separate
+  // copies on either side of the wire and must not drift: a change here
+  // needs the same change there.
   function toWirePath(path) {
-    return String(path == null ? '' : path).replace(/\//g, '.');
+    var text = String(path == null ? '' : path), out = '', at = true, i = 0;
+    while (i < text.length) {
+      var ch = text.charAt(i);
+      if (at && ch === '\\') {
+        var end = i;
+        while (end < text.length && !/\s/.test(text.charAt(end))) { end++; }
+        out += text.slice(i, end);
+        while (end < text.length && /\s/.test(text.charAt(end))) { end++; }
+        i = end; at = false;
+        continue;
+      }
+      if (ch === '/' || ch === '.') { out += '.'; at = true; }
+      else { out += ch; at = false; }
+      i++;
+    }
+    return out;
   }
 
   // The other half of the same mismatch is the ROOT.
@@ -1164,13 +1196,42 @@
   // failure alike, since a stale failure is the more damaging of the two
   // — applies only while it still holds it. A superseded response is
   // dropped whole: no ingest, no empty state, no note.
+  //
+  // The token doubles as the in-flight flag, because the second thing a
+  // load's timing decides is where an inbound FOCUS is resolved. A
+  // `phys_focus` or a `selection_changed` picks a row out of
+  // `state.payload`, and that payload is only replaced at ingest — so
+  // one arriving mid-reload would be answered out of the model being
+  // replaced, select a row from the outgoing run, and then be wiped by
+  // the render that lands a moment later. The pane already has the slot
+  // for "the target arrived before the model": a focus in flight takes
+  // the same slot and is applied at ingest, against the new rows.
+  //
+  // `inFlight` is the generation whose response is still out, so it
+  // stops counting the moment a newer load supersedes it — the older
+  // response can no longer settle anything, and the pane is waiting on
+  // the newer one either way.
   function nextGeneration(state) {
     state.generation = (state.generation || 0) + 1;
+    state.inFlight = state.generation;
     return state.generation;
   }
 
   function applies(state, generation) {
     return state.generation === generation;
+  }
+
+  // The response this load is entitled to install has landed. False for
+  // a superseded one, which settles nothing and does nothing.
+  function settle(state, generation) {
+    if (!applies(state, generation)) { return false; }
+    state.inFlight = 0;
+    return true;
+  }
+
+  // Are the rows on screen about to be replaced?
+  function loadInFlight(state) {
+    return !!state.inFlight && state.inFlight === state.generation;
   }
   // <<< load-generation
 
@@ -1192,7 +1253,7 @@
     fetch(url, { cache: 'no-store' }).then(function (r) {
       return r.json().then(function (body) { return { ok: r.ok, body: body }; });
     }).then(function (res) {
-      if (!applies(state, generation)) { return; }
+      if (!settle(state, generation)) { return; }
       if (!res.ok) { loadFailed(requested, res.body && res.body.error); return; }
       // Only on success: a selection the server refused must not become
       // the run this pane thinks it is showing, or the next reload would
@@ -1200,7 +1261,7 @@
       state.dir = requested;
       ingest(res.body);
     }).catch(function (e) {
-      if (!applies(state, generation)) { return; }
+      if (!settle(state, generation)) { return; }
       loadFailed(requested, 'could not read ' + url + ': ' + e);
     });
   }
@@ -2192,12 +2253,17 @@
   function focusInstanceFromWire(ip) {
     if (Array.isArray(ip)) { ip = ip[0]; }
     if (typeof ip !== 'string' || !ip) { return; }
-    if (!state.payload) {
+    if (!state.payload || loadInFlight(state)) {
       // The hub replays the cached selection immediately after
       // `welcome`, which routinely beats the `/phy.json` fetch — the
       // same race `applyFocus` already holds a `phys_focus` for. Held
       // here too, or opening the pane while a selection is live shows
       // nothing selected.
+      //
+      // A reload in flight is the same race one beat later: the rows
+      // are still the outgoing run's, so a selection resolved now would
+      // name a row of the model being replaced. Held for the same
+      // ingest.
       state.pendingSelection = ip;
       return;
     }
@@ -2234,10 +2300,13 @@
   // and says so, exactly as it did before there was anything to select:
   // switching runs is a gesture in the pane, not a message on the wire.
   function applyFocus(payload) {
-    if (!state.payload) {
+    if (!state.payload || loadInFlight(state)) {
       // The hub replays a cached focus on connect, which routinely wins
       // the race against the model fetch; hold it rather than dropping
-      // it.
+      // it. A reload in flight holds it for the same reason: the rows
+      // are the outgoing run's until ingest installs the new ones, and
+      // a target answered out of them is answered about the wrong run
+      // — then overwritten, unremarked, by the render that follows.
       state.pending = payload;
       return;
     }

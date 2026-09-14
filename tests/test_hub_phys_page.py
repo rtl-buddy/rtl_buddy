@@ -656,6 +656,84 @@ def test_the_separator_is_levelled_only_on_the_way_to_the_wire():
     ]
 
 
+#: The paths both copies of the levelling rule are pinned against
+#: (#561). It is ONE rule -- a backslash opening a segment runs to the
+#: whitespace that ends it, or to the end of the path -- and only the
+#: canonical separator differs: `/` in `rtl_buddy.phys.query.level_path`,
+#: `.` in the pane's `toWirePath`. The two expectation tables below are
+#: therefore the same list twice, and a change to one copy alone fails
+#: the other's test.
+ESCAPED_PATHS = [
+    r"u_top/\gen[0].u_x",  # the escape a reader actually stores
+    "u_top/\\gen[0].u_x /u_ff",  # terminated, as Verilog spells it
+    r"u_top/\a/b",  # an escape may contain the other separator too
+    r"u_top/x\a/b",  # a backslash mid-segment leads no escape
+    r"u_top.u_sub",  # and nothing about plain paths changes
+]
+
+
+def test_the_wire_levelling_keeps_an_escaped_identifier_whole():
+    r"""`\gen[0].u_x` is one leaf's *name*: neither the `.` nor a `/`
+    inside it is a level, so rewriting one would hand the schematic a
+    path no row can answer to."""
+
+    out = _node(
+        _marked_js("path-normalise")
+        + "console.log(JSON.stringify(%s.map(toWirePath)));" % json.dumps(ESCAPED_PATHS)
+    )
+    assert json.loads(out) == [
+        r"u_top.\gen[0].u_x",
+        r"u_top.\gen[0].u_x.u_ff",
+        r"u_top.\a/b",
+        r"u_top.x\a.b",
+        r"u_top.u_sub",
+    ]
+
+
+def test_the_pane_and_the_query_layer_level_the_same_way():
+    """The anti-drift pin: two copies of one rule, one separator apart."""
+
+    from rtl_buddy.phys.query import level_path
+
+    assert [level_path(path) for path in ESCAPED_PATHS] == [
+        r"u_top/\gen[0].u_x",
+        r"u_top/\gen[0].u_x/u_ff",
+        r"u_top/\a/b",
+        r"u_top/x\a/b",
+        r"u_top/u_sub",
+    ]
+
+
+def test_an_escaped_row_is_still_reachable_from_the_wire():
+    r"""End to end through the edges: a `\gen[0].u_x` leaf, sent out
+    rooted and matched on the way back, is one row rather than none."""
+
+    out = _node(
+        _marked_js("path-normalise")
+        + r"""
+        var rows = [{ instance_path: 'u_top/\\gen[0].u_x' }];
+        function hit(path, rooted) {
+          var row = findByPath(rows, path, 'blk', rooted);
+          return row === null ? null : row.instance_path;
+        }
+        console.log(JSON.stringify([
+          withTop('u_top/\\gen[0].u_x', 'blk'),
+          hit('blk.u_top.\\gen[0].u_x', true),
+          hit('u_top.\\gen[0].u_x', false),
+          hit('u_top/\\gen[0].u_x ', false),
+          hit('u_top.\\gen[0].u_x2', false)
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        r"blk.u_top.\gen[0].u_x",
+        r"u_top/\gen[0].u_x",
+        r"u_top/\gen[0].u_x",
+        r"u_top/\gen[0].u_x",
+        None,
+    ]
+
+
 def test_the_design_top_is_added_on_the_way_out():
     """Model rows are uniformly rootless — an OpenSTA full name is
     relative to the top — and a schematic `instance_path` is rooted. So
@@ -1120,12 +1198,12 @@ def test_a_superseded_reload_neither_installs_nor_blanks(tmp_path: Path):
     assert body.index("nextGeneration(state)") < body.index("fetch(url")
     # Both arms guard, and the failure arm above all: a stale failure is
     # the one that destroys data the reader can see.
-    assert body.count("if (!applies(state, generation)) { return; }") == 2
+    assert body.count("if (!settle(state, generation)) { return; }") == 2
     success = body.split("}).then(function (res) {")[1]
-    assert success.index("applies(state, generation)") < success.index("loadFailed(")
-    assert success.index("applies(state, generation)") < success.index("ingest(")
+    assert success.index("settle(state, generation)") < success.index("loadFailed(")
+    assert success.index("settle(state, generation)") < success.index("ingest(")
     failure = body.split("}).catch(function (e) {")[1]
-    assert failure.index("applies(state, generation)") < failure.index("loadFailed(")
+    assert failure.index("settle(state, generation)") < failure.index("loadFailed(")
     # The generation is not payload state: a failed load must not reset
     # the counter a later response is still checked against.
     forget = js.split("function forgetModel() {")[1].split("\n  }")[0]
@@ -1316,6 +1394,53 @@ def test_an_early_selection_is_held_until_the_model_arrives():
     assert "var focus = state.pending, selection = state.pendingSelection;" in js
     assert "} else if (selection) {" in js
     assert "focusInstanceFromWire(selection);" in js
+
+
+def test_a_focus_arriving_mid_reload_waits_for_the_new_model():
+    """The finding (#562 round-11 review). `state.payload` is only
+    replaced at ingest, so a `phys_focus` or a `selection_changed` that
+    lands while `/phy.json` is out was resolved against the OUTGOING
+    run's rows — it selected a row of the model being replaced, and the
+    render a moment later wiped the selection without a word."""
+
+    # The gate: a load is in flight from the moment it takes its token
+    # until its own response settles it, and a superseded response
+    # settles nothing — the pane is still waiting on the newer load.
+    out = _node(
+        _marked_js("load-generation")
+        + """
+        var state = { generation: 0, inFlight: 0 };
+        var seen = [loadInFlight(state)];              // idle before any load
+        var first = nextGeneration(state);
+        seen.push(loadInFlight(state));                // out
+        var second = nextGeneration(state);
+        seen.push(settle(state, first));               // the stale one settles
+        seen.push(loadInFlight(state));                // ...nothing: still out
+        seen.push(settle(state, second));
+        seen.push(loadInFlight(state));                // landed
+        console.log(JSON.stringify(seen));
+        """
+    )
+    assert json.loads(out) == [False, True, False, True, True, False]
+
+    js = _page_js()
+    # Both inbound paths take the same gate, and the pending slots they
+    # already had for the pre-model race are the slots they use.
+    assert "if (!state.payload || loadInFlight(state)) {" in js
+    assert js.count("if (!state.payload || loadInFlight(state)) {") == 2
+    focus = js.split("function applyFocus(payload) {")[1]
+    assert focus.index("loadInFlight(state)") < focus.index("state.pending = payload;")
+    wire = js.split("function focusInstanceFromWire(ip) {")[1]
+    assert wire.index("loadInFlight(state)") < wire.index(
+        "state.pendingSelection = ip;"
+    )
+    # And ingest installs the new payload BEFORE it drains them, so what
+    # was held is resolved against the new model's rows rather than the
+    # ones it was waiting out.
+    ingest = js.split("function ingest(payload) {")[1].split("\n  }")[0]
+    assert ingest.index("state.payload = payload;") < ingest.index(
+        "var focus = state.pending, selection = state.pendingSelection;"
+    )
 
 
 def test_the_first_hello_is_polite():
