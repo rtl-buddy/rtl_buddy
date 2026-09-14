@@ -11,6 +11,7 @@ inconsistent spacing preserved — those are the parts that break.
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -2064,6 +2065,55 @@ def test_two_option_sets_that_resolve_the_same_digest_the_same():
     # Nothing recorded is `None`, not a digest of the empty mapping: a
     # backend that fingerprinted nothing must not look like one that did.
     assert options_digest(None) is None and options_digest({}) is None
+
+
+def test_an_undigestible_option_set_is_absent_rather_than_unstable(caplog):
+    """The docstring promises the same options digest the same everywhere,
+    and the old `default=repr` fallback quietly voided it: `repr` of most
+    objects carries the address it happens to live at, so one run would
+    fingerprint differently on every invocation with nothing in the digest
+    to say so. Strict rendering, `None`, and a DEBUG line naming who."""
+
+    class _Opaque:
+        pass
+
+    options = {"strategy": "TIMING", "hook": _Opaque()}
+    with caplog.at_level(logging.DEBUG):
+        assert options_digest(options, producer="synth/blk") is None
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "phys.options_not_serialisable"
+    )
+    assert record.levelno == logging.DEBUG
+    assert record.rtl_fields["producer"] == "synth/blk"
+    # The offending key, so the producer can be fixed rather than guessed
+    # at -- and only the offending one.
+    assert record.rtl_fields["keys"] == ["hook"]
+
+    # Unstable is what it would otherwise have been: two `repr`s of two
+    # instances of the same class differ, so the digest was never the
+    # fingerprint of the option set at all.
+    assert repr(_Opaque()) != repr(_Opaque())
+
+
+def test_the_strict_rendering_still_digests_every_option_set_in_use(caplog):
+    """The invariant is checked, not merely hoped for: nothing a producer
+    passes today goes through the fallback, so nothing changes for them."""
+
+    with caplog.at_level(logging.DEBUG):
+        digest = options_digest(
+            {"synth_args": ["-flatten"], "defines": {"W": 8}, "abc": None, "keep": True}
+        )
+    assert digest is not None and len(digest) == len(
+        options_digest({"strategy": "TIMING"})
+    )
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "phys.options_not_serialisable"
+    ]
 
 
 def test_a_config_that_differs_does_not_stop_the_halves_from_merging(tmp_path):

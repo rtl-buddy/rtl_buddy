@@ -339,6 +339,7 @@ def publish_synth(
                 constraints=constraints,
                 constraints_sha256=sha256_of(constraints),
                 options=options,
+                producer=f"synth/{run}",
             )
         },
         block=(
@@ -445,6 +446,7 @@ def publish_power(
                 constraints=constraints,
                 constraints_sha256=sha256_of(constraints),
                 options=options,
+                producer=f"power/{run}",
             ),
             "mode": mode,
             "activity": activity,

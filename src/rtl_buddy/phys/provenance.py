@@ -27,8 +27,8 @@ tool options — enough to read ``nangate45 / timing-opt`` apart from
 
 **What feeds the options digest**, exactly: the mapping its producer
 hands :func:`options_digest`, rendered as canonical JSON (sorted keys,
-no whitespace) and sha256'd to :data:`OPTIONS_DIGEST_CHARS` hex
-characters. The synthesis flows pass the *resolved*
+no whitespace, and nothing that JSON cannot render) and sha256'd to
+:data:`OPTIONS_DIGEST_CHARS` hex characters. The synthesis flows pass the *resolved*
 :class:`~rtl_buddy.config.synth.SynthToolOpts` they already compute —
 tool-level defaults with the effort's ``synth-args``/``abc-args`` and
 the per-synthesis ``tool_overrides`` folded in — plus the elaboration
@@ -61,15 +61,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 
+from ..logging_utils import log_event
 from ..tools.artifact_paths import ARTIFACT_DIRNAME
 from ..xplr.ledger import (
     LEDGER_DIRNAME as XPLR_DIRNAME,
     RECORD_FILENAME as XPLR_RECORD_FILENAME,
     RESERVED_DIRNAMES as XPLR_RESERVED_DIRNAMES,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Every key of the config block, so a run that resolved none of them
 #: still writes them all. Stable keys, ``null`` for "not recorded" — the
@@ -112,6 +116,7 @@ def config_block(
     constraints=None,
     constraints_sha256: str | None = None,
     options=None,
+    producer: str | None = None,
 ) -> dict:
     """The config fingerprint of one run, as the documents store it.
 
@@ -126,13 +131,16 @@ def config_block(
     it project-relative before either document is written, for the same
     reason every other path in a manifest is
     (:func:`rtl_buddy.phys.manifest.project_relative`).
+
+    ``producer`` names who filled ``options``, and is only ever used to
+    say whose mapping could not be digested (:func:`options_digest`).
     """
     return {
         "platform": platform or None,
         "effort": effort or None,
         "constraints": str(constraints) if constraints else None,
         "constraints_sha256": constraints_sha256,
-        "options_sha256": options_digest(options),
+        "options_sha256": options_digest(options, producer=producer),
     }
 
 
@@ -172,19 +180,66 @@ def activity_block(
     }
 
 
-def options_digest(options) -> str | None:
+def options_digest(options, *, producer: str | None = None) -> str | None:
     """A short, deterministic digest of an effective option set.
 
-    Canonical JSON — keys sorted, no whitespace, non-JSON values through
-    ``repr`` — so the same options digest the same on every machine and
-    in every Python. ``None`` for a producer that passed nothing, which
-    is the honest answer for a backend that has no options to fingerprint
-    rather than a digest of the empty mapping.
+    Canonical JSON — keys sorted, no whitespace — so the same options
+    digest the same on every machine and in every Python. ``None`` for a
+    producer that passed nothing, which is the honest answer for a
+    backend that has no options to fingerprint rather than a digest of
+    the empty mapping.
+
+    **Strict, and ``None`` when it cannot be.** The rendering used to
+    fall back to ``repr`` for anything JSON could not take, which quietly
+    voids the promise above: ``repr`` of most objects embeds the address
+    they happen to live at, so the first non-primitive to reach an
+    options mapping would fingerprint the same run differently on every
+    invocation — and nothing about the digest says so, because a digest
+    of garbage looks exactly like a digest. Every producer today passes
+    JSON-safe values, so the fallback never fired; that is luck, and this
+    makes it a checked invariant instead. A mapping that will not render
+    is reported at DEBUG — naming ``producer`` and, where they can be
+    told apart, the keys that would not go — and digests to ``None``. An
+    absent fingerprint is honest about knowing nothing; an unstable
+    present one is not.
+
+    ``ValueError`` is caught alongside ``TypeError`` because a self-
+    referential mapping fails that way rather than as an unknown type,
+    and it is the same failure to a reader: no canonical rendering.
     """
     if not options:
         return None
-    canonical = json.dumps(options, sort_keys=True, separators=(",", ":"), default=repr)
+    try:
+        canonical = json.dumps(options, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "phys.options_not_serialisable",
+            producer=producer,
+            keys=_unserialisable_keys(options),
+            error=str(exc),
+        )
+        return None
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:OPTIONS_DIGEST_CHARS]
+
+
+def _unserialisable_keys(options) -> list[str]:
+    """Which of ``options``' values JSON would not take, for the DEBUG line.
+
+    Empty when the mapping as a whole is what failed rather than any one
+    value — a key that is not a string, a cycle closed through several
+    entries — so the event says "these" only when it can.
+    """
+    if not isinstance(options, dict):
+        return []
+    bad = []
+    for key, value in options.items():
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            bad.append(str(key))
+    return sorted(bad)
 
 
 def normalise_config(recorded) -> dict | None:
