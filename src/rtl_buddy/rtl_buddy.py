@@ -7906,6 +7906,10 @@ class RtlBuddy:
             "wns_ps",
             "tns_ps",
             "static_function_findings",
+            # Where the per-module breakdown behind these scalars was
+            # published (#560). Omitted, like every other optional field
+            # here, when the run published no model.
+            "phys_model",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -7926,7 +7930,17 @@ class RtlBuddy:
         row = {"name": r["power_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("mode", "total_w", "internal_w", "switching_w", "leakage_w"):
+        for k in (
+            "mode",
+            "total_w",
+            "internal_w",
+            "switching_w",
+            "leakage_w",
+            # Where the per-instance breakdown behind these scalars was
+            # published (#560). Omitted, like every other optional field
+            # here, when the run published no model.
+            "phys_model",
+        ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row

@@ -151,6 +151,15 @@ HALF_PROVENANCE = {"modules": "synth", "instances": "power"}
 #: parent of a path they read elsewhere should not have to know which.
 _PATH_SEPARATORS = ("/", ".")
 
+#: What starts a Verilog escaped identifier. A name that is not a legal
+#: bare identifier -- a generate label carrying its index, a name a
+#: frontend mangled -- is written ``\gen[0].u_x``, and the ``.`` inside
+#: it is part of the *name*, not a level. Only a backslash that opens a
+#: segment leads an escape: Verilog admits no other position for one, and
+#: requiring the position keeps a stray backslash mid-name from
+#: swallowing every level after it.
+_ESCAPE_LEAD = "\\"
+
 #: The one separator every path comparison here is made in. Which of the
 #: two a path is spelled with is the *producer's* choice, so a comparison
 #: that kept it would make ``u_top.u_sub`` and ``u_top/u_sub`` different
@@ -199,16 +208,58 @@ INSTANCE_JOIN_NAME_COLLISION = (
 
 
 def level_path(path: str) -> str:
-    """One instance path in the separator every comparison here uses.
+    r"""One instance path in the separator every comparison here uses.
 
     Every ``/`` and every ``.`` is a level, whichever the tool wrote —
-    the same rule the hub's `/phy` pane levels a schematic path with
-    before it puts one on the wire.
+    *except* inside an escaped identifier. Verilog escapes a name that is
+    not a legal bare identifier as ``\gen[0].u_x``, terminated by
+    whitespace, and the ``.`` in there names no level: levelling it would
+    split one leaf into two and put the row under a parent that does not
+    exist. So a backslash opening a segment runs atomically to the
+    whitespace that ends it, or to the end of the path when nothing does.
+
+    What the model can actually hold, since the rule is only worth what
+    the data makes of it: both readers behind it keep a path only if it
+    has no space in it — :func:`~rtl_buddy.phys.reports.parse_instance_power`
+    captures the path as ``(\S+)\s*$`` and the cells sidecar takes a
+    line of exactly two whitespace-separated fields — so an escape's
+    terminator is *stripped* on the way in, and an escape that is not the
+    last segment takes its whole row down with it (the space makes the
+    line unparseable and it is dropped). An escaped leaf therefore
+    reaches the model as ``u_top/\gen[0].u_x``, backslash kept and
+    terminator gone, which is the spelling this must survive. The
+    terminated form is handled too, and the terminator dropped, so a user
+    who types the path as Verilog spells it still matches the stored row.
+
+    The hub's `/phy` pane levels a schematic path the same way in its
+    ``toWirePath`` before it puts one on the wire (#561). The two are
+    separate copies on either side of the wire and must not drift: a
+    change here needs the same change there.
     """
-    levelled = str(path)
-    for separator in _PATH_SEPARATORS:
-        levelled = levelled.replace(separator, _CANONICAL_SEPARATOR)
-    return levelled
+    text = str(path)
+    levelled: list[str] = []
+    at_segment_start = True
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if at_segment_start and char == _ESCAPE_LEAD:
+            end = index
+            while end < len(text) and not text[end].isspace():
+                end += 1
+            levelled.append(text[index:end])
+            while end < len(text) and text[end].isspace():
+                end += 1
+            index = end
+            at_segment_start = False
+            continue
+        if char in _PATH_SEPARATORS:
+            levelled.append(_CANONICAL_SEPARATOR)
+            at_segment_start = True
+        else:
+            levelled.append(char)
+            at_segment_start = False
+        index += 1
+    return "".join(levelled)
 
 
 class PhysQueryError(FatalRtlBuddyError):
