@@ -117,7 +117,7 @@ end else begin
 end
 ```
 
-Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the result is `NA`: it needs review but does not by itself make the shell exit status nonzero. A simulator exit code alone is not a non-UVM verdict.
+Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the outcome is unknown: the result is `NA` and the run exits 1. A simulator exit code alone is not a non-UVM verdict, but a simulator that exits nonzero *and* prints no marker has aborted, and that combination is reported as `FAIL`.
 
 For UVM, configure thresholds and let RTL Buddy parse the UVM Report Summary:
 
@@ -139,14 +139,14 @@ Setup hooks, filelist validation, compilation, and simulation timeout can also p
 | `FAIL` | The verdict failed, or setup, filelist, compile, or simulation failed |
 | `XFAIL`, `XPASS` | Remapped by an expected-failure marker |
 | `SKIP` | Excluded by regression-level or flow filtering |
-| `NA` | No real verdict was produced, including a successful early stop |
+| `NA` | No verdict was produced: either a successful early stop (exits 0) or an unknown outcome (exits 1) |
 
 The shell exit code is a coarse run status. Parse `payload.results` under `--machine` for per-test verdicts.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | No real `FAIL`; may include `PASS`, `XFAIL`, `SKIP`, or `NA` |
-| 1 | At least one real test/tool-flow failure, or a strict `XPASS` |
+| 0 | No real `FAIL`; may include `PASS`, `XFAIL`, `SKIP`, or an early-stop `NA` |
+| 1 | At least one real test/tool-flow failure, an unknown `NA`, or a strict `XPASS` |
 | 2 | Fatal configuration or environment error |
 
 A strict unexpected pass counts as a failure. See [Expected Failures](expected-failures.md).
@@ -159,7 +159,7 @@ Use the global `-E` or `--early-stop` option with `pre`, `comp`, `sim`, or `post
 rb -E comp test smoke
 ```
 
-A successful stop before a terminal verdict reports `NA` and exits 0. A stage failure still reports `FAIL` and exits 1. Treat `NA` as requiring inspection, not evidence that the DUT passed.
+A successful stop before a terminal verdict reports `NA` and exits 0; its result row carries `early_stop: true` (in `--machine` output too) so tooling can tell it apart. A stage failure still reports `FAIL` and exits 1. An `NA` that was not asked for — no verdict in the transcript — is an unknown outcome, carries no marker, and exits 1. Treat `NA` as requiring inspection, not evidence that the DUT passed.
 
 ## Sharing compiled builds across tests
 

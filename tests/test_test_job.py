@@ -28,7 +28,10 @@ from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.result_io import load_result_json
 from rtl_buddy.runner.test_results import (
     CompileFailResults,
+    EarlyStopResults,
     TestPassResults,
+    # Aliased: a bare ``TestResults`` here is collected as a test class.
+    TestResults as RtlBuddyTestResults,
 )
 from rtl_buddy.seed_mode import SeedMode
 
@@ -447,6 +450,41 @@ def test_test_job_rejects_resolved_seed_transport_corruption(
 
     assert result.exit_code == 1
     assert "does not match dispatch plan seed" in str(result.exception)
+
+
+def test_test_job_unknown_na_result_exits_1(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """#546: the job grades its own result the way the head does, so an
+    aborted simulation (NA, no verdict, nobody asked to stop) leaves a
+    nonzero job exit and a scheduler row that says FAILED."""
+    stub_runner.canned = RtlBuddyTestResults(
+        "basic/results", {"result": "NA", "desc": "test result unknown"}
+    )
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["_test-job", "basic", "--result-json", "res.json"])
+    assert result.exit_code == 1, result.output
+
+    envelope = load_result_json(minimal_project / "res.json")
+    assert envelope["result"].results["result"] == "NA"
+    assert "early_stop" not in envelope["result"].results
+
+
+def test_test_job_early_stop_result_exits_0(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The other half of #546: a dispatched ``-E comp`` run stopped because
+    it was told to, so the job succeeded and its envelope says so."""
+    stub_runner.canned = EarlyStopResults(
+        name="basic/results", desc="Stopped early at compile"
+    )
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["_test-job", "basic", "--result-json", "res.json"])
+    assert result.exit_code == 0, result.output
+
+    envelope = load_result_json(minimal_project / "res.json")
+    assert envelope["result"].results["result"] == "NA"
+    assert envelope["result"].results["early_stop"] is True
 
 
 def test_test_job_machine_envelope(
