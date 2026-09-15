@@ -327,10 +327,40 @@ def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
     return selected or None
 
 
+# The whole of one key's release, not one call of it. A key fanned out over
+# a thousand runs is a thousand `scontrol` calls, and at one 30 s timeout
+# each an unreachable controller would hold the build job — and the compile
+# slot it occupies — for hours to buy an optimization. The batch gets a
+# budget instead, and the first systemic failure ends it (#548 review).
+_RELEASE_BUDGET_S = 60
+
+
+class ReleaseOutcome(NamedTuple):
+    """What one batch of :func:`release_dependency` actually managed.
+
+    ``systemic`` is set when the batch stopped early — a timeout, or
+    ``scontrol`` not being executable at all. Those say something about
+    this host and this controller rather than about a job id, so retrying
+    the remaining ids would pay the same cost again; ``skipped`` is what
+    was never attempted, and the caller should stop asking for the rest of
+    the run. A per-id refusal (``rc != 0``: an unknown or already-finished
+    job) is an ordinary ``failure`` and the batch continues.
+    """
+
+    released: list[str]
+    failures: list[tuple[str, str]]
+    skipped: list[str]
+    systemic: str | None
+
+
 def release_dependency(
-    job_ids: Sequence[str], *, cluster: str | None = None, cwd: str | None = None
-) -> list[tuple[str, str]]:
-    """Clear these jobs' scheduler dependency; return the failures (#548).
+    job_ids: Sequence[str],
+    *,
+    cluster: str | None = None,
+    cwd: str | None = None,
+    budget_s: float | None = None,
+) -> ReleaseOutcome:
+    """Clear these jobs' scheduler dependency; report what happened (#548).
 
     ``scontrol update JobId=<id> Dependency=`` is how a job sitting
     ``PENDING`` with reason ``Dependency`` is told to stop waiting. It
@@ -340,18 +370,37 @@ def release_dependency(
     the array they were grouped into.
 
     Called from the build job, once a key has compiled, against ids the
-    head wrote into the gates manifest — ``cluster`` is the one it
-    submitted them to, since a job id is unique only within its cluster
-    (#509). One call per id: ``scontrol update`` addresses a single job.
+    head wrote into the gates manifest. ``cluster`` is the one those ids
+    were issued by, since a job id is unique only within its cluster
+    (#509) — the caller batches by it. One call per id: ``scontrol
+    update`` addresses a single job.
+
+    The whole batch shares ``budget_s`` (default :data:`_RELEASE_BUDGET_S`)
+    and each call is time-boxed to what is left of it, so the cost of this
+    is bounded by the batch and not by the fan-out.
 
     Best effort, and it never raises. The ``afterok`` gate is still on
-    every one of these jobs, so a release that does not happen costs the
-    run its early start and nothing else; a raise, by contrast, would
-    escape the build job and cancel the whole fan-out.
+    every job that was not reached, so a release that does not happen
+    costs the run its early start and nothing else; a raise, by contrast,
+    would escape the build job and cancel the whole fan-out.
     """
     cluster_argv = [] if cluster is None else ["-M", cluster]
+    released: list[str] = []
     failures: list[tuple[str, str]] = []
-    for job_id in job_ids:
+    systemic: str | None = None
+    deadline = time.monotonic() + (_RELEASE_BUDGET_S if budget_s is None else budget_s)
+    pending = list(job_ids)
+    while pending:
+        job_id = pending.pop(0)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            systemic = (
+                f"release budget of "
+                f"{_RELEASE_BUDGET_S if budget_s is None else budget_s:g}s "
+                "exhausted"
+            )
+            pending.insert(0, job_id)
+            break
         try:
             proc = subprocess.run(
                 [
@@ -364,11 +413,15 @@ def release_dependency(
                 capture_output=True,
                 text=True,
                 cwd=cwd,
-                timeout=_SCONTROL_TIMEOUT_S,
+                timeout=min(_SCONTROL_TIMEOUT_S, remaining),
             )
         except (OSError, subprocess.SubprocessError) as e:
-            failures.append((job_id, str(e)[:200]))
-            continue
+            # Not about this job id: a wedged controller or an scontrol
+            # that cannot be run answers the same way for every id behind
+            # it. Stop the batch and tell the caller to stop asking.
+            systemic = str(e)[:200]
+            failures.append((job_id, systemic))
+            break
         if proc.returncode != 0:
             failures.append(
                 (
@@ -379,7 +432,9 @@ def release_dependency(
                     )[:200],
                 )
             )
-    return failures
+            continue
+        released.append(job_id)
+    return ReleaseOutcome(released, failures, pending, systemic)
 
 
 # `MaxRSS` is a high-water mark over samples, so a job shorter than the

@@ -42,14 +42,21 @@ GATES_WAIT_S = 120.0
 GATES_POLL_S = 2.0
 
 
-def write_gates(path, *, run_token, cluster, entries) -> Path:
+def write_gates(path, *, run_token, entries) -> Path:
     """Write the head's plan-index → job-id manifest; return ``path``.
 
-    ``entries`` is an iterable of ``(plan index, test name, job id)`` —
-    one per submitted (test, run_id), so a plan index fanned out over
-    several runs legitimately appears more than once. Job ids are the
-    backend's own: ``"1234"`` for a single submission, ``"1234_3"`` for an
-    array element.
+    ``entries`` is an iterable of ``(plan index, test name, job id,
+    cluster)`` — one per submitted (test, run_id), so a plan index fanned
+    out over several runs legitimately appears more than once. Job ids are
+    the backend's own: ``"1234"`` for a single submission, ``"1234_3"`` for
+    an array element.
+
+    The cluster is recorded PER ENTRY, not once for the file. A job id is
+    unique only within the cluster that issued it (#509), and
+    ``--clusters=a,b`` places each array wherever it can start first — so
+    one run's fan-out can legitimately span two clusters, and a single
+    file-level value would aim half the releases at a stranger's job id.
+    ``None`` means the local cluster and is omitted from the entry.
 
     ``run_token`` is the head's per-invocation nonce, carried so the build
     job can tell this run's manifest from one an earlier run left at the
@@ -63,13 +70,14 @@ def write_gates(path, *, run_token, cluster, entries) -> Path:
     payload = {
         "schema_version": GATES_SCHEMA_VERSION,
         "run_token": run_token,
-        # Where the scheduler accepted these ids. A job id is unique only
-        # within its cluster, so a release issued against the wrong one
-        # would at best fail and at worst name somebody else's job (#509).
-        "cluster": cluster,
         "entries": [
-            {"index": int(index), "test": str(test), "job_id": str(job_id)}
-            for index, test, job_id in entries
+            {
+                "index": int(index),
+                "test": str(test),
+                "job_id": str(job_id),
+                **({} if cluster is None else {"cluster": str(cluster)}),
+            }
+            for index, test, job_id, cluster in entries
         ],
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -144,24 +152,40 @@ def wait_for_gates(
         sleep(min(interval, remaining))
 
 
-def job_ids_for(payload, indices) -> list[str]:
-    """The sim job ids the head submitted for these plan indices.
+def release_batches(payload, indices) -> list[tuple[str | None, list[str]]]:
+    """``[(cluster, job ids)]`` for these plan indices, one batch per cluster.
 
     One plan index can map to several ids: a test fanned out over N
     ``run_ids`` is one config in the plan and N rows in the fan-out. Order
     follows ``indices``, duplicates are dropped, and a malformed entry is
     skipped rather than failing the lookup — the manifest is advisory, and
     releasing the ids it *did* state correctly beats releasing none.
+
+    Batched by cluster because that is what ``scontrol`` is addressed with:
+    ids from different clusters cannot go in one call, and the caller must
+    not have to discover that by having a release silently name a job on
+    the wrong controller.
     """
-    by_index: dict[int, list[str]] = {}
+    by_index: dict[int, list[tuple[str, str | None]]] = {}
     for entry in payload.get("entries") or []:
         if not isinstance(entry, dict):
             continue
         index, job_id = entry.get("index"), entry.get("job_id")
         if not isinstance(index, int) or not isinstance(job_id, str) or not job_id:
             continue
-        by_index.setdefault(index, []).append(job_id)
-    job_ids: list[str] = []
+        cluster = entry.get("cluster")
+        if cluster is not None and not isinstance(cluster, str):
+            # A manifest that cannot say where the id lives is not one to
+            # guess for: fall back to the local cluster, the same as a
+            # single-cluster site's absent field.
+            cluster = None
+        by_index.setdefault(index, []).append((job_id, cluster))
+    batches: dict[str | None, list[str]] = {}
+    seen: set[str] = set()
     for index in indices:
-        job_ids.extend(by_index.get(index, ()))
-    return list(dict.fromkeys(job_ids))
+        for job_id, cluster in by_index.get(index, ()):
+            if job_id in seen:
+                continue
+            seen.add(job_id)
+            batches.setdefault(cluster, []).append(job_id)
+    return list(batches.items())

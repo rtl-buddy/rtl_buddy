@@ -15,31 +15,30 @@ import time
 
 from rtl_buddy.dispatch.gates import (
     GATES_SCHEMA_VERSION,
-    job_ids_for,
     load_gates,
+    release_batches,
     wait_for_gates,
     write_gates,
 )
 
 
 def _entries():
-    return [(0, "alpha", "1234_1"), (1, "beta", "1234_2")]
+    return [(0, "alpha", "1234_1", None), (1, "beta", "1234_2", None)]
 
 
 def test_manifest_round_trips_through_the_file(tmp_path):
     path = write_gates(
         tmp_path / "gates-9.json",
         run_token="tok",
-        cluster="hpc",
-        entries=_entries(),
+        entries=[(0, "alpha", "1234_1", "hpc"), (1, "beta", "1234_2", None)],
     )
     payload, reason = load_gates(path)
     assert reason is None
     assert payload["schema_version"] == GATES_SCHEMA_VERSION
     assert payload["run_token"] == "tok"
-    assert payload["cluster"] == "hpc"
+    # Cluster per entry, and omitted where it is the local one (#548 review).
     assert payload["entries"] == [
-        {"index": 0, "test": "alpha", "job_id": "1234_1"},
+        {"index": 0, "test": "alpha", "job_id": "1234_1", "cluster": "hpc"},
         {"index": 1, "test": "beta", "job_id": "1234_2"},
     ]
     # Written through a temp name, so a polling build job never sees a
@@ -78,7 +77,7 @@ def test_wait_returns_a_manifest_that_arrives_late(tmp_path):
 
     def _write_later():
         time.sleep(0.15)
-        write_gates(path, run_token="tok", cluster=None, entries=_entries())
+        write_gates(path, run_token="tok", entries=_entries())
 
     writer = threading.Thread(target=_write_later)
     writer.start()
@@ -116,9 +115,7 @@ def test_a_manifest_from_an_earlier_run_is_rejected_immediately(tmp_path):
     """The path is keyed on the head pid, which the OS reuses. Releasing a
     stale manifest's ids would clear the dependency of somebody else's
     jobs, so a token mismatch is refused rather than waited out."""
-    path = write_gates(
-        tmp_path / "gates-9.json", run_token="old", cluster=None, entries=_entries()
-    )
+    path = write_gates(tmp_path / "gates-9.json", run_token="old", entries=_entries())
     slept = []
     payload, reason = wait_for_gates(
         path, run_token="new", timeout_s=30.0, interval_s=1.0, sleep=slept.append
@@ -135,17 +132,40 @@ def test_one_plan_index_can_hold_several_jobs(tmp_path):
         write_gates(
             tmp_path / "g.json",
             run_token="tok",
-            cluster=None,
             entries=[
-                (0, "alpha", "7_1"),
-                (0, "alpha", "7_2"),
-                (1, "beta", "7_3"),
+                (0, "alpha", "7_1", None),
+                (0, "alpha", "7_2", None),
+                (1, "beta", "7_3", None),
             ],
         )
     )
-    assert job_ids_for(payload, [0]) == ["7_1", "7_2"]
-    assert job_ids_for(payload, [1, 0]) == ["7_3", "7_1", "7_2"]
-    assert job_ids_for(payload, [4]) == []
+    assert release_batches(payload, [0]) == [(None, ["7_1", "7_2"])]
+    assert release_batches(payload, [1, 0]) == [(None, ["7_3", "7_1", "7_2"])]
+    assert release_batches(payload, [4]) == []
+
+
+def test_ids_are_batched_by_the_cluster_that_issued_them(tmp_path):
+    """`--clusters=a,b` places each array wherever it can start first, so
+    one key's jobs can live on two controllers — and a job id means
+    nothing against the wrong one (#509)."""
+    payload, _ = load_gates(
+        write_gates(
+            tmp_path / "g.json",
+            run_token="tok",
+            entries=[
+                (0, "alpha", "7_1", "east"),
+                (0, "alpha", "8_1", "west"),
+                (1, "beta", "7_2", "east"),
+                (2, "gamma", "9_1", None),
+            ],
+        )
+    )
+    assert release_batches(payload, [0, 1]) == [
+        ("east", ["7_1", "7_2"]),
+        ("west", ["8_1"]),
+    ]
+    # An absent cluster is the local one and batches on its own.
+    assert release_batches(payload, [2]) == [(None, ["9_1"])]
 
 
 def test_a_malformed_entry_does_not_cost_the_others_their_release():
@@ -156,7 +176,9 @@ def test_a_malformed_entry_does_not_cost_the_others_their_release():
             {"job_id": "7_3"},
             "not an entry",
             {"index": 1, "job_id": ""},
-            {"index": 1, "job_id": "7_4"},
+            # A cluster that is not a name is no cluster: released against
+            # the local controller rather than guessed at.
+            {"index": 1, "job_id": "7_4", "cluster": 17},
         ]
     }
-    assert job_ids_for(payload, [0, 1]) == ["7_1", "7_4"]
+    assert release_batches(payload, [0, 1]) == [(None, ["7_1", "7_4"])]

@@ -423,8 +423,10 @@ def _builtin_manifest() -> list[ToolSpec]:
                 "`Invalid job array specification`. A dispatch build job also "
                 "uses `scontrol update JobId=<id> Dependency=` to start a "
                 "compile key's simulation jobs as soon as that key is built "
-                "instead of when the whole build job ends; without it they "
-                "wait for the build job, as they did before",
+                "instead of when the whole build job ends; that call is made "
+                "from the compute node running the build job, so scontrol has "
+                "to be on ITS PATH and not only the submit host's, and without "
+                "it those jobs wait for the build job, as they did before",
             },
             install_hint={
                 "macos": "no native macOS build; use a Linux submit host, or a "
