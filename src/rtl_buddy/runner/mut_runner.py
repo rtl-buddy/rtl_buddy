@@ -37,6 +37,7 @@ from pathlib import Path
 from ..config.mut import MutConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..seeding import resolve_test_seed
 from .fpv_runner import FpvRunner
 from .mut_results import ERRORED, KILLED, SURVIVED, MutantOutcome, MutResults
 
@@ -601,6 +602,11 @@ class MutRunner:
     def _run_one_test(self, test_cfg, suite_dir, name_suffix):
         from .test_runner import TestRunner
 
+        resolve_test_seed(
+            test_cfg,
+            self.root_cfg,
+            suite_config_path=self.mut_cfg.test_config,
+        )
         return TestRunner(
             name=self.name + "/" + name_suffix,
             root_cfg=self.root_cfg,

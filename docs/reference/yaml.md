@@ -462,6 +462,8 @@ Test fields:
 | `plusargs` | Optional map | `KEY: VALUE` becomes `+KEY=VALUE`; a null value becomes `+KEY` |
 | `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE`; a null value becomes `+define+KEY` |
 | `sim_timeout` | Default 60 | Seconds per simulation run |
+| `sim-rand-seed` | Optional | Fixed runtime seed from 1 through 2147483647. Overrides `--master-seed`, `--rnd-new`, and `--rnd-last`; use for timing or command-cycle stimulus that must remain unchanged |
+| `sim-rand-seed-plusarg` | Optional | Plusarg name that receives the fixed, master-derived, or builder-default seed before `preproc` runs. The hook may read it with `test_cfg.get_plusarg(NAME)` or use `test_cfg.get_resolved_seed()`; RTL Buddy passes the same value to the simulator. `--rnd-new` and `--rnd-last` require a fixed `sim-rand-seed` when this field is set because their seed is otherwise unavailable before preprocessing |
 | `uvm.max_warns` / `uvm.max_errors` | Optional | Thresholds whose excess fails the test |
 | `sweep.path` | Optional | Expansion hook path |
 | `preproc.path` | Optional | Precompile hook path |

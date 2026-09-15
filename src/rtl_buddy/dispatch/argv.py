@@ -133,6 +133,10 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
         argv += ["--seed-mode", spec.seed_mode.value]
     if spec.replay_run_id is not None:
         argv += ["--replay-run-id", str(spec.replay_run_id)]
+    if spec.master_seed is not None:
+        argv += ["--master-seed", str(spec.master_seed)]
+    if spec.resolved_seed is not None:
+        argv += ["--resolved-seed", str(spec.resolved_seed)]
     return argv
 
 

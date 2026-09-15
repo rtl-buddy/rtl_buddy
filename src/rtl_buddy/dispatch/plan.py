@@ -31,6 +31,8 @@ def write_plan(
     suite_config_path: str,
     configs: list[TestConfig],
     run_token: str,
+    *,
+    master_seed: int | None = None,
 ) -> Path:
     """Write the dispatch plan for one suite; return ``path``.
 
@@ -54,6 +56,8 @@ def write_plan(
         # expansion order; sim-job lookup builds its own index by name.
         "tests": [cfg.to_plan_dict() for cfg in configs],
     }
+    if master_seed is not None:
+        payload["master_seed"] = master_seed
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2))
     tmp.replace(path)  # atomic: a job never reads a half-written manifest
@@ -87,6 +91,11 @@ def read_plan_token(path: Path) -> str | None:
     stale envelope by identity instead of by absence (#362).
     """
     return _load(path).get("run_token")
+
+
+def read_plan_master_seed(path: Path) -> int | None:
+    """The exact master seed selected by the dispatching head, if any."""
+    return _load(path).get("master_seed")
 
 
 def read_plan_config(path: Path, test_name: str) -> TestConfig | None:
