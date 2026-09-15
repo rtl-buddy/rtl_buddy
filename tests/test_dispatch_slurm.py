@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -4176,3 +4177,147 @@ def test_a_wedged_squeue_is_not_retried(monkeypatch):
     backend.submit_build(_build_spec())
 
     assert [argv[0] for argv in calls] == ["squeue", "sbatch"]
+
+
+# ------------------------------------------------ per-key release (#548)
+
+
+def _release_run(calls, results):
+    """subprocess.run stand-in for ``scontrol update``: records, pops."""
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+        result = (
+            results.pop(0)
+            if results
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    return run
+
+
+def test_release_dependency_clears_each_job_id(monkeypatch):
+    """One ``scontrol update`` per job — plain ids and array elements alike.
+
+    An empty ``Dependency=`` is the whole point: it clears the gate rather
+    than replacing it, so a job PENDING on the build job's ``afterok``
+    becomes runnable while its array siblings stay pending.
+    """
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    outcome = slurm_module.release_dependency(
+        ["1234_1", "1234_3", "999"], cwd="/proj/verif/blk"
+    )
+    assert outcome.released == ["1234_1", "1234_3", "999"]
+    assert (outcome.failures, outcome.skipped, outcome.systemic) == ([], [], None)
+    assert [call["argv"] for call in calls] == [
+        ["scontrol", "update", "JobId=1234_1", "Dependency="],
+        ["scontrol", "update", "JobId=1234_3", "Dependency="],
+        ["scontrol", "update", "JobId=999", "Dependency="],
+    ]
+    # Explicit cwd per the engineering guidelines, and time-boxed: a wedged
+    # slurmctld must not hold a compute allocation open.
+    assert {call["cwd"] for call in calls} == {"/proj/verif/blk"}
+    assert all(call["timeout"] is not None for call in calls)
+
+
+def test_release_dependency_addresses_the_cluster_that_issued_the_ids(monkeypatch):
+    """A job id is unique only within its cluster (#509)."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    slurm_module.release_dependency(["77_2"], cluster="hpc", cwd="/proj")
+    assert calls[0]["argv"] == [
+        "scontrol",
+        "-M",
+        "hpc",
+        "update",
+        "JobId=77_2",
+        "Dependency=",
+    ]
+
+
+def test_release_dependency_reports_failures_without_raising(monkeypatch):
+    """The build job's exit status is the fan-out's life: a failed release
+    is a slower start, an exception would be a cancelled suite.
+
+    A refused id is about that id — an unknown or already-finished job —
+    so the batch carries on and the rest are still released.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=1, stdout="", stderr="slurm_update: Invalid job id"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, results))
+
+    outcome = slurm_module.release_dependency(["1_1", "1_2", "1_3"])
+    assert [job_id for job_id, _ in outcome.failures] == ["1_1", "1_3"]
+    assert "Invalid job id" in outcome.failures[0][1]
+    # An empty stderr still says which command failed and how.
+    assert "rc=1" in outcome.failures[1][1]
+    assert outcome.released == ["1_2"]
+    # Every id was attempted; one refusal does not abandon the rest.
+    assert len(calls) == 3
+    assert outcome.skipped == [] and outcome.systemic is None
+
+
+def test_release_dependency_survives_a_missing_or_wedged_scontrol(monkeypatch):
+    def run(argv, **kwargs):
+        raise OSError("No such file or directory: 'scontrol'")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    outcome = slurm_module.release_dependency(["1_1"])
+    assert [job_id for job_id, _ in outcome.failures] == ["1_1"]
+    assert "scontrol" in outcome.failures[0][1]
+    assert outcome.systemic is not None
+
+
+def test_a_systemic_failure_stops_the_batch_instead_of_paying_it_per_id(monkeypatch):
+    """A wedged controller answers the same way for every id behind it.
+
+    One 30 s timeout per id multiplies by the fan-out — a key with a
+    thousand runs would hold the build job, and the compile slot it
+    occupies, for hours to buy an optimization (#548 review). So the first
+    timeout ends the batch and names what was not attempted.
+    """
+    calls = []
+    results = [subprocess.TimeoutExpired(cmd="scontrol", timeout=30)]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, results))
+
+    outcome = slurm_module.release_dependency(["1_1", "1_2", "1_3", "1_4"])
+    assert len(calls) == 1, calls
+    assert [job_id for job_id, _ in outcome.failures] == ["1_1"]
+    assert outcome.skipped == ["1_2", "1_3", "1_4"]
+    assert outcome.systemic is not None
+    assert outcome.released == []
+
+
+def test_a_release_batch_shares_one_budget_across_its_ids(monkeypatch):
+    """The cost of a release is bounded by the batch, not by the fan-out."""
+    calls = []
+    clock = iter([0.0, 0.0, 0.4, 0.9, 1.4])
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    monkeypatch.setattr(slurm_module.time, "monotonic", lambda: next(clock))
+
+    outcome = slurm_module.release_dependency(
+        ["1_1", "1_2", "1_3", "1_4"], budget_s=1.0
+    )
+    # Each call is time-boxed to what is LEFT of the batch's budget, and
+    # the batch stops once there is none.
+    assert calls == [pytest.approx(1.0), pytest.approx(0.6), pytest.approx(0.1)]
+    assert outcome.released == ["1_1", "1_2", "1_3"]
+    assert outcome.skipped == ["1_4"]
+    assert "budget" in outcome.systemic
+    # Nothing failed: the ids simply ran out of time and keep their gate.
+    assert outcome.failures == []
