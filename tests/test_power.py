@@ -1020,6 +1020,112 @@ def test_a_trace_rewritten_in_place_gives_the_run_a_new_identity(tmp_path, monke
     assert blocks[0] != blocks[1]
 
 
+def _saif_backend(tmp_path):
+    """A dynamic backend reading a SAIF the test can rewrite."""
+    from rtl_buddy.config.power import PowerActivity
+
+    backend = _make_power_backend(tmp_path)
+    trace = tmp_path / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
+    trace.parent.mkdir(parents=True, exist_ok=True)
+    backend.power_cfg.mode = "dynamic"
+    backend.power_cfg.activity = PowerActivity(
+        saif=str(trace),
+        vcd=None,
+        scope="tb/u_dut",
+        default_toggle_rate=0.1,
+        default_static_prob=0.5,
+    )
+    return backend, trace
+
+
+def test_the_trace_is_hashed_before_openroad_reads_it(tmp_path, monkeypatch):
+    """The finding (#570 round-15 review, Codex P2). The hash was taken in
+    `_publish_phys_model`, *after* an analysis that runs for minutes, so a
+    `dump.saif` the test behind it re-captured mid-run was identified by
+    its replacement and the document claimed bytes the watts beside them
+    were never measured from. The identity is now taken as the subprocess
+    is launched, which is the only moment the file on disk is the file
+    being read."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+    from rtl_buddy.tools import power_openroad
+
+    backend, trace = _saif_backend(tmp_path)
+    trace.write_text("(SAIFILE measured)\n")
+    measured = sha256_of(trace)
+    seen = []
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        # Taken already, by the time the tool that reads the trace starts.
+        seen.append(backend._trace_sha256)
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+        Path(backend._instances_cells_path()).write_text(_INSTANCE_CELLS)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    result = backend.run()
+
+    assert seen == [measured]
+    activity = load_model(result.results["phys_model"])["provenance"]["power"][
+        "activity"
+    ]
+    assert activity["trace_sha256"] == measured
+
+
+def test_a_trace_rewritten_under_the_run_is_recorded_as_unknown(
+    tmp_path, monkeypatch, caplog
+):
+    """Hashing at the start narrows the window; it does not close it. So
+    the hash is confirmed when OpenROAD returns, and a trace that moved
+    in between has *no* identity this run can vouch for — the first hash
+    names bytes OpenROAD may not have finished reading, the second names
+    bytes it certainly did not start with. `null` is the model's word for
+    unknown, and the warning is what stops it reading as "this run
+    measured no trace"."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+    from rtl_buddy.tools import power_openroad
+
+    backend, trace = _saif_backend(tmp_path)
+    trace.write_text("(SAIFILE first)\n")
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        # The next run of the test behind this trace, landing mid-analysis.
+        trace.write_text("(SAIFILE recaptured under the run)\n")
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+        Path(backend._instances_cells_path()).write_text(_INSTANCE_CELLS)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    with caplog.at_level("WARNING"):
+        result = backend.run()
+
+    activity = load_model(result.results["phys_model"])["provenance"]["power"][
+        "activity"
+    ]
+    # Neither hash is recorded: not the bytes at the start, not the ones
+    # on disk now.
+    assert activity["trace_sha256"] is None
+    assert sha256_of(trace) is not None
+    # The path is still recorded — what the run read is known, which
+    # bytes it read is not.
+    assert activity["trace"].endswith("dump.saif")
+    assert "trace_changed_during_run" in caplog.text
+
+
 def test_a_static_run_hashes_no_trace_and_reads_none(tmp_path, monkeypatch):
     """The fixture's own shape: `mode: static` with a trace still named in
     the config. The Tcl emits no `read_saif`, so there is nothing to

@@ -57,6 +57,10 @@ class OpenRoadPower(BasePower):
         # database and never a netlist at all.
         self._netlist_source_path: str | None = None
         self._netlist_sha256: str | None = None
+        # The activity trace's identity, taken as OpenROAD is launched
+        # and confirmed when it returns; see `_hash_trace`. `None` both
+        # before the run and for a static run that reads no trace.
+        self._trace_sha256: str | None = None
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -145,6 +149,76 @@ class OpenRoadPower(BasePower):
         # is about to read, and nothing else writes this path.
         self._netlist_sha256 = sha256_of(snapshot)
         return None
+
+    def _trace_path(self) -> str | None:
+        """The activity trace this run hands OpenROAD, or ``None``.
+
+        ``None`` for a static run, which reads no trace at all:
+        :func:`~rtl_buddy.phys.provenance.activity_block` drops a
+        retained trace from such a run's block anyway, and a VCD is the
+        largest file in an artefact tree — a whole pass over one to
+        identify a file the Tcl never opens is a whole pass for nothing.
+        """
+        if self.power_cfg.get_activity_source() not in TRACE_SOURCES:
+            return None
+        activity = self.power_cfg.get_activity()
+        return activity.saif or activity.vcd
+
+    def _hash_trace(self) -> None:
+        """Identify the trace by its bytes, as OpenROAD is launched (#570).
+
+        **Not snapshotted, unlike the netlist.** The netlist is copied
+        into this run's own directory precisely so the hash and the bytes
+        the tool parses are one file no concurrent writer can reach, and
+        that is the stronger guarantee. It is not available here: a SAIF
+        is megabytes and a VCD of a long test is gigabytes, so a copy per
+        power run would multiply the largest artefact in the tree by the
+        number of corners analysed, on a filesystem that is holding the
+        original for the same reason. The netlist is worth the copy
+        because it is small; the trace is not.
+
+        So the trace is hashed in place, immediately before the
+        subprocess starts, and the residual race is the interval between
+        this read and OpenROAD's own — milliseconds, against the minutes
+        the analysis itself takes, and against the whole analysis that
+        the old placement left exposed. `_confirm_trace_unchanged` closes
+        the report on the other end.
+        """
+        self._trace_sha256 = sha256_of(self._trace_path())
+
+    def _confirm_trace_unchanged(self) -> None:
+        """Withdraw the trace hash if the file moved under the run (#570).
+
+        `dump.saif` is rewritten in place by the next run of the test
+        behind it, and a power analysis is long enough for that to happen
+        while it is reading. Re-hashing at the end and comparing is what
+        turns "the trace probably did not change" into a statement the
+        document can make: equal, and the recorded hash identifies bytes
+        that were on disk for the whole of the run.
+
+        Unequal, and the honest record is that the identity is *unknown*.
+        Neither hash is the answer — the first names bytes OpenROAD may
+        not have finished reading, the second names bytes it certainly
+        did not start with — and a hash nothing can vouch for is worse
+        than no hash, because the provenance gate reads a recorded hash
+        as evidence. ``None`` is the model's own word for unknown, which
+        is what a static run and an unreadable file already record, so
+        the withdrawal needs no new vocabulary. The warning is what makes
+        it findable: a null here otherwise reads as "this run measured no
+        trace", which is the opposite of what happened.
+        """
+        if self._trace_sha256 is None:
+            return
+        if sha256_of(self._trace_path()) == self._trace_sha256:
+            return
+        log_event(
+            logger,
+            logging.WARNING,
+            "power.trace_changed_during_run",
+            power=self.power_cfg.get_name(),
+            trace=self._trace_path(),
+        )
+        self._trace_sha256 = None
 
     # ------------------------------------------------------------------
     # Inputs resolution
@@ -577,6 +651,11 @@ class OpenRoadPower(BasePower):
             cmd=" ".join(cmd),
         )
 
+        # Last thing before the subprocess: the trace's identity is of
+        # the bytes on disk as OpenROAD starts, and the narrower that
+        # window is the less there is to confirm afterwards (#570).
+        self._hash_trace()
+
         with task_status(f"power {self.power_cfg.get_name()} [openroad]"):
             result = subprocess.run(
                 cmd,
@@ -695,8 +774,13 @@ class OpenRoadPower(BasePower):
         source the Tcl did not use. The trace is identified by its
         SHA-256 as well as its path: `dump.saif` is rewritten in place by
         the next run of the test behind it, so the path alone cannot tell
-        a re-captured trace from the one this run measured. One extra
-        read of one file, and only on a run that read it at all.
+        a re-captured trace from the one this run measured. That hash is
+        `_hash_trace`'s, taken as OpenROAD was launched and confirmed
+        when it returned, not re-read here -- a hash taken at this point
+        would identify a replacement written while the analysis ran, and
+        `_confirm_trace_unchanged` records `null` rather than a hash
+        nothing can vouch for. Two reads of one file, and only on a run
+        that read it at all.
 
         The constraints recorded are the RESOLVED SDC, `_resolve_inputs`'
         own `sdc`, and not the config's `constraints:` field. On a
@@ -710,6 +794,7 @@ class OpenRoadPower(BasePower):
         one field was what it was configured with, which is the same
         value only when the reader spelt it out.
         """
+        self._confirm_trace_unchanged()
         try:
             inputs = self._resolve_inputs()
         except Exception:  # noqa: BLE001 - resolution already succeeded once
@@ -728,12 +813,15 @@ class OpenRoadPower(BasePower):
             activity=activity_block(
                 source=source,
                 trace=trace,
-                # Hashed only for a run that read one. `activity_block`
-                # drops a retained trace from a static run's block anyway,
-                # and a VCD is the largest file in an artefact tree --
-                # reading one to identify a file the Tcl never opened
-                # would be a whole pass over it for nothing.
-                trace_sha256=(sha256_of(trace) if source in TRACE_SOURCES else None),
+                # Taken as OpenROAD was launched and confirmed when it
+                # returned (`_hash_trace`), not re-read now: the analysis
+                # is long, `dump.saif` is rewritten in place by the next
+                # run of the test behind it, and a hash taken afterwards
+                # would identify the replacement rather than the bytes
+                # this run measured. `None` where the run read no trace,
+                # or where the trace changed underneath it and the
+                # identity is therefore unknown.
+                trace_sha256=self._trace_sha256,
                 scope=activity.scope,
                 toggle_rate=activity.default_toggle_rate,
                 duty=activity.default_static_prob,
