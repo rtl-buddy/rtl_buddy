@@ -163,7 +163,7 @@ tests:
 
 Tests with identical resolved reservations share an array. Compilation normally uses `cfg-dispatch.compile`; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.
 
-## Set per-suite compile resources
+## Set compile resources per suite and testbench
 
 `cfg-dispatch.compile` is one reservation for every suite's build job, so a repo with one large top-level testbench and many leaf-cell benches sizes them all for the largest. A suite that differs states its own reservation at the **top level of its `tests.yaml`**, in the same `{cpus, mem, time}` shape:
 
@@ -179,15 +179,56 @@ testbenches:
     ...
 ```
 
-The compile reservation resolves field by field in this order: suite `compile`, `cfg-dispatch.compile`, `cfg-dispatch.resources`, built-in defaults. A field the suite omits inherits, so the example above keeps the cluster-wide `cpus: 8` and `time: "02:00:00"` and moves only memory and concurrency. The block sizes the suite's build job, and — for a builder that cannot share a build — the compile half of the field-wise maximum that sizes each simulation job.
+The compile reservation resolves field by field in this order: testbench `compile`, suite `compile`, `cfg-dispatch.compile`, `cfg-dispatch.resources`, built-in defaults. A field an outer layer omits inherits, so the example above keeps the cluster-wide `cpus: 8` and `time: "02:00:00"` and moves only memory and concurrency. The block sizes the suite's build job, and — for a builder that cannot share a build — the compile half of the field-wise maximum that sizes each simulation job.
 
 `parallel` layers the same way, over `cfg-dispatch.compile.parallel`, and must be at least 1. The build job is per suite, so a suite that compiles one key writes `parallel: 1` and its build job reserves `cpus` instead of `cpus` × the cluster-wide value — on a busy partition that is the difference between starting and queueing. A suite that says nothing keeps inheriting the cluster-wide value. Sizing it against the partition's widest node is the writer's job at either level, since only `cpus` is scaled for you. The build job's `Compiling N distinct build(s)` line names whichever key governed it, so the log says which file to edit; where the planned-config cap lowered the value it quotes what the file holds and reports the cap separately, rather than attributing the capped number to the key. `parallel` is still meaningless in a per-test or per-testbench `resources:` block, where unknown keys are dropped silently.
 
+A testbench states its own `compile:` when the suite's entries verilate at different scales — the same top level at two geometries, say, where the small one takes four minutes and 6 GB and the product one takes two hours and 130 GB:
+
+```yaml
+compile:
+  mem: 8G           # the small geometry, which most pull requests run
+
+testbenches:
+  - name: tb_chip_small
+    filelist: [...]
+  - name: tb_chip_t1
+    filelist: [...]
+    compile:
+      mem: 256G
+      time: "06:00:00"
+```
+
+A testbench block takes the same `{cpus, mem, time}` shape and wins over the suite block field by field, in both directions — it may lower a field as well as raise one. Writing `parallel` there is an error: it is how many builds the one build job runs at once, so it belongs to the suite block or to `cfg-dispatch`.
+
+**The two blocks mean different things, and the build job's reservation is where that shows.** A suite-level `compile:` describes the **whole job** — the allocation you watch in `squeue` — and nothing below it may take the reservation under that figure. A testbench `compile:` describes **one build**, so the suite's build job aggregates them over the testbenches the plan actually selected tests from, then floors the result at the whole-job value:
+
+| Field | Over the planned builds' blocks | Then |
+|---|---|---|
+| `cpus` | the largest single block's | floored at the suite-resolved value, then × `compile.parallel` as always |
+| `mem` | the sum of the largest `min(parallel, n)` blocks — the builds that can be in flight together each hold their own peak | floored at the suite-resolved value |
+| `time` | the makespan of the build job's own work queue: each build goes to whichever of the `parallel` workers frees up first, in plan order, and the job ends when the last worker does | floored at the suite-resolved value |
+
+At `parallel: 1` that makespan is the serial total; with a worker per build it is the longest build. In between it is a real schedule, not `ceil(sum / parallel)` — 30, 30 and 20 minutes over two workers finish in **50**, not 40, and a reservation sized from the lower figure times the job out mid-compile.
+
+The unit of the aggregation is one **build**, not one testbench: the build job groups on the compile directory a config resolves to after `preproc`, so two selected tests on one testbench that differ in `plusdefines`, `builder` or `model` compile separately and each hold their own peak. rtl_buddy counts one reservation per distinct `(testbench, plusdefines, builder, model)` among the planned tests. It cannot see the real compile key from the submit host, so where two such configs happen to resolve to the same key the job is reserved for a build it does not run — an over-count, which is the safe direction.
+
+A testbench with no `compile:` of its own enters none of those sums; it is covered by the whole-job value, so a suite of five plain benches under `time: "00:30:00"` still reserves thirty minutes. Only planned tests count either: a run that selects nothing from `tb_chip_t1` reserves the suite's `8G`, which is what stops a pull request fencing off memory for a build it never runs.
+
+Reservation advice names the entry whose block supplied the winning field, as `testbenches[name=tb_chip_t1].compile.mem`. Two shapes have no such entry to name, and both withhold the `reduce` row rather than aim it somewhere inapplicable, recording the reason and the paths in `rightsize.build_advice_withheld`:
+
+- the value is a **sum of several builds** (`compile-aggregate`) — the suggestion is a whole-job figure, and writing it into one contributor's key would leave the total where it was;
+- two sources produce it **independently** (`compile-origin-tied`) — two builds at the same figure, or one that merely reaches the whole-job floor, where lowering either alone moves nothing.
+
+`raise` advice is unaffected by both: moving any one source up moves a maximum, and a sum with it. A simulation job that compiles for itself is sized from its own testbench's block alone, never from the aggregate.
+
+`parallel` layers the same way, over `cfg-dispatch.compile.parallel`, and must be at least 1. The build job is per suite, so a suite that compiles one key writes `parallel: 1` and its build job reserves `cpus` instead of `cpus` × the cluster-wide value — on a busy partition that is the difference between starting and queueing. A suite that says nothing keeps inheriting the cluster-wide value. Sizing it against the partition's widest node is the writer's job at either level, since only `cpus` is scaled for you. The build job's `Compiling N distinct build(s)` line names whichever key governed it, so the log says which file to edit. `parallel` is still meaningless in a per-test or per-testbench `resources:` block, where unknown keys are dropped silently; in a testbench `compile:` block it is rejected at load instead, because there the key reads as if it meant something.
+
 The block is a scheduling fact only. It is not part of the compile fingerprint, so adding or changing it never invalidates a shared build stamp.
 
-Size `compile.time` for the longest batch the build job runs, not for one build. With `compile.parallel: N` the suite's unique compile keys are compiled N at a time, so the job's wall clock is the makespan of a work queue N workers deep: each worker takes the next unbuilt key as it frees up, and the job ends when the last one finishes. `ceil(distinct builds / N)` times the slowest build is a safe upper bound to size against, and it is close to the real figure only when the builds take similar times; a mix of one long build and several short ones finishes nearer the long one alone. At the default `parallel: 1` it is the serial total of every key.
+Size the **suite-level** `compile.time` for the longest batch the build job runs, not for one build (a testbench block states one build and is queued for you). With `compile.parallel: N` the suite's unique compile keys are compiled N at a time, so the job's wall clock is the makespan of a work queue N workers deep: each worker takes the next unbuilt key as it frees up, and the job ends when the last one finishes. `ceil(distinct builds / N)` times the slowest build is a safe upper bound to size against, and it is close to the real figure only when the builds take similar times; a mix of one long build and several short ones finishes nearer the long one alone. At the default `parallel: 1` it is the serial total of every key.
 
-Size `compile.mem` for `parallel` concurrent builds: the head scales only the `cpus` reservation, and N elaborations need roughly N times the memory. Size it from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
+Size the **suite-level** `compile.mem` for `parallel` concurrent builds: the head scales only the `cpus` reservation, and N elaborations need roughly N times the memory. A testbench block states one build's peak and the head adds those up. Size it from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
 
 VCS license wait under `-licqueue` counts against the Slurm time limit. Give `compile.time` queue headroom; `compile.license_queued` records only completed builds that waited. N concurrent elaborations hold up to N licenses at once, so raising `parallel` multiplies license pressure and can convert compute time into queue time; keep it at or below what the site's license pool can serve.
 
