@@ -798,7 +798,7 @@ class OpenRoadSynth:
         return {
             "tool": self.tool_cfg.get_name(),
             "elaborate": dict(
-                elaboration_fingerprint(self._resolve_yosys_opts()),
+                elaboration_fingerprint(self._resolve_yosys_opts(), self.root_cfg),
                 synth_args=self.effort_cfg.get_yosys_synth_args(),
             ),
             "map": {

@@ -5346,6 +5346,63 @@ def test_the_library_fingerprint_is_project_relative_where_it_can_be(tmp_path):
     assert library_fingerprint([str(inside)], object()) == [str(inside)]
 
 
+def test_the_slang_plugin_is_fingerprinted_as_the_script_loads_it(tmp_path):
+    """The finding (#570 round-15 review, Codex P2). The digest recorded the
+    raw `plugin_path`, and the script loads `resolve_plugin_path`'s answer.
+    That was wrong in both directions: a plugin selected through
+    `RTL_BUDDY_SLANG_PLUGIN` leaves the field empty, so two runs against two
+    different yosys-slang builds digested identically, and a relative path
+    digested apart from the absolute path it resolves to."""
+    from rtl_buddy.config.synth import SynthToolOpts
+    from rtl_buddy.tools.synth_yosys import (
+        SLANG_PLUGIN_ENV,
+        elaboration_fingerprint,
+    )
+
+    class _Root:
+        def get_project_rootdir(self):
+            return str(tmp_path)
+
+    def _fed(plugin_path, env=None, root_cfg=None):
+        import os as _os
+
+        opts = SynthToolOpts(frontend="slang", plugin_path=plugin_path)
+        previous = _os.environ.get(SLANG_PLUGIN_ENV)
+        if env is None:
+            _os.environ.pop(SLANG_PLUGIN_ENV, None)
+        else:
+            _os.environ[SLANG_PLUGIN_ENV] = env
+        try:
+            return elaboration_fingerprint(opts, root_cfg)["plugin_path"]
+        finally:
+            if previous is None:
+                _os.environ.pop(SLANG_PLUGIN_ENV, None)
+            else:
+                _os.environ[SLANG_PLUGIN_ENV] = previous
+
+    # The env fallback is an identity, not an absence.
+    assert _fed(None, env="/opt/a/slang.so") == "/opt/a/slang.so"
+    assert _fed(None, env="/opt/a/slang.so") != _fed(None, env="/opt/b/slang.so")
+    # Two spellings of one plugin converge.
+    absolute = str(tmp_path / "plug" / "slang.so")
+    assert _fed("plug/slang.so", root_cfg=_Root()) == absolute
+    assert _fed(absolute, root_cfg=_Root()) == absolute
+    # Nothing configured at all is still nothing.
+    assert _fed(None) is None
+
+
+def test_the_verilog_frontend_records_no_plugin_at_all(tmp_path):
+    """The gate is unchanged: the verilog read emitter loads no plugin, so
+    resolving one for it would report a difference the script cannot have."""
+    from rtl_buddy.config.synth import SynthToolOpts
+    from rtl_buddy.tools.synth_yosys import elaboration_fingerprint
+
+    fed = elaboration_fingerprint(
+        SynthToolOpts(frontend="verilog", plugin_path="/opt/a/slang.so"), None
+    )
+    assert "plugin_path" not in fed and "single_unit" not in fed
+
+
 def test_a_synth_run_digests_the_merged_define_table_its_script_fed(tmp_path):
     """The finding (#570 round-15 review, Codex P2). `_write_script` feeds
     the frontend `elaboration_defines()` — the generated filelist's

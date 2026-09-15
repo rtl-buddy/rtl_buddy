@@ -513,7 +513,7 @@ def library_fingerprint(paths, root_cfg) -> list[str]:
     return [project_relative(path, root) for path in paths]
 
 
-def elaboration_fingerprint(opts: SynthToolOpts) -> dict:
+def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
     """The elaboration settings a generated Yosys script actually reads.
 
     Both synthesis backends elaborate through :func:`emit_frontend_read_cmds`
@@ -535,6 +535,23 @@ def elaboration_fingerprint(opts: SynthToolOpts) -> dict:
     verilog runs differing in either produce the same script and are the
     same experiment.
 
+    The plugin is fingerprinted **resolved**, as
+    :func:`resolve_plugin_path` returns it and the script's ``plugin -i``
+    line spells it (#570). The raw field was wrong in both directions: a
+    plugin selected through the ``RTL_BUDDY_SLANG_PLUGIN`` fallback
+    leaves it empty, so two runs against two different yosys-slang builds
+    digested identically, while a relative path and the absolute path it
+    resolves to are one plugin digesting as two. A path and not its
+    contents, consistently with :func:`library_fingerprint`: a rebuilt
+    ``slang.so`` at one path is the case a path cannot catch, and hashing
+    a shared object on every synthesis is not the price for it.
+
+    ``root_cfg`` is what a relative path resolves against. Resolution is
+    allowed to fail back to the raw spelling: it raises only for a
+    non-absolute environment variable, which :func:`validate_frontend`
+    has already refused by the time any run publishes, and a fingerprint
+    is the last place worth raising from.
+
     The two gates are recorded *resolved* rather than as configured: the
     default of ``static_functions`` depends on the frontend
     (:func:`resolve_static_functions_mode`), so an empty setting under
@@ -547,7 +564,11 @@ def elaboration_fingerprint(opts: SynthToolOpts) -> dict:
         "conflicting_drivers": resolve_conflicting_drivers_mode(opts),
     }
     if opts.frontend == "slang":
-        fed["plugin_path"] = opts.plugin_path
+        try:
+            plugin = resolve_plugin_path(opts.plugin_path, root_cfg)
+        except FatalRtlBuddyError:
+            plugin = opts.plugin_path
+        fed["plugin_path"] = plugin
         fed["single_unit"] = opts.single_unit
     return fed
 
@@ -1175,7 +1196,7 @@ class YosysSynth:
         fed = {
             "tool": self.tool_cfg.get_name(),
             "mapped": mapped,
-            "elaborate": elaboration_fingerprint(opts),
+            "elaborate": elaboration_fingerprint(opts, self.root_cfg),
             "synth_args": opts.synth_args,
             "params": self.synth_cfg.get_params(),
             "defines": self._digested_defines(),
