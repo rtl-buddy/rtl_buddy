@@ -578,6 +578,12 @@ class YosysSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._period_ps: int | None = None
+        # The `-D` table `_write_script` actually fed the frontend:
+        # filelist `+define+` entries with the run's `defines:` on top.
+        # Recorded by the writer and read by `_phys_options`, the way
+        # `_period_ps` is, so the digest is of what the script consumed
+        # rather than of a re-derivation of it (#570).
+        self._script_defines: dict[str, str | None] | None = None
         self._opts: SynthToolOpts | None = None
 
     def _filelist_path(self) -> str:
@@ -762,6 +768,7 @@ class YosysSynth:
         mapped = bool(lib_paths)
 
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
+        self._script_defines = defines
         incdirs = incdirs_from_filelist(fl_path)
 
         lines = []
@@ -1132,7 +1139,14 @@ class YosysSynth:
           outranks it -- `_resolve_opts` has already folded that in.
         - `params` and `defines`: the elaboration values, which shape the
           netlist exactly as an ABC script does and are the knob a
-          parameter sweep turns.
+          parameter sweep turns. `defines` is the **merged** table
+          `_write_script` hands the frontend -- the filelist's `+define+`
+          entries with the run's `defines:` layered on top
+          (:func:`elaboration_defines`) -- and not `synth.yaml`'s field
+          alone. The field alone digested a `+define+WIDTH=8` change in
+          the generated filelist as no change at all, which is a
+          different design under one fingerprint (#570); it also read two
+          runs apart when one spelt a value the filelist already gave it.
         - `mapped`: which branch the script took, since the two consume
           different things below.
 
@@ -1164,7 +1178,7 @@ class YosysSynth:
             "elaborate": elaboration_fingerprint(opts),
             "synth_args": opts.synth_args,
             "params": self.synth_cfg.get_params(),
-            "defines": self.synth_cfg.get_defines(),
+            "defines": self._digested_defines(),
         }
         if mapped:
             fed["abc_period_ps"] = self._period_ps
@@ -1172,6 +1186,20 @@ class YosysSynth:
         else:
             fed["abc_args"] = opts.abc_args
         return fed
+
+    def _digested_defines(self) -> dict:
+        """The macro table the generated script fed the frontend (#570).
+
+        Recorded by `_write_script`, not re-derived here: it is the table
+        that was passed, and re-reading `synth.f` to rebuild it would
+        digest a filelist that may since have been rewritten. The
+        fallback is `synth.yaml`'s own field, for a caller that reaches
+        this without a script having been written -- there is no
+        published run in that state, so it is a floor and not a path.
+        """
+        if self._script_defines is not None:
+            return dict(self._script_defines)
+        return self.synth_cfg.get_defines()
 
     def _publish_phys_model(
         self, *, area_um2: float | None, gate_count: int | None, mapped: bool

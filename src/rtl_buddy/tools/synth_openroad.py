@@ -73,6 +73,9 @@ class OpenRoadSynth:
         self.artefact_dir = str(artefact_root)
         self._yosys_opts: SynthToolOpts | None = None
         self._or_opts: SynthToolOpts | None = None
+        # The `-D` table `_write_yosys_script` actually fed the frontend;
+        # see the Yosys backend's field of the same name (#570).
+        self._script_defines: dict[str, str | None] | None = None
         self.static_function_findings = 0
 
     # ------------------------------------------------------------------
@@ -215,6 +218,7 @@ class OpenRoadSynth:
         lib_paths = self._resolve_lib_paths()
         params = self.synth_cfg.get_params()
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
+        self._script_defines = defines
         incdirs = incdirs_from_filelist(fl_path)
         opts = self._resolve_yosys_opts()
 
@@ -763,7 +767,12 @@ class OpenRoadSynth:
           reads. The rest of the stage-2 opts is inert on this path, so
           the dataclass is not digested.
         - `params` and `defines`: the elaboration values, which shape the
-          netlist as surely as an ABC script does.
+          netlist as surely as an ABC script does. `defines` is the
+          **merged** table `_write_yosys_script` hands the frontend --
+          the filelist's `+define+` entries with the run's `defines:` on
+          top (:func:`elaboration_defines`) -- and not `synth.yaml`'s
+          field alone, which digested a `+define+WIDTH=8` change in the
+          generated filelist as no change at all (#570).
         - `libs`: the resolved Liberty set (:func:`library_fingerprint`),
           at the top because both stages read it -- stage 1 for
           `read_liberty`, `abc -liberty` and `stat -liberty`, stage 2 for
@@ -801,8 +810,19 @@ class OpenRoadSynth:
             },
             "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
             "params": self.synth_cfg.get_params(),
-            "defines": self.synth_cfg.get_defines(),
+            "defines": self._digested_defines(),
         }
+
+    def _digested_defines(self) -> dict:
+        """The macro table the generated script fed the frontend (#570).
+
+        Recorded by `_write_yosys_script` rather than re-derived, for the
+        reason the Yosys backend's twin gives: it is the table that was
+        passed, and `synth.f` may have been rewritten since.
+        """
+        if self._script_defines is not None:
+            return dict(self._script_defines)
+        return self.synth_cfg.get_defines()
 
     def _publish_phys_model(
         self, *, area_um2: float | None, gate_count: int | None

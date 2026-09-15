@@ -5346,6 +5346,64 @@ def test_the_library_fingerprint_is_project_relative_where_it_can_be(tmp_path):
     assert library_fingerprint([str(inside)], object()) == [str(inside)]
 
 
+def test_a_synth_run_digests_the_merged_define_table_its_script_fed(tmp_path):
+    """The finding (#570 round-15 review, Codex P2). `_write_script` feeds
+    the frontend `elaboration_defines()` — the generated filelist's
+    `+define+` entries with the run's `defines:` layered on top — but the
+    digest recorded `synth.yaml`'s field alone. A filelist whose
+    `+define+WIDTH=8` became `+define+WIDTH=16` therefore elaborated a
+    different design under an identical fingerprint."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+
+    def _digest(filelist_defines):
+        ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(defines={"MODE": "fast"}))
+        fl = Path(ys._filelist_path())
+        fl.parent.mkdir(parents=True, exist_ok=True)
+        fl.write_text(
+            "".join(f"+define+{d}\n" for d in filelist_defines) + f"-v {sv}\n"
+        )
+        ys._write_script(str(fl))
+        return options_digest(ys._phys_options(mapped=False))
+
+    narrow = _digest(["WIDTH=8"])
+    wide = _digest(["WIDTH=16"])
+
+    assert narrow is not None and narrow != wide
+    # A bare entry is its own value, and adding one is a change.
+    assert _digest(["WIDTH=8", "DEBUG"]) != narrow
+    # And the same filelist twice is the same experiment.
+    assert _digest(["WIDTH=8"]) == narrow
+
+
+def test_the_openroad_backend_digests_its_merged_defines_too(tmp_path):
+    """Both backends feed their frontend the same merged mapping, so both
+    have to digest it — the round-14 rule is per script, not per tool."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    lib = tmp_path / "slow.lib"
+    lib.write_text("")
+
+    def _digest(filelist_defines):
+        or_synth = _make_openroad(
+            tmp_path, synth_cfg=_make_synth_cfg(lib_paths=[str(lib)])
+        )
+        fl = Path(or_synth._filelist_path())
+        fl.parent.mkdir(parents=True, exist_ok=True)
+        fl.write_text(
+            "".join(f"+define+{d}\n" for d in filelist_defines) + f"-v {sv}\n"
+        )
+        or_synth._write_yosys_script(str(fl))
+        return options_digest(or_synth._phys_options())
+
+    assert _digest(["WIDTH=8"]) != _digest(["WIDTH=16"])
+    assert _digest(["WIDTH=8"]) == _digest(["WIDTH=8"])
+
+
 def _openroad_digest(
     tmp_path,
     *,
