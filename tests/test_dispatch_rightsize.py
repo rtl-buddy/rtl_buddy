@@ -889,6 +889,48 @@ def test_a_parallel_build_job_withholds_its_cpus_advice(caplog):
     assert record.rtl_fields["efficiency"] == 0.125
     assert "no cpus advice for the build job" in caplog.text
     assert "cfg-dispatch.compile.parallel" in caplog.text
+    # Nothing said the suite owns the key, so the root one governs.
+    assert record.rtl_fields["parallel_origin"] == "cfg-dispatch.compile.parallel"
+
+
+def test_withheld_cpus_advice_names_the_suite_key_when_the_suite_owns_it(caplog):
+    """The line ends in "size <key>", so it must name the key that governs.
+
+    A suite whose own `compile:` block sets `parallel` is not moved by
+    sizing `cfg-dispatch.compile.parallel` — the advice would be withheld
+    again on the next run for exactly the same reason (#547 review).
+    """
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 7200,
+                "alloc_cpus": 16,
+                "total_cpu_s": 200,
+            },
+            parallel=4,
+            cpus=4,
+            compile_origins={"parallel": "suite"},
+            suite_config_hint="/proj/verif/blk/blk_suite.yaml",
+        )
+
+    assert [f for f in findings if f.resource == "cpus"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["parallel_origin"] == "blk_suite.yaml compile.parallel"
+    # The basename, not the whole path: the line stays readable and still
+    # says which file to open when several suites are in one report.
+    assert "size blk_suite.yaml compile.parallel" in caplog.text
+    assert "cfg-dispatch.compile.parallel" not in caplog.text
+    # The withheld `time` row still carries the attribution for the footer.
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.parallel_origin == "blk_suite.yaml compile.parallel"
 
 
 def test_a_single_build_is_advised_even_at_a_wide_parallel():
@@ -917,6 +959,41 @@ def test_a_single_build_is_advised_even_at_a_wide_parallel():
     # ...but 3 > the 2 already configured, so the note explains the lever
     # that is actually oversized here.
     assert "compile.parallel 4" in cpus_a.edit_hint["note"]
+    # Nothing said the suite owns the key, so the lever is cfg-dispatch's.
+    assert "lower cfg-dispatch.compile.parallel" in cpus_a.edit_hint["note"]
+
+
+def test_the_parallel_lever_names_the_suite_when_the_suite_owns_it():
+    """A suite's own `compile.parallel` is what governs this job (#547).
+
+    Telling the reader to lower `cfg-dispatch.compile.parallel` when their
+    tests.yaml sets the key is advice that moves nothing and comes back on
+    the next run — the same failure the per-field `edit_hint` origins fix.
+    """
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,
+        },
+        parallel=4,
+        cpus=8,
+        compile_work={"records": 1, "compiled": 1, "compiled_sec": 90.0},
+        compile_origins={"parallel": "suite"},
+        suite_config_hint="verif/blk/tests.yaml",
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    note = cpus_a.edit_hint["note"]
+    # Named by its file, the one spelling every line that mentions the key
+    # uses — the pool line, this note, the withheld line, the table footer.
+    assert "lower tests.yaml compile.parallel" in note
+    assert "cfg-dispatch.compile.parallel" not in note
+    # The cpus hint is unaffected: the suite set `parallel`, not `cpus`.
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.compile.cpus"
+    # ...and the row carries the same spelling up to the rendered table.
+    assert cpus_a.parallel_origin == "tests.yaml compile.parallel"
 
 
 def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():
@@ -1350,6 +1427,46 @@ def test_the_compile_sim_note_only_appears_under_a_compile_sim_row(monkeypatch):
 
     sim_only = _rendered_metadata([_finding("sim")], monkeypatch)
     assert len(sim_only) == 1
+
+
+def test_the_build_job_note_names_the_key_that_governs_parallel(monkeypatch):
+    """The footnote tells a reader what sizes the row; name the right key.
+
+    A suite whose own `compile:` block sets `parallel` is not moved by
+    `cfg-dispatch.compile.parallel`, so a footnote naming the root key
+    sends them to a value with no effect on that build job (#547 review).
+    """
+    root_owned = _finding("compile")
+    assert root_owned.parallel_origin is None  # an unattributed row
+    lines = _rendered_metadata([root_owned], monkeypatch)
+    assert any("up to cfg-dispatch.compile.parallel builds" in line for line in lines)
+
+    suite_owned = _finding("compile")
+    suite_owned.parallel_origin = "blk_suite.yaml compile.parallel"
+    lines = _rendered_metadata([suite_owned], monkeypatch)
+    assert any("up to blk_suite.yaml compile.parallel builds" in line for line in lines)
+    assert not any("cfg-dispatch.compile.parallel" in line for line in lines)
+
+
+def test_the_build_job_note_states_the_rule_when_suites_disagree(monkeypatch):
+    """One regression can table several suites, and they need not agree.
+
+    Picking either key would be wrong for the other's row, and each row's
+    own file is already in the Field column — so the footnote states the
+    layering instead of naming a file.
+    """
+    suite_owned = _finding("compile")
+    suite_owned.parallel_origin = "blk_suite.yaml compile.parallel"
+    root_owned = _finding("compile")
+    root_owned.suite = "verif/other/tests.yaml"
+    root_owned.parallel_origin = "cfg-dispatch.compile.parallel"
+    lines = _rendered_metadata([suite_owned, root_owned], monkeypatch)
+    assert any(
+        "up to the resolved compile.parallel (suite block or cfg-dispatch) builds"
+        in line
+        for line in lines
+    )
+    assert not any("blk_suite.yaml" in line for line in lines)
 
 
 def test_the_per_build_clause_only_appears_under_a_build_cpus_row(monkeypatch):

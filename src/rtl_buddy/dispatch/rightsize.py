@@ -71,7 +71,7 @@ Semantics:
   :func:`analyze_build_reservation` reads its ``sacct`` entry directly and
   asks the same two questions of it — wall clock against the limit, cpu
   time against the allocation. Its cpus suggestion is divided back down by
-  ``cfg-dispatch.compile.parallel``, because the field a project edits is
+  the resolved ``compile.parallel``, because the field a project edits is
   per-build while the reservation the head submitted was the product — and
   its denominator is the requested cpus, for the same reason a test's is. Its
   ``reduce`` needs the build envelope to say a compile actually ran: a
@@ -93,6 +93,7 @@ import math
 from dataclasses import dataclass, field
 
 from ..config.dispatch import (
+    compile_parallel_origin,
     mem_to_bytes,
     sbatch_arg_sets_cpu_count_directly,
     time_to_seconds,
@@ -132,6 +133,14 @@ class RightsizeFinding:
     # additive, and None whenever the two agree or nothing reported an
     # allocation. Only ever set on a `cpus` finding.
     allocated: str | None = None
+    # How this row's `compile.parallel` is spelled — the suite's own
+    # `compile:` block where it set one, else the cfg-dispatch key (#547
+    # review). Only ever set on a build-job (`phase: compile`) row, and
+    # only so the rendered table's footnote can name the key a reader would
+    # edit. Deliberately NOT in `as_event()`: the machine payload's key set
+    # is a contract, and a machine reader already gets the same
+    # attribution, per field, in `edit_hint`.
+    parallel_origin: str | None = None
 
     def as_event(self) -> dict:
         return {
@@ -449,10 +458,10 @@ def analyze_build_reservation(
     the compile OOM-killed. And there is no ``raise`` on cpus: cpu
     efficiency below 1 means slots idled, never that more were needed.
 
-    ``compile_resources`` is the *per-build* reservation
-    (``cfg-dispatch.compile``); the head multiplied its cpus by
-    ``parallel`` before submitting, and the field a project edits is
-    per-build — so cpus advice is only offered for a job that ran an
+    ``compile_resources`` is the *per-build* reservation (the suite's own
+    ``compile:`` block over ``cfg-dispatch.compile``); the head multiplied
+    its cpus by ``parallel`` before submitting, and the field a project
+    edits is per-build — so cpus advice is only offered for a job that ran an
     effective ``parallel`` of 1 (one slot, or one build record), where the
     whole-job ratio and the per-build one are the same number. Above that
     the ratio also carries the tail (unequal builds; a plan with fewer
@@ -502,7 +511,8 @@ def analyze_build_reservation(
 
     ``compile_origins`` says, per field, where the *winning* value came
     from — ``{"mem": "suite"}`` when the suite's own ``compile:`` block set
-    it (#497) — and ``suite_config_hint`` is that suite's tests.yaml path.
+    it (#497), ``parallel`` included (#547) — and ``suite_config_hint`` is
+    that suite's tests.yaml path.
     Together they decide which file an edit hint names: advice that says
     "shrink ``cfg-dispatch.compile.mem``" is wrong for a field a suite
     block overrides, because editing the root config would not move this
@@ -565,6 +575,14 @@ def analyze_build_reservation(
     states = [state] if state else []
 
     origins = compile_origins or {}
+    # How this job's `compile.parallel` should be spelled wherever advice
+    # names it — the withheld line, the `cpus` note's lever sentence, and
+    # the advice table's footer, which the finding carries it up to. A
+    # suite's own block wins outright, so a reader sent to the root key
+    # would edit a value that moves this job not at all (#547 review).
+    parallel_key = compile_parallel_origin(
+        origins.get("parallel") == "suite", suite_config_hint
+    )
 
     alloc_cpus = build_telemetry.get("alloc_cpus")
     # This job's generated `--cpus-per-task`: the resolved per-build cpus
@@ -655,6 +673,10 @@ def analyze_build_reservation(
         "reg_level": None,
         "states": states,
         "phase": "compile",
+        # Carried on every build-job row, not just the cpus one: the
+        # footnote it feeds explains the row itself, and a table whose only
+        # build-job row is `time` still has a build job behind it.
+        "parallel_origin": parallel_key,
     }
 
     # --- time -------------------------------------------------------
@@ -744,6 +766,9 @@ def analyze_build_reservation(
                 interval_s=accounting_interval_s,
                 parallel=parallel,
                 efficiency=round(efficiency, 3),
+                # ...and which key to size, since the message says to size
+                # one: the suite's own where it set it (#547 review).
+                parallel_origin=parallel_key,
             )
         elif efficiency < rightsize_cfg.over_threshold:
             suggested_total = max(
@@ -808,9 +833,8 @@ def analyze_build_reservation(
                     " `parallel` is the other lever: it is capped by the "
                     "suite's planned configs, not by its distinct compile "
                     "keys, so configs that share one key reserve cpus for "
-                    "builds that never run — lower "
-                    "cfg-dispatch.compile.parallel instead when the key "
-                    "count is the smaller number."
+                    f"builds that never run — lower {parallel_key} "
+                    "instead when the key count is the smaller number."
                 )
             )
             if suggested_per_build < per_build_now:

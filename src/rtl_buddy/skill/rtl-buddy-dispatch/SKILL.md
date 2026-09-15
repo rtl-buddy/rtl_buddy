@@ -20,10 +20,10 @@ full scheduler contract and YAML fields.
 
 Dispatch implies shared builds. A simulation starts only after its compile-key
 build succeeds, so one failed or undersized build can block a whole group.
-One build job per suite compiles its distinct builds, `cfg-dispatch.compile.parallel`
-of them at a time (default 1). Above 1 the job runs every config's `preproc` before
-any builder starts, so no hook may mutate another config's inputs; at the default
-it still runs `preproc` and compile per config in turn.
+One build job per suite compiles its distinct builds, `compile.parallel` of them
+at a time (default 1; a suite's `compile:` overrides cfg-dispatch's). Above 1 the
+job runs every config's `preproc` before any builder starts, so no hook may mutate
+another's inputs; at 1 it runs `preproc` then compile per config.
 Slurm refuses an array above the cluster's `MaxArraySize` (`Invalid job array
 specification`). rtl_buddy reads the limit from `scontrol show config` and
 splits an oversized group across arrays, each with its own manifest and logs
@@ -41,9 +41,9 @@ In machine mode, inspect `payload.reservation_advice`. Apply its `edit_hint.file
 and `edit_hint.path` exactly: the governing field may be a test/testbench
 `resources:` entry, a suite-level `compile:` block at the top of that suite's
 `tests.yaml`, or `cfg-dispatch.compile` in `root_config.yaml`. The suite block
-overrides `cfg-dispatch.compile` field by field, so one big suite can carry its
-own `compile: {mem: ...}` instead of every suite's build job inheriting a raise
-of the global reservation.
+overrides it field by field, `parallel` included, so one big suite can carry its
+own `compile: {mem: ...}` instead of every build job inheriting a raise of the
+global reservation.
 
 - Slurm `OUT_OF_MEMORY`, or a local Verilator/compiler SIGKILL/`Killed`, means
   raise the governing `mem`; raising `sim_timeout` cannot fix it.

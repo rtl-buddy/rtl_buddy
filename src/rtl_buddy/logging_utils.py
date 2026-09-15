@@ -427,9 +427,37 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     # builds; the suite has fewer distinct compile keys than
                     # that, so the surplus is deliberate over-provisioning
                     # and not a number to read off the right-sizing table.
+                    #
+                    # Name the layer that actually governs: a suite's own
+                    # `compile.parallel` beats cfg-dispatch's, and pointing
+                    # a reader at the root key would send them to a value
+                    # editing which moves this job not at all (#547). The
+                    # cfg-dispatch spelling is the fallback for a job log
+                    # written before the field existed.
+                    origin = fields.get("parallel_origin")
+                    if not isinstance(origin, str) or not origin:
+                        origin = "cfg-dispatch.compile.parallel"
+                    # Quote the number the named key actually holds. The head
+                    # caps the configured value by the suite's planned
+                    # configs before the job ever sees it, so `requested` can
+                    # be smaller than what the file says — and a line reading
+                    # "compile.parallel is 2" beside a tests.yaml saying 4
+                    # contradicts the very key it sends the reader to edit
+                    # (#547 review). Absent (an older job log), or equal:
+                    # the cap did not bite and there is nothing to explain.
+                    configured = fields.get("parallel_configured")
+                    capped = isinstance(configured, int) and configured > requested
+                    msg += f" ({origin} is {configured if capped else requested}"
+                    if capped:
+                        # `requested` is the planned-config count whenever the
+                        # cap bit: the head takes min(configured, planned), so
+                        # the plan is what it landed on.
+                        msg += (
+                            f", capped to {requested} by the {requested} "
+                            "planned configs"
+                        )
                     msg += (
-                        f" (cfg-dispatch.compile.parallel is {requested}, so "
-                        "the build job's cpus reservation is sized for "
+                        ", so the build job's cpus reservation is sized for "
                         f"{requested} — effective parallelism here is "
                         f"{parallel})"
                     )
@@ -563,12 +591,22 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 # Narrower than the others: only the cpus row is withheld,
                 # and only because a whole-job ratio is not a per-build one
                 # once slots can idle in the tail.
+                #
+                # The line ends in an instruction, so it has to name the key
+                # that governs THIS job: a suite's own `compile.parallel`
+                # beats cfg-dispatch's, and sizing the root key would leave
+                # the suite's value in force and the advice withheld again
+                # next run (#547 review). The root spelling is the fallback
+                # for a job log written before the field existed.
+                origin = fields.get("parallel_origin")
+                if not isinstance(origin, str) or not origin:
+                    origin = "cfg-dispatch.compile.parallel"
                 return (
                     f"{fields.get('suite')}: no cpus advice for the build "
                     f"job: it ran up to {fields.get('parallel')} builds at "
                     f"once at {fields.get('efficiency')} cpu efficiency, and "
                     "an idle slot and an under-used compile look the same "
-                    "from outside — size cfg-dispatch.compile.parallel "
+                    f"from outside — size {origin} "
                     "against the suite's distinct compile keys first"
                 )
             elif reason == "no-build-records":

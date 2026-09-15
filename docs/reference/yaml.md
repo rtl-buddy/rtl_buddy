@@ -251,8 +251,8 @@ cfg-dispatch:
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
 | `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`; an integer from YAML sexagesimal parsing is fatal |
-| `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field. It is the only reservation block that takes `parallel`; the key is meaningless in a per-test or per-testbench `resources:` block, or in a suite-level `compile:`, and is discarded there |
-| `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
+| `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field, `parallel` included. Those two blocks are the only ones that take `parallel`; the key is meaningless in a per-test or per-testbench `resources:` block and is discarded there |
+| `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Overridden by a suite's own `compile.parallel` where that suite sets one. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
 | `sbatch-args` | Empty list; appended verbatim and therefore overrides duplicate generated flags. Any argument here that sets the job's cpu request — `-c`/`--cpus-per-task`, or the task/node counts that raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`) — supersedes the resolved `cpus`, so CPU right-sizing falls back to the scheduler's `ReqCPUS` for that run and its `cpus` advice names this key rather than the masked `resources.cpus` / `compile.cpus`. Within one option the last occurrence wins, as it does for sbatch; distinct options combine instead, and the advice then names them all and leaves the combining rule to sbatch rather than claiming a product. Only a lone `-c`/`--cpus-per-task` is offered the suggested value; the task/node counts are told to be decomposed. A direct `--cpus-per-task` override also disables the compile `cpus` floor, which bounds a reservation sbatch never saw; a task or node count leaves that flag in force, so the floor is kept. The `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and `SBATCH_NODES` environment variables count the same way, since the submit inherits them (command line beats environment, and the environment is never sanitized). A GPU count (`--gpus`/`-G`, `--gpus-per-node`, `--gpus-per-socket`, a gpu `--gres`, or their `SBATCH_*` forms) together with `--ntasks-per-gpu` and no `--ntasks` also counts, since sbatch derives the task count from that pair. Node-selection constraints (`--threads-per-core`, `-B`), placement maxima (`--ntasks-per-core`, `--ntasks-per-socket`, and `--ntasks-per-gpu` on its own), `--exclusive` and `SBATCH_CPUS_PER_TASK` are not overrides — the generated `--cpus-per-task` still states the request; `--cpus-per-gpu` is not either, since Slurm rejects it alongside the `--cpus-per-task` every job carries. Two exceptions to "appended last", both on the build job: its `--dependency` is emitted after these and composes the configured expression with the shared-build dedup, and its `--job-name` is emitted after these because that name is what the dedup serialises on — a `--job-name` / `-J` here therefore does not rename the build job (it still renames simulation jobs) |
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
 | `max-array-size` | Unset; the cluster's Slurm `MaxArraySize`, read from `scontrol show config` when unset. Setting it does not suppress the probe: the probe is the only source of `max-array-tasks`, which still applies. Must be at least 2. Slurm's largest array task index is one **below** it, so `1001` allows 1000 elements per array; a resource group larger than that is split across several arrays instead of being refused by sbatch. Set it where the submit host cannot run `scontrol`, or to split groups more finely |
@@ -407,13 +407,14 @@ model-configs:
 
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build job.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build job and how many builds it runs at once.
 
 ```yaml
 rtl-buddy-filetype: test_config
 
 compile:
   mem: 48G
+  parallel: 1
 
 testbenches:
   - name: tb_top
@@ -436,7 +437,7 @@ Top-level fields:
 | `testbenches` | Required | Testbench definitions |
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
-| `compile` | Optional | This suite's dispatch compile reservation: `cpus`, `mem`, and quoted `time`. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`; an omitted field inherits. Sizes the suite's build job, and the compile half of a simulation job that compiles for itself. `parallel` is not accepted here and is discarded. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
+| `compile` | Optional | This suite's dispatch compile reservation: `cpus`, `mem`, quoted `time`, and `parallel`. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`; an omitted field inherits. Sizes the suite's build job, and the compile half of a simulation job that compiles for itself. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
 
 Testbench fields:
 
