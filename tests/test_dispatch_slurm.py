@@ -4176,3 +4176,91 @@ def test_a_wedged_squeue_is_not_retried(monkeypatch):
     backend.submit_build(_build_spec())
 
     assert [argv[0] for argv in calls] == ["squeue", "sbatch"]
+
+
+# ------------------------------------------------ per-key release (#548)
+
+
+def _release_run(calls, results):
+    """subprocess.run stand-in for ``scontrol update``: records, pops."""
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+        return (
+            results.pop(0)
+            if results
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+    return run
+
+
+def test_release_dependency_clears_each_job_id(monkeypatch):
+    """One ``scontrol update`` per job — plain ids and array elements alike.
+
+    An empty ``Dependency=`` is the whole point: it clears the gate rather
+    than replacing it, so a job PENDING on the build job's ``afterok``
+    becomes runnable while its array siblings stay pending.
+    """
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    failures = slurm_module.release_dependency(
+        ["1234_1", "1234_3", "999"], cwd="/proj/verif/blk"
+    )
+    assert failures == []
+    assert [call["argv"] for call in calls] == [
+        ["scontrol", "update", "JobId=1234_1", "Dependency="],
+        ["scontrol", "update", "JobId=1234_3", "Dependency="],
+        ["scontrol", "update", "JobId=999", "Dependency="],
+    ]
+    # Explicit cwd per the engineering guidelines, and time-boxed: a wedged
+    # slurmctld must not hold a compute allocation open.
+    assert {call["cwd"] for call in calls} == {"/proj/verif/blk"}
+    assert all(call["timeout"] is not None for call in calls)
+
+
+def test_release_dependency_addresses_the_cluster_that_issued_the_ids(monkeypatch):
+    """A job id is unique only within its cluster (#509)."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    slurm_module.release_dependency(["77_2"], cluster="hpc", cwd="/proj")
+    assert calls[0]["argv"] == [
+        "scontrol",
+        "-M",
+        "hpc",
+        "update",
+        "JobId=77_2",
+        "Dependency=",
+    ]
+
+
+def test_release_dependency_reports_failures_without_raising(monkeypatch):
+    """The build job's exit status is the fan-out's life: a failed release
+    is a slower start, an exception would be a cancelled suite."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=1, stdout="", stderr="slurm_update: Invalid job id"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, results))
+
+    failures = slurm_module.release_dependency(["1_1", "1_2", "1_3"])
+    assert [job_id for job_id, _ in failures] == ["1_1", "1_3"]
+    assert "Invalid job id" in failures[0][1]
+    # An empty stderr still says which command failed and how.
+    assert "rc=1" in failures[1][1]
+    # Every id was attempted; one refusal does not abandon the rest.
+    assert len(calls) == 3
+
+
+def test_release_dependency_survives_a_missing_or_wedged_scontrol(monkeypatch):
+    def run(argv, **kwargs):
+        raise OSError("No such file or directory: 'scontrol'")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    failures = slurm_module.release_dependency(["1_1"])
+    assert [job_id for job_id, _ in failures] == ["1_1"]
+    assert "scontrol" in failures[0][1]

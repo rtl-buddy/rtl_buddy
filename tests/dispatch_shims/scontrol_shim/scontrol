@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Fake scontrol, in its OWN directory: `scontrol` is an optional Slurm
+# binary and the build job's per-key release (#548) is the only thing that
+# needs one, so the shim is opted into per test by prepending this dir to
+# PATH rather than living beside sbatch/squeue where every dispatch shim
+# test would inherit it.
+#
+# `update` appends its argv to $RB_SHIM_SCONTROL_LOG, one line per call.
+# Anything else (the head's `show config` array-limit probe) exits 0 with
+# no output, which is the "no usable MaxArraySize" path — the same one a
+# submit host with no scontrol at all takes.
+case " $* " in
+  *" update "*)
+    [ -n "${RB_SHIM_SCONTROL_LOG:-}" ] && printf '%s\n' "$*" >> "$RB_SHIM_SCONTROL_LOG"
+    ;;
+esac
+exit 0

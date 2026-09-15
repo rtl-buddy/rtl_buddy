@@ -7,9 +7,11 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import json
 import uuid
@@ -96,6 +98,7 @@ from .dispatch import (
 )
 from .dispatch.argv import job_log_path
 from .dispatch.base import BuildJobSpec, ElabJobSpec, TestJobSpec, telemetry_key
+from .dispatch.gates import job_ids_for, wait_for_gates, write_gates
 from .dispatch.plan import (
     read_plan_config,
     read_plan_configs,
@@ -109,6 +112,7 @@ from .dispatch.rightsize import (
     analyze_build_reservation,
     analyze_suite_reservations,
 )
+from .dispatch.slurm import release_dependency
 from .runner.result_io import (
     BUILD_COMPILE_FAIL_PREFIX,
     COMPILE_ERROR_TAIL_LINES,
@@ -2354,6 +2358,14 @@ class RtlBuddy:
                 "head's plan-capped value (diagnostics only)",
             ),
         ] = None,
+        gates: Annotated[
+            str,
+            typer.Option(
+                "--gates",
+                help="dispatch gates manifest; release each compile key's "
+                "simulation jobs as soon as that key is built",
+            ),
+        ] = None,
     ):
         """
         internal: compile a suite's runnable tests on a compute node (#351)
@@ -2379,6 +2391,13 @@ class RtlBuddy:
         logs beside that envelope instead of the head's
         ``<suite>/rtl_buddy.log``; run by hand without it there is no head
         to collide with, so it falls back to the suite log (#437).
+
+        With ``--gates`` (Slurm only) it also releases each compile key's
+        simulation jobs as that key finishes, instead of leaving all of
+        them gated on this whole job: see ``dispatch.gates`` and #548. The
+        gate itself is untouched — every one of those jobs keeps its
+        ``afterok`` on this job, which is what still cancels the fan-out if
+        this job dies.
         """
         if parallel < 1:
             # Rejected before anything is entered or written: a job allowed
@@ -2407,6 +2426,10 @@ class RtlBuddy:
         result_json_path = (
             self._abs_invocation_path(result_json) if result_json is not None else None
         )
+        # Same treatment for the gates manifest, and for the same reason as
+        # the plan: it is a head path, and this job's cwd is a compute
+        # node's (#458).
+        gates_path = self._abs_invocation_path(gates) if gates is not None else None
         ctx = self._enter_command_context(
             primary_config=test_config,
             log_path=(
@@ -2440,6 +2463,7 @@ class RtlBuddy:
             parallel=parallel,
             parallel_configured=parallel_configured,
             parallel_origin=parallel_origin,
+            gates=gates,
         )
 
         if plan is not None:
@@ -2525,6 +2549,135 @@ class RtlBuddy:
         # does not report one at all keeps the pre-#534 leader rule, the
         # same convention `adopt_group_build` is looked up under.
         unreported = object()
+
+        # ---- per-key release (#548).
+        #
+        # Every sim job of this suite was submitted `--dependency=afterok`
+        # on THIS job, so without help the fastest compile key's tests wait
+        # for the slowest key in the plan — 56 minutes of it, in the report
+        # that opened the issue. The head cannot gate them per key: the keys
+        # only exist once `run.f` has been written, which happens here, on a
+        # compute node (#458). So the release is this job's to make.
+        #
+        # What is released, and when: a group whose compile has RETURNED
+        # (so the build directory's lock is long gone) with a build and a
+        # stamp on disk. Not a failed key — its sims stay on `afterok`,
+        # start after this job, read the build envelope and decline the
+        # recompile (#498), which is exactly the behaviour they had before
+        # this existed. The `afterok` itself is never cleared as a gate: it
+        # is left on every job and stays the orphan safety net, because
+        # `--kill-on-invalid-dep=yes` is what reaps the fan-out if this job
+        # dies mid-compile.
+        #
+        # Resolved once, lazily, at the first release: `shutil.which` is a
+        # filesystem walk and the manifest may not be written yet, and
+        # neither is worth paying for in a job with `--gates` pointing at a
+        # head that never got there.
+        release_lock = threading.Lock()
+        release_state = {"resolved": False, "gates": None}
+
+        def _resolve_gates_locked():
+            """The manifest, or ``None`` with the reason logged. Once."""
+            if release_state["resolved"]:
+                return release_state["gates"]
+            release_state["resolved"] = True
+            if shutil.which("scontrol") is None:
+                # `scontrol` is an optional binary in the tool manifest, so
+                # a site can run the whole Slurm backend without it. Say so
+                # once and keep every job on `afterok`.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_unavailable",
+                    reason=(
+                        "no `scontrol` on PATH; simulation jobs stay gated on "
+                        "this build job"
+                    ),
+                )
+                return None
+            try:
+                token = (
+                    read_plan_token(self._abs_invocation_path(plan))
+                    if plan is not None
+                    else None
+                )
+            except FatalRtlBuddyError:
+                # The plan already parsed once above, so this is unreachable
+                # short of the file changing underneath; an unreadable token
+                # only costs the staleness check.
+                token = None
+            payload, reason = wait_for_gates(gates_path, run_token=token)
+            if payload is None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.gates_unavailable",
+                    path=str(gates_path),
+                    reason=reason,
+                )
+                return None
+            release_state["gates"] = payload
+            return payload
+
+        def _release_group(group_dir, members):
+            """Clear the `afterok` of this key's sims. Never raises.
+
+            ``members`` is ``[(plan index, test name), …]`` for the rows
+            this group actually built. Called from the worker that compiled
+            the group, right after its last member returned, so two keys
+            finishing at different times release at different times — which
+            is the entire point.
+            """
+            if gates_path is None or not members or cancellation_has_started():
+                return
+            with release_lock:
+                # Held across the wait on purpose: the manifest is resolved
+                # exactly once for the job, and a second worker arriving
+                # mid-poll should join that wait rather than start its own.
+                # It costs that worker the remainder of a bounded wait, and
+                # only in the run where the head never wrote the file.
+                payload = _resolve_gates_locked()
+            if payload is None:
+                return
+            job_ids = job_ids_for(payload, [index for index, _ in members])
+            if not job_ids:
+                # The manifest knows nothing about these configs: a hand-run
+                # build job over a head's manifest, or a plan whose indices
+                # moved. Nothing to release and nothing wrong.
+                return
+            failures = release_dependency(
+                job_ids, cluster=payload.get("cluster"), cwd=suite_dir
+            )
+            failed = {job_id for job_id, _ in failures}
+            released = [job_id for job_id in job_ids if job_id not in failed]
+            if released:
+                # On the console, not just in the job log: this is the line
+                # that says a 40-minute key stopped holding its tests, and
+                # INFO is invisible on a CI console without it. Emitted from
+                # a pool worker in the batched shape, which is safe on both
+                # halves: logging handlers take the logging lock, and the
+                # console half is a Rich `print` to stderr, never stdout —
+                # so the machine path's JSON stream is untouched.
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.key_released",
+                    group=group_dir,
+                    tests=[name for _, name in members],
+                    job_ids=released,
+                )
+            for job_id, error in failures:
+                # A release that did not happen is a job that starts when
+                # this one ends — slower, never wrong — so it is a warning
+                # and the build continues.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_failed",
+                    group=group_dir,
+                    job_id=job_id,
+                    error=error,
+                )
 
         def _compile_group(group):
             """Compile one group's configs serially; rows for the caller.
@@ -2655,6 +2808,21 @@ class RtlBuddy:
                     else:
                         group_leaders.setdefault(group_dir, name)
                 rows.append((index, name, built, None, runner, group_dir))
+            # Outside the loop, and therefore outside every build-directory
+            # lock `compile_prepared` took: by here this key is built and
+            # stamped, and its sims can start without racing a writer.
+            # Per ROW, not per group: a member that failed, or one whose
+            # build left no stamp for the sim to validate, keeps its gate
+            # and the pre-#548 recovery path.
+            _release_group(
+                group_dir,
+                [
+                    (index, name)
+                    for index, name, built, _error, runner, _dir in rows
+                    if built
+                    and getattr(runner, "last_build_stamp", unreported) is not None
+                ],
+            )
             return rows
 
         # ---- serial phase: construct, PRE, and probe the compile key.
@@ -3852,8 +4020,11 @@ class RtlBuddy:
 
         # (3) Group by resolved resources: elements of one sbatch array must
         # share a reservation shape. Consumes the single expansion; no hook.
-        groups = {}  # (cpus, mem, time) -> list[(row index, TestJobSpec)]
-        for entry in entries:
+        groups = {}  # (cpus, mem, time) -> list[(row index, plan index, spec)]
+        # `plan_index` is the config's position in the plan manifest written
+        # above — the build job's own index for it, and therefore the only
+        # name the two processes share for "this compile key's tests" (#548).
+        for plan_index, entry in enumerate(entries):
             cfg = entry["cfg"]
             resources = resolve_resources(dispatch_cfg, cfg)
             if entry["compile_in_job"]:
@@ -3983,7 +4154,7 @@ class RtlBuddy:
                 # same reservation can ride along in the same array.
                 groups.setdefault(
                     (resources.cpus, resources.mem, resources.time), []
-                ).append((idx, spec))
+                ).append((idx, plan_index, spec))
 
         pending = []  # (row index, JobHandle)
         # When this attempt went out. Retry classification only accepts
@@ -3993,13 +4164,19 @@ class RtlBuddy:
         # forever (#405 review). Taken before the first submit, so it can
         # never be later than a job's own output.
         submitted_at = time.time()
+        # (plan index, test name, job id) per submitted row, for the gates
+        # manifest below. Only the FIRST round of submissions belongs in it:
+        # `_resubmit_retryable` runs after collection, by which time the build
+        # job it would be talking to has long exited, and a retry's jobs are
+        # submitted ungated anyway.
+        gate_entries = []
         try:
             # Per-invocation array dir (head pid) so a resubmit or an
             # overlapping run in the same suite tree never rewrites a
             # manifest under another run's still-queued array elements, which
             # sed the manifest at exec time. Sibling of .shared-builds.
             for array_seq, group_entries in enumerate(groups.values(), start=1):
-                specs = [spec for _, spec in group_entries]
+                specs = [spec for _, _, spec in group_entries]
                 array_dir = dispatch_root / f"{os.getpid()}-{array_seq:03d}"
                 handles = backend.submit_array(
                     specs,
@@ -4019,13 +4196,50 @@ class RtlBuddy:
                         build_handle.job_id if build_handle is not None else None
                     ),
                 )
-                for (idx, _), handle in zip(group_entries, handles):
+                for (idx, plan_index, spec), handle in zip(group_entries, handles):
                     pending.append((idx, handle))
+                    gate_entries.append((plan_index, spec.test_name, handle.job_id))
         except BaseException:
             # A mid-fan-out submit failure must not leak this suite's build
             # job or already-submitted arrays.
             backend.cancel_all([build_handle] + [handle for _, handle in pending])
             raise
+        # The whole suite is out, so every id the build job could release is
+        # known: hand it the map (#548). Written here and not inside the try
+        # above because a manifest naming only half an array would release
+        # only half a compile key, and because failing to write it must not
+        # cancel a fleet that is already correctly gated on `afterok` — the
+        # run simply keeps the pre-#548 behaviour.
+        gates_json = getattr(getattr(build_handle, "spec", None), "gates_json", None)
+        if gates_json is not None:
+            # The SIM jobs' cluster, not the build job's: these are the ids
+            # to be released, and an id is unique only within the cluster
+            # that issued it (#509). Unanimous or nothing — a `--clusters=a,b`
+            # fan-out that landed the arrays in two places has no single
+            # answer, and naming one of them would aim a release at a
+            # stranger's job id. `None` there falls back to the local
+            # cluster, where the release simply fails and logs.
+            sim_clusters = {handle.cluster for _, handle in pending}
+            try:
+                write_gates(
+                    gates_json,
+                    run_token=run_token,
+                    cluster=(
+                        sim_clusters.pop()
+                        if len(sim_clusters) == 1
+                        else build_handle.cluster
+                    ),
+                    entries=gate_entries,
+                )
+            except OSError as e:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.gates_write_failed",
+                    suite_dir=suite_dir,
+                    path=str(gates_json),
+                    error=str(e),
+                )
         return {
             "suite_results": suite_results,
             "pending": pending,
@@ -4280,9 +4494,28 @@ class RtlBuddy:
             # Where the build job records which configs compiled; the head
             # reads it at collect for compile-fail parity.
             result_json=dispatch_root / f"build-result-{os.getpid()}.json",
+            # ...and where the head will record which sim job is waiting on
+            # which planned config, so the build job can release a compile
+            # key's sims as soon as that key is built (#548). Keyed on the
+            # same head pid as the envelope beside it, and only for a
+            # backend whose jobs can be released at all: `local-parallel`
+            # has no pending queue to clear, so it gets no flag and its
+            # build job's argv is byte-identical to before.
+            gates_json=(
+                dispatch_root / f"gates-{os.getpid()}.json"
+                if backend.name == "slurm"
+                else None
+            ),
         )
         # A stale build-result must not annotate this run's collection.
         Path(spec.result_json).unlink(missing_ok=True)
+        # Same for the gates manifest: this pid has been a head before, and
+        # the build job starts polling for this path before the fan-out has
+        # written it. It also carries a run token the build job checks, so
+        # this is belt and braces — but a file that is never read beats one
+        # that is read and rejected.
+        if spec.gates_json is not None:
+            Path(spec.gates_json).unlink(missing_ok=True)
         return backend.submit_build(spec)
 
     @staticmethod

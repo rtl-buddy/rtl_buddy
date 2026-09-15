@@ -105,6 +105,10 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
         argv += ["--plan", str(spec.plan_path)]
     if spec.result_json is not None:
         argv += ["--result-json", str(spec.result_json)]
+    if spec.gates_json is not None:
+        # Absent for every backend that cannot release a pending job, so
+        # their build job's argv is unchanged (#548).
+        argv += ["--gates", str(spec.gates_json)]
     if spec.reg_level is not None:
         argv += ["-l", str(spec.reg_level)]
     if spec.start_level is not None:

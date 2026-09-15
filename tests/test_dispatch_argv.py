@@ -239,3 +239,18 @@ def test_rebuild_is_absent_at_the_default():
     """Nobody asked, so the job script is the one a pre-#494 head wrote."""
     assert "--rebuild" not in build_job_argv(_build_spec())
     assert "--rebuild" not in sim_job_argv(_test_spec())
+
+
+def test_gates_manifest_is_forwarded_to_a_build_job():
+    """The build job is told where to find the head's job-id map (#548)."""
+    argv = build_job_argv(_build_spec(gates_json=Path("/w/.dispatch/gates-7.json")))
+    assert _flag_value(argv, "--gates") == "/w/.dispatch/gates-7.json"
+    assert argv.index("--gates") > argv.index("_build-job")
+
+
+def test_gates_manifest_is_absent_when_the_backend_cannot_release():
+    """No flag, no wait: a build job with no manifest to poll for must have
+    an argv byte-identical to a pre-#548 head's, which is what every
+    ``local-parallel`` run still gets."""
+    assert "--gates" not in build_job_argv(_build_spec())
+    assert BuildJobSpec(suite_dir=".", test_config_path="tests.yaml").gates_json is None

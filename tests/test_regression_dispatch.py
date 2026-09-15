@@ -5244,3 +5244,131 @@ def test_the_collect_audit_skips_a_malformed_stamp_identity(caplog):
     events = _mismatch_events(caplog)
     assert len(events) == 1
     assert events[0]["tests"] == ["delta", "gamma"]
+
+
+# ------------------------------ the head's gates manifest (#548)
+
+
+class _ReleasingBackend(_FakeBackend):
+    """A fake that answers to the one backend name the head gates on.
+
+    The flag is not "a fake backend" but "a backend whose pending jobs can
+    be released", which today is Slurm alone — so the fixture has to claim
+    the name to see the manifest at all.
+    """
+
+    name = "slurm"
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        return [self.submit(spec, dependency=dependency) for spec in specs]
+
+
+def _gates_manifest(project: Path) -> dict:
+    paths = list(project.glob("artefacts/.dispatch/gates-*.json"))
+    assert len(paths) == 1, [str(path) for path in paths]
+    return json.loads(paths[0].read_text())
+
+
+def test_head_records_every_submitted_job_against_its_plan_index(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The manifest is the build job's only way to name a key's jobs (#548).
+
+    The plan index is the shared name: the build job knows its configs by
+    position in the plan manifest, and the head knows which job it gave
+    each of them.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    manifest = _gates_manifest(minimal_project)
+    assert manifest["schema_version"] == 1
+    # Same index space as the plan beside it, and the same order.
+    plans = list(minimal_project.glob("artefacts/.dispatch/plan-*.json"))
+    planned = [test["name"] for test in json.loads(plans[0].read_text())["tests"]]
+    assert [entry["test"] for entry in manifest["entries"]] == planned
+    assert [entry["index"] for entry in manifest["entries"]] == list(
+        range(len(planned))
+    )
+    assert [entry["job_id"] for entry in manifest["entries"]] == [
+        "fake-1",
+        "fake-2",
+    ]
+    # And the token the build job checks the manifest's identity with, so a
+    # manifest an earlier head left at this pid's path is refused.
+    assert manifest["run_token"] == json.loads(plans[0].read_text())["run_token"]
+
+    # The build job is told where to read it, beside its own envelope.
+    spec = backend.build_submitted[0]
+    assert spec.gates_json is not None
+    assert Path(spec.gates_json).parent == Path(spec.result_json).parent
+
+    # The gate itself is untouched: every sim still carries the afterok that
+    # reaps the fan-out if the build job dies (#548 keeps it deliberately).
+    assert backend.dependencies == ["fake-build", "fake-build"]
+
+
+def test_head_writes_no_gates_manifest_for_a_backend_that_cannot_release(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`local-parallel` has no pending queue to clear, so it gets no
+    manifest and its build job's argv is unchanged."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted[0].gates_json is None
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+
+
+def test_head_writes_no_gates_manifest_without_a_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No build job, nothing to release from: a suite whose tests each
+    compile in their own job is ungated already (#358)."""
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted == []
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+
+
+def test_a_gates_manifest_that_cannot_be_written_does_not_fail_the_run(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The manifest is an optimization on top of a gate that is already
+    correct, so losing it must cost the run its early start and nothing
+    else — above all not the fleet that is already submitted."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(rtl_buddy_module, "write_gates", _boom)
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.cancelled is False
+    assert len(backend.submitted) == 2
