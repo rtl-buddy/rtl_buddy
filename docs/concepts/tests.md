@@ -187,6 +187,34 @@ The test's `compile.log` records the same breadcrumb, with the command a rebuild
 
 Verilator, VCS, and Icarus support shared builds. An unsupported builder or an absolute `builder-simv` uses the test's own build directory and logs why cross-test sharing was declined. RTL Buddy overrides relative output-location options so the shared directory owns `simv`.
 
+### Persistent build cache
+
+`artefacts/.shared-builds/` lives inside the workspace, so a CI job that wipes the workspace after every run (`deleteDir()`, `git clean -ffdx`) throws the cache away and recompiles inputs that never changed. Point `shared-build-root` at a directory outside the workspace and the cache outlives the run:
+
+```yaml
+cfg-rtl-reg:
+  reg-cfg-path: regression.yaml
+  shared-build-root: /shared/nfs/rb-build-cache
+```
+
+```bash
+rb regression --share-build --shared-build-root /shared/nfs/rb-build-cache
+```
+
+`--shared-build-root` beats `RTL_BUDDY_SHARED_BUILD_ROOT`, which beats the config key; an empty value at either of the first two turns the cache off for that run. A relative root resolves against the project root — the directory holding `root_config.yaml` — not the working directory, so a dispatched build job and its simulation jobs resolve one path. The root is created on demand and only applies with `--share-build` (which `--dispatch` implies).
+
+Builds land in `<root>/<suite-namespace>/obj_dir_<key>/`, where the namespace is the suite directory relative to the project root with `/` replaced by `__` (`verif/demo_tiny_alu` → `verif__demo_tiny_alu`); a suite outside the project root gets a digest of its absolute path instead. Nothing in the layout names the checkout, which is the point: every checkout on the host shares the cache.
+
+In this mode the compile key changes shape. It is spelled relative to the project root — `run.f` entries and any absolute in-root path in the compile line alike — and it **includes the content hash** of every tracked input. Two checkouts with byte-identical inputs therefore get the same directory and reuse each other's build wherever they sit; two checkouts on different commits get different directories, instead of rebuilding over one another. That makes the directory content-addressed, so a run keeps one directory per distinct input set rather than one per key — a cache to prune rather than a build to rebuild. The stamp is checked on top of the key as usual, and records the project root it was written from so another checkout can re-anchor its entries.
+
+Switching the cache on or off changes every key, so the first run after either compiles once. Nothing prunes the cache; do it between runs, never during one (the build lock lives inside the directory it guards — see [Known issues](../known-issues.md)):
+
+```bash
+find /shared/nfs/rb-build-cache -mindepth 2 -maxdepth 2 -name 'obj_dir_*' -mtime +14 -exec rm -rf {} +
+```
+
+A generated input that is not reproducible byte-for-byte — a `preproc` hook that stamps a timestamp into a header — moves the key rather than only the stamp here, so it strands a directory per run instead of rebuilding in place.
+
 ## Run with randomized seeds
 
 ```bash
