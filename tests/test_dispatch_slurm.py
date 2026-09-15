@@ -4321,3 +4321,156 @@ def test_a_release_batch_shares_one_budget_across_its_ids(monkeypatch):
     assert "budget" in outcome.systemic
     # Nothing failed: the ids simply ran out of time and keep their gate.
     assert outcome.failures == []
+
+
+# ------------------------- an interrupted run's surviving jobs (#521)
+
+
+def test_live_job_ids_asks_squeue_for_the_recorded_bases(monkeypatch):
+    """One query per cluster, over base ids, expanded back to elements.
+
+    The handles come from a run manifest rather than from this process's
+    own submissions, so the ids are all this backend has: it asks about the
+    array bases and maps each squeue row back onto the elements recorded.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=0,
+            stdout="77_[2-3]|Dependency|PENDING|0:00|rb:beta\n",
+            stderr="",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    live = backend.live_job_ids(
+        [
+            JobHandle("76", _spec()),
+            JobHandle("77_1", _spec(run_id=1)),
+            JobHandle("77_2", _spec(run_id=2)),
+            JobHandle("77_3", _spec(run_id=3)),
+        ]
+    )
+
+    (argv,) = calls
+    assert argv[0] == "squeue"
+    assert "--noheader" in argv
+    assert f"--format={slurm_module._SQUEUE_FORMAT}" in argv
+    assert argv[-2] == "--jobs"
+    assert sorted(argv[-1].split(",")) == ["76", "77"]
+    # 77_1 has started and left the queue; the build job 76 is gone.
+    assert live == {"77_2", "77_3"}
+
+
+def test_live_job_ids_reports_a_drained_fleet_as_gone(monkeypatch):
+    """`Invalid job id specified` is how a fleet that aged out of the queue
+    answers, and it is the answer that retires a manifest as stale."""
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="slurm_load_jobs error: Invalid job id specified",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.live_job_ids([JobHandle("88", _spec())]) == set()
+
+
+def test_live_job_ids_treats_a_failed_poll_as_still_live(monkeypatch):
+    """A query that errored says nothing about the jobs.
+
+    Reading it as "gone" would submit a second fleet beside a first one
+    still holding the cluster, or silently skip the `scancel` the user
+    asked for — so an unanswered probe reports the recorded ids live and
+    the run errs towards not acting.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1, stdout="", stderr="slurm_load_jobs error: timeout"
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handles = [JobHandle("91", _spec()), JobHandle("92_1", _spec(run_id=1))]
+    assert backend.live_job_ids(handles) == {"91", "92_1"}
+
+
+def test_live_job_ids_queries_each_cluster_with_its_own_selection(monkeypatch):
+    """A job id means nothing on a cluster that did not issue it (#509), so
+    a fleet spread over two clusters is two queries."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="10|None|RUNNING|0:30|rb:a\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    live = backend.live_job_ids(
+        [
+            JobHandle("10", _spec(), cluster="alpha"),
+            JobHandle("11", _spec(), cluster="beta"),
+        ]
+    )
+
+    assert live == {"10"}
+    assert [argv[argv.index("-M") + 1] for argv in calls] == ["alpha", "beta"]
+
+
+def test_live_job_ids_bounds_each_probe_and_reads_a_timeout_as_live(monkeypatch):
+    """A wedged controller must not hold the cancellation check open.
+
+    `--orphans cancel` re-probes on a 30 s grace and `squeue` had no
+    timeout, so one unresponsive controller could block the head for as
+    long as it liked. The probe now carries the caller's remaining
+    deadline, and running out of it is an answer about the query, never
+    about the jobs — so the ids come back LIVE and the run errs towards
+    not acting (#580 review).
+    """
+    calls = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append((list(argv), timeout))
+        if timeout is not None:
+            # A controller that takes longer than the caller can wait.
+            raise slurm_module.subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handles = [JobHandle("31", _spec()), JobHandle("32_1", _spec(run_id=1))]
+    assert backend.live_job_ids(handles, timeout_s=0.25) == {"31", "32_1"}
+    assert [timeout for _argv, timeout in calls] == [0.25]
+
+    # ...and with no deadline the call is unbounded, exactly as the drain
+    # wait has always issued it.
+    calls.clear()
+    assert backend.live_job_ids(handles) == set()
+    assert [timeout for _argv, timeout in calls] == [None]
+
+
+def test_the_drain_wait_still_polls_without_a_timeout(monkeypatch):
+    """`wait_all` has `max-wait` above it and nothing to gain from giving
+    up on one poll, so its argv and its call shape are unchanged."""
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(timeout)
+        return (
+            results.pop(0)
+            if results
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    backend.wait_all([JobHandle("41", _spec())])
+    assert calls == [None]
