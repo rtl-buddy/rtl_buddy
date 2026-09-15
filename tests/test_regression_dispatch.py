@@ -5525,3 +5525,580 @@ def test_the_gates_skipped_event_has_a_dedicated_human_message():
     assert "/w/verif/blk" in message and "singleton" in message
     assert "waits for its build job" in message
     assert "dispatch gates_skipped" not in message
+
+
+class _OrphanBackend(_ReleasingBackend):
+    """A scheduler-backed fake that can be told what is still queued.
+
+    ``live`` is the set of job ids the "scheduler" still holds, which is
+    the one thing the head asks a backend about an interrupted run: the
+    manifest supplies the ids, the backend says which of them are real.
+    """
+
+    def __init__(self, live=(), **kwargs):
+        super().__init__(**kwargs)
+        self.live = set(live)
+        self.probed = []
+        self.cancelled_handles = []
+
+    def live_job_ids(self, handles):
+        self.probed.append([handle.job_id for handle in handles])
+        return {handle.job_id for handle in handles if handle.job_id in self.live}
+
+    def cancel_all(self, handles):
+        self.cancelled_handles.append([handle.job_id for handle in handles])
+        super().cancel_all(handles)
+
+
+class _PoolBackend(_ReleasingBackend):
+    """A fake whose jobs are the head's own children (`local-parallel`)."""
+
+    name = "local-parallel"
+    scheduled = False
+
+
+def _run_manifests(project: Path) -> list[Path]:
+    return sorted(project.glob("artefacts/.dispatch/run-*.json"))
+
+
+def _run_manifest(project: Path) -> dict:
+    paths = _run_manifests(project)
+    assert len(paths) == 1, [str(path) for path in paths]
+    return json.loads(paths[0].read_text())
+
+
+def _orphan_the_run(project: Path, *, pid=None) -> tuple[Path, dict]:
+    """Rewind this project's manifest to what a killed head leaves behind.
+
+    A head that dies between the fan-out and collection leaves a manifest
+    saying ``running`` and a pid that is not the next run's. Both runs of
+    these tests share one process, so the pid has to be rewritten too —
+    which is also the check that discovery skips a head's own manifest.
+    """
+    paths = _run_manifests(project)
+    assert len(paths) == 1, [str(path) for path in paths]
+    payload = json.loads(paths[0].read_text())
+    payload["status"] = "running"
+    path = paths[0]
+    if pid is not None:
+        payload["pid"] = pid
+        # ...and move it to that pid's path, or the next run in this
+        # process would write its own manifest straight over it.
+        path = path.with_name(f"run-{pid}.json")
+        paths[0].unlink()
+    path.write_text(json.dumps(payload))
+    return path, payload
+
+
+def _all_job_ids(payload) -> list[str]:
+    ids = [entry["job_id"] for entry in payload["pending"]]
+    if payload["build"] is not None:
+        ids.append(payload["build"]["job_id"])
+    return ids
+
+
+def _dispatched_regression(argv=()):
+    """One dispatched regression, with the artefact-tree lock handed back.
+
+    These tests invoke `rb` twice in one process. The tree lock is released
+    when the RtlBuddy that took it is collected, and the second invocation
+    would otherwise refuse to start because the first one's object is still
+    alive on the stack.
+    """
+    result, rb = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+            *argv,
+        ]
+    )
+    rb._artifact_locks.release_all()
+    return result, rb
+
+
+def _console_text(result) -> str:
+    """The console output with its line breaks taken out.
+
+    Rich wraps a warning to the terminal width, so a phrase in the message
+    is split at whatever column the run happened to reach. Collapsing the
+    whitespace asserts on the words rather than on the wrapping.
+    """
+    return " ".join(result.output.split())
+
+
+def _logged_events(project: Path, event: str) -> list[dict]:
+    """Every occurrence of one event in the project's head logs.
+
+    Only usable for an event logged by the LAST thing a suite does: the
+    head re-anchors (and rewrites) the suite's file log before collecting,
+    so a warning from the submit phase is no longer there afterwards.
+    """
+    found = []
+    for log in sorted(project.rglob("rtl_buddy.log")):
+        for line in log.read_text().splitlines():
+            if not line.strip().startswith("{"):
+                continue
+            record = json.loads(line)
+            if record.get("event") == event:
+                found.append(record)
+    return found
+
+
+def _fatal_text(result) -> str:
+    """The message of a fatal raised out of `rb.app`.
+
+    `_invoke` drives the Typer app directly rather than `RtlBuddy.run()`,
+    which is what renders a FatalRtlBuddyError to the console — so the text
+    lives on the exception, not in the captured output.
+    """
+    assert result.exception is not None, result.output
+    return str(result.exception)
+
+
+def test_head_records_its_whole_fleet_in_a_run_manifest(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The record a dead head leaves for the next one (#521).
+
+    Job ids live only in the head's memory and in INFO events, so a killed
+    head's fleet is unreachable. The manifest is the on-disk half: the ids,
+    the specs to rebuild their handles, and the run token their envelopes
+    are stamped with.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+
+    manifest = _run_manifest(minimal_project)
+    assert manifest["schema_version"] == 1
+    assert manifest["backend"] == "slurm"
+    assert manifest["pid"] == os.getpid()
+    # A collected run is settled: the next invocation never probes it.
+    assert manifest["status"] == "collected"
+
+    plans = list(minimal_project.glob("artefacts/.dispatch/plan-*.json"))
+    plan = json.loads(plans[0].read_text())
+    assert manifest["run_token"] == plan["run_token"]
+    assert manifest["plan"] == str(plans[0])
+    assert Path(manifest["suite_config"]).name == "tests.yaml"
+
+    # Every submitted row, against the row index the collector fills in.
+    assert [entry["job_id"] for entry in manifest["pending"]] == ["fake-1", "fake-2"]
+    assert [entry["row"] for entry in manifest["pending"]] == [0, 1]
+    assert manifest["build"]["job_id"] == "fake-build"
+    assert manifest["build"]["spec"]["kind"] == "build"
+    # The sim spec is complete enough to rebuild the handle a collector
+    # needs — above all the envelope path and the plan it was planned from.
+    spec = manifest["pending"][0]["spec"]
+    assert spec["kind"] == "test"
+    assert spec["result_json"].endswith(".json")
+    assert spec["plan_path"] == str(plans[0])
+    assert [row["test_name"] for row in manifest["rows"]] == [
+        entry["spec"]["test_name"] for entry in manifest["pending"]
+    ]
+    # Placeholders and live result objects alike stay out of the record.
+    assert all("results" not in row for row in manifest["rows"])
+    assert manifest["submitted_at"] >= manifest["started_at"]
+
+
+def test_head_marks_the_run_manifest_cancelled_when_it_takes_the_fleet_down(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A cancelled fleet must not read as an orphan on the next run (#521).
+
+    The head that cancels knows more than any later probe can: the jobs are
+    gone because it said so. Leaving the manifest at `running` would make
+    the next invocation query the scheduler about them and — while the
+    records were still in the queue — offer to adopt a dead run.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _FailingWait(_OrphanBackend):
+        def wait_all(self, handles, *, extra_wait=0.0):
+            raise RuntimeError("controller unreachable")
+
+    backend = _FailingWait()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code != 0
+    assert backend.cancelled
+    assert _run_manifest(minimal_project)["status"] == "cancelled"
+
+
+def test_head_writes_no_run_manifest_for_jobs_that_die_with_it(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`local-parallel` runs its jobs as this process's children, so an
+    interrupted run of it leaves nothing to find and nothing to record."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _PoolBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert not _run_manifests(minimal_project)
+
+
+def test_discovery_skips_this_head_and_a_settled_manifest(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two things are never orphans: this process's own manifest, and one
+    whose run already ended.
+
+    The pid test is load-bearing for a regression, which writes a manifest
+    per suite in one directory and would otherwise rediscover the suite it
+    submitted a moment ago.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed == []  # nothing to probe on a first run
+
+    # `running`, but written by this very pid.
+    _orphan_the_run(minimal_project)
+    backend.live = {"fake-1", "fake-2"}
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed == []
+    assert "orphans_found" not in result.output
+
+    # ...and a manifest of another head's run that has been collected.
+    paths = _run_manifests(minimal_project)
+    payload = json.loads(paths[0].read_text())
+    payload["pid"] = os.getpid() + 1
+    payload["status"] = "collected"
+    paths[0].write_text(json.dumps(payload))
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed == []
+
+
+def test_discovery_retires_a_manifest_whose_jobs_have_all_finished(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head killed AFTER its fleet finished leaves a manifest with
+    nothing behind it; it is marked stale so it is probed exactly once."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, _payload = _orphan_the_run(minimal_project, pid=os.getpid() + 1)
+
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed, "the manifest was never put to the backend"
+    assert json.loads(manifest_path.read_text())["status"] == "stale"
+    # Nothing was found, so this run behaved exactly as it always has.
+    assert "still queued or running" not in result.output
+
+
+def test_warn_names_the_orphaned_jobs_and_submits_anyway(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The default: the jobs are named, the run proceeds unchanged (#521)."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project, pid=os.getpid() + 1)
+    orphan_ids = _all_job_ids(payload)
+    backend.live = set(orphan_ids)
+    submitted_before = len(backend.submitted)
+
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    console = _console_text(result)
+    assert "still queued or running" in console
+    for job_id in orphan_ids:
+        assert job_id in console
+    assert "--orphans adopt" in console
+    assert "--orphans cancel" in console
+    # A fresh fleet went out beside the orphan, as it always did.
+    assert len(backend.submitted) > submitted_before
+    assert backend.cancelled_handles == []
+    # Untouched: `warn` reports, it does not decide.
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_cancel_scancels_the_orphaned_fleet_then_submits_a_fresh_one(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--orphans cancel` takes the old fleet down BEFORE this one goes out,
+    so the two never compete for the same nodes."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project, pid=os.getpid() + 1)
+    orphan_ids = _all_job_ids(payload)
+    backend.live = set(orphan_ids)
+    submitted_before = len(backend.submitted)
+
+    result, _rb = _dispatched_regression(["--orphans", "cancel"])
+    assert result.exit_code == 0, result.output
+    # Exactly the orphan's handles, rebuilt from its manifest.
+    assert len(backend.cancelled_handles) == 1
+    assert sorted(backend.cancelled_handles[0]) == sorted(orphan_ids)
+    assert json.loads(manifest_path.read_text())["status"] == "cancelled"
+    assert len(backend.submitted) > submitted_before
+    console = _console_text(result)
+    assert "cancelled 3 job(s) left by an earlier run" in console
+    for job_id in orphan_ids:
+        assert job_id in console
+
+
+def test_adopt_collects_the_orphaned_fleet_and_submits_nothing(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--orphans adopt` is the whole point of the manifest (#521).
+
+    The adopted run collects by the ORPHAN's run token, which is what its
+    jobs stamped their envelopes with — so the check that nothing was
+    submitted and the check that every row scored are the same check.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project, pid=os.getpid() + 1)
+    backend.live = set(_all_job_ids(payload))
+    submitted_before = list(backend.submitted)
+    builds_before = list(backend.build_submitted)
+
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+            "--orphans",
+            "adopt",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.submitted == submitted_before
+    assert backend.build_submitted == builds_before
+    # No second plan either: the adopted jobs read the one their own head
+    # wrote, and this head's pid names no run.
+    assert len(list(minimal_project.glob("artefacts/.dispatch/plan-*.json"))) == 1
+
+    envelope = json.loads(
+        [line for line in result.output.splitlines() if line.startswith("{")][-1]
+    )
+    results = {row["name"]: row["result"] for row in envelope["payload"]["results"]}
+    assert set(results.values()) == {"PASS"}, results
+    assert json.loads(manifest_path.read_text())["status"] == "collected"
+    adopted = _logged_events(minimal_project, "dispatch.orphans_adopted")
+    assert len(adopted) == 1, adopted
+    assert adopted[0]["run_token"] == payload["run_token"]
+    assert adopted[0]["build_job"] == payload["build"]["job_id"]
+
+
+def test_adopt_refuses_a_fleet_that_ran_a_different_test_set(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Adopting a fleet planned from other tests would score this run
+    against results it never asked for, so it is fatal and says what
+    differs."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project, pid=os.getpid() + 1)
+    backend.live = set(_all_job_ids(payload))
+    # Rewrite the record so it names a test this invocation does not plan.
+    payload["rows"][0]["test_name"] = "some_other_test"
+    manifest_path.write_text(json.dumps(payload))
+
+    submitted_before = list(backend.submitted)
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "cannot adopt" in message
+    assert "some_other_test" in message
+    assert "--orphans cancel" in message
+    assert backend.submitted == submitted_before  # nothing new went out
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_adopt_refuses_a_fleet_submitted_from_a_different_config(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two co-located configs share a `.dispatch` namespace only when the
+    regression says so; an adoption still has to name the same one."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project, pid=os.getpid() + 1)
+    backend.live = set(_all_job_ids(payload))
+    payload["suite_config"] = str(minimal_project / "other-tests.yaml")
+    manifest_path.write_text(json.dumps(payload))
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    assert "other-tests.yaml" in _fatal_text(result)
+
+
+def test_adopt_refuses_to_choose_between_two_orphaned_runs(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two interrupted runs with live jobs have no right answer: adopting
+    one silently abandons the other's fleet."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project, pid=os.getpid() + 1)
+    backend.live = set(_all_job_ids(payload))
+    second = manifest_path.with_name("run-999999.json")
+    twin = dict(payload, pid=999999, run_token="a-second-run")
+    second.write_text(json.dumps(twin))
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "found 2 interrupted runs" in message
+    assert "--orphans cancel" in message
+
+
+def test_adopt_refuses_a_backend_whose_jobs_died_with_their_head(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Nothing survives a `local-parallel` head, so `adopt` there is a
+    request that cannot be honoured — and running the suite instead is not
+    what was asked for."""
+    _mark_stub_builder_verilator(minimal_project)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(_PoolBackend())
+    )
+    result, _rb = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "local-parallel",
+            "--orphans",
+            "adopt",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "nothing to adopt" in _fatal_text(result)
+    assert "--dispatch slurm" in _fatal_text(result)
+
+
+def test_an_unknown_orphans_policy_is_rejected(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, _rb = _dispatched_regression(["--orphans", "collect"])
+    assert result.exit_code != 0
+    assert "--orphans must be one of" in _fatal_text(result)
+
+
+def test_a_recorded_job_spec_rebuilds_exactly(tmp_path: Path):
+    """The manifest has to survive JSON: paths, enums and the nested
+    reservation all come back as the types a collector uses."""
+    from rtl_buddy.dispatch.run_manifest import decode_spec, encode_spec
+
+    spec = SimJobSpec(
+        test_name="basic",
+        suite_dir=str(tmp_path),
+        test_config_path=str(tmp_path / "tests.yaml"),
+        result_json=tmp_path / "result.json",
+        run_id=3,
+        seed_mode=SeedMode.NEW,
+        master_seed=99,
+        resolved_seed=7,
+        expect_prebuilt=True,
+        build_result_json=tmp_path / "build-result.json",
+        log_path=tmp_path / "slurm.log",
+        plan_path=tmp_path / "plan.json",
+    )
+    assert decode_spec(encode_spec(spec)) == spec
+
+    build = rtl_buddy_module.BuildJobSpec(
+        suite_dir=str(tmp_path),
+        test_config_path=str(tmp_path / "tests.yaml"),
+        parallel=3,
+        rebuild=True,
+        plan_path=tmp_path / "plan.json",
+        result_json=tmp_path / "build-result.json",
+        gates_json=tmp_path / "gates.json",
+    )
+    assert decode_spec(encode_spec(build)) == build
+
+
+def test_a_manifest_from_another_version_is_skipped_not_fatal(tmp_path: Path):
+    """A run that has submitted nothing must not be refused because of a
+    file a neighbouring rtl_buddy wrote."""
+    from rtl_buddy.dispatch.run_manifest import (
+        discover_run_manifests,
+        load_run_manifest,
+    )
+
+    (tmp_path / "run-1.json").write_text(json.dumps({"schema_version": 99}))
+    (tmp_path / "run-2.json").write_text("{ not json")
+    payload, reason = load_run_manifest(tmp_path / "run-1.json")
+    assert payload is None and "schema_version" in reason
+    assert discover_run_manifests(tmp_path) == []

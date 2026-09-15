@@ -91,6 +91,28 @@ def _run_regression(
     shutil.copytree(fixture, project)
     if prepare_project is not None:
         prepare_project(project)
+    return _rerun_regression(
+        project,
+        work_dir,
+        extra_args=extra_args,
+        extra_env=extra_env,
+        extra_path_dirs=extra_path_dirs,
+    )
+
+
+def _rerun_regression(
+    project: Path,
+    work_dir: Path,
+    extra_args=(),
+    extra_env=None,
+    extra_path_dirs=(),
+):
+    """A second `rb regression` over a project a previous one already ran.
+
+    Same shim environment and the same job db, so the two runs share the
+    scheduler's id space exactly as two invocations against one cluster do
+    — which is what an adoption has to be judged against (#521).
+    """
     env = dict(os.environ)
     prefix = os.pathsep.join(str(path) for path in (*extra_path_dirs, _SHIMS))
     env["PATH"] = f"{prefix}{os.pathsep}{env['PATH']}"
@@ -509,3 +531,67 @@ def test_shim_regression_without_scontrol_says_so_and_still_passes(shim_run):
     ]
     assert events.count("dispatch.release_unavailable") == 1, events
     assert "dispatch.key_released" not in events
+
+
+# ------------------------------ adopting an interrupted run (#521)
+
+
+def test_shim_adopt_collects_an_interrupted_fleet_without_resubmitting(
+    tmp_path_factory,
+):
+    """`--orphans adopt` waits on the old fleet instead of launching one.
+
+    The first run is a complete regression, so its envelopes and its build
+    result really exist on disk; its manifest is then rewound to `running`,
+    which is exactly the state a head killed between the fan-out and
+    collection leaves behind — a synchronous shim head cannot be killed
+    there without losing the envelopes the adoption is supposed to find.
+    `RB_SHIM_LIVE` makes the orphan probe see that fleet still queued, once,
+    so the second run discovers it and the wait that follows sees it drain.
+
+    The assertion that matters is the job db: `sbatch` appends a line per
+    submission, so an adoption that submitted anything at all would grow it.
+    """
+    work = tmp_path_factory.mktemp("dispatch_adopt")
+    proc, _envelope, project, diag = _run_regression(work)
+    assert proc.returncode == 0, diag
+
+    manifests = list(project.glob("verif/blk/artefacts/.dispatch/run-*.json"))
+    assert len(manifests) == 1, [str(path) for path in manifests]
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest["status"] == "collected"
+    assert manifest["backend"] == "slurm"
+    job_ids = [entry["job_id"] for entry in manifest["pending"]]
+    assert job_ids, manifest
+    if manifest["build"] is not None:
+        job_ids.append(manifest["build"]["job_id"])
+
+    manifest["status"] = "running"
+    manifests[0].write_text(json.dumps(manifest))
+    submissions_before = (work / "jobs.db").read_text().splitlines()
+
+    proc, envelope, _project, diag = _rerun_regression(
+        project,
+        work,
+        extra_args=("--orphans", "adopt"),
+        extra_env={"RB_SHIM_LIVE": ",".join(job_ids)},
+    )
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    assert (work / "jobs.db").read_text().splitlines() == submissions_before, diag
+
+    results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
+    assert results == {"alpha": "PASS", "beta": "PASS"}, diag
+    # ...and the adopted run is the one that retires the manifest.
+    assert json.loads(manifests[0].read_text())["status"] == "collected"
+
+    events = [
+        json.loads(line)
+        for line in (project / "verif" / "blk" / "rtl_buddy.log")
+        .read_text()
+        .splitlines()
+        if line.strip().startswith("{")
+    ]
+    adopted = [e for e in events if e.get("event") == "dispatch.orphans_adopted"]
+    assert len(adopted) == 1, [e.get("event") for e in events]
+    assert adopted[0]["run_token"] == manifest["run_token"]
