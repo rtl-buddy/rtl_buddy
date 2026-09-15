@@ -305,6 +305,24 @@ class DispatchBackend(ABC):
         to ``attempts × (backoff + max-wait)``.
         """
 
+    def live_job_ids(self, handles: Sequence[JobHandle | None]) -> set[str]:
+        """Which of these jobs the backend still holds — ids, not handles.
+
+        Unlike :meth:`wait_all` this is asked about jobs THIS process never
+        submitted: an interrupted run's manifest names them, and the
+        question is whether its fleet outlived the head that launched it
+        (#521). The default answer is "none", which is the truth for every
+        backend that executes jobs itself — a local-parallel pool's
+        subprocesses are children of the head and die with it, so an
+        interrupted run leaves nothing to find.
+
+        A scheduler-backed backend overrides this and must be conservative
+        about a query it could not run: reporting "gone" from a broken
+        ``squeue`` would let a second fleet be submitted alongside a first
+        one that is still running.
+        """
+        return set()
+
     @abstractmethod
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         """Best-effort cancellation of all outstanding jobs.

@@ -82,6 +82,7 @@ from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
 from .config.dispatch import (
+    ORPHANS_POLICIES,
     JobResources,
     combine_for_in_job_compile,
     compile_parallel,
@@ -107,6 +108,20 @@ from .dispatch.plan import (
     write_plan,
 )
 from .dispatch.progress import group_job_ids
+from .dispatch.run_manifest import (
+    STATUS_CANCELLED,
+    STATUS_COLLECTED,
+    STATUS_STALE,
+    build_from,
+    discover_run_manifests,
+    handles_from,
+    pending_from,
+    row_identities,
+    run_manifest_path,
+    set_run_status,
+    update_pending_job_ids,
+    write_run_manifest,
+)
 from .dispatch.retry import backoff_delay, classify_missing_result
 from .dispatch.rightsize import (
     analyze_build_reservation,
@@ -811,6 +826,12 @@ class RtlBuddy:
         self.expect_prebuilt = False
         # `--rebuild`: distrust the build stamps and compile anyway (#494).
         self.rebuild = False
+        # `--orphans`: what this invocation does about a previous run's jobs
+        # that outlived their head (#521). `None` defers to
+        # `cfg-dispatch.orphans`, which defaults to `warn`; `_orphans_policy`
+        # is the resolved answer, fixed once the backend is known.
+        self._orphans: str | None = None
+        self._orphans_policy: str = "warn"
         self.build_result_json = None
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
@@ -1541,10 +1562,22 @@ class RtlBuddy:
                 show_default="cfg-dispatch jobs, else min(4, cpu count)",
             ),
         ] = None,
+        orphans: Annotated[
+            str,
+            typer.Option(
+                "--orphans",
+                help="what to do about an interrupted run's jobs that are "
+                "still queued or running (warn, cancel, adopt)",
+                show_default="cfg-dispatch orphans, else warn",
+            ),
+        ] = None,
     ):
         """
         run a simple test
         """
+        # Recorded before anything resolves a backend: the policy is
+        # validated against the selected backend there (#521).
+        self._orphans = orphans
         master_seed = self._checked_master_seed(master_seed)
         if master_seed is not None and (rnd_new or rnd_last):
             raise FatalRtlBuddyError(
@@ -1856,10 +1889,20 @@ class RtlBuddy:
                 show_default="cfg-dispatch jobs, else min(4, cpu count)",
             ),
         ] = None,
+        orphans: Annotated[
+            str,
+            typer.Option(
+                "--orphans",
+                help="what to do about an interrupted run's jobs that are "
+                "still queued or running (warn, cancel, adopt)",
+                show_default="cfg-dispatch orphans, else warn",
+            ),
+        ] = None,
     ):
         """
         repeat a test with multiple random seeds
         """
+        self._orphans = orphans
         self.rebuild = rebuild
         self._shared_build_root_flag = shared_build_root
         self.rtl_builder_mode = (
@@ -3788,7 +3831,7 @@ class RtlBuddy:
         dispatch_cfg = self.root_cfg.get_dispatch_cfg()
         if jobs is not None:
             dispatch_cfg = replace(dispatch_cfg, jobs=jobs)
-        return create_dispatch_backend(
+        backend = create_dispatch_backend(
             backend_name,
             dispatch_cfg,
             # Which root_config.yaml this `cfg-dispatch` came from, snapshotted
@@ -3798,6 +3841,65 @@ class RtlBuddy:
             # edit hint has to name (#527).
             config_path=getattr(self.root_cfg, "root_cfg_path", None),
         )
+        # Validate `--orphans` / `cfg-dispatch.orphans` against the backend
+        # that was actually selected, before the run plans anything (#521).
+        self._orphans_policy = self._resolve_orphans_policy(backend)
+        return backend
+
+    def _resolve_orphans_policy(self, backend):
+        """``warn`` / ``cancel`` / ``adopt`` for this run (#521).
+
+        CLI ``--orphans`` over ``cfg-dispatch.orphans`` over ``warn``,
+        validated here rather than by Typer so the flag and the config key
+        are rejected by one message before anything is submitted.
+
+        Resolved ONCE, beside the backend, and for the same reason: a
+        multi-root regression rebuilds ``root_cfg`` per suite, and a policy
+        re-read there would let one suite's root_config.yaml decide what
+        happens to another suite's orphans.
+
+        Only a scheduler-backed backend can leave anything behind — the
+        local path runs tests in this process and ``local-parallel`` in its
+        children, both of which die with the head. ``adopt`` asked for
+        explicitly is therefore FATAL there: it names jobs that provably do
+        not exist, and quietly running the suite instead is not what was
+        asked for. The same policy *inherited from config* degrades to
+        ``warn`` with a notice, because a project that sets it for its
+        Slurm regressions must still be able to run ``rb test`` locally.
+        """
+        value = self._orphans
+        if value is None:
+            value = self.root_cfg.get_dispatch_cfg().orphans
+        else:
+            value = value.strip().lower()
+            if value not in ORPHANS_POLICIES:
+                raise FatalRtlBuddyError(
+                    f"--orphans must be one of {', '.join(ORPHANS_POLICIES)} "
+                    f"(got {self._orphans!r})."
+                )
+        if backend is not None and backend.scheduled:
+            return value
+        name = backend.name if backend is not None else "local"
+        if value == "adopt" and self._orphans is not None:
+            raise FatalRtlBuddyError(
+                f"--orphans adopt needs a scheduler-backed dispatch backend, "
+                f"but this run uses {name}: its jobs are this process's own "
+                "children and die with the head, so there is nothing to "
+                "adopt. Re-run the tests, or use --dispatch slurm."
+            )
+        if value != "warn":
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.orphans_ignored",
+                orphans=value,
+                backend=name,
+                reason=(
+                    "only a scheduler-backed backend can leave jobs running "
+                    "after the head exits"
+                ),
+            )
+        return "warn"
 
     def _reject_early_stop_under_dispatch(self, dispatch, backend):
         """Reject ``--early-stop`` under dispatch, naming what selected it.
@@ -3827,6 +3929,32 @@ class RtlBuddy:
             f"sim+post; {remedy}."
         )
 
+    @staticmethod
+    def _close_run_manifest(state, status):
+        """Record how one suite's fleet ended, for the next run (#521).
+
+        The manifest exists to tell a later invocation whether an earlier
+        one's jobs are still out there. A run that reaches collection or
+        teardown answers that itself, so it says so and the next run never
+        has to ask the scheduler about it. Best effort in both directions:
+        a status that cannot be written costs one wasted ``squeue`` and a
+        `dispatch.orphans_found` about a fleet that has in fact ended,
+        which the probe then retires as stale.
+        """
+        path = (state or {}).get("run_manifest")
+        if path is None:
+            return
+        reason = set_run_status(path, status)
+        if reason is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.run_manifest_status_failed",
+                path=str(path),
+                status=status,
+                error=reason,
+            )
+
     def _wait_or_cancel(self, backend, state):
         """Await one submitted suite's fleet; cancel it if the head dies.
 
@@ -3849,6 +3977,10 @@ class RtlBuddy:
             backend.wait_all(handles)
         except BaseException:
             backend.cancel_all(handles)
+            # The fleet is down, so the record of it must not keep saying
+            # `running` — the next invocation would probe the scheduler for
+            # jobs this head has just cancelled (#521).
+            self._close_run_manifest(state, STATUS_CANCELLED)
             raise
 
     @staticmethod
@@ -3905,86 +4037,309 @@ class RtlBuddy:
                     "directories"
                 )
 
-    def _dispatch_suite_submit(
-        self,
-        suite_cfg,
-        backend,
-        *,
-        run_token,
-        prepared=None,
-        dispatch_namespace=None,
-        test_name=None,
-        reg_level=None,
-        start_level=None,
-        run_ids=None,
-        seed_mode: SeedMode = SeedMode.DEFAULT,
-        replay_run_id=None,
-        master_seed: int | None = None,
-    ):
-        """Plan + build job + array fan-out for one suite; no waiting (#351).
+    def _discover_orphan_runs(self, backend, dispatch_root):
+        """Interrupted runs of this suite whose jobs are still on the cluster.
 
-        Nothing heavy runs on the submit host (usually an interactive login
-        node). Phases: (1) **plan** — expand the suite's sweep hooks *once*
-        on the head and write the resulting configs to a plan manifest.
-        (2) submit a **build job** that compiles the shared executable on a
-        compute node (``rb _build-job --plan``, share-build) — skipped when
-        no planned test's builder can share a build, since its output would
-        be unreadable to every sim job (#358). (3) Fan-out — group the sim
-        jobs by resolved resources into ``sbatch`` arrays (``rb _test-job
-        --plan``), each gated on the build via ``--dependency=afterok`` (a
-        sim only starts once its shared build succeeded; its own
-        ``compile()`` then short-circuits on the stamp and it runs SIM+POST).
-        A group whose builder compiles inside the job instead is left
-        ungated and carries a reservation covering both phases. Neither the
-        build job nor the sim jobs re-run the sweep hook — they read the
-        plan. Returns collect state for
-        :meth:`_dispatch_collect` including the build handle; the caller
-        owns the (cross-suite) wait. Partial submissions are cancelled here
-        on a mid-fan-out failure; the caller additionally cancels the whole
-        fleet on a later failure or interrupt.
+        The scan is over run manifests, never over scheduler job names: two
+        invocations of one suite submit the same build-job name — that is
+        exactly what the shared-build dedup serialises on (#515) — so a
+        name-keyed search would happily adopt or cancel a colleague's fleet.
+        A manifest is one head's record of one fan-out, and the ``run_token``
+        in it is what the envelopes its jobs write are stamped with.
+
+        Every manifest still marked ``running`` is put to the backend: a
+        manifest with nothing live left behind it is a head that died after
+        its fleet finished, so it is retired as ``stale`` and never probed
+        again. Returns one record per manifest that still has live jobs.
         """
-        if run_ids is None:
-            run_ids = [None]
-        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
-        dispatch_cfg = self.root_cfg.get_dispatch_cfg()
-        if prepared is None:
-            suite_results = []
-            # (1) Plan: one sweep expansion for the whole suite, on the head.
-            entries = self._plan_dispatch_suite(
-                suite_cfg,
-                test_name=test_name,
-                reg_level=reg_level,
-                start_level=start_level,
-                run_ids=run_ids,
-                suite_results=suite_results,
-                seed_mode=seed_mode,
-                master_seed=master_seed,
+        if not backend.scheduled:
+            # local-parallel runs its jobs as this process's children; an
+            # interrupted run of it leaves nothing behind to discover, and
+            # probing would be a query about jobs that cannot exist.
+            return []
+        orphans = []
+        for path, payload in discover_run_manifests(dispatch_root):
+            try:
+                handles = handles_from(payload)
+            except (KeyError, TypeError, ValueError) as e:
+                # A manifest from a neighbouring rtl_buddy whose job specs
+                # this one cannot rebuild. Skipped rather than fatal: this
+                # run has submitted nothing yet, and refusing to start
+                # because of a file another version wrote would make an
+                # upgrade unrunnable.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "dispatch.orphan_run_unreadable",
+                    path=str(path),
+                    error=str(e)[:200],
+                )
+                continue
+            live = sorted(backend.live_job_ids(handles)) if handles else []
+            if live:
+                orphans.append(
+                    {
+                        "path": path,
+                        "payload": payload,
+                        "handles": handles,
+                        "live": live,
+                    }
+                )
+                continue
+            reason = set_run_status(path, STATUS_STALE)
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.orphan_run_stale",
+                path=str(path),
+                run_token=payload.get("run_token"),
+                jobs=len(handles),
+                error=reason,
             )
-        else:
-            entries = prepared["entries"]
-            suite_results = prepared["suite_results"]
-        if not entries:
-            # Every test filtered out by -l/-s: nothing to compile or run.
-            # Submitting a build job here would queue an rb _build-job that
-            # iterates nothing and make wait_all block on it for zero work.
-            return {"suite_results": suite_results, "pending": [], "build_handle": None}
+        return orphans
 
-        dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
-        if dispatch_namespace is not None:
-            dispatch_root /= dispatch_namespace
-        # ``run_token`` is the head's per-invocation nonce (one per regression
-        # run, shared across suites). Threaded to every sim job through the
-        # plan; each job stamps it into its result envelope so collection
-        # tells this run's result from a stale one by identity, not absence
-        # (#362).
-        plan_path = write_plan(
-            dispatch_root / f"plan-{os.getpid()}.json",
-            str(suite_cfg.get_path()),
-            [e["cfg"] for e in entries],
-            run_token,
-            master_seed=master_seed,
+    @staticmethod
+    def _warn_about_orphan_runs(orphans, *, suite_dir):
+        """Name an interrupted run's surviving jobs, and change nothing.
+
+        The default, and deliberately inert: this run proceeds with a fresh
+        fleet exactly as every release before #521 did. Acting by default
+        would mean either destroying a fleet that may be one minute from
+        finishing or binding this run's verdict to results it did not
+        submit, and neither is a decision to take on a user's behalf.
+
+        WARNING and console-visible, because the cost of not seeing it is a
+        doubled cluster footprint, and a long dispatched run's CI log is
+        often the only artefact anybody reads (#435).
+        """
+        for orphan in orphans:
+            payload = orphan["payload"]
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.orphans_found",
+                suite_dir=suite_dir,
+                manifest=str(orphan["path"]),
+                run_token=payload.get("run_token"),
+                pid=payload.get("pid"),
+                job_ids=group_job_ids(orphan["live"]),
+                jobs=len(orphan["live"]),
+                remedy=(
+                    "re-run with --orphans adopt to collect these jobs "
+                    "instead of submitting new ones, or --orphans cancel to "
+                    "scancel them first"
+                ),
+            )
+
+    def _cancel_orphan_runs(self, backend, orphans, *, suite_dir):
+        """``scancel`` an interrupted run's fleet, then proceed normally.
+
+        The handles are rebuilt from the manifest, so the cancellation goes
+        through the same per-cluster ``scancel`` any live run's teardown
+        uses — an id means nothing on a cluster that did not issue it
+        (#509). The manifest is marked ``cancelled`` whether or not the
+        scheduler agreed: what it records is this head's decision about the
+        run, and a job that had already ended is cancelled in the only
+        sense that matters here.
+        """
+        for orphan in orphans:
+            payload = orphan["payload"]
+            backend.cancel_all(orphan["handles"])
+            set_run_status(orphan["path"], STATUS_CANCELLED)
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.orphans_cancelled",
+                backend=backend.name,
+                suite_dir=suite_dir,
+                manifest=str(orphan["path"]),
+                run_token=payload.get("run_token"),
+                pid=payload.get("pid"),
+                job_ids=group_job_ids(orphan["live"]),
+                jobs=len(orphan["live"]),
+            )
+
+    def _adopt_orphan_run(
+        self,
+        orphans,
+        *,
+        backend,
+        suite_cfg,
+        suite_dir,
+        dispatch_cfg,
+        entries,
+        suite_results,
+    ):
+        """Collect an interrupted run's fleet instead of submitting one (#521).
+
+        Returns the same collect state a submission would have, rebuilt
+        from the manifest: the orphan's handles, its ``run_token`` (which
+        is what makes its jobs' envelopes acceptable to *this* head, #362),
+        and its submission time (which is what retry classification dates
+        artefacts against, #405). Nothing is submitted and no new plan is
+        written — the adopted jobs are already reading the plan their own
+        head wrote, and a second plan at this pid's path would name a run
+        that does not exist.
+
+        Every way this could collect the wrong thing is a hard error rather
+        than a fallback to submitting, because the fallback is the failure:
+        it would run the suite twice over one set of artefact directories.
+        """
+        if not orphans:
+            raise FatalRtlBuddyError(
+                f"--orphans adopt found no interrupted run of {suite_dir} with "
+                "jobs still queued or running. Nothing was submitted. Drop "
+                "--orphans (or pass --orphans warn) to run the suite normally."
+            )
+        if len(orphans) > 1:
+            listed = ", ".join(
+                f"{orphan['path']} (run_token "
+                f"{orphan['payload'].get('run_token')}, "
+                f"{len(orphan['live'])} live jobs)"
+                for orphan in orphans
+            )
+            raise FatalRtlBuddyError(
+                f"--orphans adopt found {len(orphans)} interrupted runs of "
+                f"{suite_dir} with live jobs and cannot choose between them: "
+                f"{listed}. Cancel the ones you do not want (scancel their "
+                "ids, or re-run with --orphans cancel to take all of them "
+                "down) and try again."
+            )
+        orphan = orphans[0]
+        payload = orphan["payload"]
+        manifest_path = orphan["path"]
+        this_config = str(Path(suite_cfg.get_path()).resolve())
+        if payload.get("suite_config") != this_config:
+            raise self._adopt_mismatch(
+                manifest_path,
+                payload,
+                "it was submitted for test config "
+                f"{payload.get('suite_config')!r}, not {this_config!r}",
+            )
+        if payload.get("backend") != backend.name:
+            raise self._adopt_mismatch(
+                manifest_path,
+                payload,
+                f"it was submitted with the {payload.get('backend')!r} backend, "
+                f"not {backend.name!r}",
+            )
+        planned = [(row["test_name"], row["randmode_i"]) for row in suite_results]
+        recorded = row_identities(payload)
+        if recorded != planned:
+            only_recorded = [row for row in recorded if row not in planned]
+            only_planned = [row for row in planned if row not in recorded]
+            difference = []
+            if only_recorded:
+                difference.append(
+                    "it ran "
+                    + ", ".join(self._row_label(row) for row in only_recorded[:10])
+                )
+            if only_planned:
+                difference.append(
+                    "this run plans "
+                    + ", ".join(self._row_label(row) for row in only_planned[:10])
+                )
+            if not difference:
+                # Same rows, different order: the plan expanded differently,
+                # which is as much a mismatch as a different set — the row
+                # index is what binds a job to a result.
+                difference.append("its tests are in a different order")
+            raise self._adopt_mismatch(manifest_path, payload, "; ".join(difference))
+        try:
+            build_handle = build_from(payload)
+            pending = pending_from(payload)
+        except (KeyError, TypeError, ValueError) as e:
+            raise self._adopt_mismatch(
+                manifest_path, payload, f"its job records cannot be read ({e})"
+            ) from e
+
+        # Put the submit-time reservation metadata back on the rows this
+        # head just planned. Right-sizing reads it per row (which cpus were
+        # requested, which compile floor bounds the advice) and only the
+        # head that submitted these jobs ever knew it; without this an
+        # adopted run would produce sacct telemetry with nothing to judge it
+        # against. `results` is deliberately not in the manifest — the fresh
+        # expansion owns the skip/setup verdicts, and every runnable row's
+        # result comes from the envelope at collect.
+        for row, recorded_row in zip(suite_results, payload.get("rows") or []):
+            for key, value in recorded_row.items():
+                if key != "results":
+                    row[key] = value
+
+        (
+            suite_compile,
+            build_compile_resources,
+            build_compile_origins,
+            build_parallel,
+        ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
+        log_console_event(
+            logger,
+            logging.INFO,
+            "dispatch.orphans_adopted",
+            backend=backend.name,
+            suite_dir=suite_dir,
+            manifest=str(manifest_path),
+            run_token=payload.get("run_token"),
+            pid=payload.get("pid"),
+            job_ids=group_job_ids(orphan["live"]),
+            jobs=len(orphan["live"]),
+            build_job=build_handle.job_id if build_handle is not None else None,
+        )
+        return {
+            "suite_results": suite_results,
+            "pending": pending,
+            "build_handle": build_handle,
+            # The ORPHAN's token, not this invocation's: its jobs stamp
+            # their envelopes with the token their own head planned them
+            # with, and collection accepts an envelope by that identity.
+            "run_token": payload.get("run_token"),
+            "submitted_at": payload.get("submitted_at"),
+            "suite_compile": suite_compile,
+            "build_compile_resources": build_compile_resources,
+            "build_compile_origins": build_compile_origins,
+            # Re-read from THIS invocation's backend rather than recorded:
+            # an `sbatch-args` cpu override is a property of the config an
+            # edit hint would tell the user to change, and that is the one
+            # in front of them now.
+            "cpus_override": cpu_request_overrides(backend.effective_sbatch_args),
+            "run_manifest": manifest_path,
+        }
+
+    @staticmethod
+    def _row_label(row):
+        """``test`` or ``test:run_id`` for one ``(name, run id)`` row."""
+        name, run_id = row
+        return name if run_id is None else f"{name}:{run_id}"
+
+    @staticmethod
+    def _adopt_mismatch(manifest_path, payload, difference):
+        """The one error shape every failed adoption takes."""
+        return FatalRtlBuddyError(
+            f"--orphans adopt cannot adopt {manifest_path} (run_token "
+            f"{payload.get('run_token')}, submitted by pid "
+            f"{payload.get('pid')}): {difference}. Adopting it would score "
+            "this run against a fleet that is not the one it planned. Re-run "
+            "with --orphans cancel to take those jobs down and start over, or "
+            "with the same arguments the interrupted run used."
         )
 
+    @staticmethod
+    def _resolve_build_compile(suite_cfg, dispatch_cfg, entries):
+        """``(suite compile block, build reservation, its origins, parallel)``.
+
+        The suite's own ``compile:`` block (#497) is the most specific
+        suite-wide layer of the compile reservation and is per suite
+        exactly like the build job it sizes, so it is read once and
+        threaded to every consumer — the build job, the in-job compile
+        combination, and the post-run advice, which has no ``suite_cfg``
+        of its own — rather than re-read where each of them needs it. An
+        adopted run (#521) rebuilds its state through the same helper.
+
+        The reservation is aggregated over the builds this plan produces
+        (#551); see the comments below for the key and the ``parallel``
+        the aggregation is scheduled against.
+        """
+        suite_compile = suite_cfg.get_compile()
         # The suite's own `compile:` block, if any (#497) — the most
         # specific layer of the compile reservation, and per suite exactly
         # like the build job it sizes. Read once here and threaded to both
@@ -3992,8 +4347,6 @@ class RtlBuddy:
         # further down) so the two can never resolve differently, and
         # stashed in the returned state for the post-run advice, which has
         # no suite_cfg of its own.
-        suite_compile = suite_cfg.get_compile()
-
         # The BUILDS this plan will produce, in plan order, each paired with
         # the `compile:` block that sizes it. The one build job compiles all
         # of them, so its reservation is aggregated over these (#551) — and
@@ -4059,6 +4412,129 @@ class RtlBuddy:
             suite_compile,
             planned_builds,
             parallel=build_parallel,
+        )
+
+        return (
+            suite_compile,
+            build_compile_resources,
+            build_compile_origins,
+            build_parallel,
+        )
+
+    def _dispatch_suite_submit(
+        self,
+        suite_cfg,
+        backend,
+        *,
+        run_token,
+        prepared=None,
+        dispatch_namespace=None,
+        test_name=None,
+        reg_level=None,
+        start_level=None,
+        run_ids=None,
+        seed_mode: SeedMode = SeedMode.DEFAULT,
+        replay_run_id=None,
+        master_seed: int | None = None,
+    ):
+        """Plan + build job + array fan-out for one suite; no waiting (#351).
+
+        Nothing heavy runs on the submit host (usually an interactive login
+        node). Phases: (1) **plan** — expand the suite's sweep hooks *once*
+        on the head and write the resulting configs to a plan manifest.
+        (2) submit a **build job** that compiles the shared executable on a
+        compute node (``rb _build-job --plan``, share-build) — skipped when
+        no planned test's builder can share a build, since its output would
+        be unreadable to every sim job (#358). (3) Fan-out — group the sim
+        jobs by resolved resources into ``sbatch`` arrays (``rb _test-job
+        --plan``), each gated on the build via ``--dependency=afterok`` (a
+        sim only starts once its shared build succeeded; its own
+        ``compile()`` then short-circuits on the stamp and it runs SIM+POST).
+        A group whose builder compiles inside the job instead is left
+        ungated and carries a reservation covering both phases. Neither the
+        build job nor the sim jobs re-run the sweep hook — they read the
+        plan. Returns collect state for
+        :meth:`_dispatch_collect` including the build handle; the caller
+        owns the (cross-suite) wait. Partial submissions are cancelled here
+        on a mid-fan-out failure; the caller additionally cancels the whole
+        fleet on a later failure or interrupt.
+        """
+        if run_ids is None:
+            run_ids = [None]
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        dispatch_cfg = self.root_cfg.get_dispatch_cfg()
+        dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
+        if dispatch_namespace is not None:
+            dispatch_root /= dispatch_namespace
+        # When this head started work on this suite, for the run manifest
+        # below — the reader of an interrupted run's manifest has no other
+        # way to tell a fleet submitted minutes ago from one from yesterday.
+        started_at = time.time()
+        # (0) An earlier run of this suite whose head died with its fleet
+        # still on the cluster (#521). Probed BEFORE anything is planned, so
+        # `--orphans cancel` takes the old fleet down before this one
+        # competes with it for the same nodes, and `--orphans adopt` can
+        # decline to submit at all.
+        orphans = self._discover_orphan_runs(backend, dispatch_root)
+        if orphans and self._orphans_policy == "cancel":
+            self._cancel_orphan_runs(backend, orphans, suite_dir=suite_dir)
+            orphans = []
+        elif orphans and self._orphans_policy == "warn":
+            self._warn_about_orphan_runs(orphans, suite_dir=suite_dir)
+        if prepared is None:
+            suite_results = []
+            # (1) Plan: one sweep expansion for the whole suite, on the head.
+            entries = self._plan_dispatch_suite(
+                suite_cfg,
+                test_name=test_name,
+                reg_level=reg_level,
+                start_level=start_level,
+                run_ids=run_ids,
+                suite_results=suite_results,
+                seed_mode=seed_mode,
+                master_seed=master_seed,
+            )
+        else:
+            entries = prepared["entries"]
+            suite_results = prepared["suite_results"]
+        if self._orphans_policy == "adopt":
+            # Collect the orphan instead of launching anything. Checked
+            # before the zero-test early return below, so "you asked to adopt
+            # and this invocation plans nothing" is a diagnosed mismatch
+            # rather than a silent no-op that leaves the fleet running.
+            return self._adopt_orphan_run(
+                orphans,
+                backend=backend,
+                suite_cfg=suite_cfg,
+                suite_dir=suite_dir,
+                dispatch_cfg=dispatch_cfg,
+                entries=entries,
+                suite_results=suite_results,
+            )
+        if not entries:
+            # Every test filtered out by -l/-s: nothing to compile or run.
+            # Submitting a build job here would queue an rb _build-job that
+            # iterates nothing and make wait_all block on it for zero work.
+            return {"suite_results": suite_results, "pending": [], "build_handle": None}
+
+        (
+            suite_compile,
+            build_compile_resources,
+            build_compile_origins,
+            build_parallel,
+        ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
+
+        # ``run_token`` is the head's per-invocation nonce (one per regression
+        # run, shared across suites). Threaded to every sim job through the
+        # plan; each job stamps it into its result envelope so collection
+        # tells this run's result from a stale one by identity, not absence
+        # (#362).
+        plan_path = write_plan(
+            dispatch_root / f"plan-{os.getpid()}.json",
+            str(suite_cfg.get_path()),
+            [e["cfg"] for e in entries],
+            run_token,
+            master_seed=master_seed,
         )
 
         # (2) Build job — unless nothing in this suite could use its output.
@@ -4376,12 +4852,50 @@ class RtlBuddy:
                     path=str(gates_json),
                     error=str(e),
                 )
+        # ...and the record of the whole fleet, for the head that comes
+        # after this one if this one never returns (#521). Written at the
+        # same point as the gates manifest and for the same reason: a
+        # manifest naming half an array would let the next run adopt half a
+        # fleet. Only for a backend the scheduler keeps alive — a
+        # local-parallel pool's jobs are this process's children and die
+        # with it, so there would never be anything to find.
+        run_manifest = None
+        if backend.scheduled:
+            try:
+                run_manifest = write_run_manifest(
+                    run_manifest_path(dispatch_root),
+                    run_token=run_token,
+                    backend=backend.name,
+                    started_at=started_at,
+                    submitted_at=submitted_at,
+                    suite_config=Path(suite_cfg.get_path()).resolve(),
+                    plan=plan_path,
+                    build=build_handle,
+                    pending=pending,
+                    rows=suite_results,
+                )
+            except (OSError, TypeError, ValueError) as e:
+                # Never fatal: the fleet is submitted and correct, and all
+                # that is lost is the next run's ability to find it. The
+                # console ids from `dispatch.suite_submitted` remain the
+                # manual route, exactly as before this existed (#435).
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.run_manifest_write_failed",
+                    suite_dir=suite_dir,
+                    path=str(run_manifest_path(dispatch_root)),
+                    error=str(e),
+                )
         return {
             "suite_results": suite_results,
             "pending": pending,
             "build_handle": build_handle,
             "run_token": run_token,
             "submitted_at": submitted_at,
+            # Where this suite's fleet is recorded, so collection can retire
+            # it (`collected`) and a teardown can mark it `cancelled`.
+            "run_manifest": run_manifest,
             # For _analyze_reservations, which re-resolves the compile
             # reservation from the root config alone and has no suite_cfg
             # (#497) — same route as build_telemetry/build_compile_work.
@@ -4785,6 +5299,7 @@ class RtlBuddy:
         suite_results = state["suite_results"]
         pending = state["pending"]
         if not pending:
+            self._close_run_manifest(state, STATUS_COLLECTED)
             return suite_results
         retry_cfg = self.root_cfg.get_dispatch_cfg().effective_retry()
         attempt = 0
@@ -4804,6 +5319,7 @@ class RtlBuddy:
             )
             if not retryable:
                 self._audit_shared_binaries(suite_results)
+                self._close_run_manifest(state, STATUS_COLLECTED)
                 return suite_results
             attempt += 1
             resubmitted_at = time.time()
@@ -4816,6 +5332,12 @@ class RtlBuddy:
                     suite_results=suite_results,
                 )
                 submitted_at = resubmitted_at
+                # A retry is a fresh submission with fresh job ids, so the
+                # manifest has to name the fleet that is now outstanding —
+                # otherwise an interrupted retry round leaves a record
+                # pointing at the jobs of the attempt before it (#521).
+                if state.get("run_manifest") is not None:
+                    update_pending_job_ids(state["run_manifest"], pending)
             except (FatalRtlBuddyError, OSError, subprocess.SubprocessError) as e:
                 # A retry is a best-effort second chance, never a way to
                 # lose a scored regression. Every row of this pass — this
@@ -4845,6 +5367,7 @@ class RtlBuddy:
                     error=str(e),
                 )
                 self._audit_shared_binaries(suite_results)
+                self._close_run_manifest(state, STATUS_COLLECTED)
                 return suite_results
 
     def _resubmit_retryable(
@@ -5703,10 +6226,20 @@ class RtlBuddy:
                 show_default="cfg-dispatch jobs, else min(4, cpu count)",
             ),
         ] = None,
+        orphans: Annotated[
+            str,
+            typer.Option(
+                "--orphans",
+                help="what to do about an interrupted run's jobs that are "
+                "still queued or running (warn, cancel, adopt)",
+                show_default="cfg-dispatch orphans, else warn",
+            ),
+        ] = None,
     ):
         """
         run rtl regression
         """
+        self._orphans = orphans
         master_seed = self._checked_master_seed(master_seed)
         merge_mode_count = sum(
             1
@@ -5926,6 +6459,12 @@ class RtlBuddy:
                 # fleet running.
                 _replace_environ(final_environ)
                 dispatch_backend.cancel_all(all_handles)
+                # ...and don't leave every suite's manifest claiming a fleet
+                # that has just been cancelled: the next invocation reads
+                # those to decide what is still out there (#521). Only the
+                # suites that got as far as submitting have one.
+                for _suite_cfg, submitted_state in submitted:
+                    self._close_run_manifest(submitted_state, STATUS_CANCELLED)
                 raise
             for suite_cfg, state in submitted:
                 # Re-anchor the file log under this suite before collecting,

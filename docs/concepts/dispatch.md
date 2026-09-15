@@ -117,6 +117,24 @@ The head writes the plan-index-to-job-id map the build job needs to `artefacts/.
 
 A released array element honours the array's `%N` throttle from `cfg-dispatch.max-jobs-per-array` like any other element, so the release changes when an element becomes eligible, not how many of them run at once. Retried jobs are never released — they are submitted after collection, when the build job is long gone. `--dispatch local-parallel` has no pending queue to clear and is unchanged: its gate is still "the build job exited 0".
 
+### Interrupted runs: warn, cancel, adopt
+
+A head that is killed — Ctrl-C too late to cancel, a dropped SSH session, a login node reboot — takes every job ID it held with it, but the fleet keeps running. Immediately after a suite's last submission the head therefore also writes `artefacts/.dispatch/run-<pid>.json`: the run token, the suite config, the plan, and every submitted job with the spec needed to rebuild its handle. Its `status` starts at `running` and is rewritten to `collected` when the run collects its results, or `cancelled` when the head takes the fleet down on the way out. A manifest left at `running` is what an interrupted run leaves behind.
+
+On start, every `--dispatch slurm` run scans that directory for manifests still marked `running` that another process wrote, and asks `squeue` whether any of their jobs are still there. A manifest with nothing left in the queue is marked `stale` and never probed again. One with live jobs is an *orphan*, and `--orphans` (or `cfg-dispatch.orphans`) decides what happens to it:
+
+| Policy | Effect |
+|---|---|
+| `warn` (default) | Logs `dispatch.orphans_found` with the manifest, the run token and the live job IDs, then submits a fresh fleet exactly as before. The orphan keeps running. |
+| `cancel` | `scancel`s the orphan's jobs, marks its manifest `cancelled` (`dispatch.orphans_cancelled`), then submits a fresh fleet. |
+| `adopt` | Submits nothing. Waits on the orphan's jobs, collects their result envelopes, and marks its manifest `collected` (`dispatch.orphans_adopted`). |
+
+`adopt` requires exactly one orphan whose recorded run matches this invocation: the same test config, the same backend, and the same expanded tests and run IDs in the same order. Anything else is a fatal error naming what differs, because adopting a fleet planned from other tests would score this run against results it never asked for. Two orphans with live jobs are fatal too — choosing one would silently abandon the other's fleet. The adopted jobs' envelopes are accepted by the orphan's run token, the same identity check a live head makes, so a stale envelope from an older run is still rejected.
+
+Identity comes from the manifest and never from scheduler job names: two runs of one suite submit the same build-job name (that is what the shared-build dedup serialises on), so a name-keyed search could adopt or cancel someone else's fleet.
+
+`--orphans` is inert off a scheduler. `local-parallel` runs its jobs as the head's own children and `local` runs them in the head itself, so an interrupted run of either leaves nothing behind; `--orphans adopt` there is a fatal error rather than a silent full re-run.
+
 A missing result from a scheduler kill, worker crash, or dependency failure is a failed row, not a dropped test. A compile failure for one compile key does not stop unrelated keys; the affected tests report that compile's exit status and error lines, and their simulation jobs do not repeat it.
 
 ## Configure dispatch
@@ -295,6 +313,7 @@ Logs are separated by process:
 | Head | `<suite>/rtl_buddy.log` | Console output |
 | Simulation | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` or `local-parallel-<tag>.log` |
 | Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log`, `gates-<pid>.json` |
+| Run record | — | `artefacts/.dispatch/run-<pid>.json` (the submitted fleet and its status; see [Interrupted runs](#interrupted-runs-warn-cancel-adopt)) |
 
 `<tag>` is the run ID or `single`; `<pid>` is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.
 

@@ -744,6 +744,47 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Cancelled {fields.get('jobs')} outstanding dispatch job(s) "
                 f"on the {fields.get('backend')} backend{id_note}"
             )
+        case "dispatch.orphans_found":
+            # The default answer to an interrupted run, and the one that
+            # changes nothing — so the message has to carry both the
+            # evidence (which jobs, which run) and the two commands that act
+            # on it, or the user is told about a problem with no handle on
+            # it (#521).
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: {fields.get('jobs')} job(s) from an earlier run of "
+                f"{fields.get('suite_dir')} are still queued or running: "
+                f"{' '.join(map(str, ids))} (run token "
+                f"{fields.get('run_token')}, submitted by pid "
+                f"{fields.get('pid')}, recorded in {fields.get('manifest')}). "
+                "This run submits its own jobs beside them — re-run with "
+                "--orphans adopt to collect those instead, or --orphans "
+                "cancel to scancel them first"
+            )
+        case "dispatch.orphans_cancelled":
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: cancelled {fields.get('jobs')} job(s) left by an "
+                f"earlier run of {fields.get('suite_dir')} (run token "
+                f"{fields.get('run_token')}, pid {fields.get('pid')}): "
+                f"{' '.join(map(str, ids))}"
+            )
+        case "dispatch.orphans_adopted":
+            # The build job is a structured field but not repeated in the
+            # text: it is already one of the live ids listed here, and
+            # naming it twice reads as two different jobs.
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: adopting {fields.get('jobs')} job(s) from an "
+                f"earlier run of {fields.get('suite_dir')} instead of "
+                f"submitting new ones: {' '.join(map(str, ids))} (run token "
+                f"{fields.get('run_token')}, pid {fields.get('pid')})"
+            )
+        case "dispatch.orphans_ignored":
+            return (
+                f"dispatch: ignoring --orphans {fields.get('orphans')} on the "
+                f"{fields.get('backend')} backend — {fields.get('reason')}"
+            )
         case "dispatch.suite_submitted":
             ids = fields.get("job_ids") or []
             build = fields.get("build_job")

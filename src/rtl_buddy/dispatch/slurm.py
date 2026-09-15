@@ -2112,6 +2112,47 @@ class SlurmDispatchBackend(DispatchBackend):
             progress.observe(states.keys(), states=states, longest=longest)
             time.sleep(self.poll_interval)
 
+    def live_job_ids(self, handles: Sequence[JobHandle | None]) -> set[str]:
+        """The subset of these ids ``squeue`` still holds (#521).
+
+        Asked about an interrupted run's fleet, read out of its manifest,
+        so the handles are rebuilt rather than submitted here — which is
+        why the query goes through the same per-cluster grouping every
+        other command about a job uses: an id means nothing on a cluster
+        that did not issue it (#509).
+
+        A poll that FAILED reports those ids live, not gone. The three
+        answers :meth:`_poll_queue` distinguishes matter more here than
+        anywhere else: "drained" and an empty "ok" both mean the run is
+        over and its manifest can be retired, while "unknown" says nothing
+        at all about the jobs — and reading that as "gone" would submit a
+        second fleet beside a first one still occupying the cluster, or
+        quietly skip the ``scancel`` a user asked for.
+        """
+        live: set[str] = set()
+        cwd = self._cwd_of(handles)
+        for cluster, base_ids in self._base_ids_by_cluster(handles).items():
+            if not base_ids:
+                continue
+            # This cluster's handle ids, for expanding a squeue row that
+            # names a whole array (`1235` or `1235_[1-40]`) back into the
+            # elements the manifest recorded.
+            ids_here = [
+                h.job_id
+                for h in handles
+                if h is not None and getattr(h, "cluster", None) == cluster
+            ]
+            lines, status = self._poll_queue(base_ids, cluster=cluster, cwd=cwd)
+            if status == "unknown":
+                live.update(ids_here)
+                continue
+            for line in lines:
+                record = _parse_squeue_line(line)
+                if record is None:
+                    continue
+                live.update(_expand_squeue_id(record["id"], ids_here))
+        return live
+
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         if not handles:
             return
