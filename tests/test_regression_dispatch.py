@@ -1884,21 +1884,122 @@ def test_suite_compile_block_scales_with_compile_parallel(
     minimal_project: Path,
     fake_backend: _FakeBackend,
 ):
-    """`parallel` stays a cfg-dispatch knob and scales the suite's cpus too."""
+    """A suite that overrides only cpus still inherits the root `parallel`."""
     _mark_stub_builder_verilator(minimal_project)
     _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
-    _add_suite_compile(minimal_project, "compile:\n  cpus: 6\n  parallel: 8\n")
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 6\n")
     result, _ = _invoke(
         ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
     )
     assert result.exit_code == 0, result.output
 
     build = fake_backend.build_submitted[0]
-    # `parallel: 8` in the suite block is an unknown key and is dropped;
-    # the cluster-wide 2 still binds, capped at the 2 planned configs.
+    # The suite said nothing about concurrency, so the cluster-wide 2 binds,
+    # capped at the 2 planned configs.
     assert build.parallel == 2
     assert build.resources.cpus == 12  # 2 x the suite's 6, not 2 x 4
     assert build.resources.mem == "16G"  # cfg-dispatch's, unscaled
+
+
+def test_suite_compile_parallel_overrides_the_cluster_wide_value(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The reported defect (#547): the suite's `parallel` was ignored.
+
+    A one-key suite writes `parallel: 1` precisely so its build job does
+    not fence off a second slot it cannot use. `mem` came through from the
+    same block, so the reservation was plainly being read — only the
+    concurrency was still sized from the root value, and the build job
+    reserved `cpus x root_parallel`.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _add_suite_compile(
+        minimal_project,
+        'compile:\n  cpus: 8\n  mem: 20G\n  time: "00:30:00"\n  parallel: 1\n',
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 1  # the suite's, not the cluster-wide 2
+    # Nothing was capped here, so the configured value is what it was given.
+    assert build.parallel_configured == 1
+    assert build.resources.cpus == 8  # the suite's cpus, NOT 16
+    assert (build.resources.mem, build.resources.time) == ("20G", "00:30:00")
+
+
+def test_suite_compile_parallel_raises_above_the_cluster_wide_value(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Layering, not a floor: the suite wins in both directions (#547).
+
+    The planned-config cap still applies on top, because it is a fact
+    about this run rather than about either config layer.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_third_test(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(1))
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 2\n  parallel: 3\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 3  # 3 planned configs, so the cap does not bite
+    assert build.resources.cpus == 6  # 3 x the suite's 2
+
+
+def test_suite_compile_parallel_is_still_capped_by_the_planned_configs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Two planned configs cannot keep four suite-requested slots busy."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(1))
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 2\n  parallel: 4\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2  # basic + extra, not the suite's 4
+    assert build.resources.cpus == 4  # 2 x 2
+    # ...and the pre-cap value rides along, so the job's own console line
+    # can quote the 4 the suite's tests.yaml holds instead of attributing
+    # the capped 2 to a key that says otherwise (#547 review).
+    assert build.parallel_configured == 4
+
+
+def test_suite_compile_parallel_never_reaches_an_in_job_compile(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A sim job that compiles for itself runs one build, whatever #547 says.
+
+    The fixture's inferred "echo" family cannot share a build, so there is
+    no build job and the compile reservation only shows up in the
+    field-wise maximum. A `parallel` that leaked in there would reserve N
+    times the cpus one serial compile can use.
+    """
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 2\n    mem: 4G\n    time: "00:10:00"\n',
+    )
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 3\n  parallel: 4\n")
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    assert fake_backend.submitted[0].resources.cpus == 3  # not 12
 
 
 def test_suite_compile_block_reaches_an_in_job_compile_reservation(
@@ -2015,6 +2116,7 @@ def test_build_job_parallel_is_capped_by_the_planned_configs(
 
     build = fake_backend.build_submitted[0]
     assert build.parallel == 2  # basic + extra, not the configured 3
+    assert build.parallel_configured == 3  # what cfg-dispatch actually says
     assert build.resources.cpus == 8  # 2 x 4, not 3 x 4
 
 
@@ -2712,6 +2814,80 @@ def test_machine_payload_carries_build_job_reservation_advice(
     assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
     assert time_a["edit_hint"]["file"].endswith("root_config.yaml")
     assert "note" not in time_a["edit_hint"]
+
+
+def test_build_advice_uses_the_suite_resolved_parallel_for_its_cpus_gate(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The `parallel > 1` gate reads the resolved value, not the root (#547).
+
+    Same two-config suite as the test above, whose `cpus` row is withheld
+    at the cluster-wide `parallel: 2`. Here the suite sets `parallel: 1`,
+    so the job really did run one build at a time and its whole-job
+    efficiency IS its per-build one — the row must be offered. Gating on
+    the root value instead would withhold advice for a job whose
+    reservation was never scaled.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        builds=[
+            {
+                "test": name,
+                "builder": "hook-chosen-builder",
+                "duration_sec": 42.5,
+                "reused": False,
+                "group": f"obj_dir_{group}",
+            }
+            for name, group in (("basic", "cafe"), ("extra", "f00d"))
+        ],
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 7200,
+            # 4 cpus, NOT 8: the suite's `parallel: 1` is what sized this.
+            "alloc_cpus": 4,
+            "total_cpu_s": 30,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    parallel: 2\n",
+    )
+    _add_suite_compile(minimal_project, "compile:\n  parallel: 1\n")
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    build_advice = {a["resource"]: a for a in advice if a["phase"] == "compile"}
+
+    cpus_a = build_advice["cpus"]
+    assert cpus_a["test"] == "(build job)"
+    assert cpus_a["reserved"] == "4"  # the unscaled per-build value
+    assert cpus_a["direction"] == "reduce"
+    # One slot, so there is no product to decompose and no lever to name.
+    assert "the build job reserved 4" in cpus_a["edit_hint"]["note"]
+    assert "compile.parallel" not in cpus_a["edit_hint"]["note"]
+    assert cpus_a["edit_hint"]["path"] == "cfg-dispatch.compile.cpus"
 
 
 def test_build_advice_names_the_suite_file_for_a_field_the_suite_overrode(

@@ -53,12 +53,14 @@ right owner (#497):
     rtl-buddy-filetype: test_config
     compile:                 # THIS suite's build job only
       mem: 48G               # a big top-level TB; cpus/time inherited
+      parallel: 1            # ...and how many builds it runs at once
     testbenches: ...
 
-:func:`resolve_compile_resources` layers it field-by-field over
-``cfg-dispatch.compile`` over ``cfg-dispatch.resources``. ``parallel`` is
-not accepted there: it sizes the build job against the partition, which is
-a cluster fact and not a suite one.
+:func:`resolve_compile_resources` layers its reservation fields
+field-by-field over ``cfg-dispatch.compile`` over ``cfg-dispatch.resources``;
+:func:`compile_parallel` layers its ``parallel`` the same way (#547). The
+build job is per suite, so a suite that compiles one key says ``parallel:
+1`` and reserves ``cpus`` rather than ``cpus x`` the cluster-wide value.
 """
 
 import logging
@@ -123,6 +125,11 @@ class DispatchCompileFile:
     accident, and that a later strict-key pass has one class to make
     strict. A project that writes it in the wrong place is told by the
     docs, not by an error.
+
+    The suite-level ``compile:`` block has its own class again
+    (:class:`SuiteCompileFile`) for the same reason and one more: there
+    ``parallel`` must be optional, so that a suite overriding only ``mem``
+    does not also pin the concurrency to this class's default of 1 (#547).
     """
 
     cpus: int | None = None
@@ -178,6 +185,65 @@ def validate_resources_block(res):
         cpus=res.cpus,
         mem=_validate_mem(res.mem),
         time=_validate_time(res.time),
+    )
+
+
+@serde
+class SuiteCompileFile:
+    """A suite's own top-level ``compile:`` block in tests.yaml (#497, #547).
+
+    :class:`DispatchResourcesFile`'s three reservation fields plus
+    ``parallel``, which layers over ``cfg-dispatch.compile.parallel``
+    exactly as the other three layer over their root counterparts. The
+    build job is per suite — there is no allocation two suites' compiles
+    share — so the suite is entitled to say how many builds its own job
+    runs at once, and a one-key suite that says ``parallel: 1`` reserves
+    ``cpus`` instead of ``cpus x`` the cluster-wide value (#547).
+
+    Its own class, deliberately, and not either of the two neighbours:
+
+    * not :class:`DispatchResourcesFile`, which is also the serde type
+      behind every per-test and per-testbench ``resources:`` block, where
+      "compile N builds at once" means nothing (#495);
+    * not :class:`DispatchCompileFile`, whose ``parallel`` defaults to 1
+      rather than to ``None``. Here the two have to stay distinguishable:
+      a suite that overrides only ``mem`` must keep inheriting the root
+      concurrency, and a class defaulting to 1 would silently pin every
+      such suite's build job to one build at a time.
+    """
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+    # ``None`` means "inherit cfg-dispatch.compile.parallel", which is the
+    # whole difference from DispatchCompileFile — see the class docstring.
+    parallel: int | None = None
+
+
+def validate_compile_block(res):
+    """Validate a raw suite-level ``compile:`` block; return a fresh copy.
+
+    :func:`validate_resources_block` plus ``parallel`` (#547): the same
+    single home for the YAML 1.1 sexagesimal trap, and the same ``>= 1``
+    rule ``cfg-dispatch.compile.parallel`` is held to, so the two layers
+    cannot disagree about what a legal value is. The caller prefixes the
+    suite path, matching the root key's message otherwise word for word.
+
+    ``None`` in, ``None`` out.
+    """
+    if res is None:
+        return None
+    parallel = getattr(res, "parallel", None)
+    if parallel is not None and parallel < 1:
+        raise FatalRtlBuddyError(
+            f"compile parallel must be >= 1 (got {parallel}); a build job "
+            "allowed zero concurrent builds would compile nothing."
+        )
+    return SuiteCompileFile(
+        cpus=res.cpus,
+        mem=_validate_mem(res.mem),
+        time=_validate_time(res.time),
+        parallel=parallel,
     )
 
 
@@ -806,7 +872,7 @@ def _scan_options(sbatch_args, long_to_short, *, value_must_contain=None):
     return found
 
 
-def compile_parallel(dispatch_cfg) -> int:
+def compile_parallel(dispatch_cfg, suite_compile=None) -> int:
     """How many distinct builds one build job may compile concurrently (#495).
 
     Deliberately NOT a field of :class:`JobResources`: the resolved compile
@@ -814,7 +880,19 @@ def compile_parallel(dispatch_cfg) -> int:
     right-sizing compile floor, and both of those are one serial build. The
     concurrency belongs to the build job alone, so it is read separately —
     and only by the code that builds that job's spec.
+
+    ``suite_compile`` is the suite's own ``compile:`` block (a
+    :class:`SuiteCompileFile`, from ``SuiteConfig.get_compile()``), and its
+    ``parallel`` wins outright where it is set — the same "most specific
+    layer" rule :func:`resolve_compile_resources` applies to the
+    reservation fields, and for the same reason: the build job is per suite
+    (#547). ``getattr``, so a caller still holding an older
+    ``DispatchResourcesFile``-shaped block reads as "inherit" rather than
+    raising.
     """
+    suite_parallel = getattr(suite_compile, "parallel", None)
+    if suite_parallel is not None:
+        return suite_parallel
     if dispatch_cfg is None or dispatch_cfg.compile is None:
         return 1
     return dispatch_cfg.compile.parallel
@@ -931,11 +1009,16 @@ def resolve_compile_resources(dispatch_cfg, suite_compile=None) -> JobResources:
     repo's sizes only the fields it actually needs (#497).
 
     ``suite_compile`` is the suite-level block (a
-    :class:`DispatchResourcesFile`, from ``SuiteConfig.get_compile()``);
+    :class:`SuiteCompileFile`, from ``SuiteConfig.get_compile()``);
     ``None`` where there is no suite in hand or the suite declared none. It
     is the MOST specific layer because the dispatched build job is per
     suite — there is no allocation a suite block could be sharing with
     another suite's compile.
+
+    ``parallel`` is not resolved here and never reaches the returned
+    :class:`JobResources`: this reservation also sizes an in-job compile's
+    sim job and the right-sizing compile floor, and both of those are one
+    serial build. :func:`compile_parallel` layers that key instead (#547).
 
     Note this is a *scheduling* fact only: nothing here reaches the compile
     fingerprint or the shared-build key, so writing a ``compile:`` block
@@ -967,11 +1050,17 @@ def compile_resource_origins(suite_compile) -> dict:
     edit hint at the file that actually holds the winning value (#497) —
     computed here, beside the layering it mirrors, so the two can never
     drift apart.
+
+    ``parallel`` is in the map too (#547), even though nothing suggests a
+    value for it: the `cpus` advice names the key in prose as the other
+    lever, and saying ``cfg-dispatch.compile.parallel`` where the suite's
+    own block governs would send a reader to a value editing which moves
+    this job's reservation not at all.
     """
     origins = {}
     if suite_compile is None:
         return origins
-    for name in ("cpus", "mem", "time"):
+    for name in ("cpus", "mem", "time", "parallel"):
         if getattr(suite_compile, name, None) is not None:
             origins[name] = "suite"
     return origins

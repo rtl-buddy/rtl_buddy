@@ -397,9 +397,37 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     # builds; the suite has fewer distinct compile keys than
                     # that, so the surplus is deliberate over-provisioning
                     # and not a number to read off the right-sizing table.
+                    #
+                    # Name the layer that actually governs: a suite's own
+                    # `compile.parallel` beats cfg-dispatch's, and pointing
+                    # a reader at the root key would send them to a value
+                    # editing which moves this job not at all (#547). The
+                    # cfg-dispatch spelling is the fallback for a job log
+                    # written before the field existed.
+                    origin = fields.get("parallel_origin")
+                    if not isinstance(origin, str) or not origin:
+                        origin = "cfg-dispatch.compile.parallel"
+                    # Quote the number the named key actually holds. The head
+                    # caps the configured value by the suite's planned
+                    # configs before the job ever sees it, so `requested` can
+                    # be smaller than what the file says — and a line reading
+                    # "compile.parallel is 2" beside a tests.yaml saying 4
+                    # contradicts the very key it sends the reader to edit
+                    # (#547 review). Absent (an older job log), or equal:
+                    # the cap did not bite and there is nothing to explain.
+                    configured = fields.get("parallel_configured")
+                    capped = isinstance(configured, int) and configured > requested
+                    msg += f" ({origin} is {configured if capped else requested}"
+                    if capped:
+                        # `requested` is the planned-config count whenever the
+                        # cap bit: the head takes min(configured, planned), so
+                        # the plan is what it landed on.
+                        msg += (
+                            f", capped to {requested} by the {requested} "
+                            "planned configs"
+                        )
                     msg += (
-                        f" (cfg-dispatch.compile.parallel is {requested}, so "
-                        "the build job's cpus reservation is sized for "
+                        ", so the build job's cpus reservation is sized for "
                         f"{requested} — effective parallelism here is "
                         f"{parallel})"
                     )

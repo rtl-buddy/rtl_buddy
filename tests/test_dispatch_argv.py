@@ -98,6 +98,37 @@ def test_compile_parallel_is_absent_at_the_default():
     assert "--parallel" not in build_job_argv(_build_spec(parallel=1))
 
 
+def test_the_configured_parallel_rides_along_when_the_plan_capped_it():
+    """The job must be able to name the number the config file holds (#547).
+
+    The head takes ``min(compile.parallel, planned configs)``, so a suite
+    that wrote 4 over a two-config plan hands the job ``--parallel 2``. A
+    console line quoting that 2 as ``compile.parallel`` contradicts the key
+    it tells the reader to edit, so the pre-cap value travels too.
+    """
+    argv = build_job_argv(_build_spec(parallel=2, parallel_configured=4))
+    assert _flag_value(argv, "--parallel-configured") == "4"
+    assert argv.index("--parallel-configured") > argv.index("_build-job")
+
+
+def test_the_configured_parallel_is_absent_when_the_cap_did_not_bite():
+    """Equal values say nothing, so the argv keeps today's shape.
+
+    Restating `--parallel` would change the job script of every project
+    that sets `compile.parallel` for no diagnostic gain — the same reason
+    `--parallel` itself is omitted at its default.
+    """
+    assert "--parallel-configured" not in build_job_argv(_build_spec())
+    assert "--parallel-configured" not in build_job_argv(
+        _build_spec(parallel=4, parallel_configured=4)
+    )
+    # A cap that collapsed the pool to 1 still omits `--parallel` (it is at
+    # the default) but must carry the configured value.
+    argv = build_job_argv(_build_spec(parallel=1, parallel_configured=4))
+    assert "--parallel" not in argv
+    assert _flag_value(argv, "--parallel-configured") == "4"
+
+
 def test_compile_parallel_is_not_a_sim_job_flag():
     """A sim job compiles one thing at most; the flag has no meaning there."""
     assert "--parallel" not in sim_job_argv(_test_spec())

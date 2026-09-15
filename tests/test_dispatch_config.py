@@ -15,6 +15,7 @@ from rtl_buddy.config.dispatch import (
     DispatchResourcesFile,
     JobResources,
     RetryConfigFile,
+    SuiteCompileFile,
     combine_for_in_job_compile,
     compile_parallel,
     compile_resource_origins,
@@ -639,6 +640,11 @@ def test_compile_resource_origins_names_only_the_fields_the_suite_set():
     assert compile_resource_origins(
         DispatchResourcesFile(cpus=8, mem="48G", time="03:00:00")
     ) == {"cpus": "suite", "mem": "suite", "time": "suite"}
+    # `parallel` rides along so advice prose names the governing key (#547).
+    assert compile_resource_origins(SuiteCompileFile(parallel=1)) == {
+        "parallel": "suite"
+    }
+    assert compile_resource_origins(SuiteCompileFile(mem="48G")) == {"mem": "suite"}
 
 
 def test_suite_compile_block_loads_and_validates_mem_and_time(
@@ -691,28 +697,74 @@ def test_suite_compile_block_coerces_an_integer_mem(minimal_project: Path):
     assert SuiteConfig(path=str(tests_yaml)).get_compile().mem == "4096"
 
 
-def test_parallel_is_not_a_field_of_a_suite_level_compile_block(
-    minimal_project: Path,
-):
-    """`parallel` at suite level is an unknown key, not a knob (#497).
+def test_a_suite_level_compile_block_binds_parallel(minimal_project: Path):
+    """The serde actually reads the key now (#547).
 
-    Concurrency sizes the build job against the partition's widest node,
-    which is a cluster fact; serde drops the key, so the resolved
-    reservation is untouched and cfg-dispatch still owns the concurrency.
+    It was silently dropped before: the block was typed as the shared
+    `resources:` class, so a suite writing `parallel: 1` beside a `mem:`
+    that plainly took effect got no concurrency change at all.
     """
     tests_yaml = minimal_project / "tests.yaml"
     tests_yaml.write_text(
         "compile:\n  mem: 48G\n  parallel: 4\n" + tests_yaml.read_text()
     )
     block = SuiteConfig(path=str(tests_yaml)).get_compile()
-    assert block.mem == "48G"
-    assert not hasattr(block, "parallel")
+    assert (block.mem, block.parallel) == ("48G", 4)
 
     cfg = DispatchConfigFile(compile=DispatchCompileFile(cpus=4)).initialise()
-    assert compile_parallel(cfg) == 1
+    # The suite is the most specific layer, exactly as for cpus/mem/time.
+    assert compile_parallel(cfg, block) == 4
+    assert compile_parallel(cfg) == 1  # ...and the root alone is unmoved
+
+    # ...but it must not reach the resolved reservation, which also sizes an
+    # in-job compile and the right-sizing compile floor (one serial build).
     resolved = resolve_compile_resources(cfg, block)
     assert resolved == JobResources(cpus=4, mem="48G")
     assert not hasattr(resolved, "parallel")
+
+
+def test_suite_compile_parallel_layers_over_cfg_dispatch(minimal_project: Path):
+    """suite `parallel` > `cfg-dispatch.compile.parallel` > 1 (#547)."""
+    root = DispatchConfigFile(compile=DispatchCompileFile(parallel=2)).initialise()
+
+    # The reported case: a one-key suite asking for one slot.
+    assert compile_parallel(root, SuiteCompileFile(parallel=1)) == 1
+    # A suite that says nothing about it inherits the cluster-wide value —
+    # a block overriding only `mem` must not pin the job to one build.
+    assert compile_parallel(root, SuiteCompileFile(mem="48G")) == 2
+    assert compile_parallel(root, None) == 2
+    # No root block at all: the suite's value still binds.
+    assert (
+        compile_parallel(
+            DispatchConfigFile().initialise(), SuiteCompileFile(parallel=3)
+        )
+        == 3
+    )
+    assert compile_parallel(None, SuiteCompileFile(parallel=3)) == 3
+    # Neither layer: the built-in default.
+    assert compile_parallel(None, None) == 1
+
+
+def test_suite_compile_parallel_below_one_is_rejected(minimal_project: Path):
+    """Same rule, and the same wording, as the root key (#547)."""
+    tests_yaml = minimal_project / "tests.yaml"
+    body = tests_yaml.read_text()
+    tests_yaml.write_text("compile:\n  parallel: 0\n" + body)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        SuiteConfig(path=str(tests_yaml))
+    assert "compile parallel must be >= 1 (got 0)" in str(excinfo.value)
+    # The suite path is prefixed, so the message names the file to edit.
+    assert str(tests_yaml) in str(excinfo.value)
+
+
+def test_suite_compile_block_without_parallel_reads_as_inherit(
+    minimal_project: Path,
+):
+    """`None`, not 1 — the difference the dedicated serde class buys."""
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text("compile:\n  mem: 48G\n" + tests_yaml.read_text())
+    block = SuiteConfig(path=str(tests_yaml)).get_compile()
+    assert block.parallel is None
 
 
 # ------------- #505 review: a cpus override in sbatch-args is detectable
