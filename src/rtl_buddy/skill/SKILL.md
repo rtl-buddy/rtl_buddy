@@ -22,8 +22,9 @@ command-specific payload otherwise. Never scrape the human table.
 owns stdout. Machine mode makes initialized `rtl_buddy.log` files JSONL.
 
 Run and regression commands normally exit 0 when every result counts as
-successful, 1 for any `FAIL` or strict `XPASS`, and 2 for fatal configuration or
-environment errors. Simulation exits 0 with no real failure, including `NA`/`XFAIL`.
+successful, 1 for any `FAIL`, unknown `NA`, or strict `XPASS`, and 2 for fatal
+configuration or environment errors. Simulation exits 0 with no real failure,
+including an intentional early-stop `NA` or an `XFAIL`.
 Reporting, audit, and pass-through commands define their own codes; use the
 relevant specialist or bundled docs page.
 

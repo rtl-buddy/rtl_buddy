@@ -6,6 +6,41 @@ import pprint
 
 from .xfail import is_pass_with_xfail
 
+# Marks an ``NA`` result as an *intentional* stop before a verdict — a
+# run_depth early stop (``-E pre|comp|sim``, #336) — as opposed to a run
+# whose outcome is simply unknown (no PASS/FAIL banner in the transcript,
+# an aborted simulator). Both spell themselves ``result: "NA"``, and only
+# the intentional one may leave the CLI exit code at 0 (#546).
+#
+# Additive: the envelope's ``schema_version`` is unchanged, ``to_json_dict``
+# carries it through the results dict for free, and an envelope written by
+# an older rtl_buddy — which has no flag — reads as "unknown", the safe
+# side of the distinction.
+EARLY_STOP_KEY = "early_stop"
+
+
+def is_early_stop(results: dict) -> bool:
+    """Whether a results dict records an intentional early stop (#546)."""
+    return bool(results.get(EARLY_STOP_KEY))
+
+
+def is_run_failure(result) -> bool:
+    """Whether one result makes the run fail — the exit-code rule (#546).
+
+    A pass (``PASS`` / ``SKIP`` / ``XFAIL`` / non-strict ``XPASS``) never
+    fails the run. Of the rest, only an ``NA`` that says it stopped early
+    on purpose is exempt: an ``NA`` meaning "no verdict was produced" is
+    an unknown outcome and must fail, exactly as ``is_pass()`` already
+    reports it.
+
+    The single grading rule for both the in-process head
+    (``_exit_code_from_results``) and a dispatched ``rb _test-job``, so a
+    run cannot be graded one way locally and another over a scheduler.
+    """
+    if result.is_pass():
+        return False
+    return not (result.results.get("result") == "NA" and is_early_stop(result.results))
+
 
 class TestResults:
     """
@@ -99,11 +134,22 @@ class CompileFailResults(TestResults):
 class EarlyStopResults(TestResults):
     """
     Early Stopping
+
+    The run stopped before a verdict because it was asked to
+    (``-E pre|comp|sim``), so its ``NA`` is intentional and carries
+    :data:`EARLY_STOP_KEY` to say so — that flag, not the bare ``NA``, is
+    what exempts the row from the exit code (#546).
     """
 
     def __init__(self, name, desc):
         super().__init__(
-            name=name, results={"result": "NA", "name": name, "desc": desc}
+            name=name,
+            results={
+                "result": "NA",
+                "name": name,
+                "desc": desc,
+                EARLY_STOP_KEY: True,
+            },
         )
 
 

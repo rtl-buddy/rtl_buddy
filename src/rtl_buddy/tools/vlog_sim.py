@@ -33,6 +33,7 @@ from ..seed_mode import SeedMode
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
+from .vlog_post import grade_unknown_sim_exit
 from .vlog_cov import VlogCov
 from .artifact_paths import (
     ARTIFACT_DIRNAME,
@@ -4164,10 +4165,16 @@ class VlogSim:
 
         return returncode
 
-    def post(self, run_id=None):
+    def post(self, run_id=None, sim_returncode=None):
         """
         post-process vlog test output to determine test results
         return TestResult
+
+        ``sim_returncode`` is what the simulation this post-processes
+        exited with, so an unknown verdict can be graded against it
+        *here*, before ``postproc.completed`` announces the result
+        (#546). ``None`` -- the default every other caller keeps -- means
+        the caller has no exit status to offer and grades nothing.
         """
 
         run_id = self.run_id if run_id is None else run_id
@@ -4194,6 +4201,13 @@ class VlogSim:
                 assertions_enabled=assertions_enabled,
             )
         results = self.vlog_post.get_results()
+        # Before the coverage overlay and before postproc.completed: that
+        # event's result/desc are the authoritative record for JSONL
+        # consumers (docs/agents.md), so the verdict has to be final by
+        # the time it is logged (#546).
+        grade_unknown_sim_exit(
+            results.results, sim_returncode, test=self.test_name, run_id=run_id
+        )
         if self._coverage_enabled():
             cov = VlogCov(
                 simulator_name=self._get_simulator_family(),

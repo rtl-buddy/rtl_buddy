@@ -1092,6 +1092,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'postproc'}: post-processing completed with result {fields.get('result')} ({fields.get('desc')})"
         case "postproc.no_markers":
             return f"{fields.get('test')}: no PASS/FAIL markers found in {fields.get('log')}; result is NA"
+        case "sim.unknown_verdict":
+            code = fields.get("returncode")
+            how = (
+                f"killed by signal {-code}"
+                if isinstance(code, int) and code < 0
+                else f"exited {code}"
+            )
+            return (
+                f"{fields.get('test')}: simulator {how} and the transcript "
+                "has no PASS/FAIL verdict; result is FAIL (#546)"
+            )
         case "postproc.conflicting_markers":
             return (
                 f"{fields.get('test')}: both PASS and FAIL markers found in "
