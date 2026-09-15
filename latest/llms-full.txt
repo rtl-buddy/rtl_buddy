@@ -2788,6 +2788,22 @@ rb regression --share-build
 
 Verilator, VCS, and Icarus support cross-test sharing. Reuse is reported once per build directory per process on the console, and every test's `compile.log` (and the log file) records its own reuse; add `--rebuild` to compile even when the stamp says the build is current. See [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and backend limitations.
 
+## Replay a seeded regression
+
+Pass one master seed to reproduce every selected test's runtime seed:
+
+```bash
+rb regression --master-seed 20260914
+rb regression --master-seed 20260914 --dispatch slurm
+```
+
+The master seed appears once in the run summary and machine payload. Each
+test's resolved seed is independent of suite order and dispatch timing, and a
+dispatched plan carries both values to its worker. Repeating the command with
+the same project layout and master seed reproduces the seeds without reading
+old artefacts. See [Run with randomized seeds](tests.md#run-with-randomized-seeds)
+for derivation, preprocessor access, fixed-test overrides, and result records.
+
 ## Run in parallel
 
 The default `--dispatch local` runs tests sequentially in the current process. For parallel execution:
@@ -3673,6 +3689,64 @@ rb randtest smoke 20
 ```
 
 `--rnd-new` records a generated seed; `--rnd-last` reuses it. `randtest` runs repeated seeded iterations. See the [CLI reference](../reference/cli.md#randtest) for replay and selection options.
+
+Use one explicit master seed when a test or regression must replay without
+depending on old artefacts:
+
+```bash
+rb test smoke --master-seed 20260914
+rb regression --master-seed 20260914 --dispatch slurm
+```
+
+RTL Buddy derives each runtime seed from the master seed, the
+project-root-relative `tests.yaml` path, the sweep-expanded test name, and the
+run ID when present. Test selection, ordering, checkout location, and dispatch
+timing do not change it. Repeating the command with the same master seed
+replays the same seeds. Master seeds are nonnegative integers and may exceed
+the simulator's seed range; derived simulator seeds are from 1 through
+2147483647.
+
+Configure `sim-rand-seed-plusarg` when a preprocessor generates randomized
+stimulus:
+
+```yaml
+tests:
+  - name: smoke
+    # ...
+    sim-rand-seed-plusarg: stimulus_seed
+```
+
+The resolved value is available through
+`test_cfg.get_resolved_seed()` and
+`test_cfg.get_plusarg("stimulus_seed")` before `preproc` runs. RTL Buddy then
+passes that value to the simulator, restores the configured plusarg if the
+hook changed it, writes it to `test.randseed` and `result.json`, and includes
+it in structured logs and machine results. Runtime seed values and plusargs do
+not change the compile key.
+
+Without a master or fixed test seed, the plusarg receives the builder's default
+integer unchanged, including `0`; the positive 31-bit limit applies only to
+fixed test seeds and master-derived seeds. `--rnd-new` and `--rnd-last` are
+rejected for a test that configures this plusarg because those modes select their value too late for preprocessing.
+`randtest` therefore requires a fixed `sim-rand-seed` for such a test; its one
+shared preprocessor run and every iteration receive that fixed value.
+
+Set `sim-rand-seed` on a test whose timing or command-cycle stimulus must stay
+fixed:
+
+```yaml
+tests:
+  - name: command_timing
+    # ...
+    sim-rand-seed: 41
+    sim-rand-seed-plusarg: stimulus_seed
+```
+
+The fixed value overrides the invocation's master, new, or replay seed policy.
+Mutation simulation oracles also resolve fixed seeds and exposed builder defaults
+before preprocessing, for both the baseline and every mutant.
+See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for the field
+contract.
 
 ## Inspect artefacts
 
@@ -5376,6 +5450,8 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │ --rnd-new                      -n               use a randomly generated seed        │
 │                                                 instead of root config seed          │
 │ --rnd-last                     -l               reuse last generated seed            │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for each selected test               │
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
@@ -5440,6 +5516,8 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 [default: 0]                         │
 │ --start-level                  -s      INTEGER  regression level to start at         │
 │                                                 [default: 0]                         │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for every selected test              │
 │ --coverage-merge                                merge coverage across regression     │
 │                                                 tests; uses raw merge for            │
 │                                                 summary/html and info-process for    │
@@ -8265,6 +8343,8 @@ Test fields:
 | `plusargs` | Optional map | `KEY: VALUE` becomes `+KEY=VALUE`; a null value becomes `+KEY` |
 | `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE`; a null value becomes `+define+KEY` |
 | `sim_timeout` | Default 60 | Seconds per simulation run |
+| `sim-rand-seed` | Optional | Fixed runtime seed from 1 through 2147483647. Overrides `--master-seed`, `--rnd-new`, and `--rnd-last`; use for timing or command-cycle stimulus that must remain unchanged |
+| `sim-rand-seed-plusarg` | Optional | Plusarg name that receives the fixed, master-derived, or builder-default seed before `preproc` runs. The hook may read it with `test_cfg.get_plusarg(NAME)` or use `test_cfg.get_resolved_seed()`; RTL Buddy passes the same value to the simulator. `--rnd-new` and `--rnd-last` require a fixed `sim-rand-seed` when this field is set because their seed is otherwise unavailable before preprocessing |
 | `uvm.max_warns` / `uvm.max_errors` | Optional | Thresholds whose excess fails the test |
 | `sweep.path` | Optional | Expansion hook path |
 | `preproc.path` | Optional | Precompile hook path |

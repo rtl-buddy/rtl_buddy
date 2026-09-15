@@ -974,6 +974,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/regressions/reuse-compilation.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/regressions/#replay-a-seeded-regression",
+          "slug": "replay-a-seeded-regression",
+          "title": "Replay a seeded regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/regressions/replay-a-seeded-regression.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/regressions/#run-in-parallel",
           "slug": "run-in-parallel",
           "title": "Run in parallel",

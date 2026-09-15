@@ -36,6 +36,8 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │ --rnd-new                      -n               use a randomly generated seed        │
 │                                                 instead of root config seed          │
 │ --rnd-last                     -l               reuse last generated seed            │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for each selected test               │
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │

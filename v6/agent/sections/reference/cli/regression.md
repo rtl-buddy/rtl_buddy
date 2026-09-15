@@ -14,6 +14,8 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 [default: 0]                         │
 │ --start-level                  -s      INTEGER  regression level to start at         │
 │                                                 [default: 0]                         │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for every selected test              │
 │ --coverage-merge                                merge coverage across regression     │
 │                                                 tests; uses raw merge for            │
 │                                                 summary/html and info-process for    │
