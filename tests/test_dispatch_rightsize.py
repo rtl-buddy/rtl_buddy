@@ -917,6 +917,37 @@ def test_a_single_build_is_advised_even_at_a_wide_parallel():
     # ...but 3 > the 2 already configured, so the note explains the lever
     # that is actually oversized here.
     assert "compile.parallel 4" in cpus_a.edit_hint["note"]
+    # Nothing said the suite owns the key, so the lever is cfg-dispatch's.
+    assert "lower cfg-dispatch.compile.parallel" in cpus_a.edit_hint["note"]
+
+
+def test_the_parallel_lever_names_the_suite_when_the_suite_owns_it():
+    """A suite's own `compile.parallel` is what governs this job (#547).
+
+    Telling the reader to lower `cfg-dispatch.compile.parallel` when their
+    tests.yaml sets the key is advice that moves nothing and comes back on
+    the next run — the same failure the per-field `edit_hint` origins fix.
+    """
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,
+        },
+        parallel=4,
+        cpus=8,
+        compile_work={"records": 1, "compiled": 1, "compiled_sec": 90.0},
+        compile_origins={"parallel": "suite"},
+        suite_config_hint="verif/blk/tests.yaml",
+    )
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    note = cpus_a.edit_hint["note"]
+    assert "lower the suite's compile.parallel" in note
+    assert "cfg-dispatch.compile.parallel" not in note
+    # The cpus hint is unaffected: the suite set `parallel`, not `cpus`.
+    assert cpus_a.edit_hint["path"] == "cfg-dispatch.compile.cpus"
 
 
 def test_the_cpus_decomposition_comes_from_the_configured_per_build_value():

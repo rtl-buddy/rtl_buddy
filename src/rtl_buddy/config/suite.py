@@ -7,7 +7,7 @@ import os
 from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
-from .dispatch import DispatchResourcesFile, validate_resources_block
+from .dispatch import SuiteCompileFile, validate_compile_block
 from .test import TestbenchConfig, TestConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -24,11 +24,13 @@ class SuiteConfigFile:
     # every suite fences off the largest verilation in the repo for the
     # smallest leaf-cell bench too. This layers over it field by field.
     #
-    # Deliberately `DispatchResourcesFile` and not `DispatchCompileFile`:
-    # `parallel` is how many builds the *build job* runs at once, a
-    # cfg-dispatch knob, and there is nothing a suite could mean by it that
-    # the cluster-wide value does not already say.
-    compile: DispatchResourcesFile | None = None
+    # Its own serde class, not `DispatchResourcesFile` (which is also every
+    # per-test `resources:` block) and not `DispatchCompileFile` (whose
+    # `parallel` defaults to 1 rather than to None): `parallel` layers here
+    # too, and "the suite said 1" has to stay distinguishable from "the
+    # suite said nothing" or a block overriding only `mem` would pin the
+    # build job to one build at a time (#547).
+    compile: SuiteCompileFile | None = None
 
 
 class SuiteConfig:
@@ -38,8 +40,9 @@ class SuiteConfig:
     Attributes:
       path (str): Path to the suite configuration file.
       tests (dict[str, TestConfig]): Test configs in suite, grouped by test name.
-      compile (DispatchResourcesFile|None): Suite-level dispatch compile
-        reservation, or ``None`` when the suite declared none (#497).
+      compile (SuiteCompileFile|None): Suite-level dispatch compile
+        reservation and concurrency, or ``None`` when the suite declared
+        none (#497, #547).
     """
 
     def __init__(self, path):
@@ -63,9 +66,11 @@ class SuiteConfig:
             # `time: 4:00:00` is an integer by the time serde sees it, and a
             # reservation that silently means 10 days is worse than a load
             # error. FatalRtlBuddyError, not a wrapped one — the message
-            # already names the trap and how to spell it (#497).
+            # already names the trap and how to spell it (#497). Same for a
+            # `parallel` below 1, held to the rule cfg-dispatch's own key is
+            # held to so the two layers cannot disagree (#547).
             try:
-                self.compile = validate_resources_block(data.compile)
+                self.compile = validate_compile_block(data.compile)
             except FatalRtlBuddyError as e:
                 log_event(
                     logger,
@@ -201,7 +206,7 @@ class SuiteConfig:
         Retrieve the suite-level dispatch compile reservation (#497).
 
         Returns:
-          DispatchResourcesFile|None: The validated ``compile:`` block, or
+          SuiteCompileFile|None: The validated ``compile:`` block, or
           ``None`` when the suite declared none (cfg-dispatch governs alone).
         """
         return self.compile

@@ -86,6 +86,16 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
         # head's keeps plan/manifest and job-script diffs quiet for every
         # project that never asks for concurrency.
         argv += ["--parallel", str(spec.parallel)]
+    if (
+        spec.parallel_configured is not None
+        and spec.parallel_configured != spec.parallel
+    ):
+        # Only when the plan's cap actually bit (#547 review). Everywhere
+        # else the configured value IS `--parallel`, and restating it would
+        # change the job script of every project that sets `compile.parallel`
+        # for no diagnostic gain. The job needs it to name the number the
+        # config file holds rather than the capped one it was handed.
+        argv += ["--parallel-configured", str(spec.parallel_configured)]
     if spec.rebuild:
         # Omitted at the default, like --parallel above: an unchanged argv
         # keeps job-script diffs quiet for every run that did not ask.

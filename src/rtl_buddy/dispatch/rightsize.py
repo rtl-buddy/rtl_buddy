@@ -71,7 +71,7 @@ Semantics:
   :func:`analyze_build_reservation` reads its ``sacct`` entry directly and
   asks the same two questions of it — wall clock against the limit, cpu
   time against the allocation. Its cpus suggestion is divided back down by
-  ``cfg-dispatch.compile.parallel``, because the field a project edits is
+  the resolved ``compile.parallel``, because the field a project edits is
   per-build while the reservation the head submitted was the product — and
   its denominator is the requested cpus, for the same reason a test's is. Its
   ``reduce`` needs the build envelope to say a compile actually ran: a
@@ -449,10 +449,10 @@ def analyze_build_reservation(
     the compile OOM-killed. And there is no ``raise`` on cpus: cpu
     efficiency below 1 means slots idled, never that more were needed.
 
-    ``compile_resources`` is the *per-build* reservation
-    (``cfg-dispatch.compile``); the head multiplied its cpus by
-    ``parallel`` before submitting, and the field a project edits is
-    per-build — so cpus advice is only offered for a job that ran an
+    ``compile_resources`` is the *per-build* reservation (the suite's own
+    ``compile:`` block over ``cfg-dispatch.compile``); the head multiplied
+    its cpus by ``parallel`` before submitting, and the field a project
+    edits is per-build — so cpus advice is only offered for a job that ran an
     effective ``parallel`` of 1 (one slot, or one build record), where the
     whole-job ratio and the per-build one are the same number. Above that
     the ratio also carries the tail (unequal builds; a plan with fewer
@@ -502,7 +502,8 @@ def analyze_build_reservation(
 
     ``compile_origins`` says, per field, where the *winning* value came
     from — ``{"mem": "suite"}`` when the suite's own ``compile:`` block set
-    it (#497) — and ``suite_config_hint`` is that suite's tests.yaml path.
+    it (#497), ``parallel`` included (#547) — and ``suite_config_hint`` is
+    that suite's tests.yaml path.
     Together they decide which file an edit hint names: advice that says
     "shrink ``cfg-dispatch.compile.mem``" is wrong for a field a suite
     block overrides, because editing the root config would not move this
@@ -801,6 +802,15 @@ def analyze_build_reservation(
             # advice is only reachable at an effective 1 — so the sentence
             # is here for the one shape that has both: slots reserved for
             # builds the plan never produced.
+            # Name the layer that governs the concurrency, not the root key
+            # by default: a suite's own `compile.parallel` wins outright, so
+            # advising cfg-dispatch would send a reader to a value editing
+            # which moves this job not at all (#547).
+            parallel_key = (
+                "the suite's compile.parallel"
+                if origins.get("parallel") == "suite"
+                else "cfg-dispatch.compile.parallel"
+            )
             lever = (
                 ""
                 if parallel == 1
@@ -808,9 +818,8 @@ def analyze_build_reservation(
                     " `parallel` is the other lever: it is capped by the "
                     "suite's planned configs, not by its distinct compile "
                     "keys, so configs that share one key reserve cpus for "
-                    "builds that never run — lower "
-                    "cfg-dispatch.compile.parallel instead when the key "
-                    "count is the smaller number."
+                    f"builds that never run — lower {parallel_key} "
+                    "instead when the key count is the smaller number."
                 )
             )
             if suggested_per_build < per_build_now:
