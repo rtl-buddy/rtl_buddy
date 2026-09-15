@@ -407,9 +407,24 @@ _LIBRARY_DIR_OPTION = "-y"
 _CMD_PATH_OPTIONS = {
     _LIBRARY_DIR_OPTION: ("dir", False),
     "-v": "file",
-    "-f": "file",
-    "-F": "file",
+    "-f": "filelist",
+    "-F": "filelist",
 }
+
+# How deep a nested `-f`/`-F` chain is followed when keying a persistent
+# cache, and the line shapes such a list may hold. Bounded so a pathological
+# (or, with the cycle guard, a merely repetitive) tree cannot turn a compile
+# key into a walk of the filesystem.
+#
+# Its own regex rather than `_FILELIST_OPTION_RE`: this one also accepts a
+# LOWERCASE `-f`, which rtl_buddy's generated `run.f` can never contain (the
+# filelist writer refuses one, `filelist.inline_f_disallowed`) but a
+# hand-written list the compile line points at may. Keeping the two separate
+# means adding it cannot change how a single generated `run.f` is stamped.
+_NESTED_FILELIST_MAX_DEPTH = 8
+_NESTED_FILELIST_OPTION_RE = re.compile(
+    r"^(\+(?:incdir|libext|define)\+|-[vyfF]\s+)?(.*)$"
+)
 
 # Compile-line options whose argument is an OUTPUT location. Their value must
 # never be read as an input: a key that hashed the binary a build produces
@@ -955,6 +970,52 @@ def _is_managed_output_path(path: str) -> bool:
     return any(
         _is_pruned_walk_dir(part) for part in Path(path).parts if part not in ("/", "")
     )
+
+
+def _key_spelling_is_relocated(spelling: str) -> bool:
+    """Does ``spelling`` name a path RELATIVE to a project root (#542 review)?
+
+    In cache mode that is exactly "inside the project root", because that is
+    the only thing :meth:`VlogSim._stamp_relpath` relativises. Those are the
+    paths of which every checkout has its OWN copy — so when one of them
+    cannot be content-hashed, the key must fall back to something rather
+    than to nothing, or two checkouts' differing copies collide.
+
+    A path left absolute is a path outside every project root: two checkouts
+    naming it name the same bytes on the same host, so "no hash" there is
+    not a collision and its stats have no business in the key.
+    """
+    match = _FILELIST_OPTION_RE.match(spelling)
+    path = match.group(2) if match else spelling
+    return bool(path) and not os.path.isabs(path)
+
+
+def _key_content_identity(spelling, entry, *, relocated: bool):
+    """What one tracked input contributes to a content-addressed key.
+
+    ``entry`` is a ``[path, size, mtime_ns, sha]`` stamp; ``spelling`` is the
+    name the key records, which is not always ``entry[0]`` (a directory
+    listing keys its files by name relative to the directory).
+
+    The hash when there is one. When there is not — an input over
+    :data:`_CONTENT_HASH_MAX_BYTES`, an unreadable one — an in-root path falls back
+    to ``[spelling, size, mtime_ns]`` (#542 review): a ROM image or a memory
+    init file above the cap is exactly the kind of input two branches
+    differ in, and recording it as ``[spelling, null]`` let two checkouts
+    with different images share one persistent build directory. The cost is
+    that such a suite stops sharing across checkouts at all, since mtimes
+    differ per checkout — correct over convenient, and documented.
+
+    The two shapes are different lengths, so a hashed entry can never
+    compare equal to an unhashed one.
+    """
+    if not isinstance(entry, list) or len(entry) != 4:
+        return entry
+    if entry[-1] is not None:
+        return [spelling, entry[-1]]
+    if relocated:
+        return [spelling, entry[1], entry[2]]
+    return [spelling, None]
 
 
 def _is_non_input_file(name: str) -> bool:
@@ -2339,115 +2400,239 @@ class VlogSim:
                 stamps.append([stamp_line, None, None, None])
         return stamps
 
+    def _key_input_path(self, resolved):
+        """``resolved`` if it is an in-root input worth reading, else None.
+
+        One gate for both ways a path reaches the key — a compile-line token
+        and a nested filelist's entry — so the two cannot disagree about
+        what counts as an input.
+        """
+        root = self._project_root
+        if not (resolved == root or resolved.startswith(root + os.sep)):
+            # Outside the project root: two checkouts naming it name the
+            # same bytes, so its absolute text is identity enough.
+            return None
+        cache_root = self.shared_build_root
+        if cache_root is not None and (
+            resolved == cache_root or resolved.startswith(cache_root + os.sep)
+        ):
+            # The build's own directory. Reading it would make the key a
+            # function of the output it names.
+            return None
+        if _is_managed_output_path(resolved):
+            # Anything under an artefact tree, a `.shared-builds/` or an
+            # `obj_dir*` is written by a build, not read by one.
+            return None
+        return resolved
+
+    def _cmd_token_roles(self, key_cmd):
+        """Which compile-line tokens name a PATH, and what kind (#542 review).
+
+        Yields ``(index, prefix, raw, kind)``: the token's position, the
+        ``run.f``-style option prefix the key records it under, the path as
+        written, and what to read out of it (``("dir", recursive)``,
+        ``"file"``, ``"filelist"``, or ``"output"``).
+
+        A token NOT yielded here is not a path, and that is the whole point
+        of the distinction (#542 review): the compile line's relativisation
+        used to apply to every token, so ``+define+DATA="/checkout/data.hex"``
+        became ``+define+DATA="data.hex"`` and two checkouts whose builds
+        baked in *different* absolute paths hashed to one key and shared one
+        binary. A define's value is compiled INTO the model; it is not a
+        path rtl_buddy may relocate, whoever it happens to point at. Same
+        for ``-D``, ``-G``, ``-pvalue+`` and any other ``key=value`` token:
+        they stay verbatim, so those checkouts get different keys.
+
+        The option this walker does recognise is one whose argument rtl_buddy
+        genuinely resolves as a search path or a source, which is the only
+        case where relocating is meaning-preserving.
+
+        ``"output"`` is yielded so ``-o <path>``'s TEXT relativises like any
+        other in-root path — a key must not carry the checkout prefix — while
+        :meth:`_cmd_path_tokens` drops it before anything is read: hashing
+        the binary a build produces would move the key on every build.
+        """
+        awaiting = None
+        for index, token in enumerate(key_cmd):
+            if not isinstance(token, str):
+                awaiting = None
+                continue
+            if awaiting is not None:
+                prefix, kind = awaiting
+                awaiting = None
+                yield (index, prefix, token, kind)
+                continue
+            if token.startswith(_INCDIR_OPTION):
+                # `+incdir+a+b` names two directories — the same reading
+                # every filelist parser gives it.
+                for part in token[len(_INCDIR_OPTION) :].split("+"):
+                    yield (index, _INCDIR_OPTION, part, ("dir", True))
+                continue
+            if token in _CMD_PATH_OPTIONS:
+                awaiting = (f"{token} ", _CMD_PATH_OPTIONS[token])
+                continue
+            if token in _CMD_OUTPUT_OPTIONS:
+                awaiting = (f"{token} ", "output")
+                continue
+            if token.startswith(_LIBRARY_DIR_OPTION) and len(token) > len(
+                _LIBRARY_DIR_OPTION
+            ):
+                yield (
+                    index,
+                    f"{_LIBRARY_DIR_OPTION} ",
+                    token[len(_LIBRARY_DIR_OPTION) :],
+                    ("dir", False),
+                )
+                continue
+            if token.startswith(("-", "+")):
+                # Some other option — a define, a warning switch, a flag.
+                # Its own text stays exactly as written; its argument, if it
+                # takes one, is judged on the next pass, because a boolean
+                # flag is routinely followed by a bare source
+                # (`--binary /proj/tb.sv`).
+                continue
+            if "=" in token:
+                # A bare `NAME=value`: a macro assignment, not a path, and
+                # its value may well be one that must stay absolute.
+                continue
+            yield (index, "", token, "file")
+
+    def _relativise_cmd(self, key_cmd):
+        """The compile line as the fingerprint records it.
+
+        Verbatim outside cache mode. Inside it, the tokens
+        :meth:`_cmd_token_roles` recognises as paths are relativised against
+        the project root and **everything else is left alone** — see that
+        method for why a define is not a path.
+        """
+        if self.shared_build_root is None:
+            return list(key_cmd)
+        relocatable = {index for index, _, _, _ in self._cmd_token_roles(key_cmd)}
+        return [
+            self._stamp_relpath(token) if index in relocatable else token
+            for index, token in enumerate(key_cmd)
+        ]
+
+    def _nested_filelist_tokens(self, filelist_path, *, seen, depth):
+        """Everything a nested ``-f``/``-F`` filelist names, recursively.
+
+        A filelist the COMPILE LINE points at is an input whose bytes decide
+        nothing on their own: what matters is the sources, include
+        directories and further filelists it names (#542 review). Hashing
+        only the list itself let two checkouts with byte-identical nested
+        lists over *different* RTL take one persistent build directory — and
+        for VCS and Icarus, which emit no dependency file, the stamp agreed
+        too, so the reuse was silent and the binary was the other checkout's.
+
+        ``run.f`` has no such gap: :meth:`_write_filelist` unrolls every
+        ``-F`` chain before writing, so the generated list is already flat
+        and its entries are stamped one by one.
+
+        Never raises and never fails a build: an unreadable list, a
+        malformed line and a missing entry are all simply not keyed on, and
+        the compile that follows reports the real problem far better than a
+        key derivation could. That is also why this reads the lines itself
+        rather than through :class:`~rtl_buddy.tools.vlog_filelist.VlogFilelist`,
+        whose reader is a *validator* — it raises on a malformed line and
+        refuses ``-f`` outright, neither of which may happen here.
+
+        Bounded by :data:`_NESTED_FILELIST_MAX_DEPTH` and cycle-safe on
+        ``realpath``, so a list that includes itself costs one visit.
+        """
+        real = os.path.realpath(filelist_path)
+        if depth > _NESTED_FILELIST_MAX_DEPTH or real in seen:
+            return
+        seen.add(real)
+        try:
+            with open(filelist_path) as filelist_fp:
+                lines = [
+                    stripped
+                    for stripped in (raw_line.strip() for raw_line in filelist_fp)
+                    if stripped and not stripped.startswith("//")
+                ]
+        except OSError:
+            return
+        base = os.path.dirname(os.path.abspath(filelist_path))
+        for line in lines:
+            match = _NESTED_FILELIST_OPTION_RE.match(line)
+            option = (match.group(1) or "").strip() if match else ""
+            entry_path = match.group(2) if match else line
+            if option in ("+define+", "+libext+"):
+                # Not paths. A define's value stays part of the list's own
+                # content hash, which is what already covers it.
+                continue
+            if entry_path.startswith('"') and entry_path.endswith('"'):
+                try:
+                    parsed = shlex.split(entry_path)
+                except ValueError:
+                    parsed = []
+                if len(parsed) == 1:
+                    entry_path = parsed[0]
+            parts = entry_path.split("+") if option == _INCDIR_OPTION else [entry_path]
+            for part in parts:
+                if not part:
+                    continue
+                resolved = self._key_input_path(
+                    os.path.normpath(os.path.join(base, part))
+                )
+                if resolved is None:
+                    continue
+                spelled = self._stamp_relpath(resolved)
+                if option in ("-f", "-F"):
+                    if os.path.realpath(resolved) in seen:
+                        # A list already visited on this chain contributes
+                        # once, under the spelling it was first reached by.
+                        continue
+                    yield (f"{option} {spelled}", resolved, "file")
+                    yield from self._nested_filelist_tokens(
+                        resolved, seen=seen, depth=depth + 1
+                    )
+                elif option == _INCDIR_OPTION:
+                    yield (f"{_INCDIR_OPTION}{spelled}", resolved, ("dir", True))
+                elif option == _LIBRARY_DIR_OPTION:
+                    yield (
+                        f"{_LIBRARY_DIR_OPTION} {spelled}",
+                        resolved,
+                        ("dir", False),
+                    )
+                else:
+                    yield (spelled, resolved, "file")
+
     def _cmd_path_tokens(self, key_cmd):
-        """Compile-LINE tokens that name an input inside the project root.
+        """Compile-LINE inputs inside the project root, with their kind.
 
         Yields ``(spelling, resolved, kind)`` — the ``run.f``-style spelling
         the compile key records (``+incdir+rel``, ``-y rel``, or a bare
         ``rel``), the absolute path it resolves to, and what to read out of
-        it. Everything else on the command line stays what it already was:
-        text.
+        it.
 
         Recognition is the same rule :func:`_relativise_paths` uses — an
         ABSOLUTE path under the project root — because that is the only
         spelling whose meaning this class can settle. A *relative*
         compile-line path is resolved by the builder against its own working
         directory, not by rtl_buddy, so guessing at it here would be a
-        different guess from the one the build makes.
+        different guess from the one the build makes. (Inside a nested
+        filelist a relative entry IS unambiguous — it anchors to the list —
+        and :meth:`_nested_filelist_tokens` resolves it.)
 
-        Conservative in three ways, each because the cost of being wrong is
-        a key that moves when nothing changed (or worse, one that moves on
-        every build). An unrecognised flag's argument is skipped rather than
-        read as a bare source path, which is what keeps `-o <path>` — the
-        build's own OUTPUT — out of the key. A path under the shared build
-        root is skipped for the same reason from the other direction. And
-        only ``+incdir+`` and ``-y`` are listed as directories: a directory
+        Only ``+incdir+`` and ``-y`` are listed as directories: a directory
         under any other option is not an input search path, and walking it
         would be inventing one.
         """
         root_prefix = self._project_root + os.sep
-        cache_root = self.shared_build_root
-
-        def _resolve(raw):
-            """``raw`` as an absolute in-root input path, or None."""
-            if not raw.startswith(root_prefix):
-                # Outside the project root, or relative — which the builder
-                # resolves against its own cwd, not rtl_buddy: text only.
-                return None
-            resolved = os.path.normpath(raw)
-            if cache_root is not None and (
-                resolved == cache_root or resolved.startswith(cache_root + os.sep)
-            ):
-                # The build's own directory. Reading it would make the key a
-                # function of the output it names.
-                return None
-            if _is_managed_output_path(resolved):
-                # Anything under an artefact tree, a `.shared-builds/` or an
-                # `obj_dir*` is written by a build, not read by one.
-                return None
-            return resolved
-
-        awaiting = None
-        after_output_flag = False
-        for token in key_cmd:
-            if not isinstance(token, str):
-                awaiting, after_output_flag = None, False
+        for _, prefix, raw, kind in self._cmd_token_roles(key_cmd):
+            if kind == "output" or not raw.startswith(root_prefix):
                 continue
-            if awaiting is not None:
-                option, kind = awaiting
-                awaiting = None
-                resolved = _resolve(token)
-                if resolved is not None:
-                    yield (
-                        f"{option} {self._stamp_relpath(token)}",
-                        resolved,
-                        kind,
-                    )
+            resolved = self._key_input_path(os.path.normpath(raw))
+            if resolved is None:
                 continue
-            after_output_flag, was_after_output_flag = False, after_output_flag
-            if token.startswith(_INCDIR_OPTION):
-                # `+incdir+a+b` names two directories — the same reading
-                # every filelist parser gives it.
-                for part in token[len(_INCDIR_OPTION) :].split("+"):
-                    resolved = _resolve(part)
-                    if resolved is not None:
-                        yield (
-                            f"{_INCDIR_OPTION}{self._stamp_relpath(part)}",
-                            resolved,
-                            ("dir", True),
-                        )
+            spelling = f"{prefix}{self._stamp_relpath(raw)}"
+            if kind == "filelist":
+                # The list's own bytes, and then everything it names.
+                yield (spelling, resolved, "file")
+                yield from self._nested_filelist_tokens(resolved, seen=set(), depth=1)
                 continue
-            if token in _CMD_PATH_OPTIONS:
-                awaiting = (token, _CMD_PATH_OPTIONS[token])
-                continue
-            if token.startswith(_LIBRARY_DIR_OPTION) and len(token) > len(
-                _LIBRARY_DIR_OPTION
-            ):
-                raw = token[len(_LIBRARY_DIR_OPTION) :]
-                resolved = _resolve(raw)
-                if resolved is not None:
-                    yield (
-                        f"{_LIBRARY_DIR_OPTION} {self._stamp_relpath(raw)}",
-                        resolved,
-                        ("dir", False),
-                    )
-                continue
-            if token in _CMD_OUTPUT_OPTIONS:
-                after_output_flag = True
-                continue
-            if token.startswith("-"):
-                # Some other option. Its own text is already in the key, and
-                # its argument (if it takes one) is judged on the next pass:
-                # a boolean flag is routinely followed by a bare source
-                # (`--binary /proj/tb.sv`), so refusing everything after a
-                # flag would miss the commonest spelling of all.
-                continue
-            if was_after_output_flag:
-                # An output location. Never an input, whatever it resolves to.
-                continue
-            resolved = _resolve(token)
-            if resolved is not None:
-                yield (self._stamp_relpath(token), resolved, "file")
+            yield (spelling, resolved, kind)
 
     def _fingerprint_cmd_inputs(self, key_cmd, sources):
         """Content identity for the inputs the compile LINE names (#542 review).
@@ -2484,27 +2669,31 @@ class VlogSim:
         for spelling, resolved, kind in self._cmd_path_tokens(key_cmd):
             if spelling in covered:
                 continue
+            # Everything here is in-root by construction, so an input that
+            # cannot be hashed falls back to its stats rather than to
+            # nothing (#542 review) — see :func:`_key_content_identity`.
             if kind == "file":
                 if not os.path.isfile(resolved):
                     continue
-                identity = self._tracked_entry(resolved)[-1]
+                entry = _key_content_identity(
+                    spelling, self._tracked_entry(resolved), relocated=True
+                )
             else:
                 if not os.path.isdir(resolved):
                     continue
                 listing = self._directory_listing(resolved, recursive=kind[1])
                 if listing is None:
                     continue
-                identity = [
-                    [inner[0], inner[-1]]
-                    if isinstance(inner, list) and inner
-                    else inner
-                    for inner in listing
+                entry = [
+                    spelling,
+                    [
+                        _key_content_identity(inner[0], inner, relocated=True)
+                        if isinstance(inner, list) and inner
+                        else inner
+                        for inner in listing
+                    ],
                 ]
-            if identity is None:
-                # Nothing readable to key on — an unhashable file, or one
-                # the hashing policy excludes. It stays text, as it was.
-                continue
-            entries.append([spelling, identity])
+            entries.append(entry)
         return entries
 
     def _fingerprint_toolchain(self, exe):
@@ -2564,10 +2753,14 @@ class VlogSim:
         here would silently disable reuse rather than error.
         """
         return {
-            # Relativised in cache mode (#542): a `--Mdir`, an `-o` or a
-            # bare source argument under the project root would otherwise
-            # make every entry of this dict a function of the checkout path.
-            "cmd": [self._stamp_relpath(token) for token in key_cmd],
+            # Relativised in cache mode (#542), but only the tokens that
+            # really are paths: an `-o`, a `-y` or a bare source argument
+            # under the project root would otherwise make every entry of
+            # this dict a function of the checkout path, while a
+            # `+define+DATA="/checkout/data.hex"` must keep the value the
+            # model is about to bake in (#542 review). See
+            # :meth:`_cmd_token_roles`.
+            "cmd": self._relativise_cmd(key_cmd),
             "env": dict(sorted(self._get_extra_compile_env().items())),
             "sources": self._fingerprint_filelist_sources(filelist_path),
             "toolchain": self._fingerprint_toolchain(key_cmd[0]),
@@ -2592,18 +2785,22 @@ class VlogSim:
         """
         if not content or not isinstance(entry, list) or not entry:
             return entry[0] if isinstance(entry, list) and entry else entry
+        relocated = isinstance(entry[0], str) and _key_spelling_is_relocated(entry[0])
         if _is_directory_entry(entry):
+            # The directory decides, not each file: a listing's names are
+            # relative to it by construction, so asking them would say
+            # "relative" even for an include tree outside the project.
             return [
                 entry[0],
                 [
-                    [inner[0], inner[-1]]
+                    _key_content_identity(inner[0], inner, relocated=relocated)
                     if isinstance(inner, list) and inner
                     else inner
                     for inner in entry[-1]
                 ],
             ]
         if len(entry) == 4:
-            return [entry[0], entry[-1]]
+            return _key_content_identity(entry[0], entry, relocated=relocated)
         return entry
 
     @staticmethod
