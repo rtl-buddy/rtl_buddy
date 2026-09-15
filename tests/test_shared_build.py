@@ -2053,10 +2053,56 @@ def test_a_group_sibling_declines_to_adopt_without_a_dependency_file(
     _install_fake_builder(monkeypatch, calls)
     sibling = _cold_tree_group_pair(tmp_path, monkeypatch, calls, family="vcs")
 
-    assert sibling.adopt_group_build() == (None, None)
+    assert sibling.adopt_group_build() == (
+        None,
+        "no dependency list (builder reports none)",
+    )
     assert sibling.last_compile["reused"] is None  # nothing decided yet
     assert sibling.compile() == 0
     assert len(calls) == 2  # ...and the pre-#535 path recompiled, as it did
+
+
+def test_every_adoption_decline_names_its_own_reason(tmp_path, monkeypatch):
+    """The remaining `(None, <reason>)` returns, one setup each (#534/#535).
+
+    The build job logs whatever comes back here as
+    `build_job.group_adoption_declined`, and "could not adopt" without a
+    reason leaves the reader of a job that compiled one key twice exactly
+    where they were before the event existed.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+    sibling = _cold_tree_group_pair(tmp_path, monkeypatch, calls)
+    stamp_path = (
+        Path(sibling.compile_group_dir()) / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+    )
+    stamped = json.loads(stamp_path.read_text())
+
+    def _restamp(**overrides):
+        stamp_path.write_text(json.dumps({**stamped, **overrides}, sort_keys=True))
+        # Consumed by the previous attempt; a fresh plan re-stats the tree.
+        sibling._compile_plan_cache = None
+
+    _restamp(deps_format=1)
+    assert sibling.adopt_group_build() == (
+        None,
+        f"stamp dependency format 1 != {vlog_sim_module._DEPS_FORMAT}",
+    )
+
+    # The compile key fixes the command, so this is a toolchain replaced
+    # under a running job — cheap to check, and the one input a group's
+    # members do not share by construction.
+    _restamp(toolchain="verilator 4.999 from somewhere else")
+    assert sibling.adopt_group_build() == (None, "stamp inputs differ")
+
+    _restamp(deps=[["src/top.sv", 1]])
+    assert sibling.adopt_group_build() == (None, "unreadable dependency entry")
+
+    stamp_path.unlink()
+    sibling._compile_plan_cache = None
+    assert sibling.adopt_group_build() == (None, "no stamp")
+    assert len(calls) == 1, "a decline compiled something"
 
 
 def _group_pair_with_incdirs(
@@ -2102,7 +2148,10 @@ def test_a_group_sibling_declines_a_build_whose_include_is_now_shadowed(
     )
     assert header.exists()
 
-    assert sibling.adopt_group_build() == (None, None)
+    verdict, reason = sibling.adopt_group_build()
+    assert verdict is None
+    assert reason.startswith("resolution changed: +incdir+")
+    assert reason.endswith("/gen :: +w.svh")
     assert sibling.last_compile["reused"] is None
     assert sibling.compile() == 0
     assert len(calls) == 2, "the shadowed include was adopted as unchanged"
@@ -2128,7 +2177,10 @@ def test_a_group_sibling_declines_a_build_when_a_library_file_appeared(
         sibling_pre=lambda: (lib / "top.sv").write_text("module top; endmodule\n"),
     )
 
-    assert sibling.adopt_group_build() == (None, None)
+    verdict, reason = sibling.adopt_group_build()
+    assert verdict is None
+    assert reason.startswith("resolution changed: -y ")
+    assert reason.endswith("/lib :: +top.sv")
     assert sibling.compile() == 0
     assert len(calls) == 2, "a new library file was adopted as unchanged"
 
@@ -2248,7 +2300,7 @@ def test_an_adoption_validates_the_stamp_it_rewrites_under_the_lock(
 
     monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _rebuilt_under_us)
 
-    assert sibling.adopt_group_build() == (None, None)
+    assert sibling.adopt_group_build() == (None, "simv changed")
     assert stamp_path.read_text() == before, "a stamp nobody validated was rewritten"
 
 
@@ -2285,7 +2337,9 @@ def test_an_adoption_lists_the_tree_under_the_lock(tmp_path, monkeypatch):
 
     monkeypatch.setattr(vlog_sim_module, "build_dir_lock", _shadowed_under_us)
 
-    assert sibling.adopt_group_build() == (None, None)
+    verdict, reason = sibling.adopt_group_build()
+    assert verdict is None
+    assert reason.startswith("resolution changed: +incdir+")
     assert stamp_path.read_text() == before, "a stale listing was stamped"
 
 
@@ -2321,7 +2375,7 @@ def test_an_adoption_whose_stamp_refresh_fails_is_not_an_adoption(
 
     monkeypatch.setattr(vlog_sim_module.VlogSim, "_replace_text", _no_space)
 
-    assert sibling.adopt_group_build() == (None, None)
+    assert sibling.adopt_group_build() == (None, "stamp refresh failed")
     assert stamp_path.read_text() == before
     assert sibling.last_compile["reused"] is None
 
@@ -3804,6 +3858,288 @@ def test_a_gated_job_does_not_recompile_a_build_the_build_job_made(
     assert "no stamp or no simv" in desc
     assert "not recompiling" in desc
     assert "\n" not in desc
+
+
+def _stamp_path(sim):
+    """The shared stamp this sim's compile key validates against."""
+    return Path(sim.compile_group_dir()) / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+
+
+def _gated(tmp_path, monkeypatch, name, *, envelope, **kwargs):
+    sim = _make_sim(tmp_path, monkeypatch, test_name=name, **kwargs)
+    _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = envelope
+    return sim
+
+
+def test_a_declining_gated_job_leaves_the_stamp_for_its_siblings(
+    tmp_path, monkeypatch, caplog
+):
+    """One element's drift must not invalidate the key for the fan-out (#534).
+
+    The unlink that clears a stale stamp belongs to a compile that is
+    actually about to run in that directory. Run before the gated verdict,
+    it fired on the one path that compiles nothing: the declining job left
+    the build job's outputs with no stamp beside them, and every sibling
+    element queued on that key then failed `_build_stamp_is_valid` with "no
+    stamp or no simv" — a cascade from one drift, and a plain re-run
+    rebuilding from scratch.
+    """
+    import logging as _logging
+
+    source = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    # The build job's compile, and the stamp it leaves.
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    stamp = _stamp_path(_make_sim(tmp_path, monkeypatch, test_name="test_a"))
+    stamped = stamp.read_bytes()
+    calls.clear()
+
+    envelope = _write_build_envelope(tmp_path, failed=[], built=["test_a", "test_b"])
+    # test_a's element derives its fingerprint from the tree as the build
+    # job left it, so its stamp check will pass...
+    reuser = _gated(tmp_path, monkeypatch, "test_a", envelope=envelope)
+    reuser._compile_plan()
+    # ...while test_b's lands after an edit, so its check cannot.
+    _touch(source, "module top; wire drifted; endmodule\n")
+    decliner = _gated(tmp_path, monkeypatch, "test_b", envelope=envelope)
+
+    with caplog.at_level(_logging.DEBUG):
+        assert decliner.compile() == 1
+    assert _events(caplog, "compile.build_stamp_rejected")
+    assert stamp.read_bytes() == stamped, "a declining job removed the shared stamp"
+
+    caplog.clear()
+    with caplog.at_level(_logging.DEBUG):
+        assert reuser.compile() == 0
+    assert reuser.last_compile["reused"] is True
+    assert _events(caplog, "compile.prebuilt_stamp_invalid") == []
+    assert calls == [], "the fan-out recompiled after one element declined"
+
+
+def test_a_gated_job_whose_build_failed_also_leaves_the_stamp(
+    tmp_path, monkeypatch, caplog
+):
+    """Same guarantee on the other verdict (#534).
+
+    A config the build job recorded as a compile failure fails here too,
+    carrying that exit status — and it compiles nothing, so it has no more
+    business removing the shared stamp than the declining job above. Its
+    same-key siblings may be perfectly buildable.
+    """
+    import logging as _logging
+
+    source = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    stamp = _stamp_path(_make_sim(tmp_path, monkeypatch, test_name="test_a"))
+    stamped = stamp.read_bytes()
+    calls.clear()
+
+    _touch(source, "module top; wire drifted; endmodule\n")
+    sim = _gated(
+        tmp_path,
+        monkeypatch,
+        "test_b",
+        envelope=_write_build_envelope(
+            tmp_path,
+            failed=["test_b"],
+            built=["test_a"],
+            builds=[{"test": "test_b", "returncode": 3}],
+        ),
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 3
+
+    assert calls == []
+    assert _events(caplog, "compile.build_job_failed")
+    assert stamp.read_bytes() == stamped, "a failed-verdict job removed the stamp"
+
+
+def test_a_gated_job_declines_on_a_missing_stamp_beside_a_real_simv(
+    tmp_path, monkeypatch, caplog
+):
+    """The MISSING-stamp case, not only the mismatching one (#534 ask 3).
+
+    `_build_stamp_is_valid` answers "no stamp or no simv in the build dir"
+    before it looks at anything else, so the envelope has to be consulted
+    after that verdict rather than only for a stamp that disagreed. The
+    binary is right there; recompiling it under the simulation reservation
+    is exactly the OOM the gate exists to prevent.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    calls.clear()
+    sim = _gated(
+        tmp_path,
+        monkeypatch,
+        "test_b",
+        envelope=_write_build_envelope(tmp_path, failed=[], built=["test_b"]),
+    )
+    stamp = _stamp_path(sim)
+    simv = Path(sim._get_simv_path())
+    stamp.unlink()
+    assert simv.is_file(), "the build the job is gated on has to still be there"
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == [], "a gated job recompiled a build whose stamp went missing"
+    (rejected,) = _events(caplog, "compile.build_stamp_rejected")
+    assert rejected["reason"] == "no stamp or no simv in the build dir"
+    assert "not recompiling" in sim.compile_fail_desc
+
+
+def _break_stamp_writes(monkeypatch, *, error=errno.EROFS):
+    """Fail every stamp write, leaving every other artefact write alone."""
+    real = vlog_sim_module.VlogSim._replace_text
+
+    def _refuse(self, path, text):
+        if Path(path).name == vlog_sim_module.SHARED_BUILD_STAMP_NAME:
+            raise OSError(error, os.strerror(error), str(path))
+        return real(self, path, text)
+
+    monkeypatch.setattr(vlog_sim_module.VlogSim, "_replace_text", _refuse)
+
+
+def test_a_stamp_that_cannot_be_written_does_not_fail_a_passing_compile(
+    tmp_path, monkeypatch, caplog
+):
+    """The compile succeeded; only the note saying so did not (#534).
+
+    A raising `write_text` escaped `compile()` — `_compile_outcome` catches
+    only `FilelistError` — so under `rb _build-job` it surfaced as a worker
+    exception and a build that was sitting in the directory was reported
+    failed, cancelling the afterok fan-out behind it. Keep the builder's
+    status, say what happened, and record it for the gated jobs.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    _break_stamp_writes(monkeypatch)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+
+    assert len(calls) == 1
+    (failed,) = _events(caplog, "compile.stamp_write_failed")
+    assert failed["test"] == "test_a"
+    assert failed["stamp"].endswith(vlog_sim_module.SHARED_BUILD_STAMP_NAME)
+    assert failed["error"]
+    assert _events(caplog, "compile.build_stamp_written") == []
+    # What the build job reads off the runner to write the envelope with.
+    assert sim.stamp_write_failed is True
+    assert sim.last_build_stamp is None
+    assert not _stamp_path(sim).exists()
+    assert Path(sim._get_simv_path()).is_file()
+
+
+def test_a_stamp_write_that_fails_leaves_no_partial_file(tmp_path, monkeypatch):
+    """Atomic like every other artefact on this path (#534).
+
+    `compile()`'s reuse fast path reads the stamp with no lock held, so a
+    plain `write_text` let a reader see a truncated file, call it
+    unreadable, and recompile a build that was perfectly good. A tmp file
+    that could not be replaced into place is removed rather than left for
+    the next listing to trip over.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    _break_stamp_writes(monkeypatch)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    build_dir = Path(sim.compile_group_dir())
+    assert [p.name for p in build_dir.glob("*.tmp")] == []
+    assert not (build_dir / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
+
+
+def test_a_gated_job_declines_when_the_build_job_could_not_stamp(
+    tmp_path, monkeypatch, caplog
+):
+    """`stamp_written: false` is read as "built", with its own reason (#534).
+
+    The build job already knows why there is no stamp: its compile
+    succeeded and the write failed. Rediscovering that here as "no stamp or
+    no simv" would send the reader looking for a build that is right there,
+    and recompiling would run it under the simulation reservation.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    _break_stamp_writes(monkeypatch)
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    calls.clear()
+
+    sim = _gated(
+        tmp_path,
+        monkeypatch,
+        "test_a",
+        envelope=_write_build_envelope(
+            tmp_path,
+            failed=[],
+            builds=[{"test": "test_a", "reused": False, "stamp_written": False}],
+        ),
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == [], "a gated job recompiled a build the job could not stamp"
+    (rejected,) = _events(caplog, "compile.build_stamp_rejected")
+    assert rejected["stamp_unwritten"] is True
+    assert rejected["reason"] == "the build job could not write the build stamp"
+    desc = sim.compile_fail_desc
+    assert "could not write its build stamp" in desc
+    assert "not recompiling" in desc
+    assert "\n" not in desc
+
+
+def test_a_gated_job_with_a_stamped_build_is_not_told_the_stamp_failed(
+    tmp_path, monkeypatch, caplog
+):
+    """The boundary: an envelope with no `stamp_written` key means stamped.
+
+    Every envelope written before this field existed says nothing, and must
+    keep meaning what it always did.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _gated(
+        tmp_path,
+        monkeypatch,
+        "test_a",
+        envelope=_write_build_envelope(
+            tmp_path, failed=[], builds=[{"test": "test_a", "reused": False}]
+        ),
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == []
+    (rejected,) = _events(caplog, "compile.build_stamp_rejected")
+    assert rejected["stamp_unwritten"] is False
+    assert "no stamp or no simv" in sim.compile_fail_desc
 
 
 def test_a_gated_job_says_when_its_inputs_are_not_the_build_jobs(

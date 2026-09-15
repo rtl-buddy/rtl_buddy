@@ -2520,6 +2520,10 @@ class RtlBuddy:
         # Keyed by group dir, and a group is one worker's whole unit of
         # work, so no two threads ever touch one key.
         group_leaders = {}
+        # Told apart from a runner reporting no stamp: a runner class that
+        # does not report one at all keeps the pre-#534 leader rule, the
+        # same convention `adopt_group_build` is looked up under.
+        unreported = object()
 
         def _compile_group(group):
             """Compile one group's configs serially; rows for the caller.
@@ -2574,7 +2578,7 @@ class RtlBuddy:
                 adopt = getattr(runner, "adopt_group_build", None)
                 if leader is not None and adopt is not None:
                     try:
-                        verdict, dependency = adopt()
+                        verdict, detail = adopt()
                     except Exception as exc:  # noqa: BLE001 - exit-0 contract
                         rows.append((index, name, False, str(exc), runner, group_dir))
                         continue
@@ -2588,7 +2592,7 @@ class RtlBuddy:
                             "build_job.group_input_drift",
                             test=name,
                             leader=leader,
-                            dependency=dependency,
+                            dependency=detail,
                         )
                         rows.append((index, name, False, None, runner, group_dir))
                         continue
@@ -2596,6 +2600,21 @@ class RtlBuddy:
                     # stamp, a compile line that moved. The leader's own
                     # full comparison decides it instead, which is the
                     # pre-#535 path and still short-circuits a valid stamp.
+                    #
+                    # Said out loud, at INFO: the whole point of adoption is
+                    # that a same-key sibling does not pay a second full
+                    # elaboration, and a decline is the difference between
+                    # "this job compiled one key once" and "it compiled it
+                    # N times". Without this the only visible trace was the
+                    # extra `compile.start` (#534/#535).
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "build_job.group_adoption_declined",
+                        test=name,
+                        leader=leader,
+                        reason=detail,
+                    )
                 try:
                     res = runner.compile_prepared()
                 except Exception as exc:  # noqa: BLE001 - see exit-0 contract
@@ -2613,7 +2632,27 @@ class RtlBuddy:
                     # adopts, whichever loop shape ran it: streaming calls
                     # this once per member, so the leader has to outlive
                     # the call.
-                    group_leaders.setdefault(group_dir, name)
+                    #
+                    # Only if it left a stamp, though. Adoption reads the
+                    # leader's stamp for the dependency list it decides on,
+                    # so a leader whose stamp never landed — the write
+                    # failed, the directory went read-only — makes every
+                    # sibling call adopt(), get "no stamp", and compile
+                    # anyway. Saying so once is worth more than N silent
+                    # declines (#534). `last_build_stamp` is set wherever a
+                    # build is stamped, reused or adopted, and names the
+                    # directory the stamp actually went in — which for an
+                    # unshared build is not `group_dir`.
+                    if getattr(runner, "last_build_stamp", unreported) is None:
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "build_job.group_leader_unstamped",
+                            test=name,
+                            group=group_dir,
+                        )
+                    else:
+                        group_leaders.setdefault(group_dir, name)
                 rows.append((index, name, built, None, runner, group_dir))
             return rows
 
@@ -2700,6 +2739,13 @@ class RtlBuddy:
                 logging.INFO,
                 "build_job.pool_configured",
                 groups=len(groups),
+                # Why the group count can be below `parallel` without
+                # anything being misconfigured: configs sharing a compile
+                # key are one group, and the siblings adopt the leader's
+                # build rather than compiling it again (#535). Reading
+                # "3 distinct builds" against a 20-test suite otherwise
+                # looks like 17 tests went missing.
+                configs=len(configs),
                 parallel=pool_size,
                 parallel_requested=parallel,
                 # What the config says, which is `parallel_requested` unless
@@ -2831,6 +2877,15 @@ class RtlBuddy:
                 # way it declines to recompile, because the build exists.
                 # Additive; schema_version stays 1.
                 build_entry["fingerprint_sha"] = stamp["fingerprint_sha"]
+            if ok and getattr(runner, "stamp_write_failed", False):
+                # Built, but with nothing on disk to say so (#534). The
+                # gated sim jobs must read this as "built" — the binary is
+                # there and a recompile under the simulation reservation is
+                # the one answer that cannot help — while getting a reason
+                # that names the write rather than sending them looking for
+                # a build that never happened. Absent means "stamped", which
+                # is what every older envelope means too.
+                build_entry["stamp_written"] = False
             if not ok:
                 # Why it failed, carried in the envelope rather than left in
                 # this job's log for someone to find (#498). Everything here

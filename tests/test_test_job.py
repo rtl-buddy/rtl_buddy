@@ -25,7 +25,7 @@ from rtl_buddy.dispatch.argv import job_log_path
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.config import SuiteConfig
 from rtl_buddy.rtl_buddy import RtlBuddy
-from rtl_buddy.runner.result_io import load_result_json
+from rtl_buddy.runner.result_io import load_build_result_json, load_result_json
 from rtl_buddy.runner.test_results import (
     CompileFailResults,
     EarlyStopResults,
@@ -1580,6 +1580,220 @@ def test_pool_configured_has_a_dedicated_human_message():
         "build_job.pool_configured",
         {"groups": 4, "parallel": 4, "parallel_requested": 4},
     )
+
+
+def test_pool_configured_says_why_there_are_fewer_builds_than_configs():
+    """Fewer distinct builds than configs is the healthy shape (#535).
+
+    A 20-config suite over 3 compile keys compiles 3 times, and a line
+    reading only "Compiling 3 distinct build(s)" looks like 17 configs went
+    missing. The pool sizing itself is correct and stays as it is.
+    """
+    from rtl_buddy.logging_utils import _human_message
+
+    shared = _human_message(
+        "build_job.pool_configured",
+        {"groups": 3, "configs": 20, "parallel": 3, "parallel_requested": 8},
+    )
+    assert "3 distinct build(s)" in shared
+    assert "20 configs share 3 keys; siblings adopt the leader's build" in shared
+    # One config per key: nothing is being shared, so nothing to explain.
+    assert "share" not in _human_message(
+        "build_job.pool_configured", {"groups": 4, "configs": 4, "parallel": 4}
+    )
+    # An older event with no `configs` renders exactly as it did.
+    assert "share" not in _human_message(
+        "build_job.pool_configured", {"groups": 4, "parallel": 4}
+    )
+
+
+class _StampedStubRunner(_StubTestRunner):
+    """A stub that reports a build stamp and can adopt a sibling's build.
+
+    Separate from :class:`_StubTestRunner` on purpose: a runner class that
+    reports neither keeps the pre-#534 leader rule, and the base stub is
+    what proves that path still works.
+    """
+
+    # test name -> stamp dict / None ("compiled, but left no stamp").
+    build_stamp_of = None
+    # test name -> bool: the compile succeeded, the stamp write did not.
+    stamp_write_failed_of = None
+    # test name -> (verdict, detail), the adopt_group_build contract.
+    adopt_of = None
+    adopt_calls: list = []
+
+    @property
+    def last_build_stamp(self):
+        hook = type(self).build_stamp_of
+        if hook is None:
+            return {"build_dir": "/b", "fingerprint_sha": "sha", "simv": None}
+        return hook(self.test_name)
+
+    @property
+    def stamp_write_failed(self):
+        hook = type(self).stamp_write_failed_of
+        return False if hook is None else hook(self.test_name)
+
+    def adopt_group_build(self):
+        type(self).adopt_calls.append(self.test_name)
+        hook = type(self).adopt_of
+        return (None, "no stamp") if hook is None else hook(self.test_name)
+
+
+@pytest.fixture
+def stamped_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StampedStubRunner]:
+    _StampedStubRunner.canned = None
+    _StampedStubRunner.last_init = None
+    _StampedStubRunner.inits = []
+    _StampedStubRunner.init_threads = []
+    _StampedStubRunner.group_of = None
+    _StampedStubRunner.compile_hook = None
+    _StampedStubRunner.prepare_hook = None
+    _StampedStubRunner.group_fail = None
+    _StampedStubRunner.compile_record_of = None
+    _StampedStubRunner.compile_failure_of = None
+    _StampedStubRunner.build_stamp_of = None
+    _StampedStubRunner.stamp_write_failed_of = None
+    _StampedStubRunner.adopt_of = None
+    _StampedStubRunner.adopt_calls = []
+    monkeypatch.setattr(rtl_buddy_module, "TestRunner", _StampedStubRunner)
+    return _StampedStubRunner
+
+
+def test_a_build_job_records_a_compile_it_could_not_stamp(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """`stamp_written: false`, beside a config that is still BUILT (#534).
+
+    The compile ran and its binary is in the directory, so failing the
+    config would cancel the afterok fan-out behind a build that exists. The
+    envelope carries the missing stamp instead, which is what lets the
+    gated simulation jobs decline rather than recompile under their own
+    reservation.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    stamped_runner.stamp_write_failed_of = lambda name: name == "basic"
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--result-json",
+            "build-result-1.json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    payload = _build_payload(result.output)
+    assert set(payload["built"]) == {"basic", "extra"}
+    assert payload["failed"] == []
+    envelope = load_build_result_json(minimal_project / "build-result-1.json")
+    records = {record["test"]: record for record in envelope["builds"]}
+    assert records["basic"]["stamp_written"] is False
+    # Absent, not `true`: every envelope written before the field existed
+    # means "stamped", and so does this one.
+    assert "stamp_written" not in records["extra"]
+
+
+def test_a_leader_that_left_no_stamp_is_never_adopted_from(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """Adoption reads the leader's stamp, so an unstamped leader is none (#534).
+
+    Left as leader, every sibling would call adopt(), be told "no stamp",
+    and compile the key again — the #535 symptom with no record of its
+    cause. Say it once, at WARNING, and let the siblings take the normal
+    path.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    stamped_runner.group_of = lambda _name: "one-shared-build-dir"
+    stamped_runner.build_stamp_of = lambda name: None if name == "basic" else {}
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    assert set(_build_payload(result.output)["built"]) == {"basic", "extra"}
+
+    unstamped = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.group_leader_unstamped"
+    ]
+    assert [record["test"] for record in unstamped] == ["basic"]
+    assert stamped_runner.adopt_calls == [], "adopted from a leader with no stamp"
+
+
+def test_a_declined_adoption_says_which_config_and_why(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A decline is a second full compile of one key, so it is logged (#535).
+
+    `(None, <reason>)` used to be silent: the only trace that a sibling had
+    not adopted was an extra `compile.start`, and nothing said which of the
+    seven reasons produced it.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    stamped_runner.group_of = lambda _name: "one-shared-build-dir"
+    stamped_runner.adopt_of = lambda _name: (None, "simv changed")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    assert set(_build_payload(result.output)["built"]) == {"basic", "extra"}
+
+    declined = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.group_adoption_declined"
+    ]
+    assert [(r["test"], r["leader"], r["reason"]) for r in declined] == [
+        ("extra", "basic", "simv changed")
+    ]
+
+
+def test_the_new_build_job_events_have_dedicated_human_messages():
+    from rtl_buddy.logging_utils import _human_message
+
+    unstamped = _human_message(
+        "build_job.group_leader_unstamped", {"test": "basic", "group": "obj_dir_ab"}
+    )
+    assert "basic" in unstamped and "obj_dir_ab" in unstamped
+    assert "compile.stamp_write_failed" in unstamped
+    assert "build_job group_leader_unstamped" not in unstamped
+
+    declined = _human_message(
+        "build_job.group_adoption_declined",
+        {"test": "extra", "leader": "basic", "reason": "simv changed"},
+    )
+    assert "extra" in declined and "basic" in declined and "simv changed" in declined
+    assert "build_job group_adoption_declined" not in declined
+
+    write_failed = _human_message(
+        "compile.stamp_write_failed",
+        {
+            "test": "basic",
+            "build_dir": "obj_dir_ab",
+            "stamp": "obj_dir_ab/rb-compile-stamp.json",
+            "error": "[Errno 30] Read-only file system",
+        },
+    )
+    assert "Read-only file system" in write_failed
+    assert "the compile succeeded" in write_failed
+    assert "compile stamp_write_failed" not in write_failed
 
 
 def test_build_job_compile_failure_is_best_effort_exit_0(

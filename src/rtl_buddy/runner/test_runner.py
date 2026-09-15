@@ -190,6 +190,22 @@ class TestRunner:
         except Exception:  # noqa: BLE001 - telemetry must never raise
             return None
 
+    @property
+    def stamp_write_failed(self):
+        """Did this runner's compile succeed but leave no stamp (#534)?
+
+        The build job records it as ``stamp_written: false`` beside the
+        config, so a gated simulation job reads "built, but no stamp"
+        rather than rediscovering it as a stamp that does not validate and
+        recompiling under the simulation reservation. Telemetry, and
+        telemetry must never raise: an absent sim, or a sim class that does
+        not report one, both read as "nothing went wrong".
+        """
+        try:
+            return bool(getattr(self._vlog_sim, "stamp_write_failed", False))
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return False
+
     def refresh_build_stamp(self):
         """Re-read the stamp behind :attr:`last_build_stamp` (#535).
 
@@ -206,8 +222,8 @@ class TestRunner:
     def adopt_group_build(self):
         """Adopt a same-key sibling's build on the prepared sim (#535).
 
-        ``("adopted", None)`` / ``("drift", <path>)`` / ``(None, None)`` —
-        see :meth:`VlogSim.adopt_group_build`. Only the dispatched build
+        ``("adopted", None)`` / ``("drift", <path>)`` / ``(None, <reason>)``
+        — see :meth:`VlogSim.adopt_group_build`. Only the dispatched build
         job asks, and only for the members of a group whose leader has
         already compiled.
         """

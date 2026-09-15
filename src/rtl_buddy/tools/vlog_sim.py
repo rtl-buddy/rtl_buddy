@@ -1299,6 +1299,12 @@ class VlogSim:
         # head can check at collect that every run of one compile key named
         # the same binary (#535).
         self.last_build_stamp = None
+        # Did this instance's last compile succeed and then fail to record
+        # its stamp? The build job puts it in the envelope as
+        # ``stamp_written: false`` so a gated sim job reads "built, but no
+        # stamp" rather than rediscovering it as "no stamp or no simv" and
+        # recompiling under the simulation reservation (#534).
+        self.stamp_write_failed = False
         # Opt-in: key the build dir on a hash of the compile inputs so tests
         # with identical inputs share one simv (#293). The resolved shared
         # dir is only known once compile() has written the filelist.
@@ -2970,6 +2976,11 @@ class VlogSim:
         is recoverable by compiling, so the test fails with the reason
         instead — one row to read rather than N red jobs.
 
+        A record carrying ``stamp_written: false`` names its own reason: the
+        build job's compile succeeded and only the stamp write failed, so
+        there is nothing here for the stamp check to have found and nothing
+        a recompile would repair either.
+
         Which reason depends on the two fingerprints. Equal (or unknown,
         from a build job too old to record one) says the two sides describe
         the same compile and the disagreement is in the stamp itself — a
@@ -2985,10 +2996,21 @@ class VlogSim:
         inputs_differ = (
             recorded_sha is not None and own_sha is not None and recorded_sha != own_sha
         )
+        # The build job already knows why there is no stamp to validate: its
+        # own compile succeeded and the stamp write failed (#534). Saying "no
+        # stamp or no simv in the build dir" here would send the reader
+        # looking for a build that is right there; name the write instead.
+        stamp_unwritten = (record or {}).get("stamp_written") is False
+        if stamp_unwritten:
+            reason = "the build job could not write the build stamp"
         what = (
-            "from different compile inputs than this job derived"
-            if inputs_differ
-            else "and its stamp still does not validate here"
+            "but could not write its build stamp"
+            if stamp_unwritten
+            else (
+                "from different compile inputs than this job derived"
+                if inputs_differ
+                else "and its stamp still does not validate here"
+            )
         )
         transcript = self._get_build_compile_transcript_path()
         log_event(
@@ -3000,6 +3022,7 @@ class VlogSim:
             build_dir=build_dir,
             reason=reason,
             inputs_differ=inputs_differ,
+            stamp_unwritten=stamp_unwritten,
             recorded_sha=recorded_sha,
             own_sha=own_sha,
             build_result=str(self.build_result_json),
@@ -3235,14 +3258,20 @@ class VlogSim:
         say what would be. That is handed back undecided.
 
         Returns ``("adopted", None)``, ``("drift", <path>)``, or
-        ``(None, None)`` for "not decidable here" — no shared build, no
+        ``(None, <reason>)`` for "not decidable here" — no shared build, no
         stamp, a compile line that somehow differs, a resolution change as
         above, or a builder that reports no dependencies. VCS and Icarus are
         that last case: with no dependency file nothing separates a consumed
         input from a bystander, so the leader's own full comparison decides
-        it and this member takes the pre-#535 path. ``(None, None)`` IS that
-        path — the caller compiles, and a valid stamp still short-circuits
-        it.
+        it and this member takes the pre-#535 path. A ``None`` verdict IS
+        that path — the caller compiles, and a valid stamp still
+        short-circuits it.
+
+        The second element is the detail in both non-adopting cases: the
+        drifted dependency's path, or the short reason this member could not
+        adopt. The caller logs that reason (#534/#535) — an adoption that
+        silently declined and a sibling that silently paid a full compile
+        were the same event with no record of the first half.
 
         An adoption also rewrites the stamp's ``sources`` to this member's
         listing. The stamp is what every gated simulation job validates
@@ -3257,24 +3286,28 @@ class VlogSim:
         """
         plan = self._compile_plan()
         fingerprint = plan.fingerprint
-        if plan.shared_dir is None or not isinstance(fingerprint, dict):
-            return None, None
+        if plan.shared_dir is None:
+            return None, "no shared build directory"
+        if not isinstance(fingerprint, dict):
+            return None, "no compile fingerprint"
         with build_dir_lock(plan.shared_dir, test=self.test_name):
             return self._adopt_group_build_locked(plan, fingerprint)
 
     def _adopt_group_build_locked(self, plan, fingerprint):
         stored = self._read_build_stamp(plan.shared_dir)
-        if (
-            stored is None
-            or not isinstance(stored.get("deps"), list)
-            or stored.get("deps_format") != _DEPS_FORMAT
-        ):
-            return None, None
+        if stored is None:
+            return None, "no stamp"
+        deps = stored.get("deps")
+        if not isinstance(deps, list):
+            return None, "no dependency list (builder reports none)"
+        stored_format = stored.get("deps_format")
+        if stored_format != _DEPS_FORMAT:
+            return None, f"stamp dependency format {stored_format} != {_DEPS_FORMAT}"
         simv_path = self._get_simv_path()
         if not Path(simv_path).is_file() or stored.get("simv") != _stat_entry(
             simv_path
         ):
-            return None, None
+            return None, "simv changed"
         # Everything but the tracked inputs, compared exactly. The compile
         # key already fixes the command and the toolchain's identity, so
         # this only catches a toolchain replaced under a running job —
@@ -3284,13 +3317,13 @@ class VlogSim:
         if {key: value for key, value in stored.items() if key not in skipped} != {
             key: value for key, value in fingerprint.items() if key != "sources"
         }:
-            return None, None
-        for entry in stored["deps"]:
+            return None, "stamp inputs differ"
+        for entry in deps:
             if not isinstance(entry, list) or len(entry) != 4:
-                return None, None
+                return None, "unreadable dependency entry"
             if not isinstance(entry[0], str):
                 # `os.stat` takes a file *descriptor* for an int.
-                return None, None
+                return None, "unreadable dependency entry"
             if not _entry_matches(entry, self._tracked_entry(entry[0])):
                 return "drift", self._note_group_input_drift(entry[0])
         # Listed now, under the lock: the plan's listing predates the wait
@@ -3298,9 +3331,7 @@ class VlogSim:
         # meanwhile would neither be seen as a resolution change nor make
         # it into the refreshed stamp the gated jobs validate by name.
         sources = self._fingerprint_filelist_sources(plan.filelist_path)
-        appeared = _first_resolution_change(
-            stored.get("sources"), sources, stored["deps"]
-        )
+        appeared = _first_resolution_change(stored.get("sources"), sources, deps)
         if appeared is not None:
             log_event(
                 logger,
@@ -3309,9 +3340,9 @@ class VlogSim:
                 test=self.test_name,
                 appeared=appeared,
             )
-            return None, None
+            return None, f"resolution changed: {appeared}"
         if not self._refresh_stamp_sources(plan.shared_dir, sources):
-            return None, None
+            return None, "stamp refresh failed"
         # Consumed like a compile: this instance has had its one build.
         self._compile_plan_cache = None
         self._report_build_reused(plan, stamp_dir=plan.shared_dir)
@@ -3522,6 +3553,7 @@ class VlogSim:
         # not inherit the first's failure record, desc, or transcript name.
         self.last_compile_failure = None
         self.compile_fail_desc = None
+        self.stamp_write_failed = False
         self._compile_transcript_override = None
         # A retry transcript describes exactly one run's retry. Left behind,
         # `rb graph results` would keep advertising it as this run's (#498
@@ -3627,6 +3659,14 @@ class VlogSim:
         compile_work_dir = plan.compile_work_dir
         build_dir = plan.build_dir
         fingerprint = plan.fingerprint
+        # The stamp this compile is about to invalidate, removed only once a
+        # builder is certain to run in that directory (#534). A gated job
+        # that declines below returns without touching it: its stamp check
+        # lost, but the directory holds the build job's outputs, and a stamp
+        # removed here would fail every *sibling* element on the same key
+        # with "no stamp or no simv" — one job's drift cascading to the whole
+        # fan-out, and a plain re-run rebuilding from scratch.
+        stale_stamp = None
 
         if self.share_build:
             if plan.unsupported_reason is None:
@@ -3639,8 +3679,9 @@ class VlogSim:
                 # (The directory itself was created by compile(), which
                 # needed it to put the build lock in.)
                 # A crashed/killed compile must never leave a stamp that
-                # validates a broken simv.
-                (plan.shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
+                # validates a broken simv — so this goes, but below, once
+                # the gated verdict has had its say.
+                stale_stamp = plan.shared_dir / SHARED_BUILD_STAMP_NAME
                 # A shared build owns the output location, so a *relative*
                 # builder-simv: is discarded rather than honoured (the absolute
                 # case declines sharing outright). Say which value went
@@ -3671,9 +3712,7 @@ class VlogSim:
                     )
                     self._record_compile(duration_sec=0.0, reused=True)
                     return 0
-                (Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME).unlink(
-                    missing_ok=True
-                )
+                stale_stamp = Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME
 
         run_cmd = self._compile_argv(plan)
         run_str = " ".join(run_cmd)
@@ -3756,6 +3795,13 @@ class VlogSim:
             # its transcript into.
             self._ensure_artifact_dir(run_id=self.run_id)
             self._compile_transcript_override = self._get_retry_transcript_path()
+        # Now, and only now: every path that returns without compiling has
+        # returned. A builder is about to write this directory, so the stamp
+        # describing what was there stops being true (#534) — a crashed or
+        # killed compile must not leave one that validates a half-written
+        # simv.
+        if stale_stamp is not None:
+            stale_stamp.unlink(missing_ok=True)
         log_event(
             logger,
             logging.INFO,
@@ -3867,32 +3913,64 @@ class VlogSim:
                 # them in `compile_work_dir`.
                 deps = self._collect_build_deps(build_dir, compile_work_dir)
                 stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
-                stamp_path.write_text(
-                    json.dumps(
-                        # The executable is stamped too, so a reuse check can
-                        # tell "these inputs" from "this binary" (#369).
-                        {
-                            **fingerprint,
-                            "deps": deps,
-                            "deps_format": _DEPS_FORMAT,
-                            "simv": _stat_entry(self._get_simv_path()),
-                        },
-                        sort_keys=True,
+                try:
+                    # Atomic, like every other artefact on this path: the
+                    # reuse fast path in compile() reads the stamp with no
+                    # lock held, so a plain write would let a reader see a
+                    # truncated file, call it unreadable and recompile a
+                    # build that is perfectly good (#534).
+                    self._replace_text(
+                        stamp_path,
+                        json.dumps(
+                            # The executable is stamped too, so a reuse check
+                            # can tell "these inputs" from "this binary"
+                            # (#369).
+                            {
+                                **fingerprint,
+                                "deps": deps,
+                                "deps_format": _DEPS_FORMAT,
+                                "simv": _stat_entry(self._get_simv_path()),
+                            },
+                            sort_keys=True,
+                        ),
                     )
-                )
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "compile.build_stamp_written",
-                    test=self.test_name,
-                    stamp=str(stamp_path),
-                    # None, not "none": machine mode serialises these as JSON
-                    # Lines, and a field whose type varies by path forces
-                    # every consumer to type-check before comparing. `null`
-                    # is also how the stamp itself spells the same thing.
-                    tracked_deps=None if deps is None else len(deps),
-                )
-                self._record_build_stamp(stamp_dir)
+                except OSError as exc:
+                    # The COMPILE succeeded — a full-size elaboration whose
+                    # output is sitting in the build directory — and the only
+                    # thing that failed is the note saying so. Letting the
+                    # OSError out of compile() would report that build failed
+                    # (`_compile_outcome` catches only FilelistError, so under
+                    # `rb _build-job` it surfaces as a worker exception), and
+                    # cancel the afterok fan-out behind a binary that exists.
+                    # So: keep the builder's status, say what happened, and
+                    # let the build job record it for the gated jobs — which
+                    # must decline rather than recompile, exactly as they do
+                    # for a stamp that fails to validate.
+                    self.stamp_write_failed = True
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "compile.stamp_write_failed",
+                        test=self.test_name,
+                        build_dir=str(stamp_dir),
+                        stamp=str(stamp_path),
+                        error=str(exc),
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "compile.build_stamp_written",
+                        test=self.test_name,
+                        stamp=str(stamp_path),
+                        # None, not "none": machine mode serialises these as
+                        # JSON Lines, and a field whose type varies by path
+                        # forces every consumer to type-check before
+                        # comparing. `null` is also how the stamp itself
+                        # spells the same thing.
+                        tracked_deps=None if deps is None else len(deps),
+                    )
+                    self._record_build_stamp(stamp_dir)
         return result.returncode
 
     def execute(
