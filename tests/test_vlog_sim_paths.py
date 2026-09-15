@@ -116,6 +116,11 @@ class DummyTestCfg:
         self.pd = None
         self.uvm = None
         self.builder_name = builder_name
+        self.pa = None
+        self.resolved_seed = None
+        self.seed_source = None
+        self.seed_identity = None
+        self.sim_rand_seed_plusarg = None
 
     def get_name(self):
         return self.name
@@ -130,7 +135,17 @@ class DummyTestCfg:
         return self.tb
 
     def get_plusargs(self):
-        return None
+        return self.pa
+
+    def get_resolved_seed(self):
+        return self.resolved_seed
+
+    def ensure_resolved_seed_plusarg(self):
+        if self.resolved_seed is None or self.sim_rand_seed_plusarg is None:
+            return
+        if self.pa is None:
+            self.pa = {}
+        self.pa[self.sim_rand_seed_plusarg] = self.resolved_seed
 
     def get_plusdefines(self):
         return {}
@@ -148,6 +163,7 @@ def _make_sim(
     *,
     test_name="basic",
     builder_cfg=None,
+    test_cfg=None,
     test_builder=None,
     builders=None,
     builder_override=None,
@@ -157,7 +173,7 @@ def _make_sim(
     root_cfg = DummyRootCfg(
         builder_cfg, builders=builders, builder_override=builder_override
     )
-    test_cfg = DummyTestCfg(
+    test_cfg = test_cfg or DummyTestCfg(
         test_name, tmp_path / "models.yaml", builder_name=test_builder
     )
     return vlog_sim_module.VlogSim(
@@ -711,6 +727,90 @@ def test_vlog_sim_execute_reads_replay_seed_from_nested_run_dir(tmp_path, monkey
 
     assert sim.execute(run_id=5, seed_mode=SeedMode.REPLAY, replay_run_id=3) == 0
     assert "+seed=4242" in captured["cmd"]
+
+
+@pytest.mark.parametrize(
+    "seed,source,mode",
+    [(410729, "master", SeedMode.MASTER), (0, "default", SeedMode.DEFAULT)],
+)
+def test_vlog_sim_uses_pre_resolved_seed_for_simulator_plusarg_and_artifact(
+    tmp_path, monkeypatch, seed, source, mode
+):
+    captured = {}
+    test_cfg = DummyTestCfg("basic", tmp_path / "models.yaml")
+    test_cfg.resolved_seed = seed
+    test_cfg.seed_source = source
+    test_cfg.seed_identity = "verif/vxp/tests.yaml::deepseek_v4::single"
+    test_cfg.sim_rand_seed_plusarg = "stimulus_seed"
+    test_cfg.ensure_resolved_seed_plusarg()
+    sim = _make_sim(tmp_path, monkeypatch, test_cfg=test_cfg)
+    hook_seed = tmp_path / "hook-seed.txt"
+    preproc = tmp_path / "preproc.py"
+    preproc.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(hook_seed)!r}).write_text("
+        "str(test_cfg.get_resolved_seed()) + ':' + "
+        "str(test_cfg.get_plusargs()['stimulus_seed']))\n"
+        "test_cfg.resolved_seed = 999\n"
+        "test_cfg.pa['stimulus_seed'] = 999\n"
+    )
+    sim.test_cfg.get_preproc_path = lambda: str(preproc)
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+    assert sim.pre() is None
+    assert hook_seed.read_text() == f"{seed}:{seed}"
+    assert sim.execute(seed_mode=mode) == 0
+    assert f"+seed={seed}" in captured["cmd"]
+    assert f"+stimulus_seed={seed}" in captured["cmd"]
+    assert Path(sim._get_randseed_path()).read_text().splitlines()[0] == str(seed)
+
+
+def test_run_multiple_style_preproc_and_simulations_share_fixed_seed(
+    tmp_path, monkeypatch
+):
+    captured = []
+    test_cfg = DummyTestCfg("basic", tmp_path / "models.yaml")
+    test_cfg.resolved_seed = 41
+    test_cfg.seed_source = "fixed"
+    test_cfg.seed_identity = "verif/timing/tests.yaml::command_timing::1"
+    test_cfg.sim_rand_seed_plusarg = "stimulus_seed"
+    test_cfg.ensure_resolved_seed_plusarg()
+    sim = _make_sim(tmp_path, monkeypatch, test_cfg=test_cfg)
+    hook_seed = tmp_path / "hook-seed.txt"
+    preproc = tmp_path / "preproc.py"
+    preproc.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(hook_seed)!r}).write_text("
+        "str(test_cfg.get_plusargs()['stimulus_seed']))\n"
+    )
+    sim.test_cfg.get_preproc_path = lambda: str(preproc)
+
+    def _fake_run(cmd, **kwargs):
+        captured.append(list(cmd))
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+    assert sim.pre(run_id=None) is None
+    assert hook_seed.read_text() == "41"
+    for run_id in (1, 2):
+        assert sim.execute(run_id=run_id, seed_mode=SeedMode.NEW) == 0
+
+    assert all("+seed=41" in cmd for cmd in captured)
+    assert all("+stimulus_seed=41" in cmd for cmd in captured)
+    for run_id in (1, 2):
+        assert Path(sim._get_randseed_path(run_id=run_id)).read_text() == "41\n"
 
 
 def test_vlog_sim_execute_reads_hier_seed_from_artifact_dir(tmp_path, monkeypatch):

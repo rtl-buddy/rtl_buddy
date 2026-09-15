@@ -32,6 +32,21 @@ syntax and schemas, use `rb test --help`, `rb randtest --help`, and
   intentional `NA` or `XFAIL`), 1 for a real `FAIL` or strict `XPASS`, and 2 for
   a fatal configuration or environment error.
 
+## Reproducible seeds
+
+- Use `rb test ... --master-seed N` or `rb regression --master-seed N` when a
+  run must replay without old artefacts. Reuse the same command and master.
+- A test with randomized preprocessing configures
+  `sim-rand-seed-plusarg: NAME`; the hook reads that plusarg or
+  `test_cfg.get_resolved_seed()`, and the simulator receives the same value.
+  Use a master or fixed seed instead of `--rnd-new`/`--rnd-last`; `randtest`
+  needs a fixed seed because its preprocessor runs once for all iterations.
+- A test-level `sim-rand-seed` pins timing-sensitive stimulus across master
+  rotations. It overrides other runtime seed modes.
+- Record the master from the summary and the resolved seed from machine
+  results or `test.randseed`. Use `rb --machine docs show concepts/tests#run-with-randomized-seeds`
+  for the full contract.
+
 ## `Sim hit timeout`
 
 This is rtl_buddy's wall-clock `sim_timeout` kill. It is distinct from a

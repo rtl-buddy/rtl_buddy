@@ -464,6 +464,22 @@ def test_compile_key_matches_for_same_toplevel(tmp_path):
     assert a == b
 
 
+def test_resolved_runtime_seed_does_not_change_compile_fingerprint(tmp_path):
+    sim = _make_sim(tmp_path, toplevel="tb_top", share_build=True)
+    before = sim._build_compile_plan().fingerprint
+
+    sim.test_cfg.resolved_seed = 410729
+    sim.test_cfg.seed_source = "master"
+    sim.test_cfg.seed_identity = "verif/blk/tests.yaml::t::single"
+    sim.test_cfg.get_plusargs = lambda: {"stimulus_seed": 410729}
+    after = sim._build_compile_plan().fingerprint
+
+    assert after == before
+    assert vlog_sim_module.VlogSim._compile_config_key(after) == (
+        vlog_sim_module.VlogSim._compile_config_key(before)
+    )
+
+
 def _key_without_top_plumbing(tmp_path, monkeypatch, **kwargs):
     """The key this config would have had before #508 existed.
 
