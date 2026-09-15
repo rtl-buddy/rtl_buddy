@@ -78,6 +78,8 @@ class TestJobSpec:
     run_id: int | None = None
     seed_mode: SeedMode = SeedMode.DEFAULT
     replay_run_id: int | None = None
+    master_seed: int | None = None
+    resolved_seed: int | None = None
     builder_mode: str = "reg"
     builder_override: str | None = None
     extra_sim_timeout: int | None = None

@@ -358,7 +358,7 @@ class TestRunner:
         Execute one pre/compile flow and run multiple simulations over run_ids.
 
         run_id controls output naming for each simulation. seed_mode controls whether
-        each run uses default seed, fresh random seed, or replayed seed.
+        each run uses a default, fresh, replayed, or pre-resolved master seed.
         """
         log_event(
             logger,
