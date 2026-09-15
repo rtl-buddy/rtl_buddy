@@ -232,8 +232,9 @@ it in structured logs and machine results. Runtime seed values and plusargs do
 not change the compile key.
 
 Without a master or fixed test seed, the plusarg receives the builder's default
-seed. `--rnd-new` and `--rnd-last` are rejected for a test that configures this
-plusarg because those modes select their value too late for preprocessing.
+integer unchanged, including `0`; the positive 31-bit limit applies only to
+fixed test seeds and master-derived seeds. `--rnd-new` and `--rnd-last` are
+rejected for a test that configures this plusarg because those modes select their value too late for preprocessing.
 `randtest` therefore requires a fixed `sim-rand-seed` for such a test; its one
 shared preprocessor run and every iteration receive that fixed value.
 
@@ -249,6 +250,8 @@ tests:
 ```
 
 The fixed value overrides the invocation's master, new, or replay seed policy.
+Mutation simulation oracles also resolve fixed seeds and exposed builder defaults
+before preprocessing, for both the baseline and every mutant.
 See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for the field
 contract.
 

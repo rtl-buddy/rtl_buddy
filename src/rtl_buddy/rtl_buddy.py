@@ -146,7 +146,8 @@ from .seeding import (
     expanded_test_seed_identity,
     suite_seed_identity,
     validate_master_seed,
-    validate_sim_seed,
+    validate_resolved_seed,
+    resolve_test_seed,
 )
 from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
@@ -1315,52 +1316,14 @@ class RtlBuddy:
         run_id: int | None,
         seed_mode: SeedMode,
     ):
-        if (
-            master_seed is None
-            and getattr(test_cfg, "sim_rand_seed", None) is None
-            and getattr(test_cfg, "sim_rand_seed_plusarg", None) is None
-        ):
-            return None
-        suite_identity = suite_seed_identity(
-            suite_config_path, self.root_cfg.get_project_rootdir()
-        )
-        resolution = test_cfg.resolve_runtime_seed(
+        return resolve_test_seed(
+            test_cfg,
+            self.root_cfg,
             master_seed=master_seed,
-            suite_identity=suite_identity,
+            suite_config_path=suite_config_path,
             run_id=run_id,
+            seed_mode=seed_mode,
         )
-        if resolution is None and test_cfg.sim_rand_seed_plusarg is not None:
-            if seed_mode == SeedMode.DEFAULT:
-                seed = self.root_cfg.resolve_rtl_builder_cfg(
-                    test_cfg.get_builder_name()
-                ).get_seed()
-                resolution = SeedResolution(
-                    seed=validate_sim_seed(seed),
-                    source="default",
-                    identity=expanded_test_seed_identity(
-                        suite_identity, test_cfg.get_name(), run_id
-                    ),
-                )
-                test_cfg.set_resolved_seed(resolution)
-            else:
-                raise FatalRtlBuddyError(
-                    f"test {test_cfg.get_name()!r}: sim-rand-seed-plusarg "
-                    f"cannot expose {seed_mode.value} seeds before preproc; use "
-                    "--master-seed or set sim-rand-seed on the test"
-                )
-        if resolution is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "seed.resolved",
-                test=test_cfg.get_name(),
-                run_id=run_id,
-                master_seed=master_seed,
-                resolved_seed=resolution.seed,
-                source=resolution.source,
-                identity=resolution.identity,
-            )
-        return resolution
 
     def _resolve_coverage_dir_summary_paths(
         self, coverage_dir_summary=None, coverage_dir_summary_file=None
@@ -2112,12 +2075,6 @@ class RtlBuddy:
         internal: run one (test, run_id) and write its result JSON (#351)
         """
         master_seed = self._checked_master_seed(master_seed)
-        if resolved_seed is not None:
-            try:
-                resolved_seed = validate_sim_seed(resolved_seed)
-            except ValueError as e:
-                raise FatalRtlBuddyError(str(e)) from e
-
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2189,7 +2146,7 @@ class RtlBuddy:
             if plan_config is not None:
                 if planned_seed is not None:
                     try:
-                        validate_sim_seed(planned_seed)
+                        validate_resolved_seed(planned_seed, test_cfg.seed_source)
                     except ValueError as e:
                         raise FatalRtlBuddyError(
                             f"dispatch plan seed for {test_name!r} is invalid: {e}"
@@ -2224,6 +2181,12 @@ class RtlBuddy:
                     seed_mode=seed_mode,
                 )
                 if resolved_seed is not None:
+                    try:
+                        validate_resolved_seed(
+                            resolved_seed, resolution.source if resolution else None
+                        )
+                    except ValueError as e:
+                        raise FatalRtlBuddyError(str(e)) from e
                     if resolution is not None and resolution.seed != resolved_seed:
                         raise FatalRtlBuddyError(
                             f"--resolved-seed {resolved_seed} does not match derived "

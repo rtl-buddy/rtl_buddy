@@ -327,6 +327,87 @@ def test_test_job_preserves_master_and_resolved_seed_from_plan(
     }
 
 
+@pytest.mark.parametrize("seed", [0, -1, 2**31])
+@pytest.mark.parametrize("with_plan", [False, True])
+def test_test_job_preserves_legacy_builder_default(
+    minimal_project: Path, stub_runner: type[_StubTestRunner], seed, with_plan
+):
+    from rtl_buddy.dispatch.plan import write_plan
+    from rtl_buddy.seeding import SeedResolution
+
+    root_path = minimal_project / "root_config.yaml"
+    root_path.write_text(
+        root_path.read_text().replace("sim-rand-seed: 1", f"sim-rand-seed: {seed}")
+    )
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n    sim-rand-seed-plusarg: stimulus_seed\n",
+        )
+    )
+    args = [
+        "_test-job",
+        "basic",
+        "--result-json",
+        "res.json",
+        "--resolved-seed",
+        str(seed),
+    ]
+    if with_plan:
+        cfg = SuiteConfig(path="tests.yaml").get_tests("basic")[0]
+        cfg.set_resolved_seed(
+            SeedResolution(seed, "default", "tests.yaml::basic::single")
+        )
+        plan = write_plan(minimal_project / "plan.json", "tests.yaml", [cfg], "tok")
+        args.extend(["--plan", str(plan)])
+    stub_runner.canned = TestPassResults(name="basic/results")
+    cli, rb = _runner()
+    result = cli.invoke(rb.app, args)
+    assert result.exit_code == 0, result.output
+    cfg = stub_runner.last_init["test_cfg"]
+    assert cfg.get_resolved_seed() == cfg.get_plusarg("stimulus_seed") == seed
+    assert (
+        load_result_json(minimal_project / "res.json")["result"].results["seed"][
+            "resolved_seed"
+        ]
+        == seed
+    )
+
+
+def test_build_job_preprocessor_cannot_change_planned_seed(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.dispatch.plan import write_plan
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    cfg = SuiteConfig(path="tests.yaml").get_tests("basic")[0]
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+    resolved = cfg.resolve_runtime_seed(
+        master_seed=123, suite_identity="tests.yaml", run_id=None
+    )
+    plan = write_plan(
+        minimal_project / "plan.json", "tests.yaml", [cfg], "tok", master_seed=123
+    )
+    seen = []
+
+    def pre(name):
+        restored = stub_runner.last_init["test_cfg"]
+        restored.resolved_seed = 999
+        seen.append(
+            (restored.get_resolved_seed(), restored.get_plusarg("stimulus_seed"))
+        )
+
+    stub_runner.prepare_hook = pre
+    stub_runner.canned = EarlyStopResults(
+        name="basic/results", desc="Stopped at compile"
+    )
+    cli, rb = _runner()
+    result = cli.invoke(rb.app, ["_build-job", "--plan", str(plan)])
+    assert result.exit_code == 0, result.output
+    assert seen == [(resolved.seed, resolved.seed)]
+
+
 def test_test_job_rejects_resolved_seed_transport_corruption(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):

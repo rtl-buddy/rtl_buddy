@@ -98,3 +98,36 @@ def test_read_rejects_schema_mismatch(minimal_project: Path):
 def test_read_rejects_unreadable(minimal_project: Path):
     with pytest.raises(FatalRtlBuddyError, match="unreadable"):
         read_plan_configs(minimal_project / "does-not-exist.json")
+
+
+@pytest.mark.parametrize("source,seed", [("master", 410729), ("default", 0)])
+def test_plan_restores_seed_lock_before_build_preprocessing(
+    minimal_project: Path, source, seed
+):
+    from rtl_buddy.seeding import SeedResolution
+
+    cfg = next(iter(_suite_configs(minimal_project)))
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+    cfg.set_resolved_seed(SeedResolution(seed, source, "tests.yaml::basic::single"))
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", [cfg], "tok")
+
+    for restored in [read_plan_configs(plan)[0], read_plan_config(plan, "basic")]:
+        restored.resolved_seed = 999
+        restored.set_plusarg("stimulus_seed", 999)
+        restored.ensure_resolved_seed_plusarg()
+        assert restored.get_resolved_seed() == seed
+        assert restored.get_plusarg("stimulus_seed") == seed
+        assert restored.to_plan_dict()["resolved_seed"] == seed
+
+
+@pytest.mark.parametrize(
+    "source,seed", [("master", 0), ("fixed", -1), ("default", True)]
+)
+def test_plan_rejects_invalid_seed_state(minimal_project: Path, source, seed):
+    cfg = next(iter(_suite_configs(minimal_project)))
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", [cfg], "tok")
+    payload = json.loads(plan.read_text())
+    payload["tests"][0].update(resolved_seed=seed, seed_source=source)
+    plan.write_text(json.dumps(payload))
+    with pytest.raises(FatalRtlBuddyError, match="dispatch plan seed.*invalid"):
+        read_plan_configs(plan)

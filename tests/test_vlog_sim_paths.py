@@ -729,13 +729,17 @@ def test_vlog_sim_execute_reads_replay_seed_from_nested_run_dir(tmp_path, monkey
     assert "+seed=4242" in captured["cmd"]
 
 
+@pytest.mark.parametrize(
+    "seed,source,mode",
+    [(410729, "master", SeedMode.MASTER), (0, "default", SeedMode.DEFAULT)],
+)
 def test_vlog_sim_uses_pre_resolved_seed_for_simulator_plusarg_and_artifact(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, seed, source, mode
 ):
     captured = {}
     test_cfg = DummyTestCfg("basic", tmp_path / "models.yaml")
-    test_cfg.resolved_seed = 410729
-    test_cfg.seed_source = "master"
+    test_cfg.resolved_seed = seed
+    test_cfg.seed_source = source
     test_cfg.seed_identity = "verif/vxp/tests.yaml::deepseek_v4::single"
     test_cfg.sim_rand_seed_plusarg = "stimulus_seed"
     test_cfg.ensure_resolved_seed_plusarg()
@@ -762,11 +766,11 @@ def test_vlog_sim_uses_pre_resolved_seed_for_simulator_plusarg_and_artifact(
     monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
 
     assert sim.pre() is None
-    assert hook_seed.read_text() == "410729:410729"
-    assert sim.execute(seed_mode=SeedMode.MASTER) == 0
-    assert "+seed=410729" in captured["cmd"]
-    assert "+stimulus_seed=410729" in captured["cmd"]
-    assert Path(sim._get_randseed_path()).read_text().splitlines()[0] == "410729"
+    assert hook_seed.read_text() == f"{seed}:{seed}"
+    assert sim.execute(seed_mode=mode) == 0
+    assert f"+seed={seed}" in captured["cmd"]
+    assert f"+stimulus_seed={seed}" in captured["cmd"]
+    assert Path(sim._get_randseed_path()).read_text().splitlines()[0] == str(seed)
 
 
 def test_run_multiple_style_preproc_and_simulations_share_fixed_seed(

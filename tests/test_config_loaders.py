@@ -423,6 +423,7 @@ def test_testconfig_plan_roundtrip():
         seed_identity="verif/axi/tests.yaml::axi_soak.W64::single",
     )
 
+    original.ensure_resolved_seed_plusarg()
     plan = original.to_plan_dict()
     # Must be JSON-safe: the manifest is written as JSON on the shared FS.
     reloaded = TC.from_plan_dict(json.loads(json.dumps(plan)))

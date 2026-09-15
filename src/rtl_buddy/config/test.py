@@ -16,6 +16,7 @@ from ..seeding import (
     derive_test_seed,
     expanded_test_seed_identity,
     validate_sim_seed,
+    validate_resolved_seed,
 )
 
 logger = logging.getLogger(__name__)
@@ -330,7 +331,7 @@ class TestConfig:
 
     def set_resolved_seed(self, resolution: SeedResolution) -> None:
         """Store a planned seed and update its configured runtime plusarg."""
-        self.resolved_seed = validate_sim_seed(resolution.seed)
+        self.resolved_seed = validate_resolved_seed(resolution.seed, resolution.source)
         self._resolved_seed_lock = self.resolved_seed
         self.seed_source = resolution.source
         self.seed_identity = resolution.identity
@@ -552,7 +553,7 @@ class TestConfig:
         at load time and carried verbatim, so the rebuilt config runs the
         same regardless of the job's cwd — no re-resolution needed.
         """
-        return cls(
+        config = cls(
             d["name"],
             d["desc"],
             from_dict(ModelConfig, d["model"]),
@@ -580,6 +581,19 @@ class TestConfig:
             seed_source=d.get("seed_source"),
             seed_identity=d.get("seed_identity"),
         )
+
+        if config.resolved_seed is not None:
+            try:
+                config.set_resolved_seed(
+                    SeedResolution(
+                        config.resolved_seed, config.seed_source, config.seed_identity
+                    )
+                )
+            except ValueError as e:
+                raise FatalRtlBuddyError(
+                    f"dispatch plan seed for {config.name!r} is invalid: {e}"
+                ) from e
+        return config
 
     def __str__(self):
         return pprint.pformat(self)

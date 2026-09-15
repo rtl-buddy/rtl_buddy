@@ -441,10 +441,16 @@ def test_randtest_rejects_unresolved_preprocessor_seed(
     assert stub_build_runner.inits == []
 
 
+@pytest.mark.parametrize("seed", [0, 1, -1, 2**31])
 def test_default_builder_seed_is_exposed_before_preprocessor(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
+    seed,
 ):
+    root_path = minimal_project / "root_config.yaml"
+    root_path.write_text(
+        root_path.read_text().replace("sim-rand-seed: 1", f"sim-rand-seed: {seed}")
+    )
     suite_path = minimal_project / "tests.yaml"
     suite_path.write_text(
         suite_path.read_text().replace(
@@ -458,9 +464,9 @@ def test_default_builder_seed_is_exposed_before_preprocessor(
 
     assert result.exit_code == 0, result.output
     run_cfg = stub_build_runner.inits[-1]["test_cfg"]
-    assert run_cfg.get_resolved_seed() == 1
+    assert run_cfg.get_resolved_seed() == seed
     assert run_cfg.seed_source == "default"
-    assert run_cfg.get_plusarg("stimulus_seed") == 1
+    assert run_cfg.get_plusarg("stimulus_seed") == seed
 
 
 def test_randtest_fixed_seed_is_shared_by_preprocessor_and_all_runs(
