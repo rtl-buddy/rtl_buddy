@@ -42,6 +42,8 @@ It does not attribute power to an RTL module, and flattening the design does not
 
 Nothing stops one name from being in both namespaces — a Liberty cell named after a block, or an RTL module called `DFF_X1`. Then the two halves are measuring two different things under one word, and `rb phys module` says so: `namespaces` lists both and `instance_join` carries a collision note the console prints. The row and the instances are still reported, and still not added together; the note is what keeps a module's cells and area beside a cell type's power from reading as one block's totals.
 
+See [Known Issues](../known-issues.md#rb-phys-module-reports-no-power-for-an-rtl-module).
+
 ## Roll up a hierarchy
 
 The model records leaf values only, because a subtree sum depends on the hierarchy the consumer projects onto. `rb phys instance <path>` is that consumer: it sums the leaves under the path at query time and leaves the document unchanged.

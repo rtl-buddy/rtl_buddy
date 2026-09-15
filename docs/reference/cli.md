@@ -130,6 +130,8 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │ --rnd-new                      -n               use a randomly generated seed        │
 │                                                 instead of root config seed          │
 │ --rnd-last                     -l               reuse last generated seed            │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for each selected test               │
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
@@ -194,6 +196,8 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 [default: 0]                         │
 │ --start-level                  -s      INTEGER  regression level to start at         │
 │                                                 [default: 0]                         │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for every selected test              │
 │ --coverage-merge                                merge coverage across regression     │
 │                                                 tests; uses raw merge for            │
 │                                                 summary/html and info-process for    │

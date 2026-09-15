@@ -236,6 +236,10 @@ The scan is a tokenizer with a definedness-only preprocessor, and it is imperfec
 
 `synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs `synth_tool_config.unknown_override` and the run uses the default. A non-mapping override block or non-boolean `single_unit` is fatal. See [Synthesis](concepts/synthesis.md).
 
+## `rb phys module` reports no power for an RTL module
+
+The two halves of the physical model spell `module` in two namespaces: the synthesis half holds RTL module names as Yosys' `stat` saw them, and the power half holds the Liberty cell each leaf instance is an instance of, because a mapped netlist's leaves are cells. `rb phys module u_cpu` therefore reports the RTL module's cell count and area with an empty instance list and no power, and flattening the design does not change it. The payload's `instance_join` states the reason and the console prints it. Ask what a block burns by its instance path instead: `rb phys instance u_cpu` sums the leaf rows under it. A name that exists in both namespaces reports both, marked by `namespaces` and a collision note, and the two are never added together. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).
+
 ## FPV COI analysis is best-effort
 
 A cone-of-influence Yosys failure logs `fpv coi_yosys_failed`, omits COI data, and does not fail a successful proof. If COI numbers disappear, inspect `artefacts/<name>/coi.log` and verify `cfg-fpv-tools[].opts.plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`.
