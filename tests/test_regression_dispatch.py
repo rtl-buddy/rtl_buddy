@@ -5258,9 +5258,25 @@ class _ReleasingBackend(_FakeBackend):
     """
 
     name = "slurm"
+    # What `SlurmDispatchBackend._configured_dependency()` would answer:
+    # a dependency the site put in `sbatch-args` or `$SBATCH_DEPENDENCY`,
+    # which is the sim job's effective gate and must not be cleared (#548).
+    configured_dependency = None
+
+    def _configured_dependency(self):
+        return self.configured_dependency
 
     def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
         return [self.submit(spec, dependency=dependency) for spec in specs]
+
+
+def _log_records(log_path: Path) -> list[dict]:
+    """Every record in a machine-mode rtl_buddy log, fields included."""
+    if not log_path.exists():
+        return []
+    return [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
 
 
 def _gates_manifest(project: Path) -> dict:
@@ -5372,3 +5388,105 @@ def test_a_gates_manifest_that_cannot_be_written_does_not_fail_the_run(
     assert result.exit_code == 0, result.output
     assert backend.cancelled is False
     assert len(backend.submitted) == 2
+
+
+def test_a_configured_dependency_turns_early_release_off_for_the_suite(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--dependency=singleton` in sbatch-args is the job's real gate.
+
+    It is appended after the generated `afterok`, and
+    `scontrol update JobId=<id> Dependency=` clears an expression whole
+    rather than one clause of it — so releasing a key would drop the
+    site's own serialisation (a licensed simulator, a staging job). There
+    is no partial answer, so the suite gets no early release at all
+    (#548 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    backend.configured_dependency = "singleton"
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    # --machine so the head's own log is JSON lines and the event below is
+    # readable as a record rather than as rendered text.
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    # No manifest, no --gates: the build job never even probes for scontrol.
+    assert backend.build_submitted[0].gates_json is None
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    # ...and the run is otherwise untouched: every sim still submitted and
+    # still gated on the build job.
+    assert len(backend.submitted) == 2
+    assert backend.dependencies == ["fake-build", "fake-build"]
+
+    skipped = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.gates_skipped"
+    ]
+    assert len(skipped) == 1, skipped
+    assert skipped[0]["dependency"] == "singleton"
+    assert "early release disabled" in skipped[0]["reason"]
+
+
+def test_no_configured_dependency_leaves_early_release_on(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary case: nothing configured, so nothing is given up."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted[0].gates_json is not None
+    assert list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    assert not [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.gates_skipped"
+    ]
+
+
+def test_the_gates_skipped_event_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "dispatch.gates_skipped",
+        {
+            "suite_dir": "/w/verif/blk",
+            "dependency": "singleton",
+            "reason": "early release disabled: sbatch-args/SBATCH_DEPENDENCY "
+            "configures a dependency (singleton) that a release would clear",
+        },
+    )
+    assert "/w/verif/blk" in message and "singleton" in message
+    assert "waits for its build job" in message
+    assert "dispatch gates_skipped" not in message

@@ -4475,6 +4475,9 @@ class RtlBuddy:
         dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
         configured_parallel = compile_parallel(dispatch_cfg, suite_compile)
+        configured_dependency = self._release_blocking_dependency(
+            backend, suite_dir=suite_dir
+        )
         if parallel is None:
             parallel = max(1, min(configured_parallel, planned))
         # `parallel` layers exactly like the reservation fields beside it
@@ -4545,7 +4548,7 @@ class RtlBuddy:
             # build job's argv is byte-identical to before.
             gates_json=(
                 dispatch_root / f"gates-{os.getpid()}.json"
-                if backend.name == "slurm"
+                if backend.name == "slurm" and configured_dependency is None
                 else None
             ),
         )
@@ -4559,6 +4562,46 @@ class RtlBuddy:
         if spec.gates_json is not None:
             Path(spec.gates_json).unlink(missing_ok=True)
         return backend.submit_build(spec)
+
+    @staticmethod
+    def _release_blocking_dependency(backend, *, suite_dir):
+        """A user-configured dependency that per-key release must not clear.
+
+        `sbatch-args` (and `$SBATCH_DEPENDENCY`) can carry a dependency of
+        the site's own — `--dependency=singleton` serialising a licensed
+        simulator is the motivating case — and it is appended AFTER the
+        generated `afterok`, so it is the sim job's *effective* gate.
+        `scontrol update JobId=<id> Dependency=` clears the whole
+        expression, not this run's clause of it, so releasing a key would
+        drop the user's serialisation and let the fan-out run in parallel
+        against whatever that gate protects (#548 review).
+
+        There is no partial answer available — Slurm takes a dependency
+        expression whole — so the suite simply does not get early release:
+        no gates manifest, no `--gates`, every job waiting for the build
+        job exactly as before. Said once per suite at INFO, because it is
+        deliberate configuration rather than a fault, and silence here
+        would read as the release being broken.
+
+        ``getattr``, like every other optional backend capability: a
+        backend with no notion of a configured dependency has none.
+        """
+        probe = getattr(backend, "_configured_dependency", None)
+        configured = probe() if callable(probe) else None
+        if configured is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.gates_skipped",
+                suite_dir=suite_dir,
+                dependency=configured,
+                reason=(
+                    "early release disabled: sbatch-args/SBATCH_DEPENDENCY "
+                    f"configures a dependency ({configured}) that a release "
+                    "would clear"
+                ),
+            )
+        return configured
 
     @staticmethod
     def _audit_shared_binaries(suite_results):
