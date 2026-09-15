@@ -112,16 +112,26 @@ _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
 def _write_run(
-    root: Path, run: str, *, modules=None, instances=None, mtime=None, publication=None
+    root: Path,
+    run: str,
+    *,
+    modules=None,
+    instances=None,
+    mtime=None,
+    publication=None,
+    artefacts=None,
 ):
     """One run's artefact directory, written the way the producers do.
 
     ``publication`` stamps both documents with one token, as a real
     publish does. Left off, they carry ``None`` — the shape a document
     written before publications were stamped has.
+
+    ``artefacts`` overrides where the run lands, for the containment
+    tests that need a run in a tree the project's walk will not enter.
     """
 
-    phys_dir = root / "verif" / "blk" / "artefacts" / run
+    phys_dir = (artefacts or root / "verif" / "blk" / "artefacts") / run
     phys_dir.mkdir(parents=True, exist_ok=True)
 
     model = None
@@ -2135,6 +2145,92 @@ def test_the_route_and_discovery_draw_one_boundary(tmp_path: Path):
     # the walk refused are not.
     assert phys_page.contained_phys_dir(root, "verif/blk/artefacts/nightly")
     assert phys_page.contained_phys_dir(root, "vendor/nightly") is None
+
+
+def test_containment_judges_each_crossed_link_not_the_endpoint(tmp_path: Path):
+    """The finding (#570 round-15 review, Codex P1). The predicate was
+    asked once, of the requested path as a whole, and it looks for an
+    `artefacts` component — which a component *below* a rejected link
+    satisfies just as well as the link's own position does. So `vendor ->
+    /srv/other` with `?dir=vendor/artefacts/run` was approved on the
+    strength of an `artefacts` belonging to the tree on the far side of
+    the link, and /phy.json served a manifest and a model from outside the
+    project: a run `rb phys runs` does not list, and will not list,
+    because the walk refuses that link at its first component."""
+    from rtl_buddy.phys import manifest as manifest_mod
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    outside = tmp_path / "srv" / "other"
+    (outside / "artefacts" / "run").mkdir(parents=True)
+    _write_run(outside, "run", modules=MODULE_ROWS, artefacts=outside / "artefacts")
+    (root / "vendor").symlink_to(outside)
+
+    # The walk enters nothing: `vendor` is a link whose own position
+    # below the root has no `artefacts` in it.
+    assert manifest_mod.discover_manifests(root) == []
+    assert phys_page.contained_phys_dir(root, "vendor/artefacts/run") is None
+    # Nor any deeper spelling that buries the magic name further down.
+    assert phys_page.contained_phys_dir(root, "vendor/artefacts/run/.") is None
+
+    status, body = phys_page.phys_payload_bytes(
+        root, requested_dir="vendor/artefacts/run"
+    )
+    assert status == 403
+    assert "vendor/artefacts/run" in json.loads(body)["error"]
+
+
+def test_containment_still_serves_a_run_behind_the_artefacts_link(tmp_path: Path):
+    """The other half of the same walk: judging each link on its own
+    position must not cost the supported layout, where the link *is* the
+    `artefacts` component and everything below it is an ordinary
+    directory."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (root / "verif" / "blk" / "artefacts").symlink_to(scratch)
+    _write_run(root, "nightly", modules=MODULE_ROWS)
+
+    admitted = phys_page.contained_phys_dir(root, "verif/blk/artefacts/nightly")
+    assert admitted == root / "verif" / "blk" / "artefacts" / "nightly"
+
+    status, body = phys_page.phys_payload_bytes(
+        root, requested_dir="verif/blk/artefacts/nightly"
+    )
+    assert status == 200
+    assert json.loads(body)["run"] == "nightly"
+
+
+def test_every_route_the_run_listing_offers_is_one_the_route_serves(tmp_path: Path):
+    """The invariant behind both: `?dir=` is handed back out of the `runs`
+    block, so every spelling that block carries has to survive the
+    containment test. Discovery only reports a route it walked, and the
+    walk asks this same predicate of the same links in the same order, so
+    the agreement holds by construction rather than by inspection."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (root / "verif" / "blk" / "artefacts").symlink_to(scratch)
+    _write_run(root, "nightly", modules=MODULE_ROWS)
+    # And a tree the walk refuses, carrying a run of its own.
+    outside = tmp_path / "srv" / "other"
+    (outside / "artefacts").mkdir(parents=True)
+    _write_run(
+        outside, "stranger", modules=MODULE_ROWS, artefacts=outside / "artefacts"
+    )
+    (root / "vendor").symlink_to(outside)
+
+    status, body = phys_page.phys_payload_bytes(root)
+    listing = json.loads(body)["runs"]["runs"]
+
+    assert [entry["run"] for entry in listing] == ["nightly"]
+    for entry in listing:
+        assert phys_page.contained_phys_dir(root, entry["phys_dir"]) is not None
+    assert phys_page.contained_phys_dir(root, "vendor/artefacts/stranger") is None
 
 
 def test_the_runs_block_is_bounded_and_says_it_is(tmp_path: Path):

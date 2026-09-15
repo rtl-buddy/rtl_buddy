@@ -249,19 +249,37 @@ def contained_phys_dir(project_root: str | os.PathLike, requested: str):
     through a link the project root is not reached through.
 
     **The divergence is bounded by discovery's own boundary.** A logical
-    path that stays under the root but *resolves* outside it has crossed
-    a link on the way, and not every such link is one of these: an
-    ``artefacts`` link to scratch is the supported layout, while a
-    ``vendor/`` link or a link to ``$HOME`` is an unrelated tree wearing
-    a project-relative name. Discovery already draws that line —
+    path that stays under the root may have crossed a link on the way,
+    and not every such link is one of these: an ``artefacts`` link to
+    scratch is the supported layout, while a ``vendor/`` link or a link
+    to ``$HOME`` is an unrelated tree wearing a project-relative name.
+    Discovery already draws that line —
     :func:`rtl_buddy.phys.manifest.may_follow_link`, an ``artefacts``
     component on the path below the root, and no link that circles back
     over the root — and the route asks it the same question rather than
-    inventing a second answer. So the grant is exactly the layout the
-    selector offers: what discovery would have walked into, this will
-    read, and nothing else. The predicate is imported, not restated;
+    inventing a second answer. The predicate is imported, not restated;
     two spellings of one boundary drift, and the drift anyone finds
     first is the one where this is the looser of the two.
+
+    **The question is asked of every link crossed, not of the endpoint.**
+    Asking it once, of the requested path as a whole, reads the rule off
+    the wrong path: ``may_follow_link`` looks for an ``artefacts``
+    component, and a component of that name below a link satisfies it
+    just as well as the link's own position does. So ``vendor ->
+    /srv/other`` with ``?dir=vendor/artefacts/run`` passed — the
+    ``artefacts`` in the answer belongs to the tree on the far side of
+    the link, not to the project — and the route served a manifest and a
+    model from outside the project, which is precisely what the boundary
+    exists to prevent. The walk below asks the question of each prefix
+    that *is* a link, about that link's own position, which is what
+    discovery does as it descends. A link is followable only where the
+    artefacts layout sanctions the link itself.
+
+    That makes the grant exactly the layout the selector offers: every
+    route discovery reports is one it walked, so every route it reports
+    passes this check by construction, and a route it refused is refused
+    here too. A run ``rb phys runs`` would not list is a run this cannot
+    serve.
 
     What is read at the end of it is a ``phys-manifest.json`` in that
     directory and the model it names, not an arbitrary file.
@@ -269,22 +287,41 @@ def contained_phys_dir(project_root: str | os.PathLike, requested: str):
     logical_root = Path(os.path.abspath(str(project_root)))
     logical = Path(os.path.abspath(os.path.join(logical_root, str(requested))))
     root_real = os.path.realpath(str(project_root))
-    resolved_inside = _under(Path(os.path.realpath(logical)), Path(root_real))
     if _under(logical, logical_root):
-        if resolved_inside:
-            return logical
-        return (
-            logical
-            if manifest_mod.may_follow_link(
-                str(logical),
-                Path(os.path.relpath(logical, logical_root)).parts,
-                root_real,
-            )
-            else None
-        )
-    if resolved_inside:
+        return logical if _links_crossed_are_followable(logical, logical_root) else None
+    # Logically outside, but resolving back in: a path handed in through
+    # a link the project root is not reached through. Its components are
+    # not project-relative, so there is no layout position to ask about —
+    # what makes it containable is that it lands inside the root.
+    if _under(Path(os.path.realpath(logical)), Path(root_real)):
         return logical
     return None
+
+
+def _links_crossed_are_followable(logical: Path, logical_root: Path) -> bool:
+    """Whether every link on the way down to ``logical`` is one to follow.
+
+    Walked from the project root outwards, one component at a time, so
+    each link is judged on *its own* position below the root rather than
+    on the position of the path that happens to end below it. That is
+    the order :func:`~rtl_buddy.phys.manifest.discover_manifests`
+    descends in, and asking the same predicate in the same order is what
+    keeps the two from disagreeing.
+
+    A component that is not a link costs an ``lstat`` and nothing else;
+    a path with no links in it is admitted having asked nothing.
+    """
+    root_real = os.path.realpath(logical_root)
+    prefix = logical_root
+    walked: tuple[str, ...] = ()
+    for part in Path(os.path.relpath(logical, logical_root)).parts:
+        prefix = prefix / part
+        walked += (part,)
+        if os.path.islink(prefix) and not manifest_mod.may_follow_link(
+            str(prefix), walked, root_real
+        ):
+            return False
+    return True
 
 
 def _under(path: Path, root: Path) -> bool:
@@ -332,7 +369,13 @@ def phys_payload_bytes(
                 requested=requested_dir,
             )
             return 403, json.dumps(
-                {"error": f"phys: {requested_dir} is outside the project root"}
+                {
+                    "error": (
+                        f"phys: {requested_dir} is outside the project root, "
+                        "or reached through a link the run listing does not "
+                        "follow"
+                    )
+                }
             ).encode("utf-8")
         if not (selected / manifest_mod.MANIFEST_FILENAME).is_file():
             return 404, json.dumps(
