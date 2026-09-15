@@ -19,6 +19,7 @@ import pytest
 from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
+from rtl_buddy.config.dispatch import mem_to_bytes, time_to_seconds
 from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
 
 # Aliased so pytest does not try to collect the dataclass as a test class.
@@ -2029,6 +2030,489 @@ def test_suite_compile_block_reaches_an_in_job_compile_reservation(
     assert resources.cpus == 8  # the suite's compile, over cfg-dispatch's 2
     assert resources.mem == "48G"  # the suite's compile, over cfg-dispatch's 4G
     assert resources.time == "00:20:00"  # sim's is longer than compile's
+
+
+# --- per-testbench compile reservation (#551) ---------------------------
+
+
+def _two_geometry_suite(project: Path, *, small: str = "", big: str = ""):
+    """Rewrite the fixture as the issue's two-geometry suite (#551).
+
+    Two testbenches over the same sources — the reported shape, where the
+    geometry is one plusdefine and the verilations differ by an order of
+    magnitude — each optionally carrying its own ``compile:`` block, plus a
+    reglvl-5 test on the second one. ``small``/``big`` are those blocks'
+    YAML, indented for a testbench entry.
+    """
+    tests_yaml = project / "tests.yaml"
+    body = tests_yaml.read_text()
+    entry = "  - name: {name}\n    toplevel: tb_basic\n    filelist:\n      - src/example.sv\n"
+    body = body.replace(
+        entry.format(name="tb_basic") + "tests:\n",
+        entry.format(name="tb_basic")
+        + small
+        + entry.format(name="tb_big")
+        + big
+        + "tests:\n",
+        1,
+    )
+    assert "tb_big" in body
+    body += (
+        "  - name: big\n"
+        "    desc: the product geometry\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 5\n"
+        "    testbench: tb_big\n"
+    )
+    tests_yaml.write_text(body)
+
+
+def test_build_job_reserves_the_max_over_the_planned_testbenches(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One build job, one allocation, sized per field by its largest build.
+
+    The reported waste (#551): a suite covering a chip top level at two
+    geometries had to state the product geometry's 130G at suite level, so
+    every pull request fenced that off for a build needing a twentieth of
+    it. Each entry now states its own, and the build job takes the maximum
+    field by field — cpus from the small entry here, mem and time from the
+    big one, which no single block states.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    _two_geometry_suite(
+        minimal_project,
+        small="    compile:\n      cpus: 6\n      mem: 6G\n",
+        big='    compile:\n      mem: 96G\n      time: "06:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, 'compile:\n  mem: 8G\n  time: "00:30:00"\n')
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0].resources
+    assert build.cpus == 6  # tb_basic's, the larger of the two
+    assert build.mem == "96G"  # tb_big's, over the suite's 8G
+    assert build.time == "06:00:00"  # tb_big's, over the suite's 00:30:00
+
+
+def test_an_unselected_testbench_does_not_inflate_the_build_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The whole point: a build nobody asked for must not fence off memory.
+
+    Same suite as above, run at the default regression level, which selects
+    only the small geometry's test. The product geometry compiles nothing,
+    so its 96G is not in the maximum.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    _two_geometry_suite(
+        minimal_project,
+        big='    compile:\n      mem: 96G\n      time: "06:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, 'compile:\n  mem: 8G\n  time: "00:30:00"\n')
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0].resources
+    assert (build.cpus, build.mem, build.time) == (4, "8G", "00:30:00")
+
+
+def test_the_testbench_max_is_still_scaled_by_compile_parallel(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """cpus x parallel applies AFTER the maximum, not instead of it (#551)."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_geometry_suite(
+        minimal_project, big="    compile:\n      cpus: 6\n      mem: 96G\n"
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    assert build.resources.cpus == 12  # 2 x max(4 root, 6 tb_big)
+    # tb_big's stated 96G plus the cfg-dispatch 16G the unannotated build
+    # beside it implies — the two that fit the two slots, unscaled.
+    assert mem_to_bytes(build.resources.mem) == 112 * 2**30
+
+
+def test_an_in_job_compile_uses_its_own_testbenchs_block(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Each sim job that compiles for itself compiles ONE testbench (#551).
+
+    The fixture's inferred "echo" family cannot share a build, so there is
+    no build job and the compile reservation only shows up inside each sim
+    job's field-wise maximum. Handing every job the build job's aggregate
+    would give the small geometry the big one's memory — the fencing-off
+    this issue removes, moved from the build job to every sim job.
+    """
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 2\n    mem: 4G\n    time: "00:10:00"\n',
+    )
+    _two_geometry_suite(minimal_project, big="    compile:\n      mem: 96G\n")
+    _add_suite_compile(minimal_project, "compile:\n  mem: 8G\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    by_test = {spec.test_name: spec.resources for spec in fake_backend.submitted}
+    # The two tests on the small geometry keep the suite's 8G...
+    assert by_test["basic"].mem == "8G"
+    assert by_test["extra"].mem == "8G"
+    # ...and only the product geometry's job is sized for 96G.
+    assert by_test["big"].mem == "96G"
+
+
+def test_build_job_sums_the_memory_of_the_builds_that_overlap(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`compile.parallel: 2` means two elaborations hold their peaks at once.
+
+    A maximum would reserve one of them and let the pair OOM (#551 review):
+    the head is the only place that knows both figures and the concurrency
+    it sized the job for.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_geometry_suite(
+        minimal_project,
+        small='    compile:\n      mem: 20G\n      time: "00:30:00"\n',
+        big='    compile:\n      mem: 96G\n      time: "01:30:00"\n',
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # 96G + 20G, the two builds that can be in flight together.
+    assert mem_to_bytes(build.resources.mem) == 116 * 2**30
+    # ...while the wall clock stays at cfg-dispatch's whole-job 2h: the
+    # 1.5h build is the longest and the queue's makespan is 1h, so nothing
+    # the testbenches say reaches above the value the job already has.
+    assert time_to_seconds(build.resources.time) == 7200
+
+
+def test_build_job_time_is_the_serial_total_at_parallel_one(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One worker compiles both benches back to back (#551 review)."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "00:10:00"\n',
+    )
+    _two_geometry_suite(
+        minimal_project,
+        small='    compile:\n      time: "00:30:00"\n',
+        big='    compile:\n      time: "01:00:00"\n',
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 1
+    # 30m + 60m, not max(30m, 60m): a maximum times the job out mid-queue.
+    assert time_to_seconds(build.resources.time) == 5400
+    # mem said nothing at testbench level, so the whole-job value stands.
+    assert build.resources.mem == "16G"
+
+
+def test_every_distinct_planned_build_reaches_the_aggregation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One reservation per distinct BUILD, not per distinct testbench.
+
+    The build job groups on the post-preproc `compile_group_dir`, so two
+    selected tests on one testbench that differ in plusdefines, builder or
+    model compile separately and each hold their own peak. Collapsing them
+    by (testbench, block) would have given two 96G builds 96G (#551 review
+    round 2). Configs whose head-visible ingredients are identical still
+    collapse: they are one compile, however many tests share it.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    (minimal_project / "sweep.py").write_text(
+        "import copy\n"
+        "from rtl_buddy.config.dispatch import TestbenchCompileFile\n"
+        "out_test_cfgs = []\n"
+        # a: its own block. b: a bigger block. c: identical to b in every
+        # head-visible ingredient, so it is the SAME build and collapses.
+        # d: b's block again, but a plusdefine of its own — a separate
+        # verilation, and a second 96G peak.
+        "for suffix, mem, pd in (\n"
+        "    ('a', '20G', None),\n"
+        "    ('b', '96G', None),\n"
+        "    ('c', '96G', None),\n"
+        "    ('d', '96G', {'WIDTH': 64}),\n"
+        "):\n"
+        "    cfg = copy.deepcopy(test_cfg)\n"
+        "    cfg.name = test_cfg.name + '.' + suffix\n"
+        "    cfg.tb.compile = TestbenchCompileFile(mem=mem)\n"
+        "    if pd is not None:\n"
+        "        cfg.pd = dict(pd)\n"
+        "    out_test_cfgs.append(cfg)\n"
+    )
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sweep:\n", "    sweep:\n      path: sweep.py\n", 1
+        )
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Three distinct builds (b and c are one), so the two largest that can
+    # overlap are the two separate 96G verilations — not 96G + 20G, which
+    # is what a (testbench, block) key would have produced.
+    assert mem_to_bytes(build.resources.mem) == 192 * 2**30
+
+
+def test_identical_planned_configs_are_one_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The other half of the rule: one compile is one reservation.
+
+    The fixture's two tests share a testbench, a model, a builder and an
+    empty plusdefines map, so they are one build — counting them twice
+    would fence off memory for a verilation that never runs.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_geometry_suite(minimal_project, small="    compile:\n      mem: 20G\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    # `basic` and `extra` are the same compile on tb_basic, so exactly ONE
+    # 20G build is in the sums — two would make it 40G. `big` states no
+    # block, so it contributes the cfg-dispatch 16G its slot implies.
+    build = fake_backend.build_submitted[0]
+    assert mem_to_bytes(build.resources.mem) == 36 * 2**30
+
+
+def _two_tests_on_one_30g_testbench(project: Path, extra: str = ""):
+    """One 30G testbench, two tests identical but for ``extra`` YAML."""
+    tests_yaml = project / "tests.yaml"
+    body = tests_yaml.read_text().replace(
+        "    filelist:\n      - src/example.sv\n",
+        "    filelist:\n      - src/example.sv\n    compile:\n      mem: 30G\n",
+        1,
+    )
+    body += (
+        "  - name: twin\n"
+        "    desc: the same compile again\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    testbench: tb_basic\n" + extra
+    )
+    tests_yaml.write_text(body)
+
+
+def test_a_preproc_hook_makes_a_test_its_own_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A hook may set plusdefines, and the key is snapshotted before it runs.
+
+    The build job runs PRE and only then probes `compile_group_dir()`, so
+    two configs that look identical to the head can leave the hook wanting
+    different builds. A test with a preprocessing hook is assumed to
+    produce its own compile — an over-count, and the safe one (#551 rev 5).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    (minimal_project / "pre.py").write_text("pass\n")
+    _two_tests_on_one_30g_testbench(
+        minimal_project, extra="    preproc:\n      path: pre.py\n"
+    )
+    # ...and the fixture's own `basic` gets one too, so BOTH are per-test.
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "    preproc:\n    postproc:\n",
+            "    preproc:\n      path: pre.py\n    postproc:\n",
+            1,
+        )
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Two builds of the same 30G testbench, both peaks held at once.
+    assert mem_to_bytes(build.resources.mem) == 60 * 2**30
+
+
+def test_without_a_preproc_hook_identical_tests_are_one_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The other half: no hook, nothing to mutate, one compile."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_tests_on_one_30g_testbench(minimal_project)
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert mem_to_bytes(build.resources.mem) == 30 * 2**30
+
+
+def test_assertion_mode_splits_a_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`assertions: true` changes the compile command, so it splits the key.
+
+    `_build_compile_plan` folds Verilator's `--assert` / `--coverage-user`
+    into `key_cmd`, so two tests identical in every other head-visible
+    ingredient still compile separately and each hold their own peak
+    (#551 review round 4).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    tests_yaml = minimal_project / "tests.yaml"
+    body = tests_yaml.read_text()
+    body = body.replace(
+        "    filelist:\n      - src/example.sv\n",
+        "    filelist:\n      - src/example.sv\n    compile:\n      mem: 30G\n",
+        1,
+    )
+    # `basic` keeps the default (false); this one differs in nothing else.
+    body += (
+        "  - name: asserted\n"
+        "    desc: same compile but with SVA in\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    assertions: true\n"
+        "    testbench: tb_basic\n"
+    )
+    tests_yaml.write_text(body)
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Two builds of the same 30G testbench, so both peaks are held at once;
+    # a key blind to `assertions` would have reserved one 30G build.
+    assert mem_to_bytes(build.resources.mem) == 60 * 2**30
+
+
+def test_self_compiling_configs_each_count_as_their_own_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A builder that cannot share compiles per TEST, so each is a build.
+
+    The build job runs PRE+COMPILE for the whole plan, self-compiling
+    configs included, and their `group_dir` is the resolved simv — per
+    test. Two of them with identical ingredients are still two concurrent
+    ThreadPool groups holding two peaks, so the key carries the test name
+    for those entries (#551 review round 3).
+    """
+    # A second builder that CAN share, so the suite submits a build job at
+    # all; the fixture's own `echo` family cannot (#358).
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            "\ncfg-verible:",
+            '  - name: "stub-vrl"\n'
+            '    builder: "echo"\n'
+            '    simulator-family: "verilator"\n'
+            '    builder-simv: "obj_dir/simv"\n'
+            "    sim-rand-seed: 1\n"
+            '    sim-rand-seed-prefix: "+seed="\n'
+            "    builder-opts:\n"
+            "      debug:\n"
+            '        compile-time: "--no-op"\n'
+            '        run-time: "--no-op"\n'
+            "\ncfg-verible:",
+            1,
+        )
+    )
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    tests_yaml = minimal_project / "tests.yaml"
+    body = tests_yaml.read_text()
+    entry = "  - name: {name}\n    toplevel: tb_basic\n    filelist:\n      - src/example.sv\n"
+    body = body.replace(
+        entry.format(name="tb_basic") + "tests:\n",
+        entry.format(name="tb_basic")
+        + "    compile:\n      mem: 30G\n"
+        + entry.format(name="tb_shared")
+        + "    compile:\n      mem: 10G\n"
+        + "tests:\n",
+        1,
+    )
+    # `basic` and `extra` share everything the head can see and still
+    # compile separately, into their own artefact directories.
+    body += (
+        "  - name: shared\n"
+        "    desc: the one config whose builder can share a build\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    builder: stub-vrl\n"
+        "    testbench: tb_shared\n"
+    )
+    tests_yaml.write_text(body)
+
+    # -l 5 so both self-compiling tests are planned: the fixture's `extra`
+    # sits at reglvl 5, and one of them alone proves nothing.
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Three builds: basic(30G), extra(30G) and shared(10G). The two that
+    # can overlap are the pair of 30G self-compiles — a key without the
+    # test name would have collapsed them and reserved 30 + 10 = 40G.
+    assert mem_to_bytes(build.resources.mem) == 60 * 2**30
 
 
 def _add_third_test(project: Path):

@@ -2,7 +2,11 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 from serde import serde, field, from_dict, to_dict
-from .dispatch import DispatchResourcesFile
+from .dispatch import (
+    DispatchResourcesFile,
+    TestbenchCompileFile,
+    validate_testbench_compile_block,
+)
 from .model import ModelConfig, ModelConfigLoader
 from .uvm import UVMConfig
 
@@ -88,6 +92,15 @@ class TestbenchConfig:
       systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
       resources (DispatchResourcesFile | None): default per-job reservation for
         dispatched runs of this testbench's tests (#351); tests override per field.
+      compile (TestbenchCompileFile | None): this testbench's own PER-BUILD
+        compile reservation (#551), layered over the suite's ``compile:``
+        block the way that block layers over ``cfg-dispatch.compile``. For a
+        suite whose testbenches verilate at wildly different sizes — the same
+        design at two geometries, say — this is what stops the whole suite
+        from reserving the largest one's memory for every build. The suite's
+        build job aggregates these (see
+        :func:`~.dispatch.aggregate_compile_resources`); ``parallel`` is rejected
+        here, because one build job compiles every testbench.
     """
 
     name: str
@@ -96,8 +109,20 @@ class TestbenchConfig:
     cocotb: CocotbTestbenchConfig | None = None
     systemc: SystemCTestbenchConfig | None = None
     resources: DispatchResourcesFile | None = None
+    compile: TestbenchCompileFile | None = None
 
     def __post_init__(self):
+        # Validated at load, in the same place and with the same wording the
+        # suite-level block uses, so the YAML 1.1 sexagesimal trap (an
+        # unquoted `4:00:00` read as the integer 14400) cannot reach sbatch
+        # as a ten-day reservation, an unaddable `mem` cannot reach the build
+        # job's sum, and a `parallel:` written here is refused rather than
+        # silently dropped. Named by testbench, matching the other errors
+        # raised here (#551).
+        try:
+            self.compile = validate_testbench_compile_block(self.compile)
+        except FatalRtlBuddyError as e:
+            raise FatalRtlBuddyError(f"testbench '{self.name}': {e}") from e
         if self.cocotb is not None and self.systemc is not None:
             raise FatalRtlBuddyError(
                 f"testbench '{self.name}': cocotb: and systemc: are mutually exclusive "

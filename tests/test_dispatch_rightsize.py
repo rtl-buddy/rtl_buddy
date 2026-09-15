@@ -7,9 +7,18 @@ guardrails, and the Verilator-only gate on time advice.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
-from rtl_buddy.config.dispatch import RightsizeConfigFile
+from rtl_buddy.config.dispatch import (
+    DispatchCompileFile,
+    DispatchConfigFile,
+    RightsizeConfigFile,
+    TestbenchCompileFile as TbCompile,
+    aggregate_compile_resources,
+)
+from rtl_buddy.config.dispatch import time_to_seconds
 from rtl_buddy.dispatch.rightsize import (
     RightsizeFinding,
     _override_note,
@@ -36,6 +45,8 @@ def _row(
     requested_cpus=None,
     cpus_override=None,
     submitted_cpus_per_task=None,
+    compile_origins=None,
+    compile_testbench=None,
 ):
     results = (
         TestPassResults(name=test + "/results")
@@ -58,6 +69,10 @@ def _row(
         "cpus_override": cpus_override,
         # The generated `--cpus-per-task`, still in force under a task count.
         "submitted_cpus_per_task": submitted_cpus_per_task,
+        # Which tests.yaml layer won each compile field for THIS test, and
+        # the testbench whose own `compile:` block did (#551).
+        "compile_origins": compile_origins,
+        "compile_testbench": compile_testbench,
     }
 
 
@@ -497,6 +512,74 @@ def test_suite_compile_attribution_is_per_field_within_one_run():
         "file": "/p/root_config.yaml",
         "path": "cfg-dispatch.compile.time",
     }
+
+
+def test_compile_governed_field_a_testbench_won_hints_at_that_entry():
+    """A testbench's own `compile:` beats the suite block it overrides (#551).
+
+    The two-geometry suite: the product entry states its own 256G, so the
+    suite-level `compile.mem` a reader would otherwise be sent to is the
+    value that LOST, and editing it moves nothing.
+    """
+    findings = _analyze(
+        [
+            _oom_row(
+                compile_in_job=True,
+                governed_by={"mem": "compile"},
+                compile_origins={"mem": "testbench"},
+                compile_testbench="tb_chip_t1",
+            )
+        ],
+        root_config_path="/p/root_config.yaml",
+        compile_origins={"mem": "suite"},
+    )
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "testbenches[name=tb_chip_t1].compile.mem",
+    }
+
+
+def test_testbench_and_suite_compile_attribution_coexist_in_one_run():
+    """One run, two tests, two layers — each named where its value lives."""
+    findings = {
+        f.test: f
+        for f in _analyze(
+            [
+                _oom_row(
+                    test="big",
+                    compile_in_job=True,
+                    governed_by={"mem": "compile"},
+                    compile_origins={"mem": "testbench"},
+                    compile_testbench="tb_chip_t1",
+                ),
+                _oom_row(
+                    test="small",
+                    compile_in_job=True,
+                    governed_by={"mem": "compile"},
+                    compile_origins={"mem": "suite"},
+                    compile_testbench="tb_chip_small",
+                ),
+            ],
+            root_config_path="/p/root_config.yaml",
+        )
+    }
+    assert findings["big"].edit_hint["path"] == (
+        "testbenches[name=tb_chip_t1].compile.mem"
+    )
+    # The small geometry declared no block of its own, so the suite key it
+    # inherits is still the one to edit — naming its testbench would send a
+    # reader to a `compile:` that is not there.
+    assert findings["small"].edit_hint["path"] == "compile.mem"
+
+
+def test_a_row_without_its_own_origins_falls_back_to_the_suite_map():
+    """Rows from before per-testbench blocks keep #497's attribution."""
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "compile"})],
+        root_config_path="/p/root_config.yaml",
+        compile_origins={"mem": "suite"},
+    )
+    assert findings[0].edit_hint["path"] == "compile.mem"
 
 
 def test_suite_won_attribution_never_touches_a_sim_governed_field():
@@ -1203,6 +1286,515 @@ def test_build_advice_falls_back_to_the_root_config_with_no_suite_path():
         "path": "cfg-dispatch.compile.time",
         "file": "root_config.yaml",
     }
+
+
+# ------ build-advice attribution when a TESTBENCH overrode a field (#551)
+
+
+def test_build_advice_names_the_testbench_whose_block_won_the_field():
+    """The build job's reservation is a max, so the winner has to be named."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={"time": {"origin": "testbench", "testbench": "tb_chip_t1"}},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {
+        "file": "/abs/verif/blk/tests.yaml",
+        "path": "testbenches[name=tb_chip_t1].compile.time",
+    }
+
+
+def test_build_advice_mixes_testbench_and_suite_attribution_in_one_run():
+    """`time` from the big geometry, `cpus` from the suite block (#551)."""
+    findings = _build_advice(
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 200,
+        },
+        parallel=1,
+        cpus=8,
+        compile_origins={
+            "time": {"origin": "testbench", "testbench": "tb_chip_t1"},
+            "cpus": {"origin": "suite", "testbench": None},
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    (cpus_a,) = [f for f in findings if f.resource == "cpus"]
+    assert time_a.edit_hint["path"] == "testbenches[name=tb_chip_t1].compile.time"
+    assert cpus_a.edit_hint["path"] == "compile.cpus"
+    assert cpus_a.edit_hint["file"] == "/abs/verif/blk/tests.yaml"
+
+
+def test_build_advice_keeps_cfg_dispatch_for_a_field_no_testbench_won():
+    """The nested map names cfg-dispatch explicitly; it must still route."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={"time": {"origin": "cfg-dispatch", "testbench": None}},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {
+        "path": "cfg-dispatch.compile.time",
+        "file": "root_config.yaml",
+    }
+
+
+def _tb(name):
+    return {"origin": "testbench", "testbench": name}
+
+
+_SUITE_SOURCE = {"origin": "suite", "testbench": None}
+
+
+def test_build_time_reduce_is_withheld_when_two_sources_tie(caplog):
+    """Two testbenches at the same time: no single edit lowers the max."""
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+            compile_origins={
+                "time": {
+                    "origin": "testbench",
+                    "testbench": "tb_a",
+                    "sources": [_tb("tb_a"), _tb("tb_b")],
+                }
+            },
+            suite_config_hint="/abs/verif/blk/tests.yaml",
+        )
+    assert [f for f in findings if f.resource == "time"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "compile-origin-tied"
+    assert record.rtl_fields["resource"] == "time"
+    # Both tied paths are named, so a reader can see what would have to move.
+    assert record.rtl_fields["paths"] == [
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_a].compile.time",
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_b].compile.time",
+    ]
+
+
+def test_a_testbench_tied_with_the_whole_job_value_also_withholds(caplog):
+    """A block that merely reaches the suite's figure moves nothing alone."""
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+            compile_origins={
+                "time": {
+                    "origin": "testbench",
+                    "testbench": "tb_a",
+                    "sources": [_tb("tb_a"), _SUITE_SOURCE],
+                }
+            },
+            suite_config_hint="/abs/verif/blk/tests.yaml",
+        )
+    assert [f for f in findings if f.resource == "time"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["paths"] == [
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_a].compile.time",
+        "/abs/verif/blk/tests.yaml:compile.time",
+    ]
+
+
+def test_one_source_still_gets_its_reduce_advice():
+    """The untied case is untouched — and still names the testbench."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_a",
+                "sources": [_tb("tb_a")],
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "reduce"
+    assert time_a.edit_hint["path"] == "testbenches[name=tb_a].compile.time"
+
+
+def test_a_tie_never_withholds_raise_advice():
+    """Raising any one source raises a maximum — and a sum with it."""
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 7200, "timelimit_s": 7200},
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_a",
+                "sources": [_tb("tb_a"), _tb("tb_b")],
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+
+
+def test_build_cpus_reduce_is_withheld_when_two_sources_tie(caplog):
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 7200,
+                "alloc_cpus": 8,
+                "total_cpu_s": 200,
+            },
+            parallel=1,
+            cpus=8,
+            compile_origins={
+                "cpus": {
+                    "origin": "testbench",
+                    "testbench": "tb_a",
+                    "sources": [_tb("tb_a"), _tb("tb_b")],
+                }
+            },
+            suite_config_hint="/abs/verif/blk/tests.yaml",
+        )
+    assert [f for f in findings if f.resource == "cpus"] == []
+    reasons = [
+        r.rtl_fields["reason"]
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert "compile-origin-tied" in reasons
+
+
+def test_a_tie_that_straddles_two_files_names_both(caplog):
+    """A testbench tied with cfg-dispatch: two files, two keys, no lever."""
+    with caplog.at_level(logging.INFO):
+        _build_advice(
+            {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+            compile_origins={
+                "time": {
+                    "origin": "testbench",
+                    "testbench": "tb_a",
+                    "sources": [
+                        _tb("tb_a"),
+                        {"origin": "cfg-dispatch", "testbench": None},
+                    ],
+                }
+            },
+            suite_config_hint="/abs/verif/blk/tests.yaml",
+        )
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["paths"] == [
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_a].compile.time",
+        "root_config.yaml:cfg-dispatch.compile.time",
+    ]
+
+
+def test_build_time_reduce_is_withheld_when_the_value_is_a_sum(caplog):
+    """A whole-job suggestion cannot be written into one contributor.
+
+    Telemetry says 30 minutes was enough; the reservation is 30 + 60 over
+    one worker. Writing 30 into the 60-minute testbench leaves the
+    aggregate at 60 and the advice comes back next run (#551 review 2).
+    """
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+            compile_origins={
+                "time": {
+                    "origin": "testbench",
+                    "testbench": "tb_big",
+                    # One source produces it, so this is NOT a tie...
+                    "sources": [_tb("tb_big")],
+                    # ...but it is a sum of two builds, which is worse.
+                    "aggregated": True,
+                    "contributors": [_tb("tb_big"), _tb("tb_small")],
+                }
+            },
+            suite_config_hint="/abs/verif/blk/tests.yaml",
+        )
+    assert [f for f in findings if f.resource == "time"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "compile-aggregate"
+    assert record.rtl_fields["paths"] == [
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_big].compile.time",
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_small].compile.time",
+    ]
+
+
+def test_a_single_contributor_is_still_attributable():
+    """One build decides the wall clock, so the suggestion is appliable."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_big",
+                "sources": [_tb("tb_big")],
+                "aggregated": False,
+                "contributors": [_tb("tb_big")],
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "reduce"
+    assert time_a.edit_hint["path"] == "testbenches[name=tb_big].compile.time"
+
+
+def test_an_aggregate_never_withholds_raise_advice():
+    """A sum still moves when any contributor is raised."""
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 7200, "timelimit_s": 7200},
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_big",
+                "sources": [_tb("tb_big")],
+                "aggregated": True,
+                "contributors": [_tb("tb_big"), _tb("tb_small")],
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+
+
+def test_two_contributors_on_one_key_still_withhold(caplog):
+    """The count comes from the contributors, not from the paths they render.
+
+    Two planned builds on one testbench sum to the reservation but point
+    at the same YAML key; counting the deduplicated paths would read that
+    as a single lever and offer an inapplicable suggestion (#551 rev 2).
+    """
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+            compile_origins={
+                "time": {
+                    "origin": "testbench",
+                    "testbench": "tb_a",
+                    "sources": [_tb("tb_a")],
+                    "aggregated": True,
+                    "contributors": [_tb("tb_a"), _tb("tb_a")],
+                }
+            },
+            suite_config_hint="/abs/verif/blk/tests.yaml",
+        )
+    assert [f for f in findings if f.resource == "time"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "compile-aggregate"
+    assert record.rtl_fields["paths"] == [
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_a].compile.time"
+    ]
+
+
+def _aggregated_time(primary_seconds, contributors=("tb_big", "tb_small")):
+    return {
+        "time": {
+            "origin": "testbench",
+            "testbench": contributors[0],
+            "sources": [_tb(contributors[0])],
+            "aggregated": True,
+            "contributors": [_tb(name) for name in contributors],
+            "contributor_value": primary_seconds,
+        }
+    }
+
+
+def test_an_aggregated_raise_names_the_contributors_own_new_value():
+    """30 + 60 reserved, a 135 target: write 105, not 135 (#551 rev 3).
+
+    The hint points at the 60-minute testbench, and `135` there would
+    re-aggregate to 165 — past the target the telemetry asked for. What
+    that key has to become is its own 60 plus the 45-minute shortfall.
+    """
+    findings = _build_advice(
+        # Reserved 90 minutes, used all of it: the near-limit raise
+        # suggests 90 x 1.5 = 135.
+        {"state": "COMPLETED", "elapsed_s": 5400, "timelimit_s": 5400},
+        compile_origins=_aggregated_time(3600),
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+    assert time_a.suggested == "01:45:00"  # 60 + (135 - 90)
+    # The whole-job figure survives in the machine event...
+    assert time_a.suggested_total == "02:15:00"
+    assert time_a.aggregate_delta == "+00:45:00"
+    event = time_a.as_event()
+    assert event["suggested"] == "01:45:00"
+    assert event["suggested_total"] == "02:15:00"
+    # ...and the hint says what the number means.
+    assert "02:15:00 in total" in time_a.edit_hint["note"]
+    assert time_a.edit_hint["path"] == "testbenches[name=tb_big].compile.time"
+
+
+def test_an_aggregated_timeout_raise_is_translated_too():
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 5400, "timelimit_s": 5400},
+        compile_origins=_aggregated_time(3600),
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+    assert time_a.suggested == "01:45:00"
+    assert time_a.suggested_total == "02:15:00"
+
+
+def test_a_raise_shares_its_delta_across_repeated_contributors():
+    """One key, two builds: raise it by half the shortfall each (#551 rev 5).
+
+    Two 30-minute builds of one testbench run back to back and reserve 60.
+    A 90-minute target written as `+30` on that single key would make the
+    job 120, not 90 — each occurrence carries 15.
+    """
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 3600, "timelimit_s": 3600},
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_a",
+                "sources": [_tb("tb_a")],
+                "aggregated": True,
+                # The same key twice: two planned builds, one YAML field.
+                "contributors": [_tb("tb_a"), _tb("tb_a")],
+                "contributor_value": 1800,
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.suggested == "00:45:00"  # 30 + 30/2, not 30 + 30
+    assert time_a.suggested_total == "01:30:00"
+    assert time_a.aggregate_delta == "+00:15:00"
+    # ...and the two occurrences re-aggregate to exactly the target.
+    assert 2 * time_to_seconds(time_a.suggested) == time_to_seconds(
+        time_a.suggested_total
+    )
+
+
+def test_a_raise_on_distinct_contributors_keeps_the_whole_delta():
+    """Two different keys: only the named one moves, so it takes it all."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 3600, "timelimit_s": 3600},
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_a",
+                "sources": [_tb("tb_a")],
+                "aggregated": True,
+                "contributors": [_tb("tb_a"), _tb("tb_b")],
+                "contributor_value": 1800,
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.suggested == "01:00:00"  # 30 + the full 30
+    assert time_a.aggregate_delta == "+00:30:00"
+
+
+def test_an_unaggregated_raise_keeps_the_whole_job_figure():
+    """One contributor: the suggestion IS the value to write."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 5400, "timelimit_s": 5400},
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_big",
+                "sources": [_tb("tb_big")],
+                "aggregated": False,
+                "contributors": [_tb("tb_big")],
+                "contributor_value": 5400,
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.suggested == "02:15:00"
+    assert time_a.suggested_total is None
+    assert time_a.aggregate_delta is None
+    assert "in total" not in (time_a.edit_hint.get("note") or "")
+
+
+def test_an_aggregate_without_a_contributor_value_is_not_translated():
+    """An older state dict degrades to the whole-job figure, not to silence."""
+    origins = _aggregated_time(3600)
+    del origins["time"]["contributor_value"]
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 5400, "timelimit_s": 5400},
+        compile_origins=origins,
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.suggested == "02:15:00"
+    assert time_a.suggested_total is None
+
+
+def test_a_real_tied_schedule_reaches_the_withhold(caplog):
+    """End to end: the aggregation's own map trips the tie rule.
+
+    The two halves are written in different modules, so one test feeds the
+    real `aggregate_compile_resources` output straight into the advice
+    rather than a hand-built provenance map (#551 rev 4).
+    """
+    cfg = DispatchConfigFile(compile=DispatchCompileFile(time="00:01:00")).initialise()
+    _, origins = aggregate_compile_resources(
+        cfg,
+        None,
+        [
+            ("tb_a", TbCompile(time="01:00:00")),
+            ("tb_b", TbCompile(time="01:00:00")),
+        ],
+        parallel=2,
+    )
+    with caplog.at_level(logging.INFO):
+        findings = _build_advice(
+            {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 3600},
+            compile_origins=origins,
+            suite_config_hint="/abs/verif/blk/tests.yaml",
+        )
+    assert [f for f in findings if f.resource == "time"] == []
+    (record,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "rightsize.build_advice_withheld"
+    ]
+    assert record.rtl_fields["reason"] == "compile-origin-tied"
+    assert record.rtl_fields["paths"] == [
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_a].compile.time",
+        "/abs/verif/blk/tests.yaml:testbenches[name=tb_b].compile.time",
+    ]
+
+
+def test_an_origins_map_without_sources_never_withholds():
+    """A state dict from before the aggregation must degrade, not go silent."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={"time": "suite"},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint["path"] == "compile.time"
 
 
 # --------------------- "nothing to compile" is not "compiled fast" (#495)

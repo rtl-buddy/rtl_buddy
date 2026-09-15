@@ -88,6 +88,7 @@ from .config.dispatch import (
     compile_parallel,
     compile_parallel_origin,
     compile_resource_origins,
+    aggregate_compile_resources,
     resolve_compile_resources,
     resolve_resources,
     cpu_request_overrides,
@@ -3768,6 +3769,108 @@ class RtlBuddy:
         # no suite_cfg of its own.
         suite_compile = suite_cfg.get_compile()
 
+        # The BUILDS this plan will produce, in plan order, each paired with
+        # the `compile:` block that sizes it. The one build job compiles all
+        # of them, so its reservation is aggregated over these (#551) — and
+        # a testbench nobody selected contributes no build, so it must not
+        # inflate that reservation.
+        #
+        # One entry per distinct compile, not per distinct testbench: the
+        # build job groups on the post-preproc `compile_group_dir`, so two
+        # selected tests sharing a testbench but differing in plusdefines,
+        # builder or model compile SEPARATELY and each hold their own peak.
+        # Collapsing them would give two 40-minute builds 40 minutes, and
+        # two 96G builds 96G (#551 review round 2).
+        #
+        # The key is the head-visible half of that grouping. The head cannot
+        # see the real key without writing filelists on the submit host
+        # (#458), so this is one reservation per distinct (testbench,
+        # plusdefines, builder, model, assertions) among the planned tests.
+        # Exact where those ingredients differ, and wrong in one direction
+        # only where they do not: two configs that happen to resolve to the
+        # same group_dir are counted twice, and the job is reserved for a
+        # build it does not run.
+        #
+        # Two shapes are keyed per test instead, both of them the opposite
+        # direction — an under-count is what they prevent.
+        #
+        # The first is a `preproc:` hook. The build job runs PRE before it
+        # probes `compile_group_dir()`, and a hook is free to set
+        # plusdefines on the config it is handed — so the ingredients this
+        # key snapshots are the ones BEFORE the hook, and two configs that
+        # look identical here can leave PRE wanting different builds. A
+        # test with a preprocessing hook is therefore assumed to produce
+        # its own compile (#551 review round 5). The alternative is running
+        # every project's hooks on the submit host to find out, which is
+        # the build job's work and #458's whole point.
+        #
+        # The second is a builder that cannot share. A config
+        # whose builder cannot share a build compiles to its OWN output path
+        # (`group_dir` is the resolved simv, per test), so the build job —
+        # which runs PRE+COMPILE for the WHOLE plan, self-compiling configs
+        # included, see the build-job skip decision below — puts each of
+        # them in a group of its own however identical their ingredients
+        # are. The test name goes into the key for those, so two of them
+        # count as the two concurrent builds they are rather than one
+        # (#551 review round 3). Not the run id: a fan-out over run_ids
+        # shares `artefacts/<test>/`, which is one build.
+        #
+        # `parallel` is resolved here rather than inside the submit helper
+        # because the aggregation needs it: memory adds up across the builds
+        # that can be in flight together, and the wall clock is their
+        # schedule. The same expression the build job is submitted with,
+        # computed once and passed to both.
+        planned_builds = []
+        seen_builds = set()
+        for entry in entries:
+            cfg = entry["cfg"]
+            tb = cfg.get_testbench()
+            tb_name = getattr(tb, "name", None)
+            tb_compile = getattr(tb, "compile", None)
+            model = cfg.get_model()
+            key = (
+                tb_name,
+                getattr(tb_compile, "cpus", None),
+                getattr(tb_compile, "mem", None),
+                getattr(tb_compile, "time", None),
+                # repr, not the value: a plusdefine is whatever the YAML or
+                # a sweep hook put there, and the key only has to separate
+                # configs, not survive a round trip.
+                tuple(
+                    sorted(
+                        (str(k), repr(v))
+                        for k, v in (cfg.get_plusdefines() or {}).items()
+                    )
+                ),
+                cfg.get_builder_name(),
+                getattr(model, "name", None),
+                getattr(model, "path", None),
+                # `assertions: true` puts Verilator's SVA flags into the
+                # compile command, and `_build_compile_plan` folds those
+                # into `key_cmd` — so two otherwise-identical tests that
+                # disagree about it are two builds (#551 review round 4).
+                getattr(cfg, "assertions", False),
+                # Per-test output dir, so per-test build — see above; and
+                # per-test again for a config with a `preproc:` hook, whose
+                # plusdefines this key snapshots BEFORE the hook has run.
+                cfg.get_name()
+                if entry["compile_in_job"] or cfg.get_preproc_path()
+                else None,
+            )
+            if key in seen_builds:
+                continue
+            seen_builds.add(key)
+            planned_builds.append((tb_name, tb_compile))
+        build_parallel = max(
+            1, min(compile_parallel(dispatch_cfg, suite_compile), len(entries))
+        )
+        build_compile_resources, build_compile_origins = aggregate_compile_resources(
+            dispatch_cfg,
+            suite_compile,
+            planned_builds,
+            parallel=build_parallel,
+        )
+
         # (2) Build job — unless nothing in this suite could use its output.
         # `sbatch-args` is appended after the generated flags and therefore
         # wins, and the `SBATCH_*` environment reaches sbatch through the
@@ -3836,6 +3939,8 @@ class RtlBuddy:
                 plan_path=plan_path,
                 planned=len(entries),
                 suite_compile=suite_compile,
+                compile_resources=build_compile_resources,
+                parallel=build_parallel,
             )
         else:
             build_handle = None
@@ -3855,19 +3960,41 @@ class RtlBuddy:
         # (3) Group by resolved resources: elements of one sbatch array must
         # share a reservation shape. Consumes the single expansion; no hook.
         groups = {}  # (cpus, mem, time) -> list[(row index, TestJobSpec)]
-        compile_resources = resolve_compile_resources(dispatch_cfg, suite_compile)
         for entry in entries:
             cfg = entry["cfg"]
             resources = resolve_resources(dispatch_cfg, cfg)
             if entry["compile_in_job"]:
+                # This test's OWN compile reservation, resolved per entry
+                # rather than once per suite: the job about to be sized
+                # compiles this testbench and no other, so the aggregate the
+                # build job takes would be the wrong number here — it would
+                # hand every sim job in the suite the sum of every planned
+                # testbench's memory (#551).
+                entry_tb = cfg.get_testbench()
+                entry_tb_compile = getattr(entry_tb, "compile", None)
+                compile_resources = resolve_compile_resources(
+                    dispatch_cfg, suite_compile, entry_tb_compile
+                )
                 # One allocation has to cover compile AND sim, so it is sized
                 # for the larger of the two per field; record which layer won
                 # so reservation advice names the governing field.
                 resources, governed_by = combine_for_in_job_compile(
                     resources, compile_resources
                 )
+                # ...and which tests.yaml layer supplied each compile field,
+                # so a field the testbench block won is hinted at that entry
+                # rather than at a suite key it overrides (#551). Per row,
+                # because with a testbench layer the attribution is no longer
+                # one fact per suite.
+                entry_origins = compile_resource_origins(
+                    suite_compile, entry_tb_compile
+                )
                 for idx, _ in entry["rows"]:
                     suite_results[idx]["governed_by"] = governed_by
+                    suite_results[idx]["compile_origins"] = entry_origins
+                    suite_results[idx]["compile_testbench"] = getattr(
+                        entry_tb, "name", None
+                    )
                     # The floor no `reduce` advice can take this allocation
                     # below, whatever the test's own resources: are trimmed to.
                     suite_results[idx]["compile_floor"] = {
@@ -4016,6 +4143,12 @@ class RtlBuddy:
             # reservation from the root config alone and has no suite_cfg
             # (#497) — same route as build_telemetry/build_compile_work.
             "suite_compile": suite_compile,
+            # The build job's own reservation and its per-field provenance as
+            # submit resolved them — the maximum over the planned testbenches
+            # (#551), which analysis cannot recompute: it has neither the plan
+            # nor the suite_cfg the testbench blocks live in.
+            "build_compile_resources": build_compile_resources,
+            "build_compile_origins": build_compile_origins,
             # What superseded this suite's resolved cpus, as it stood when
             # these jobs were submitted. Snapshotted rather than recomputed
             # at analysis, because the environment half of it can move under
@@ -4156,6 +4289,8 @@ class RtlBuddy:
         plan_path,
         planned,
         suite_compile=None,
+        compile_resources=None,
+        parallel=None,
     ):
         """Submit the suite's compile as a Slurm build job (compute node).
 
@@ -4164,6 +4299,16 @@ class RtlBuddy:
         included (#547). Passed in rather than re-read from ``suite_cfg`` so
         this job's reservation and the in-job-compile combination in the
         caller are provably the same resolution.
+
+        ``compile_resources`` is the reservation this job is sized from: the
+        planned testbenches' own ``compile:`` blocks aggregated and floored
+        at the suite-level whole-job value (#551), resolved by the caller
+        because only the caller holds the plan. ``parallel`` is the
+        concurrency that aggregation was computed against, passed in for the
+        same reason — the two must be the same number, since memory adds up
+        across the builds in flight together and wall clock divides by them.
+        Both ``None`` fall back to resolving here, which is the same answer
+        for every suite whose testbenches declare no block of their own.
 
         ``planned`` is how many configs the plan holds. It caps the
         resolved ``compile.parallel``: a suite with two planned configs
@@ -4181,14 +4326,19 @@ class RtlBuddy:
         dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
         configured_parallel = compile_parallel(dispatch_cfg, suite_compile)
-        parallel = max(1, min(configured_parallel, planned))
+        if parallel is None:
+            parallel = max(1, min(configured_parallel, planned))
         # `parallel` layers exactly like the reservation fields beside it
         # (#547): this job belongs to this suite alone, so a suite with one
         # compile key says `parallel: 1` and reserves `cpus` rather than
         # `cpus x` a cluster-wide value sized for the repo's widest suite.
         # Sizing against the partition's widest node remains the writer's
         # obligation at either level — see the scaling note below.
-        resources = resolve_compile_resources(dispatch_cfg, suite_compile)
+        resources = (
+            compile_resources
+            if compile_resources is not None
+            else resolve_compile_resources(dispatch_cfg, suite_compile)
+        )
         if parallel > 1:
             # Scale ONLY this job's reservation, and only here: the very
             # same resolved compile resources size an in-job compile's sim
@@ -4981,7 +5131,15 @@ class RtlBuddy:
                     # The per-build reservation, NOT the scaled one the build
                     # spec carries: the advice names
                     # cfg-dispatch.compile.cpus, which is per-build.
-                    resolve_compile_resources(
+                    #
+                    # Submit's own resolution where there is one: with
+                    # per-testbench `compile:` blocks the build job is sized
+                    # by the maximum over the PLANNED testbenches (#551), and
+                    # analysis holds neither the plan nor the suite_cfg those
+                    # blocks live in. The suite-wide fallback is the same
+                    # number for every suite that declares none.
+                    (state or {}).get("build_compile_resources")
+                    or resolve_compile_resources(
                         self.root_cfg.get_dispatch_cfg(), suite_compile
                     ),
                     build_spec.parallel,
@@ -5006,9 +5164,13 @@ class RtlBuddy:
                     # Per-field provenance, so a value the suite block won
                     # is pointed back at the suite's tests.yaml instead of
                     # at a cfg-dispatch key editing which would move
-                    # nothing (#497). The same map the per-test analysis
-                    # above got: one reservation, one attribution.
-                    compile_origins=compile_origins,
+                    # nothing (#497). The build job's own map, which also
+                    # names the testbench whose block won each field where
+                    # the maximum took it from one (#551); the suite-wide
+                    # map is the fallback for a state dict from before that.
+                    compile_origins=(
+                        (state or {}).get("build_compile_origins") or compile_origins
+                    ),
                     suite_config_hint=suite_config_path or suite_display,
                     # ...and whether the resolved reservation is what the
                     # build job was actually submitted with: a `sbatch-args`
@@ -5078,6 +5240,16 @@ class RtlBuddy:
                 "parenthesised figure is what the scheduler allocated — a "
                 "site that hands out whole cores gives more than was "
                 "requested, and no edit to Field changes that"
+            )
+        if any(f.suggested_total for f in findings):
+            # Without this the number reads as the reservation to end up
+            # with, and a reader who writes it into the named Field
+            # overshoots by whatever the other builds contribute (#551).
+            metadata.append(
+                "an aggregated row's suggestion is the named Field's OWN new "
+                "value, not the whole-job figure: the build job reserves the "
+                "sum of its builds, so writing the total into one of them "
+                "would overshoot"
             )
         compile_rows = [f for f in findings if f.phase == "compile"]
         if compile_rows:
