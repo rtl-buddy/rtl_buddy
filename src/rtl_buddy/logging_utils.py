@@ -1190,6 +1190,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({', '.join(str(job_id) for job_id in job_ids)}); they start "
                 "now instead of waiting for the rest of the build job"
             )
+        case "dispatch.gates_skipped":
+            return (
+                f"dispatch: {fields.get('suite_dir')}: {fields.get('reason')}. "
+                "Slurm takes a dependency expression whole, so a release "
+                f"would drop {fields.get('dependency')} along with this run's "
+                "own gate; every simulation job waits for its build job "
+                "instead."
+            )
         case "dispatch.gates_unavailable":
             return (
                 "dispatch: no gates manifest at "

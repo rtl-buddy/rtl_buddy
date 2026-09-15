@@ -168,6 +168,28 @@ def test_ids_are_batched_by_the_cluster_that_issued_them(tmp_path):
     assert release_batches(payload, [2]) == [(None, ["9_1"])]
 
 
+def test_two_clusters_may_hand_out_the_same_job_id(tmp_path):
+    """An id is unique within a cluster, not across a federation.
+
+    Deduping on the number alone would collapse east's 77_1 and west's
+    77_1 into one release and leave the other job gated on a build that
+    had already released it (#548 review).
+    """
+    payload, _ = load_gates(
+        write_gates(
+            tmp_path / "g.json",
+            run_token="tok",
+            entries=[
+                (0, "alpha", "77_1", "east"),
+                (0, "alpha", "77_1", "west"),
+                # A true duplicate — the same pair twice — still collapses.
+                (0, "alpha", "77_1", "east"),
+            ],
+        )
+    )
+    assert release_batches(payload, [0]) == [("east", ["77_1"]), ("west", ["77_1"])]
+
+
 def test_a_malformed_entry_does_not_cost_the_others_their_release():
     payload = {
         "entries": [

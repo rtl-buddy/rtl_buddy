@@ -181,11 +181,16 @@ def release_batches(payload, indices) -> list[tuple[str | None, list[str]]]:
             cluster = None
         by_index.setdefault(index, []).append((job_id, cluster))
     batches: dict[str | None, list[str]] = {}
-    seen: set[str] = set()
+    # Keyed on the PAIR, because an id is only unique within its cluster:
+    # `--clusters=a,b` can hand out 77_1 on each, and deduping on the
+    # number alone would drop one of the two real jobs — leaving a
+    # simulation gated on a build that had already released it (#548
+    # review).
+    seen: set[tuple[str | None, str]] = set()
     for index in indices:
         for job_id, cluster in by_index.get(index, ()):
-            if job_id in seen:
+            if (cluster, job_id) in seen:
                 continue
-            seen.add(job_id)
+            seen.add((cluster, job_id))
             batches.setdefault(cluster, []).append(job_id)
     return list(batches.items())
