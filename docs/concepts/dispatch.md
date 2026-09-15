@@ -98,6 +98,22 @@ The build job itself carries no `--kill-on-invalid-dep`: `singleton` waits for t
 
 When a build job exists, every dependent is submitted with `--kill-on-invalid-dep=yes`. A failed build therefore removes jobs that could never satisfy `afterok`; collection also cancels any `DependencyNeverSatisfied` remnants. A user-supplied `--kill-on-invalid-dep=no` in `sbatch-args` overrides the default.
 
+### Start simulations as their compile key finishes
+
+Every simulation job of a suite is gated on that suite's one build job, so a suite with three compile keys and `compile.parallel: 2` would hold a key that finished in the first minute until the slowest key in the plan was done. The build job therefore releases each key as it lands: once a key has compiled and its stamp is on disk, the build job clears the dependency of exactly that key's simulation jobs with `scontrol update JobId=<id> Dependency=`, and they start while the other keys are still compiling. It logs one `dispatch.key_released` per key, naming the tests and job ids.
+
+The `afterok` gate is not replaced, only cleared per key. Every job is still submitted with it, and with `--kill-on-invalid-dep=yes`, so a build job that dies mid-compile still reaps the whole fan-out — including the keys it had already released, whose jobs are by then running or finished.
+
+What is *not* released:
+
+- A key whose compile **failed**. Its jobs keep the gate, start after the build job, read the build record and decline the recompile exactly as before.
+- A key whose compile succeeded but left **no stamp** (`stamp_written: false`). There is nothing for the simulation job to validate early.
+- Every job, when the submit host has no `scontrol`. It is an optional Slurm binary; without it the build job logs `dispatch.release_unavailable` once and the run behaves as it did before this existed.
+
+The head writes the plan-index-to-job-id map the build job needs to `artefacts/.dispatch/gates-<pid>.json`, immediately after the last submission of the suite — the build job is submitted first, so it polls for that file (up to two minutes) at its first release and logs `dispatch.gates_unavailable` if it never appears. A release the scheduler refuses is a `dispatch.release_failed` warning and nothing more: those jobs start when the build job ends.
+
+A released array element honours the array's `%N` throttle from `cfg-dispatch.max-jobs-per-array` like any other element, so the release changes when an element becomes eligible, not how many of them run at once. Retried jobs are never released — they are submitted after collection, when the build job is long gone. `--dispatch local-parallel` has no pending queue to clear and is unchanged: its gate is still "the build job exited 0".
+
 A missing result from a scheduler kill, worker crash, or dependency failure is a failed row, not a dropped test. A compile failure for one compile key does not stop unrelated keys; the affected tests report that compile's exit status and error lines, and their simulation jobs do not repeat it.
 
 ## Configure dispatch
@@ -275,7 +291,7 @@ Logs are separated by process:
 |---|---|---|
 | Head | `<suite>/rtl_buddy.log` | Console output |
 | Simulation | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` or `local-parallel-<tag>.log` |
-| Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log` |
+| Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log`, `gates-<pid>.json` |
 
 `<tag>` is the run ID or `single`; `<pid>` is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.
 

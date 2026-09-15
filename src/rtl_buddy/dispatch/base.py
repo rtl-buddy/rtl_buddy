@@ -66,6 +66,13 @@ class BuildJobSpec:
     # directory, and its per-process memo turns one user request into
     # exactly one rebuild per build dir for the whole suite.
     rebuild: bool = False
+    # Where the head records which sim job holds which plan index (#548),
+    # so this job can clear the `afterok` dependency of one compile key's
+    # sims the moment that key is built instead of holding them for the
+    # slowest key in the plan. Set only for a backend that can be told to
+    # release a pending job (Slurm); ``None`` everywhere else keeps the
+    # argv — and the gate — exactly as it was. See ``dispatch.gates``.
+    gates_json: Path | None = None
 
 
 @dataclass

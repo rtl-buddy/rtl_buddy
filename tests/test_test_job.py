@@ -21,6 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
+from rtl_buddy.dispatch import gates as gates_module
 from rtl_buddy.dispatch.argv import job_log_path
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.config import SuiteConfig
@@ -2658,3 +2659,303 @@ def test_rebuild_reaches_the_test_runner_of_an_undispatched_rb_test(
     result = runner.invoke(rb.app, ["test", "basic", "-c", "tests.yaml", "--rebuild"])
     assert result.exit_code == 0, result.output
     assert stub_runner.last_init["rebuild"] is True
+
+
+# ------------------------------ per-key release from the build job (#548)
+
+
+def _two_key_build_job(
+    stub_runner: type[_StubTestRunner], *, failing: str | None = "extra"
+):
+    """Arrange the fixture suite as two compile keys, one of which fails.
+
+    ``basic`` is the fast key and ``extra`` the slow one, which is the
+    shape the issue reports: a key that finished in the first minute held
+    behind a key that had not.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.group_of = lambda name: f"obj_dir_{name}"
+    stub_runner.compile_hook = lambda name: (
+        CompileFailResults(name=f"{name}/results")
+        if name == failing
+        else EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
+    )
+
+
+def _fake_release(monkeypatch: pytest.MonkeyPatch, *, refuses=None):
+    """Record ``release_dependency`` calls instead of shelling out.
+
+    ``refuses`` maps a job id to the error Slurm gave for it, so a refusal
+    lands on the job it belongs to rather than on every call.
+    """
+    calls = []
+    refuses = refuses or {}
+
+    def release(job_ids, *, cluster=None, cwd=None):
+        calls.append({"job_ids": list(job_ids), "cluster": cluster, "cwd": cwd})
+        return [(job_id, refuses[job_id]) for job_id in job_ids if job_id in refuses]
+
+    monkeypatch.setattr(rtl_buddy_module, "release_dependency", release)
+    monkeypatch.setattr(
+        rtl_buddy_module.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
+    return calls
+
+
+def _gates(path: Path, entries) -> Path:
+    from rtl_buddy.dispatch.gates import write_gates
+
+    return write_gates(path, run_token=None, cluster="hpc", entries=entries)
+
+
+def test_build_job_releases_a_key_that_built_and_not_one_that_failed(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The whole point of #548: the fast key's sims stop waiting.
+
+    ``extra``'s compile failed, so its jobs keep the ``afterok`` they were
+    submitted with — they run after this job, read the build envelope and
+    decline the recompile (#498), exactly as before.
+    """
+    _two_key_build_job(stub_runner)
+    calls = _fake_release(monkeypatch)
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _build_payload(result.output)["built"] == ["basic"]
+
+    assert [call["job_ids"] for call in calls] == [["1000_1"]]
+    # Issued against the cluster the head recorded, from the suite dir.
+    assert calls[0]["cluster"] == "hpc"
+    assert calls[0]["cwd"] == str(minimal_project)
+
+    released = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.key_released"
+    ]
+    assert len(released) == 1, released
+    assert released[0]["tests"] == ["basic"]
+    assert released[0]["job_ids"] == ["1000_1"]
+    assert released[0]["group"] == "obj_dir_basic"
+
+
+def test_build_job_releases_every_run_of_a_released_config(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """One plan index, N fanned-out runs, N job ids to clear."""
+    _two_key_build_job(stub_runner, failing=None)
+    calls = _fake_release(monkeypatch)
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (0, "basic", "1000_2"), (1, "extra", "1000_3")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [call["job_ids"] for call in calls] == [["1000_1", "1000_2"], ["1000_3"]]
+
+
+def test_build_job_waits_for_a_gates_manifest_the_head_has_not_written_yet(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The build job is submitted BEFORE the sims it releases, so at its
+    first release the manifest may still be on its way."""
+    _two_key_build_job(stub_runner, failing=None)
+    calls = _fake_release(monkeypatch)
+    gates_path = minimal_project / "gates-1.json"
+    monkeypatch.setattr(gates_module, "GATES_WAIT_S", 10.0)
+    monkeypatch.setattr(gates_module, "GATES_POLL_S", 0.02)
+
+    def _write_later():
+        time.sleep(0.15)
+        _gates(gates_path, [(0, "basic", "1000_1"), (1, "extra", "1000_2")])
+
+    writer = threading.Thread(target=_write_later)
+    writer.start()
+    try:
+        runner, rb = _runner()
+        result = runner.invoke(
+            rb.app,
+            [
+                "--machine",
+                "_build-job",
+                "-c",
+                "tests.yaml",
+                "-l",
+                "5",
+                "--gates",
+                str(gates_path),
+            ],
+        )
+    finally:
+        writer.join()
+    assert result.exit_code == 0, result.output
+    assert [call["job_ids"] for call in calls] == [["1000_1"], ["1000_2"]]
+
+
+def test_build_job_builds_on_when_the_gates_manifest_never_arrives(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head that died between submits costs the run its early start and
+    nothing else: the compile finishes and the job still exits 0."""
+    _two_key_build_job(stub_runner, failing=None)
+    calls = _fake_release(monkeypatch)
+    monkeypatch.setattr(gates_module, "GATES_WAIT_S", 0.05)
+    monkeypatch.setattr(gates_module, "GATES_POLL_S", 0.01)
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--gates",
+            str(minimal_project / "never.json"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert set(_build_payload(result.output)["built"]) == {"basic", "extra"}
+    assert calls == []
+
+    events = _events(minimal_project / "rtl_buddy.log")
+    # Said once for the whole job, not once per compile key.
+    assert events.count("dispatch.gates_unavailable") == 1
+    assert "dispatch.key_released" not in events
+
+
+def test_build_job_says_so_once_when_scontrol_is_missing(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``scontrol`` is an optional Slurm binary: a site without one keeps
+    every sim job gated on the build job, and is told why."""
+    _two_key_build_job(stub_runner, failing=None)
+    calls = _fake_release(monkeypatch)
+    monkeypatch.setattr(rtl_buddy_module.shutil, "which", lambda name: None)
+    gates = _gates(minimal_project / "gates-1.json", [(0, "basic", "1000_1")])
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == []
+
+    events = _events(minimal_project / "rtl_buddy.log")
+    assert events.count("dispatch.release_unavailable") == 1
+    assert "dispatch.key_released" not in events
+
+
+def test_build_job_reports_a_refused_release_without_failing(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A job id Slurm will not clear is a slower start, never a failure."""
+    _two_key_build_job(stub_runner, failing=None)
+    _fake_release(monkeypatch, refuses={"1000_1": "slurm_update: Invalid job id"})
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert set(_build_payload(result.output)["built"]) == {"basic", "extra"}
+
+    records = _records(minimal_project / "rtl_buddy.log")
+    failed = [r for r in records if r.get("event") == "dispatch.release_failed"]
+    assert [r["job_id"] for r in failed] == ["1000_1"]
+    assert "Invalid job id" in failed[0]["error"]
+    # Every id of that key was refused, so there is nothing to claim
+    # released for it — and the other key is unaffected.
+    released = [r for r in records if r.get("event") == "dispatch.key_released"]
+    assert [r["job_ids"] for r in released] == [["1000_2"]]
+
+
+def test_build_job_without_gates_never_touches_scontrol(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No ``--gates`` is every pre-#548 run, and every local-parallel one:
+    nothing is polled, nothing is released, nothing is logged about it."""
+    _two_key_build_job(stub_runner, failing=None)
+    calls = _fake_release(monkeypatch)
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == []
+    events = _events(minimal_project / "rtl_buddy.log")
+    assert not [event for event in events if str(event).startswith("dispatch.")]

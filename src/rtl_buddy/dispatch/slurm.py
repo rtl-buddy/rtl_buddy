@@ -327,6 +327,61 @@ def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
     return selected or None
 
 
+def release_dependency(
+    job_ids: Sequence[str], *, cluster: str | None = None, cwd: str | None = None
+) -> list[tuple[str, str]]:
+    """Clear these jobs' scheduler dependency; return the failures (#548).
+
+    ``scontrol update JobId=<id> Dependency=`` is how a job sitting
+    ``PENDING`` with reason ``Dependency`` is told to stop waiting. It
+    takes a plain id and an array *element* id alike (``1234`` /
+    ``1234_3``), and clearing one element leaves its siblings pending, so
+    a compile key's sims can be released without disturbing the rest of
+    the array they were grouped into.
+
+    Called from the build job, once a key has compiled, against ids the
+    head wrote into the gates manifest — ``cluster`` is the one it
+    submitted them to, since a job id is unique only within its cluster
+    (#509). One call per id: ``scontrol update`` addresses a single job.
+
+    Best effort, and it never raises. The ``afterok`` gate is still on
+    every one of these jobs, so a release that does not happen costs the
+    run its early start and nothing else; a raise, by contrast, would
+    escape the build job and cancel the whole fan-out.
+    """
+    cluster_argv = [] if cluster is None else ["-M", cluster]
+    failures: list[tuple[str, str]] = []
+    for job_id in job_ids:
+        try:
+            proc = subprocess.run(
+                [
+                    "scontrol",
+                    *cluster_argv,
+                    "update",
+                    f"JobId={job_id}",
+                    "Dependency=",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=_SCONTROL_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            failures.append((job_id, str(e)[:200]))
+            continue
+        if proc.returncode != 0:
+            failures.append(
+                (
+                    job_id,
+                    (
+                        proc.stderr.strip()
+                        or f"`scontrol update` failed (rc={proc.returncode})"
+                    )[:200],
+                )
+            )
+    return failures
+
+
 # `MaxRSS` is a high-water mark over samples, so a job shorter than the
 # sampling interval reports whatever the first sample caught — near zero.
 # The stock `JobAcctGatherFrequency` is 30 s and dispatch exists to produce
