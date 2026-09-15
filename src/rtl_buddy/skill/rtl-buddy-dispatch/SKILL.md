@@ -39,21 +39,21 @@ missing, stale, or invalid, 2 for a fatal orchestration/configuration error.
 
 In machine mode, inspect `payload.reservation_advice`. Apply its `edit_hint.file`
 and `edit_hint.path` exactly: the governing field may be a test/testbench
-`resources:` entry, a suite-level `compile:` block at the top of that suite's
-`tests.yaml`, or `cfg-dispatch.compile` in `root_config.yaml`. The suite block
-overrides it field by field, `parallel` included, so one big suite can carry its
-own `compile: {mem: ...}` instead of every build job inheriting a raise of the
-global reservation.
+`resources:` entry, a `compile:` block on a testbench or atop that suite's
+`tests.yaml`, or `cfg-dispatch.compile` in `root_config.yaml`. Each overrides
+the previous field by field (`parallel` only to suite level), so a big suite or
+testbench carries its own `compile: {mem: ...}`, counted once per PLANNED
+compile: the job sums the overlapping ones, schedules their time over
+`parallel`, and floors at the suite value.
 
 - Slurm `OUT_OF_MEMORY`, or a local Verilator/compiler SIGKILL/`Killed`, means
   raise the governing `mem`; raising `sim_timeout` cannot fix it.
 - Scheduler `TIMEOUT` means raise the governing job `time`; `Sim hit timeout`
   inside a completed job points at the test's `sim_timeout`.
 - Under-reservation costs failed work: apply `raise` advice before `reduce`.
-- Size `compile.time` for the longest build batch, not the suite's serial total:
-  with `compile.parallel: N` the distinct builds run N at a time. Size
-  `compile.mem` for N concurrent elaborations — only `cpus` is scaled for you —
-  and keep N at or below the site's license pool for VCS.
+- Size the suite `compile.mem`/`time` for the WHOLE job at `compile.parallel: N`
+  — N concurrent elaborations, N at or below the site's VCS license pool. Only
+  per-testbench blocks are aggregated for you.
 - A `(build job)` row with `phase: compile` is the suite's build job. Its `cpus`
   suggestion is per build while `reserved` is the scaled product submitted; read
   `edit_hint.note`. The `cpus` row appears only for a job that ran one build at a

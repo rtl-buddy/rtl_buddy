@@ -54,16 +54,32 @@ right owner (#497):
     compile:                 # THIS suite's build job only
       mem: 48G               # a big top-level TB; cpus/time inherited
       parallel: 1            # ...and how many builds it runs at once
-    testbenches: ...
+    testbenches:
+      - name: tb_chip_small   # ~6 GB, ~4 minutes
+        filelist: [...]
+      - name: tb_chip_t1      # the product geometry: ~130 GB, ~2 hours
+        filelist: [...]
+        compile:              # ...so it says so here (#551)
+          mem: 256G
+          time: "06:00:00"
 
 :func:`resolve_compile_resources` layers its reservation fields
-field-by-field over ``cfg-dispatch.compile`` over ``cfg-dispatch.resources``;
-:func:`compile_parallel` layers its ``parallel`` the same way (#547). The
-build job is per suite, so a suite that compiles one key says ``parallel:
-1`` and reserves ``cpus`` rather than ``cpus x`` the cluster-wide value.
+field-by-field over ``cfg-dispatch.compile`` over ``cfg-dispatch.resources``,
+with a testbench's own ``compile:`` block the most specific layer of all
+(#551); :func:`compile_parallel` layers ``parallel`` the same way (#547).
+The build job is per suite, so a suite that compiles one key says
+``parallel: 1`` and reserves ``cpus`` rather than ``cpus x`` the
+cluster-wide value.
+
+That one build job compiles every planned testbench, so its reservation is
+AGGREGATED over them — :func:`aggregate_compile_resources`. The two tests.yaml
+layers differ in what they describe: a suite block is whole-job and floors
+the result, a testbench block is per build and is summed (``mem``) or
+queued (``time``) with its siblings.
 """
 
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -184,6 +200,78 @@ def validate_resources_block(res):
     return DispatchResourcesFile(
         cpus=res.cpus,
         mem=_validate_mem(res.mem),
+        time=_validate_time(res.time),
+    )
+
+
+def _validate_compile_mem(value):
+    """:func:`_validate_mem`, plus the parse the build job depends on.
+
+    A compile reservation is not only passed to sbatch: the build job's is
+    AGGREGATED — summed across the testbench blocks that can compile at the
+    same time and floored at the whole-job value — so every one of them has
+    to be a number rtl_buddy can add up (#551 review). A spelling
+    :func:`mem_to_bytes` cannot read would otherwise drop silently out of
+    that sum and shrink the reservation, which is the one outcome the
+    aggregation exists to prevent. Rejected at load instead, with the same
+    parser the aggregation uses so the two can never disagree about what a
+    legal value is.
+    """
+    text = _validate_mem(value)
+    if text is not None and mem_to_bytes(text) is None:
+        raise FatalRtlBuddyError(
+            f"dispatch resources: mem {value!r} is not a value Slurm "
+            "understands (expected bytes, or a number with a K/M/G/T suffix "
+            "such as 512M or 16G)."
+        )
+    return text
+
+
+@serde
+class TestbenchCompileFile:
+    """A testbench's own ``compile:`` block in tests.yaml (#551).
+
+    The same three reservation fields as :class:`DispatchResourcesFile`,
+    and a ``parallel`` that exists only to be REJECTED. Unknown keys are
+    dropped silently by serde, so a project writing ``parallel:`` on a
+    testbench would otherwise get no reservation change and no error — and
+    the key reads as if it meant something here, because it does one level
+    up. There is exactly one build job per suite and it compiles every
+    testbench, so "how many builds at once" cannot be a property of one of
+    them; :func:`validate_testbench_compile_block` says so at load.
+
+    These three fields are PER BUILD, unlike the suite-level block's, which
+    stay whole-job — see :func:`aggregate_compile_resources`.
+    """
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+    # Accepted by the schema, refused by the validator. See the class
+    # docstring: silence here would be worse than an error.
+    parallel: int | None = None
+
+
+def validate_testbench_compile_block(res):
+    """Validate a raw testbench ``compile:`` block; return a fresh copy.
+
+    :func:`validate_resources_block`'s rules, with ``mem`` held to the
+    stricter parse the build job's aggregation needs, plus the refusal of
+    ``parallel`` (#551). The caller prefixes the testbench name, matching
+    the other errors ``TestbenchConfig`` raises.
+
+    ``None`` in, ``None`` out.
+    """
+    if res is None:
+        return None
+    if getattr(res, "parallel", None) is not None:
+        raise FatalRtlBuddyError(
+            "parallel is not accepted on a testbench compile block; set it "
+            "at suite level (compile.parallel) or in cfg-dispatch.compile."
+        )
+    return TestbenchCompileFile(
+        cpus=res.cpus,
+        mem=_validate_compile_mem(res.mem),
         time=_validate_time(res.time),
     )
 
@@ -920,6 +1008,53 @@ def mem_to_bytes(value) -> int | None:
         return None
 
 
+def _compile_mem_bytes(value, *, testbench=None):
+    """Parse a compile reservation's ``mem`` to bytes, or fail loudly (#551).
+
+    :func:`aggregate_compile_resources` ADDS these up, so a spelling
+    :func:`mem_to_bytes` cannot read has no safe fallback: dropping it from
+    the sum shrinks the reservation and the build is OOM-killed with
+    nothing in the log to say why. The same parser
+    :func:`_validate_compile_mem` holds a testbench block to at load, so a
+    value that loads always aggregates and this can only fire for a layer
+    validated before that rule existed.
+
+    ``None`` in, ``None`` out.
+    """
+    if value is None:
+        return None
+    parsed = mem_to_bytes(value)
+    if parsed is None:
+        whose = f"testbench {testbench!r}: " if testbench else ""
+        raise FatalRtlBuddyError(
+            f"{whose}compile mem {value!r} is not a value Slurm understands "
+            "(expected bytes, or a number with a K/M/G/T suffix such as 512M "
+            "or 16G); the build job's reservation is summed from these, so an "
+            "unparseable one cannot be sized around."
+        )
+    return parsed
+
+
+def format_mem(bytes_val: int) -> str:
+    """Bytes → sbatch-friendly integer ``M``/``G`` string (rounded up).
+
+    The inverse of :func:`mem_to_bytes`, and beside it (#551): the build
+    job's reservation is now summed in bytes and has to be written back as
+    an sbatch spelling, so the pair belongs in one place rather than one
+    here and one in the right-sizing module that also imports it.
+    """
+    mb = math.ceil(bytes_val / 2**20)
+    if mb >= 4096:
+        return f"{math.ceil(mb / 1024)}G"
+    return f"{mb}M"
+
+
+def format_time(seconds: float) -> str:
+    """Seconds → ``HH:MM:SS`` rounded up to the whole minute."""
+    minutes = math.ceil(seconds / 60)
+    return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
 def time_to_seconds(value) -> int | None:
     """Parse an sbatch ``--time`` spelling to seconds; ``None`` if unparseable.
 
@@ -999,21 +1134,30 @@ def combine_for_in_job_compile(
     return combined, governed_by
 
 
-def resolve_compile_resources(dispatch_cfg, suite_compile=None) -> JobResources:
-    """Resolve the reservation for the dispatched build job.
+def resolve_compile_resources(
+    dispatch_cfg, suite_compile=None, tb_compile=None
+) -> JobResources:
+    """Resolve the compile reservation for ONE testbench.
 
-    The suite's own ``compile:`` block over ``cfg-dispatch.compile`` over
-    ``cfg-dispatch.resources`` over the built-in defaults, field by field —
-    so the build inherits the sim defaults unless the compile is called out
-    separately, and a suite whose verilation is nothing like the rest of the
-    repo's sizes only the fields it actually needs (#497).
+    The testbench's own ``compile:`` block over the suite's over
+    ``cfg-dispatch.compile`` over ``cfg-dispatch.resources`` over the
+    built-in defaults, field by field — so the build inherits the sim
+    defaults unless the compile is called out separately, and a suite whose
+    verilation is nothing like the rest of the repo's sizes only the fields
+    it actually needs (#497).
 
     ``suite_compile`` is the suite-level block (a
     :class:`SuiteCompileFile`, from ``SuiteConfig.get_compile()``);
-    ``None`` where there is no suite in hand or the suite declared none. It
-    is the MOST specific layer because the dispatched build job is per
-    suite — there is no allocation a suite block could be sharing with
-    another suite's compile.
+    ``None`` where there is no suite in hand or the suite declared none.
+
+    ``tb_compile`` is a testbench's own ``compile:`` block (a
+    :class:`DispatchResourcesFile`, from ``TestbenchConfig.compile``) and is
+    the MOST specific layer (#551): one suite can hold two entries whose
+    verilations differ by an order of magnitude — the same top level at two
+    geometries — and forcing the suite block to state the larger one fences
+    that reservation off for every build in the suite. ``None`` for a
+    testbench that declared none, and for every caller that resolves a
+    suite-wide figure rather than one build's.
 
     ``parallel`` is not resolved here and never reaches the returned
     :class:`JobResources`: this reservation also sizes an in-job compile's
@@ -1028,7 +1172,7 @@ def resolve_compile_resources(dispatch_cfg, suite_compile=None) -> JobResources:
     layers = []
     if dispatch_cfg is not None:
         layers += [dispatch_cfg.resources, dispatch_cfg.compile]
-    layers.append(suite_compile)
+    layers += [suite_compile, tb_compile]
     for layer in layers:
         if layer is None:
             continue
@@ -1041,26 +1185,265 @@ def resolve_compile_resources(dispatch_cfg, suite_compile=None) -> JobResources:
     return resolved
 
 
-def compile_resource_origins(suite_compile) -> dict:
-    """Which resolved compile fields the suite's ``compile:`` block won.
+def compile_resource_origins(suite_compile, tb_compile=None) -> dict:
+    """Which tests.yaml layer won each resolved compile field.
 
-    ``{field: "suite"}`` for every field the suite block set; fields it
-    left ``None`` are simply absent, meaning cfg-dispatch (or the built-in
-    default) still governs them. Reservation advice reads this to point an
-    edit hint at the file that actually holds the winning value (#497) —
-    computed here, beside the layering it mirrors, so the two can never
-    drift apart.
+    ``{field: "suite"}`` for every field the suite block set and
+    ``{field: "testbench"}`` for every field the testbench block set — the
+    latter last, because it is the more specific layer and
+    :func:`resolve_compile_resources` applies it last too. Fields neither
+    set are simply absent, meaning cfg-dispatch (or the built-in default)
+    still governs them. Reservation advice reads this to point an edit hint
+    at the file *and the key* that actually hold the winning value (#497,
+    #551) — computed here, beside the layering it mirrors, so the two can
+    never drift apart.
 
     ``parallel`` is in the map too (#547), even though nothing suggests a
     value for it: the `cpus` advice names the key in prose as the other
     lever, and saying ``cfg-dispatch.compile.parallel`` where the suite's
     own block governs would send a reader to a value editing which moves
-    this job's reservation not at all.
+    this job's reservation not at all. It has no testbench layer — one
+    build job per suite runs every testbench's builds, so the concurrency
+    cannot be a property of one of them.
     """
     origins = {}
-    if suite_compile is None:
-        return origins
     for name in ("cpus", "mem", "time", "parallel"):
         if getattr(suite_compile, name, None) is not None:
             origins[name] = "suite"
+    for name in ("cpus", "mem", "time"):
+        if getattr(tb_compile, name, None) is not None:
+            origins[name] = "testbench"
     return origins
+
+
+def aggregate_compile_resources(
+    dispatch_cfg, suite_compile=None, testbenches=(), parallel=1
+) -> tuple[JobResources, dict]:
+    """The build job's reservation over the testbenches it will compile (#551).
+
+    Named for what it does: the fields are combined, not compared. `mem`
+    adds up and `time` queues; only `cpus` is a maximum.
+
+    One build job per suite compiles every planned config, so its single
+    allocation has to cover all of them at once. The two tests.yaml layers
+    mean different things here, and the aggregation is what keeps them
+    honest (#551 review):
+
+    * the suite-level ``compile:`` block is WHOLE-JOB, exactly as it has
+      been since #497 — a project sizes it for the job it watches in
+      ``squeue``, and nothing below may take the reservation under it;
+    * a testbench ``compile:`` block is PER BUILD — it describes one
+      verilation, so several of them have to be combined rather than
+      compared.
+
+    Per field, therefore, over the testbenches that state a block of their
+    own, floored at the suite-resolved (whole-job) value:
+
+    ``cpus``
+        the largest block's, because the head multiplies this by
+        ``parallel`` afterwards; a build needing 8 cores needs 8 whether or
+        not its neighbour needs 2.
+    ``mem``
+        the sum of the largest ``min(parallel, n)`` blocks. Memory is
+        additive: the builds that can be in flight together each hold their
+        own peak, and the widest such set is the one to survive.
+    ``time``
+        the makespan of the build job's own work queue: each build goes to
+        whichever of the ``parallel`` workers frees up first, in plan
+        order, which is the schedule its ThreadPool actually runs. At
+        ``parallel: 1`` that is the serial total, and with a worker per
+        build it is the longest one. ``ceil(sum / parallel)`` is only a
+        LOWER bound in between — 30, 30 and 20 minutes over two workers
+        finish in 50, not 40 — and a lower bound is the wrong side to
+        reserve from (#551 review round 2).
+
+    A build with no block of its own contributes to NONE of those sums: it
+    is covered by the suite-level whole-job value, and adding an inherited
+    figure per build would make a suite of five plain benches with
+    ``time: 30m`` reserve two and a half hours.
+
+    ``testbenches`` is ``(name, tb_compile)`` once per planned BUILD — not
+    once per testbench in the file, and not once per selected test. Two
+    tests on one testbench that differ in plusdefines, builder or model
+    compile separately and each hold their own peak, so the caller keys the
+    list on those ingredients; two that share them are one compile however
+    many tests they are. A testbench nobody selected contributes no build,
+    and letting it inflate the reservation is exactly the fencing-off this
+    issue removes. ``()`` resolves the suite-wide figure alone, which is
+    what a caller with no plan in hand (and every suite whose testbenches
+    declare nothing) gets today.
+
+    Returns the reservation and, beside it, the provenance of each field::
+
+        {field: {"origin": "testbench"|"suite"|"cfg-dispatch",
+                 "testbench": name|None,
+                 "sources": [{"origin": ..., "testbench": ...}, ...],
+                 "aggregated": bool,
+                 "contributors": [{"origin": ..., "testbench": ...}, ...]}}
+
+    ``origin``/``testbench`` name the one place to edit. ``sources`` lists
+    EVERY source that independently produces the winning value, and
+    ``contributors``/``aggregated`` say whether it is a SUM of several
+    builds at all. Right-sizing withholds a ``reduce`` for either — no
+    single edit lowers a tied value, and a whole-job suggestion written
+    into one contributor of a sum leaves the total where it was (#551
+    review).
+
+    Raises :class:`FatalRtlBuddyError` for a ``mem`` it cannot parse: the
+    sum is taken in bytes, and a value silently dropped out of it would
+    shrink the reservation.
+    """
+    parallel = max(1, int(parallel or 1))
+    # Only planned builds that state a block of their own take part in the
+    # aggregation; the rest ride on the whole-job floor below.
+    blocks = [
+        (name, block)
+        for name, block in testbenches
+        if any(getattr(block, f, None) is not None for f in ("cpus", "mem", "time"))
+    ]
+    floor = resolve_compile_resources(dispatch_cfg, suite_compile)
+    floor_origins = compile_resource_origins(suite_compile)
+    resolved = JobResources(cpus=floor.cpus, mem=floor.mem, time=floor.time)
+    origins = {}
+
+    def _floor_source(field_name):
+        return {
+            "origin": floor_origins.get(field_name, "cfg-dispatch"),
+            "testbench": None,
+        }
+
+    def _tb_source(name):
+        return {"origin": "testbench", "testbench": name}
+
+    def _dedupe(sources):
+        """Collapse repeats: two planned builds can share one YAML key."""
+        out = []
+        for source in sources:
+            if source not in out:
+                out.append(source)
+        return out
+
+    def _record(field_name, winners, contributors=()):
+        """Record what produced this field's value, and how.
+
+        ``winners`` are the sources that INDEPENDENTLY produce it — more
+        than one and no single edit can lower it. ``contributors`` are the
+        builds whose values were ADDED to reach it; more than one and the
+        number cannot be decomposed back into an edit at all (#551 review).
+        """
+        winners = _dedupe(winners) or [_floor_source(field_name)]
+        # NOT deduplicated: two planned builds can share one YAML key, and
+        # their values still add up twice. The count is the whole point.
+        contributors = list(contributors)
+        origins[field_name] = {
+            "origin": winners[0]["origin"],
+            "testbench": winners[0]["testbench"],
+            # Every source that produces the same number, so a `reduce` no
+            # single edit could apply is withheld rather than aimed at one
+            # of several tied sources.
+            "sources": winners,
+            # ...and, separately, whether the number is a sum at all: a
+            # whole-job suggestion written into one contributor's key
+            # leaves the aggregate where it was.
+            "aggregated": len(contributors) > 1,
+            "contributors": contributors,
+        }
+
+    # --- cpus: the widest single build, never below the whole-job value ---
+    # Not summed: the head multiplies this by `parallel` afterwards, so a
+    # build needing 8 cores needs 8 whether or not its neighbour needs 2.
+    cpus_bids = [(block.cpus, name) for name, block in blocks if block.cpus is not None]
+    resolved.cpus = max([value for value, _ in cpus_bids] + [floor.cpus])
+    cpus_winners = [_tb_source(n) for v, n in cpus_bids if v == resolved.cpus]
+    if floor.cpus == resolved.cpus:
+        cpus_winners.append(_floor_source("cpus"))
+    _record("cpus", cpus_winners)
+
+    # --- mem: the builds that can overlap each hold their own peak -------
+    mem_bids = sorted(
+        (
+            (_compile_mem_bytes(block.mem, testbench=name), name, str(block.mem))
+            for name, block in blocks
+            if block.mem is not None
+        ),
+        key=lambda bid: bid[0],
+        reverse=True,
+    )
+    # Only `parallel` of them are ever in flight together, so only the
+    # widest that many add up; the rest wait for a slot.
+    overlapping = mem_bids[:parallel]
+    summed_mem = sum(value for value, _, _ in overlapping)
+    floor_mem = _compile_mem_bytes(floor.mem)
+    winning_mem = max(summed_mem, floor_mem or 0)
+    mem_winners = []
+    mem_contributors = []
+    if overlapping and summed_mem == winning_mem:
+        # The largest contributor is named as the lever, but the whole set
+        # is recorded: a sum of several cannot be decomposed into one edit.
+        top = overlapping[0][0]
+        mem_winners = [_tb_source(n) for v, n, _ in overlapping if v == top]
+        mem_contributors = [_tb_source(n) for _, n, _ in overlapping]
+    floor_binds_mem = floor_mem is not None and floor_mem == winning_mem
+    if floor_binds_mem:
+        mem_winners.append(_floor_source("mem"))
+        # Keep the spelling the config already uses where the whole-job
+        # value binds — the common case, which must stay byte-identical.
+        resolved.mem = floor.mem
+    elif len(overlapping) == 1:
+        resolved.mem = overlapping[0][2]
+    elif overlapping:
+        resolved.mem = format_mem(winning_mem)
+    _record("mem", mem_winners, mem_contributors)
+
+    # --- time: the makespan of the build job's own work queue ------------
+    time_bids = [
+        (time_to_seconds(block.time), name, str(block.time))
+        for name, block in blocks
+        if block.time is not None
+    ]
+    time_bids = [bid for bid in time_bids if bid[0] is not None]
+    floor_time = time_to_seconds(floor.time)
+    # The build job hands its groups to a ThreadPool in plan order, so the
+    # schedule is a greedy list schedule: each build goes to whichever
+    # worker frees up first, and the job ends when the last worker does.
+    # `ceil(sum / parallel)` is only a LOWER bound on that — 30, 30 and 20
+    # minutes over two workers finish in 50, not 40 — and a lower bound is
+    # exactly the wrong side to reserve from (#551 review).
+    # More workers than builds changes nothing and a cluster-wide
+    # `parallel` can be far larger than one suite's plan, so only the
+    # slots that can be used are allocated.
+    slots = max(1, min(parallel, len(time_bids)))
+    workers = [[] for _ in range(slots)]
+    finish = [0] * slots
+    for index, (value, _, _) in enumerate(time_bids):
+        slot = min(range(slots), key=lambda k: finish[k])
+        workers[slot].append(index)
+        finish[slot] += value
+    makespan = max(finish) if time_bids else 0
+    # No separate "longest single build" floor: a greedy schedule never
+    # finishes before its longest element, so the makespan already contains
+    # it — and at `parallel: 1` it is the serial total.
+    winning_time = max(makespan, floor_time or 0)
+    time_winners = []
+    time_contributors = []
+    if time_bids and makespan == winning_time:
+        # The builds on the worker that finishes last are what the job is
+        # waiting for: one of them is a lever, several are a sum.
+        critical = workers[finish.index(makespan)]
+        time_contributors = [_tb_source(time_bids[i][1]) for i in critical]
+        longest = max(time_bids[i][0] for i in critical)
+        time_winners = [
+            _tb_source(time_bids[i][1]) for i in critical if time_bids[i][0] == longest
+        ]
+        if len(critical) == 1:
+            # One build decides the wall clock: its own spelling is the
+            # answer, and no reformatting can drift from the config.
+            resolved.time = time_bids[critical[0]][2]
+        else:
+            resolved.time = format_time(winning_time)
+    if floor_time is not None and floor_time == winning_time:
+        time_winners.append(_floor_source("time"))
+        # The whole-job value binds: keep the spelling the config uses.
+        resolved.time = floor.time
+    _record("time", time_winners, time_contributors)
+    return resolved, origins

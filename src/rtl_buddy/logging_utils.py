@@ -619,6 +619,29 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "from outside — size cfg-dispatch.compile.parallel "
                     "against the suite's distinct compile keys first"
                 )
+            elif reason == "compile-aggregate":
+                # The build job's reservation is a SUM over the planned
+                # builds, and a whole-job suggestion written into any one
+                # of them leaves the aggregate where it was (#551).
+                return (
+                    f"{fields.get('suite')}: no {fields.get('resource')} "
+                    "reduce advice for the build job: its reservation adds "
+                    "up the planned builds "
+                    f"({', '.join(fields.get('paths') or [])}), and a "
+                    "whole-job figure written into any one of them would "
+                    "not lower the total"
+                )
+            elif reason == "compile-origin-tied":
+                # The build job's reservation is aggregated over the planned
+                # testbenches, so `max`/`sum` can land on the same number
+                # from two editable places at once (#551).
+                return (
+                    f"{fields.get('suite')}: no {fields.get('resource')} "
+                    "reduce advice for the build job: its reservation is "
+                    "produced by more than one config value at once "
+                    f"({', '.join(fields.get('paths') or [])}), and lowering "
+                    "any one of them alone would leave it exactly where it is"
+                )
             elif reason == "no-build-records":
                 # Distinct from "nothing compiled": the job was accounted for
                 # (that is how we got here) but left no envelope to say what

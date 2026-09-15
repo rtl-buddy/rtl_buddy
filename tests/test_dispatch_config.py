@@ -3,6 +3,7 @@ resources layering, and the backend registry."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -16,18 +17,22 @@ from rtl_buddy.config.dispatch import (
     JobResources,
     RetryConfigFile,
     SuiteCompileFile,
+    TestbenchCompileFile as TbCompile,
     combine_for_in_job_compile,
     compile_parallel,
     compile_resource_origins,
+    aggregate_compile_resources,
     mem_to_bytes,
     resolve_compile_resources,
     resolve_resources,
+    validate_testbench_compile_block,
     cpu_request_overrides,
     sbatch_args_cpu_request_options,
     time_to_seconds,
 )
 from rtl_buddy.config.root import RootConfig
 from rtl_buddy.config.suite import SuiteConfig
+from rtl_buddy.config.test import TestbenchConfig as TbConfig
 from rtl_buddy.dispatch import SlurmDispatchBackend, create_dispatch_backend
 from rtl_buddy.errors import FatalRtlBuddyError
 
@@ -765,6 +770,437 @@ def test_suite_compile_block_without_parallel_reads_as_inherit(
     tests_yaml.write_text("compile:\n  mem: 48G\n" + tests_yaml.read_text())
     block = SuiteConfig(path=str(tests_yaml)).get_compile()
     assert block.parallel is None
+
+
+# --- per-testbench compile reservation (#551) ---------------------------
+
+
+def _suite_with_testbench_compile(minimal_project, block: str) -> SuiteConfig:
+    """Rewrite the fixture's single testbench with an extra YAML block."""
+    tests_yaml = minimal_project / "tests.yaml"
+    body = tests_yaml.read_text()
+    tests_yaml.write_text(body.replace("    toplevel: tb_basic\n", block))
+    return SuiteConfig(path=str(tests_yaml))
+
+
+def test_testbench_compile_block_binds_and_normalises(minimal_project: Path):
+    """`testbenches[].compile:` is read, and validated like its neighbours."""
+    suite = _suite_with_testbench_compile(
+        minimal_project,
+        "    toplevel: tb_basic\n    compile:\n      cpus: 8\n"
+        '      mem: 4096\n      time: "06:00:00"\n',
+    )
+    block = suite.get_tests("basic")[0].get_testbench().compile
+    # mem normalised to a string by the same validator cfg-dispatch uses.
+    assert (block.cpus, block.mem, block.time) == (8, "4096", "06:00:00")
+
+
+@pytest.mark.parametrize(
+    "time_value,expected",
+    [
+        # An unquoted `6:00:00` is the integer 21600 by the time serde sees
+        # it — the trap the suite-level block is held to as well (#497).
+        (21600, "sexagesimal"),
+        ("6 hours", "not a valid Slurm time"),
+    ],
+)
+def test_testbench_compile_block_rejects_a_bad_time(time_value, expected):
+    """Rejected at construction, with the testbench named (#551)."""
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        TbConfig(
+            name="tb_basic",
+            filelist=["tb.sv"],
+            compile=TbCompile(time=time_value),
+        )
+    assert expected in str(excinfo.value)
+    # ...and the testbench is named, so the message says which entry to fix.
+    assert "tb_basic" in str(excinfo.value)
+
+
+def test_testbench_compile_block_bad_time_fails_the_suite_load(
+    minimal_project: Path, caplog
+):
+    """...and the suite carrying it does not load (#551)."""
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(FatalRtlBuddyError):
+            _suite_with_testbench_compile(
+                minimal_project,
+                "    toplevel: tb_basic\n    compile:\n      time: 6:00:00\n",
+            )
+    # The reason reaches the user through the load_failed event, which is
+    # where every other testbench validation error lands too.
+    assert "sexagesimal" in caplog.text
+    assert "tb_basic" in caplog.text
+
+
+def test_testbench_compile_block_rejects_an_unaddable_mem():
+    """The build job SUMS these, so an unparseable one cannot load (#551)."""
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        TbConfig(
+            name="tb_big",
+            filelist=["tb.sv"],
+            compile=TbCompile(mem="lots"),
+        )
+    assert "not a value Slurm understands" in str(excinfo.value)
+    assert "tb_big" in str(excinfo.value)
+
+
+def test_testbench_compile_block_rejects_parallel(minimal_project: Path, caplog):
+    """`parallel` is job-wide, so it is refused rather than dropped (#551)."""
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        TbConfig(
+            name="tb_basic",
+            filelist=["tb.sv"],
+            compile=TbCompile(mem="96G", parallel=4),
+        )
+    message = str(excinfo.value)
+    assert "parallel is not accepted on a testbench compile block" in message
+    assert "compile.parallel" in message and "cfg-dispatch.compile" in message
+    assert "tb_basic" in message
+
+    # ...and a suite that writes it does not load, rather than silently
+    # reserving as if the key were not there.
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(FatalRtlBuddyError):
+            _suite_with_testbench_compile(
+                minimal_project,
+                "    toplevel: tb_basic\n    compile:\n"
+                "      mem: 96G\n      parallel: 4\n",
+            )
+    assert "parallel is not accepted on a testbench compile block" in caplog.text
+
+
+def test_a_validated_testbench_block_never_carries_parallel():
+    """The field exists to be rejected; it must not survive validation."""
+    block = validate_testbench_compile_block(TbCompile(mem="96G"))
+    assert block.parallel is None
+    # ...and the resolved reservation has no such field at all.
+    resolved = resolve_compile_resources(None, None, block)
+    assert not hasattr(resolved, "parallel")
+
+
+def test_testbench_compile_block_is_the_most_specific_compile_layer():
+    """testbench `compile:` > suite `compile:` > cfg-dispatch (#551)."""
+    cfg = DispatchConfigFile(
+        resources=DispatchResourcesFile(cpus=2, mem="4G", time="00:30:00"),
+        compile=DispatchCompileFile(cpus=4, mem="16G"),
+    ).initialise()
+    suite_block = SuiteCompileFile(mem="48G")
+
+    # No testbench block: unchanged from #497's layering.
+    assert resolve_compile_resources(cfg, suite_block) == JobResources(
+        cpus=4, mem="48G", time="00:30:00"
+    )
+    # One field overridden; every other field still inherits its own layer.
+    assert resolve_compile_resources(
+        cfg, suite_block, TbCompile(mem="256G")
+    ) == JobResources(cpus=4, mem="256G", time="00:30:00")
+    # ...including downwards: the small geometry of a big suite. (What the
+    # BUILD JOB reserves is floored at the suite value — see
+    # aggregate_compile_resources — but this per-build resolution is not.)
+    assert resolve_compile_resources(
+        cfg, suite_block, TbCompile(mem="6G", time="00:10:00")
+    ) == JobResources(cpus=4, mem="6G", time="00:10:00")
+    # And with no suite block at all it layers straight over cfg-dispatch.
+    assert resolve_compile_resources(cfg, None, TbCompile(cpus=16)) == JobResources(
+        cpus=16, mem="16G", time="00:30:00"
+    )
+
+
+def test_compile_resource_origins_reports_the_testbench_layer():
+    suite_block = SuiteCompileFile(cpus=8, mem="48G")
+    assert compile_resource_origins(suite_block, None) == {
+        "cpus": "suite",
+        "mem": "suite",
+    }
+    # The testbench is the more specific layer, so it takes the field over.
+    assert compile_resource_origins(
+        suite_block, TbCompile(mem="256G", time="06:00:00")
+    ) == {"cpus": "suite", "mem": "testbench", "time": "testbench"}
+    # ...and it needs no suite block beneath it.
+    assert compile_resource_origins(None, TbCompile(cpus=16)) == {"cpus": "testbench"}
+
+
+# --- the build job's aggregation over the planned testbenches (#551) ----
+#
+# The suite-level block stays WHOLE-JOB (what a project watches in squeue);
+# a testbench block is PER BUILD, so the two combine rather than compare.
+
+_AGG_CFG = DispatchConfigFile(
+    compile=DispatchCompileFile(cpus=2, mem="4G", time="00:10:00")
+).initialise()
+
+
+def test_build_reservation_takes_the_widest_cpus_and_sums_nothing():
+    """cpus is per build and scaled by `parallel` on the head, so: max."""
+    resources, origins = aggregate_compile_resources(
+        _AGG_CFG,
+        None,
+        [
+            ("tb_small", TbCompile(cpus=6)),
+            ("tb_big", TbCompile(cpus=10)),
+        ],
+        parallel=2,
+    )
+    assert resources.cpus == 10
+    assert origins["cpus"]["testbench"] == "tb_big"
+    assert origins["cpus"]["sources"] == [
+        {"origin": "testbench", "testbench": "tb_big"}
+    ]
+
+
+def test_build_reservation_sums_the_memory_of_the_builds_that_overlap():
+    """Memory is additive: `parallel` elaborations each hold their peak."""
+    blocks = [
+        ("tb_a", TbCompile(mem="8G")),
+        ("tb_b", TbCompile(mem="6G")),
+        ("tb_c", TbCompile(mem="2G")),
+    ]
+    # Two slots: only the two largest are ever in flight together.
+    resources, origins = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=2)
+    assert mem_to_bytes(resources.mem) == 14 * 2**30
+    # ...attributed to the largest contributor, which is what a reduction
+    # would have to move.
+    assert origins["mem"]["testbench"] == "tb_a"
+
+    # One slot: the builds are serial, so only the largest has to fit.
+    serial, _ = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=1)
+    assert mem_to_bytes(serial.mem) == 8 * 2**30
+    # Three slots, three builds: all of them.
+    wide, _ = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=3)
+    assert mem_to_bytes(wide.mem) == 16 * 2**30
+
+
+def test_build_reservation_time_is_the_queue_makespan():
+    """`parallel` workers draining n builds, in plan order."""
+    blocks = [
+        ("tb_a", TbCompile(time="00:30:00")),
+        ("tb_b", TbCompile(time="00:20:00")),
+        ("tb_c", TbCompile(time="00:10:00")),
+    ]
+    # Serial: the total, not the longest — a maximum would have reserved 30
+    # minutes for an hour of compiling.
+    serial, origins = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=1)
+    assert time_to_seconds(serial.time) == 3600
+    # The longest build on the critical worker is the lever named...
+    assert origins["time"]["testbench"] == "tb_a"
+    # ...but all three add up to it, so no single edit can lower it.
+    assert origins["time"]["aggregated"] is True
+    # Two slots: a(30) then b(20), and c(10) joins b — 30 either way here.
+    paired, _ = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=2)
+    assert time_to_seconds(paired.time) == 1800
+    # ...but never below the longest single build, which no amount of
+    # concurrency can shorten.
+    long_tail, _ = aggregate_compile_resources(
+        _AGG_CFG,
+        None,
+        [
+            ("tb_long", TbCompile(time="02:00:00")),
+            ("tb_short", TbCompile(time="00:02:00")),
+        ],
+        parallel=4,
+    )
+    assert time_to_seconds(long_tail.time) == 7200
+
+
+def test_build_reservation_time_is_a_real_schedule_not_a_lower_bound():
+    """`ceil(sum / parallel)` under-reserves a heterogeneous queue (#551 rev 2).
+
+    30, 30 and 20 minutes over two workers: the greedy list schedule the
+    build job's ThreadPool actually runs puts 30 and 20 on one worker and
+    finishes in 50, while `ceil(80 / 2)` says 40 — and 40 is the side of
+    the answer that times the job out mid-compile.
+    """
+    blocks = [
+        ("tb_a", TbCompile(time="00:30:00")),
+        ("tb_b", TbCompile(time="00:30:00")),
+        ("tb_c", TbCompile(time="00:20:00")),
+    ]
+    paired, origins = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=2)
+    assert time_to_seconds(paired.time) == 3000
+    # a and c share the worker that finishes last; b is on the other one.
+    assert [s["testbench"] for s in origins["time"]["contributors"]] == [
+        "tb_a",
+        "tb_c",
+    ]
+    assert origins["time"]["aggregated"] is True
+
+    # A worker each: the makespan IS the longest build, and that one build
+    # is the lever — nothing is summed.
+    wide, wide_origins = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=3)
+    assert time_to_seconds(wide.time) == 1800
+    assert wide_origins["time"]["aggregated"] is False
+    assert wide_origins["time"]["testbench"] == "tb_a"
+    # ...and the same holds for more slots than builds.
+    wider, _ = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=9)
+    assert time_to_seconds(wider.time) == 1800
+
+    # One worker: the serial total, every build a contributor.
+    serial, serial_origins = aggregate_compile_resources(
+        _AGG_CFG, None, blocks, parallel=1
+    )
+    assert time_to_seconds(serial.time) == 4800
+    assert len(serial_origins["time"]["contributors"]) == 3
+
+
+def test_a_single_contributor_is_not_an_aggregate():
+    """One build decides the wall clock: still one edit away (#551 rev 2)."""
+    resources, origins = aggregate_compile_resources(
+        _AGG_CFG, None, [("tb_a", TbCompile(time="00:20:00"))], parallel=1
+    )
+    # Its own spelling, not a reformatted one.
+    assert resources.time == "00:20:00"
+    assert origins["time"]["aggregated"] is False
+    assert origins["time"]["testbench"] == "tb_a"
+
+
+def test_two_builds_on_one_testbench_still_sum():
+    """Same YAML key, two planned compiles — the peaks add up twice.
+
+    Deduplicating the contributors by the key they point at would read
+    this as a single 96G build and halve the reservation (#551 rev 2).
+    """
+    blocks = [("tb_a", TbCompile(mem="96G", time="00:30:00"))] * 2
+    resources, origins = aggregate_compile_resources(_AGG_CFG, None, blocks, parallel=2)
+    assert mem_to_bytes(resources.mem) == 192 * 2**30
+    assert origins["mem"]["aggregated"] is True
+    assert len(origins["mem"]["contributors"]) == 2
+    # ...and the paths they render to collapse, because there is only one
+    # key — which is exactly why the count cannot come from the paths.
+    assert {s["testbench"] for s in origins["mem"]["contributors"]} == {"tb_a"}
+
+
+def test_a_single_overlapping_mem_block_is_not_an_aggregate():
+    _, one = aggregate_compile_resources(
+        _AGG_CFG, None, [("tb_a", TbCompile(mem="96G"))], parallel=2
+    )
+    assert one["mem"]["aggregated"] is False
+    _, two = aggregate_compile_resources(
+        _AGG_CFG,
+        None,
+        [("tb_a", TbCompile(mem="96G")), ("tb_b", TbCompile(mem="20G"))],
+        parallel=2,
+    )
+    assert two["mem"]["aggregated"] is True
+    assert [s["testbench"] for s in two["mem"]["contributors"]] == ["tb_a", "tb_b"]
+
+
+def test_the_suite_block_is_a_whole_job_floor_under_every_field():
+    """#497's block keeps its meaning: nothing below may go under it."""
+    suite_block = SuiteCompileFile(cpus=8, mem="48G", time="04:00:00")
+    resources, origins = aggregate_compile_resources(
+        _AGG_CFG,
+        suite_block,
+        [("tb_small", TbCompile(cpus=1, mem="1G", time="00:05:00"))],
+        parallel=1,
+    )
+    assert (resources.cpus, resources.mem, resources.time) == (8, "48G", "04:00:00")
+    for field_name in ("cpus", "mem", "time"):
+        assert origins[field_name]["origin"] == "suite"
+        assert origins[field_name]["testbench"] is None
+
+
+def test_a_testbench_without_a_block_never_enters_the_sums():
+    """Otherwise five plain benches under `time: 30m` would reserve 150m."""
+    suite_block = SuiteCompileFile(mem="8G", time="00:30:00")
+    plain = [(f"tb_{i}", None) for i in range(5)]
+    resources, _ = aggregate_compile_resources(_AGG_CFG, suite_block, plain, parallel=4)
+    assert (resources.mem, resources.time) == ("8G", "00:30:00")
+    # ...and one entry that DOES state a block is the only contributor.
+    mixed, origins = aggregate_compile_resources(
+        _AGG_CFG,
+        suite_block,
+        plain + [("tb_big", TbCompile(mem="96G", time="06:00:00"))],
+        parallel=4,
+    )
+    assert (mixed.mem, mixed.time) == ("96G", "06:00:00")
+    assert origins["mem"]["testbench"] == "tb_big"
+
+
+def test_aggregate_compile_resources_without_testbenches_is_the_suite_resolution():
+    """Every suite whose testbenches declare nothing keeps today's number."""
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(cpus=4, mem="16G", time="02:00:00")
+    ).initialise()
+    suite_block = SuiteCompileFile(mem="48G")
+    resources, origins = aggregate_compile_resources(cfg, suite_block)
+    assert resources == resolve_compile_resources(cfg, suite_block)
+    assert origins["cpus"]["origin"] == "cfg-dispatch"
+    assert origins["mem"]["origin"] == "suite"
+    assert origins["time"]["origin"] == "cfg-dispatch"
+    # ...and the same holds for a list of testbenches with no blocks at all.
+    plain, _ = aggregate_compile_resources(
+        cfg, suite_block, [("a", None), ("b", None), ("c", None)]
+    )
+    assert plain == resources
+
+
+def test_aggregate_compile_resources_returns_a_fresh_object_each_call():
+    """The head scales this by `parallel`; nothing else may see that."""
+    cfg = DispatchConfigFile(compile=DispatchCompileFile(cpus=4)).initialise()
+    first, _ = aggregate_compile_resources(cfg, None, [("tb", None)])
+    second, _ = aggregate_compile_resources(cfg, None, [("tb", None)])
+    assert first is not second
+    first.cpus *= 4
+    assert second.cpus == 4
+
+
+def test_aggregate_compile_resources_raises_on_an_unaddable_mem():
+    """A reservation that cannot be added up must never shrink quietly."""
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        aggregate_compile_resources(
+            _AGG_CFG,
+            None,
+            # Constructed past the loader's validation, which is what the
+            # head must not depend on being the only guard.
+            [("tb_bad", SuiteCompileFile(mem="lots"))],
+        )
+    assert "not a value Slurm understands" in str(excinfo.value)
+    assert "tb_bad" in str(excinfo.value)
+
+
+# --- tied sources: no single edit can lower the reservation (#551 review)
+
+
+def test_tied_testbenches_are_all_recorded_as_sources():
+    """Two blocks at the same cpus: lowering either moves the max not at all."""
+    _, origins = aggregate_compile_resources(
+        _AGG_CFG,
+        None,
+        [
+            ("tb_a", TbCompile(cpus=8)),
+            ("tb_b", TbCompile(cpus=8)),
+        ],
+        parallel=2,
+    )
+    assert origins["cpus"]["sources"] == [
+        {"origin": "testbench", "testbench": "tb_a"},
+        {"origin": "testbench", "testbench": "tb_b"},
+    ]
+
+
+def test_a_block_that_only_reaches_the_whole_job_value_ties_with_it():
+    """The suite states 8G and the one block also asks 8G — two sources."""
+    _, origins = aggregate_compile_resources(
+        _AGG_CFG,
+        SuiteCompileFile(mem="8G"),
+        [("tb_a", TbCompile(mem="8G"))],
+        parallel=1,
+    )
+    assert origins["mem"]["sources"] == [
+        {"origin": "testbench", "testbench": "tb_a"},
+        {"origin": "suite", "testbench": None},
+    ]
+
+
+def test_an_untied_field_records_exactly_one_source():
+    _, origins = aggregate_compile_resources(
+        _AGG_CFG,
+        SuiteCompileFile(mem="8G"),
+        [("tb_a", TbCompile(mem="96G"))],
+        parallel=1,
+    )
+    assert origins["mem"]["sources"] == [{"origin": "testbench", "testbench": "tb_a"}]
 
 
 # ------------- #505 review: a cpus override in sbatch-args is detectable

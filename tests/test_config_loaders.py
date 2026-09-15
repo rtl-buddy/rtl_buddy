@@ -391,7 +391,10 @@ def test_testconfig_plan_roundtrip():
     """
     import json
 
-    from rtl_buddy.config.dispatch import DispatchResourcesFile
+    from rtl_buddy.config.dispatch import (
+        DispatchResourcesFile,
+        TestbenchCompileFile,
+    )
     from rtl_buddy.config.model import ModelConfig
     from rtl_buddy.config.uvm import UVMConfig
 
@@ -408,7 +411,16 @@ def test_testconfig_plan_roundtrip():
         preproc_path="/abs/hooks/pre.py",
         postproc_path=None,
         sweep_path="/abs/hooks/sweep.py",
-        tb=TB(name="axi_tb", filelist=["tb/axi_tb.sv"], toplevel="axi_top"),
+        tb=TB(
+            name="axi_tb",
+            filelist=["tb/axi_tb.sv"],
+            toplevel="axi_top",
+            resources=DispatchResourcesFile(cpus=2, mem="8G"),
+            # The per-testbench compile reservation rides to the build
+            # and sim jobs on `tb` alone (#551), so the round trip is
+            # the only thing guarding it.
+            compile=TestbenchCompileFile(mem="256G", time="06:00:00"),
+        ),
         timeout=120,
         covers=["axi.rd", "axi.wr"],
         builder_name="verilator",
