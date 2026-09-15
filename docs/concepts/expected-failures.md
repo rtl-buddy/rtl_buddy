@@ -13,7 +13,7 @@ Use an expected-failure marker only for a known, understood failure that should 
 | `xfail: true` | `XFAIL`, counts as pass | `XPASS`, counts as pass | Either outcome is acceptable |
 | `xfail_strict: true` | `XFAIL`, counts as pass | `XPASS`, counts as fail | A pass means the marker is stale |
 
-If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged.
+If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged, so a marker does not cover an unknown `NA`: that outcome still exits 1.
 
 Prefer `xfail_strict: true` for a known bug or intentionally failing teaching case so the regression reports when the underlying behavior changes.
 

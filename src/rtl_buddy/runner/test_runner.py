@@ -9,6 +9,7 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 from ..tools.vlog_sim import VlogSim
+from ..tools.vlog_post import describe_sim_exit
 from ..tools.cocotb_sim import CocotbSim
 from ..tools.systemc_sim import SystemCSim
 from ..seed_mode import SeedMode
@@ -302,6 +303,36 @@ class TestRunner:
         make_results = self._compile_outcome(run_ids=run_ids)
         return None if make_results is None else make_results()
 
+    def _sim_stage_failure(self, execute_returncode, run_id):
+        """The ``-E sim`` stop's result when the simulation itself failed.
+
+        ``-E sim`` stops before post-processing, so a nonzero exit there
+        is a failed stage, not the successful early stop it used to
+        report (#546). It is *only* the stage that is known to have
+        failed: nothing read the transcript — the user asked to skip
+        that — so the desc names the exit status and says post-processing
+        did not run, rather than claiming there is no verdict. A
+        transcript can carry one: ``execute()`` itself writes a ``FAIL``
+        banner and returns 1 when a replayed seed is missing
+        (#574 review).
+        """
+        log_event(
+            logger,
+            logging.ERROR,
+            "sim.stage_failed",
+            test=self.test_cfg.get_name(),
+            run_id=run_id,
+            stage="sim",
+            returncode=execute_returncode,
+        )
+        return SimStageFailResults(
+            name=self.name + "/results",
+            desc=(
+                f"Sim {describe_sim_exit(execute_returncode)} before the "
+                "-E sim stop; transcript not post-processed"
+            ),
+        )
+
     def run(self):
         # run pre-proc python (which logs test_runner.start)
         setup_failure = self.prepare()
@@ -337,6 +368,11 @@ class TestRunner:
             return SimTimeoutResults(name=self.name + "/results")
 
         if self.run_depth == RunDepth.SIM:
+            # A stop before post-processing is only "successful" when the
+            # simulator itself came back clean; a crash under -E sim is a
+            # failed stage, not an outcome to hand-check (#546).
+            if execute_returncode != 0:
+                return self._sim_stage_failure(execute_returncode, self.run_id)
             log_event(
                 logger,
                 logging.INFO,
@@ -349,9 +385,10 @@ class TestRunner:
                 name=self.name + "/results", desc="Stopped early at sim"
             )
 
-        # run post-proc
-        results = vlog_sim.post(run_id=self.run_id)
-        return results
+        # run post-proc. The simulator's exit status travels with it: an
+        # aborted run leaves no verdict in its transcript, and post() is
+        # where that becomes a FAIL rather than an unknown NA (#546).
+        return vlog_sim.post(run_id=self.run_id, sim_returncode=execute_returncode)
 
     def run_multiple(self, run_ids):
         """
@@ -418,6 +455,10 @@ class TestRunner:
             )
             if execute_returncode == 4444:
                 result = SimTimeoutResults(name=self.name + "/results")
+            elif self.run_depth == RunDepth.SIM and execute_returncode != 0:
+                # Same rule as run(): a crashed simulator is not a
+                # successful early stop (#546).
+                result = self._sim_stage_failure(execute_returncode, run_id)
             elif self.run_depth == RunDepth.SIM:
                 log_event(
                     logger,
@@ -431,7 +472,7 @@ class TestRunner:
                     name=self.name + "/results", desc="Stopped early at sim"
                 )
             else:
-                result = vlog_sim.post(run_id=run_id)
+                result = vlog_sim.post(run_id=run_id, sim_returncode=execute_returncode)
             # This run's own launch, taken now: the next run's `execute()`
             # restates the executable it launches, and a shared binary
             # replaced between two seeds is two different launches.

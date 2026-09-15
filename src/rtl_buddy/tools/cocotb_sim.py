@@ -212,7 +212,10 @@ class CocotbSim(VlogSim):
         )
         return env
 
-    def post(self, run_id=None):
+    def post(self, run_id=None, sim_returncode=None):
+        # `sim_returncode` is accepted for the base class's signature and
+        # ignored: a cocotb verdict comes from `cocotb_results.xml` and is
+        # never the unknown NA that an exit status would re-grade (#546).
         run_id = self.run_id if run_id is None else run_id
         results_path = self._get_cocotb_results_path(run_id=run_id)
 

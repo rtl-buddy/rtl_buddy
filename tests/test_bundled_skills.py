@@ -33,7 +33,9 @@ def test_bundled_skills_keep_critical_operational_guidance():
     assert "`rb docs show` is" in primary
     assert "bare JSON" in primary
     assert "strict `XPASS`" in primary
-    assert "including `NA`/`XFAIL`" in primary
+    # #546 split the two NAs: only an intentional early stop exits 0.
+    assert "unknown `NA`" in primary
+    assert "including an intentional early-stop `NA`" in primary
 
     graph = _bundled_skill_text("rtl-buddy-graph")
     # The hub-gated tool has to be described as hub-gated: an agent that
