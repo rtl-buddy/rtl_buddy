@@ -6259,3 +6259,303 @@ def test_the_default_mode_key_ignores_compile_line_content(tmp_path, monkeypatch
             fingerprint, cmd_inputs=[["+incdir+hdr", [["cmd.svh", "beef"]]]]
         )
     )
+
+
+def _write_nested_filelists(checkout, *, source="module nested; endmodule\n"):
+    """A compile-line `-f` list that names a further list, which names RTL.
+
+    Byte-identical in every checkout on purpose: the bytes of the lists are
+    not what two branches differ in — the RTL they reach is.
+    """
+    (checkout / "rtl" / "nested.sv").write_text(source)
+    lists = checkout / "lists"
+    lists.mkdir(exist_ok=True)
+    (lists / "inner.f").write_text("// inner\n../rtl/nested.sv\n")
+    (lists / "top.f").write_text("// top\n-F inner.f\n")
+    return lists / "top.f"
+
+
+def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monkeypatch):
+    """A filelist is not an input whose own bytes decide anything: what it
+    NAMES is (#542 review).
+
+    Keyed on the list's hash alone, two checkouts with byte-identical
+    nested lists over different RTL took one persistent build directory —
+    and for VCS and Icarus, which report no dependencies, the stamp agreed
+    too, so the second checkout silently simulated the first's binary.
+    """
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+    top_a = _write_nested_filelists(tmp_path / "wt-a")
+    _write_nested_filelists(
+        tmp_path / "wt-b", source="module nested; /* patched */ endmodule\n"
+    )
+
+    def _key(name):
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                tmp_path / name,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["-f", str(tmp_path / name / "lists" / "top.f")],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    assert _key("wt-a") != _key("wt-b"), (
+        "two checkouts whose nested filelists reach different RTL share one dir"
+    )
+    # ...and identical RTL behind identical lists still shares, which is
+    # what the cache is for.
+    _write_nested_filelists(tmp_path / "wt-b")
+    assert _key("wt-a") == _key("wt-b")
+    # The whole chain is keyed, not just its head: both lists and the
+    # source they reach.
+    sim = _cache_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=["-f", str(top_a)],
+    )
+    plan = sim._compile_plan()
+    spellings = [
+        entry[0]
+        for entry in sim._fingerprint_cmd_inputs(
+            plan.key_cmd, plan.fingerprint["sources"]
+        )
+    ]
+    assert spellings == [
+        "-f lists/top.f",
+        "-F lists/inner.f",
+        "rtl/nested.sv",
+    ], spellings
+
+
+def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeypatch):
+    """A nested list may name an `+incdir+` of its own — listed like any
+    other — and a list that includes itself costs one visit, not a hang."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    (checkout / "hdr").mkdir()
+    (checkout / "hdr" / "w.svh").write_text("`define W 8\n")
+    lists = checkout / "lists"
+    lists.mkdir()
+    (lists / "top.f").write_text("+incdir+../hdr\n-F top.f\n")
+
+    def _sim():
+        _as_a_fresh_process()
+        return _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["-f", str(lists / "top.f")],
+        )
+
+    sim = _sim()
+    plan = sim._compile_plan()
+    entries = sim._fingerprint_cmd_inputs(plan.key_cmd, plan.fingerprint["sources"])
+    # The self-include contributes once, under the spelling it was first
+    # reached by, and is not followed a second time.
+    assert [entry[0] for entry in entries] == ["-f lists/top.f", "+incdir+hdr"]
+    # ...and the include directory is keyed by its listing, so a header
+    # inside it moves the key.
+    before = plan.shared_dir.name
+    _touch(checkout / "hdr" / "w.svh", "`define W 16\n")
+    assert _sim()._compile_plan().shared_dir.name != before
+
+
+def test_an_input_too_large_to_hash_keeps_two_checkouts_apart(tmp_path, monkeypatch):
+    """Above the hashing cap `_content_sha` answers None, and `[path, null]`
+    is the same answer for every checkout — so two branches with different
+    ROM images took one persistent build directory (#542 review).
+
+    The fallback is the input's stats. That costs this suite cross-checkout
+    reuse, since mtimes differ per checkout; a silently wrong binary costs
+    more.
+    """
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+    for name, rom in (("wt-a", "0" * 64), ("wt-b", "1" * 64)):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        (checkout / "rtl" / "rom.hex").write_text(rom)
+
+    def _key(name):
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                tmp_path / name,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=[str(tmp_path / name / "rtl" / "rom.hex")],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    assert _key("wt-a") != _key("wt-b"), (
+        "two checkouts with different unhashable images share one obj_dir"
+    )
+
+
+def test_an_unhashable_run_f_source_keeps_two_checkouts_apart(tmp_path, monkeypatch):
+    """The same hole on the `run.f` side, where the entry is a `sources`
+    stamp rather than a compile-line token (#542 review)."""
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+
+    def _key(name, rom):
+        checkout = tmp_path / name
+        suite = _write_checkout(checkout)
+        (checkout / "rtl" / "rom.hex").write_text(rom)
+        _as_a_fresh_process()
+        return (
+            _make_sim(
+                checkout,
+                monkeypatch,
+                test_name="t",
+                suite_dir=suite,
+                project_root=checkout,
+                model_path=suite / "models.yaml",
+                filelist=["../../rtl/a.sv", "../../rtl/rom.hex"],
+                shared_build_root=cache,
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    assert _key("wt-a", "0" * 64) != _key("wt-b", "1" * 64)
+
+
+def test_an_out_of_root_input_that_cannot_be_hashed_stays_stat_free(
+    tmp_path, monkeypatch
+):
+    """The fallback is for RELOCATED paths only.
+
+    A path left absolute is outside every project root, so two checkouts
+    naming it name the same bytes and "no hash" is no collision — while
+    folding its mtime into the key would strand a cache directory every
+    time somebody touched a toolchain header.
+    """
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+    checkout = tmp_path / "wt-a"
+    suite = _write_checkout(checkout)
+    outside = tmp_path / "vendor"
+    outside.mkdir()
+    (outside / "big.sv").write_text("module big; endmodule\n" + "//" * 64)
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _make_sim(
+                checkout,
+                monkeypatch,
+                test_name="t",
+                suite_dir=suite,
+                project_root=checkout,
+                model_path=suite / "models.yaml",
+                filelist=["../../rtl/a.sv", str(outside / "big.sv")],
+                shared_build_root=cache,
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(outside / "big.sv", "module big; endmodule\n" + "//" * 65)
+    assert _key() == before
+
+
+def test_a_path_valued_define_is_never_relativised(tmp_path, monkeypatch):
+    """A define's value is compiled INTO the model, so it is not a path
+    rtl_buddy may relocate (#542 review).
+
+    Relativised, `+define+DATA="/wt-a/data.hex"` and
+    `+define+DATA="/wt-b/data.hex"` became one token, and two checkouts
+    shared a binary that had baked in the first one's absolute path.
+    """
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+
+    def _plan(name, opts):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=opts,
+        )._compile_plan()
+
+    def _define(name):
+        return f'+define+DATA="{tmp_path / name / "data.hex"}"'
+
+    plan_a = _plan("wt-a", [_define("wt-a")])
+    plan_b = _plan("wt-b", [_define("wt-b")])
+    assert plan_a.shared_dir.name != plan_b.shared_dir.name
+    assert _define("wt-a") in plan_a.fingerprint["cmd"], plan_a.fingerprint["cmd"]
+
+    # The same for the other value-bearing spellings, and for a bare
+    # `NAME=value` that is not a path at all.
+    for opt in (
+        f"-DDATA={tmp_path / 'wt-a' / 'data.hex'}",
+        f"-GROM={tmp_path / 'wt-a' / 'data.hex'}",
+        f"-pvalue+top.ROM={tmp_path / 'wt-a' / 'data.hex'}",
+        f"ROM={tmp_path / 'wt-a' / 'data.hex'}",
+    ):
+        assert opt in _plan("wt-a", [opt]).fingerprint["cmd"], opt
+
+    # ...while a genuine path option still relativises, so identical
+    # content at two paths still shares one build.
+    for name in ("wt-a", "wt-b"):
+        (tmp_path / name / "hdr").mkdir()
+        (tmp_path / name / "hdr" / "w.svh").write_text("`define W 8\n")
+    incdir_a = _plan("wt-a", [f"+incdir+{tmp_path / 'wt-a' / 'hdr'}"])
+    incdir_b = _plan("wt-b", [f"+incdir+{tmp_path / 'wt-b' / 'hdr'}"])
+    assert "+incdir+hdr" in incdir_a.fingerprint["cmd"]
+    assert incdir_a.shared_dir.name == incdir_b.shared_dir.name
+
+
+def test_an_output_option_argument_still_relativises_but_is_never_read(
+    tmp_path, monkeypatch
+):
+    """`-o <in-root path>` must not carry a checkout prefix into the key —
+    and must not be hashed either (#542 review)."""
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+        (tmp_path / name / "out").mkdir()
+
+    def _plan(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["-o", str(tmp_path / name / "out" / "simv")],
+        )._compile_plan()
+
+    plan_a = _plan("wt-a")
+    assert "out/simv" in plan_a.fingerprint["cmd"]
+    assert plan_a.shared_dir.name == _plan("wt-b").shared_dir.name
+    sim = _cache_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=["-o", str(tmp_path / "wt-a" / "out" / "simv")],
+    )
+    assert (
+        sim._fingerprint_cmd_inputs(plan_a.key_cmd, plan_a.fingerprint["sources"]) == []
+    )
