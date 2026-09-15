@@ -1283,6 +1283,54 @@ def _finding(phase, resource="time"):
     )
 
 
+def test_the_field_column_keeps_the_per_test_hint_path(tmp_path, monkeypatch, capsys):
+    """#520: `tests[name=alpha]` is data, and Rich must not eat it.
+
+    The per-test hint path is the whole point of the Field column — it names
+    the entry to edit. Rendered as console markup it collapsed to
+    `tests.resources.cpus`, which names every test and therefore none.
+    """
+    import logging
+
+    import rtl_buddy.rtl_buddy as rbmod
+    from rtl_buddy.logging_utils import setup_logging
+
+    finding = _finding("sim", resource="cpus")
+    finding.test = "alpha[0]"
+    finding.edit_hint = {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=alpha].resources.cpus",
+    }
+
+    monkeypatch.setenv("COLUMNS", "400")  # keep each row on one line
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    try:
+        rbmod.RtlBuddy._render_reservation_advice(object(), [finding])
+    finally:
+        # setup_logging() attached a file handler under tmp_path; leaving it
+        # on the root logger would outlive this test's directory.
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            handler.close()
+
+    stderr = capsys.readouterr().err
+    assert "tests[name=alpha].resources.cpus" in stderr
+    assert "alpha[0]" in stderr
+
+
+def test_the_rendered_rows_carry_the_hint_path_unescaped(monkeypatch):
+    """The escape belongs to the renderer, not to the data (#520).
+
+    The same rows reach the `--machine` `summary` event and the plain-text
+    log, so escaping them here would put a stray backslash in both.
+    """
+    finding = _finding("sim", resource="cpus")
+    finding.edit_hint = {"path": "tests[name=alpha].resources.cpus"}
+    rows, _metadata = _rendered_rows([finding], monkeypatch)
+    assert rows[0]["field"] == "tests[name=alpha].resources.cpus"
+
+
 def test_the_compile_sim_note_only_appears_under_a_compile_sim_row(monkeypatch):
     """A note explaining a row the table does not contain is noise.
 

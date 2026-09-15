@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.markup import escape as rich_escape
 from rich.table import Table
 
 
@@ -1903,21 +1904,31 @@ def render_summary(
             metadata=metadata or [],
             rows=rows,
         )
-        emit_console_text("\n".join(plain_lines))
+        # markup=False for the same reason the table cells below are
+        # escaped: these lines carry user-derived strings (a rightsize edit
+        # hint reads `tests[name=alpha].resources.cpus`) and Rich would eat
+        # the brackets as a style tag (#520).
+        emit_console_text("\n".join(plain_lines), markup=False)
         return
 
     logger.result("\n" + "\n".join(plain_lines))
 
-    table = Table(title=title)
+    # Everything below is data, not markup: no caller builds a cell, title
+    # or caption out of Rich style tags, but plenty of them interpolate
+    # user strings that contain square brackets — a rightsize edit-hint
+    # path, a test name, a graph query. Rich parses `[name=alpha]` as a
+    # style tag and drops it, silently hiding which test a hint names, so
+    # escape the data and let the table own its own styling (#520).
+    table = Table(title=rich_escape(title))
     if metadata:
-        table.caption = "\n".join(metadata)
+        table.caption = rich_escape("\n".join(metadata))
 
     for key, label in columns:
         justify = "right" if key in {"run_id"} else "left"
         no_wrap = key in {"result", "run_id"}
-        table.add_column(label, justify=justify, no_wrap=no_wrap)
+        table.add_column(rich_escape(label), justify=justify, no_wrap=no_wrap)
 
     for row in rows:
-        table.add_row(*(str(row.get(key, "")) for key, _label in columns))
+        table.add_row(*(rich_escape(str(row.get(key, ""))) for key, _label in columns))
 
     get_stderr_console().print(table)
