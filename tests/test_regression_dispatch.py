@@ -22,7 +22,12 @@ from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
 
 # Aliased so pytest does not try to collect the dataclass as a test class.
 from rtl_buddy.dispatch.base import TestJobSpec as SimJobSpec
-from rtl_buddy.dispatch.plan import read_plan_configs, read_plan_token
+from rtl_buddy.dispatch.plan import (
+    read_plan_config,
+    read_plan_configs,
+    read_plan_master_seed,
+    read_plan_token,
+)
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.result_io import write_build_result_json, write_result_json
@@ -33,6 +38,7 @@ from rtl_buddy.runner.test_results import (
     TestPassResults,
 )
 from rtl_buddy.seed_mode import SeedMode
+from rtl_buddy.seeding import derive_test_seed
 
 
 class _FakeBackend(DispatchBackend):
@@ -72,6 +78,14 @@ class _FakeBackend(DispatchBackend):
                 if self.job_result == "PASS"
                 else CompileFailResults(name=spec.test_name + "/results")
             )
+            if spec.resolved_seed is not None:
+                planned_cfg = read_plan_config(spec.plan_path, spec.test_name)
+                results.results["seed"] = {
+                    "master_seed": spec.master_seed,
+                    "resolved_seed": spec.resolved_seed,
+                    "source": planned_cfg.seed_source,
+                    "identity": planned_cfg.seed_identity,
+                }
             # Mirror the real rb _test-job: stamp the head's run token
             # (carried in the plan) into the envelope so collection accepts
             # it (#362).
@@ -204,6 +218,303 @@ def test_dispatched_regression_passes(
     assert spec.share_build is True
     assert spec.resources.time is not None
     assert spec.result_json.is_file()
+
+
+def test_dispatched_regression_carries_master_and_resolved_seed(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    spec = fake_backend.submitted[0]
+    assert spec.seed_mode == SeedMode.MASTER
+    assert spec.master_seed == 20260914
+    assert spec.resolved_seed is not None
+    assert read_plan_master_seed(spec.plan_path) == 20260914
+    planned = read_plan_config(spec.plan_path, spec.test_name)
+    assert planned.get_resolved_seed() == spec.resolved_seed
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert envelope["payload"]["master_seed"] == 20260914
+
+
+def test_dispatched_master_seed_uses_sweep_expanded_names(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    (minimal_project / "sweep.py").write_text(
+        "import copy\n"
+        "out_test_cfgs = []\n"
+        "for suffix in ('fp16', 'fp32'):\n"
+        "    cfg = copy.deepcopy(test_cfg)\n"
+        "    cfg.name = test_cfg.name + '.' + suffix\n"
+        "    out_test_cfgs.append(cfg)\n"
+    )
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sweep:\n", "    sweep:\n      path: sweep.py\n", 1
+        )
+    )
+
+    result, _ = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    specs = {spec.test_name: spec for spec in fake_backend.submitted}
+    assert set(specs) == {"basic.fp16", "basic.fp32"}
+    for name, spec in specs.items():
+        expected = derive_test_seed(
+            20260914,
+            suite_identity="tests.yaml",
+            test_name=name,
+            run_id=None,
+        )
+        assert spec.resolved_seed == expected.seed
+        assert (
+            read_plan_config(spec.plan_path, name).get_resolved_seed() == expected.seed
+        )
+
+
+def test_direct_test_and_regression_derive_the_same_seed(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    suite_dir = minimal_project / "verif" / "foo"
+    suite_dir.mkdir(parents=True)
+    for name in ("tests.yaml", "models.yaml"):
+        (suite_dir / name).write_text((minimal_project / name).read_text())
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs:\n  - verif/foo/tests.yaml\n"
+    )
+
+    monkeypatch.chdir(suite_dir)
+    direct, direct_rb = _invoke(
+        [
+            "--machine",
+            "test",
+            "basic",
+            "-c",
+            "tests.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert direct.exit_code == 0, direct.output
+    direct_cfg = stub_build_runner.inits[-1]["test_cfg"]
+    direct_seed = direct_cfg.get_resolved_seed()
+    direct_rb._artifact_locks.release_all()
+
+    stub_build_runner.inits = []
+    monkeypatch.chdir(minimal_project)
+    regression, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert regression.exit_code == 0, regression.output
+    regression_seed = stub_build_runner.inits[-1]["test_cfg"].get_resolved_seed()
+
+    assert direct_seed == regression_seed
+    assert direct_cfg.seed_identity == "verif/foo/tests.yaml::basic::single"
+
+
+def test_same_master_seed_replays_local_regression_seed(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    first, first_rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert first.exit_code == 0, first.output
+    first_seed = stub_build_runner.inits[-1]["test_cfg"].get_resolved_seed()
+    first_rb._artifact_locks.release_all()
+
+    stub_build_runner.inits = []
+    second, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert second.exit_code == 0, second.output
+    second_seed = stub_build_runner.inits[-1]["test_cfg"].get_resolved_seed()
+
+    assert first_seed is not None
+    assert second_seed == first_seed
+
+
+def test_test_accepts_master_seed_above_signed_64_bit(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    master_seed = (1 << 96) + 20260914
+
+    result, _ = _invoke(
+        ["--machine", "test", "basic", "--master-seed", str(master_seed)]
+    )
+
+    assert result.exit_code == 0, result.output
+    cfg = stub_build_runner.inits[-1]["test_cfg"]
+    assert (
+        cfg.get_resolved_seed()
+        == derive_test_seed(
+            master_seed,
+            suite_identity="tests.yaml",
+            test_name="basic",
+            run_id=None,
+        ).seed
+    )
+
+
+@pytest.mark.parametrize("rnd_flag", ["--rnd-new", "--rnd-last"])
+def test_test_rejects_master_seed_with_legacy_random_modes(
+    minimal_project: Path,
+    rnd_flag: str,
+):
+    result, _ = _invoke(["test", "basic", "--master-seed", "20260914", rnd_flag])
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cannot be combined" in str(result.exception)
+
+
+def test_randtest_rejects_unresolved_preprocessor_seed(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["randtest", "basic", "2"])
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cannot expose new seeds before preproc" in str(result.exception)
+    assert stub_build_runner.inits == []
+
+
+@pytest.mark.parametrize("seed", [0, 1, -1, 2**31])
+def test_default_builder_seed_is_exposed_before_preprocessor(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    seed,
+):
+    root_path = minimal_project / "root_config.yaml"
+    root_path.write_text(
+        root_path.read_text().replace("sim-rand-seed: 1", f"sim-rand-seed: {seed}")
+    )
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["test", "basic"])
+
+    assert result.exit_code == 0, result.output
+    run_cfg = stub_build_runner.inits[-1]["test_cfg"]
+    assert run_cfg.get_resolved_seed() == seed
+    assert run_cfg.seed_source == "default"
+    assert run_cfg.get_plusarg("stimulus_seed") == seed
+
+
+def test_randtest_fixed_seed_is_shared_by_preprocessor_and_all_runs(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n"
+            "    sim-rand-seed: 41\n"
+            "    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["--machine", "randtest", "basic", "2"])
+
+    assert result.exit_code == 0, result.output
+    run_cfg = stub_build_runner.inits[-1]["test_cfg"]
+    assert stub_build_runner.inits[-1]["seed_mode"] == SeedMode.NEW
+    assert run_cfg.get_resolved_seed() == 41
+    assert run_cfg.get_plusarg("stimulus_seed") == 41
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = json.loads(payload_line)["payload"]["results"]
+    assert [
+        (row["seed"]["resolved_seed"], row["seed"]["identity"]) for row in rows
+    ] == [
+        (41, "tests.yaml::basic::single"),
+        (41, "tests.yaml::basic::single"),
+    ]
+
+
+def test_master_seed_rejects_one_shared_preprocessor_for_multiple_runs():
+    rb = RtlBuddy(name="test_master_seed_multiple")
+
+    with pytest.raises(
+        FatalRtlBuddyError, match="requires one run id per expanded test"
+    ):
+        rb._do_test_suite(
+            object(),
+            run_ids=[1, 2],
+            seed_mode=SeedMode.MASTER,
+            master_seed=20260914,
+        )
 
 
 def test_dispatched_regression_missing_result_is_dispatch_fail(
@@ -1301,6 +1612,38 @@ def test_randtest_dispatch_fans_out_seeds(
     ][-1]
     envelope = json.loads(payload_line)
     assert [r["run_id"] for r in envelope["payload"]["results"]] == [1, 2, 3]
+
+
+def test_randtest_dispatch_fixed_seed_reports_shared_identity_on_every_row(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n"
+            "    sim-rand-seed: 41\n"
+            "    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["--machine", "randtest", "basic", "2", "--dispatch", "slurm"])
+
+    assert result.exit_code == 0, result.output
+    assert [spec.resolved_seed for spec in recording_backend.submitted] == [41, 41]
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = json.loads(payload_line)["payload"]["results"]
+    assert [
+        (row["seed"]["resolved_seed"], row["seed"]["identity"]) for row in rows
+    ] == [
+        (41, "tests.yaml::basic::single"),
+        (41, "tests.yaml::basic::single"),
+    ]
 
 
 def test_randtest_replay_stays_local(

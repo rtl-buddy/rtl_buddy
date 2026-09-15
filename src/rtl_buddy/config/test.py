@@ -11,6 +11,13 @@ import os
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..seeding import (
+    SeedResolution,
+    derive_test_seed,
+    expanded_test_seed_identity,
+    validate_sim_seed,
+    validate_resolved_seed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +201,11 @@ class TestConfig:
     xfail: bool = False
     xfail_strict: bool = False
     default_timeout: int = 60  # NOTE: potential for config through root config
+    sim_rand_seed: int | None = None
+    sim_rand_seed_plusarg: str | None = None
+    resolved_seed: int | None = None
+    seed_source: str | None = None
+    seed_identity: str | None = None
 
     def get_name(self):
         """
@@ -293,6 +305,47 @@ class TestConfig:
         if self.pa is None:
             self.pa = {}
         self.pa.update(new_args)
+
+    def resolve_runtime_seed(
+        self, *, master_seed: int | None, suite_identity: str, run_id: int | None
+    ) -> SeedResolution | None:
+        """Resolve and expose this run's seed before its preprocessor executes."""
+        if self.sim_rand_seed is not None:
+            resolution = SeedResolution(
+                seed=validate_sim_seed(self.sim_rand_seed),
+                source="fixed",
+                identity=expanded_test_seed_identity(suite_identity, self.name, run_id),
+            )
+        elif master_seed is not None:
+            resolution = derive_test_seed(
+                master_seed,
+                suite_identity=suite_identity,
+                test_name=self.name,
+                run_id=run_id,
+            )
+        else:
+            return None
+
+        self.set_resolved_seed(resolution)
+        return resolution
+
+    def set_resolved_seed(self, resolution: SeedResolution) -> None:
+        """Store a planned seed and update its configured runtime plusarg."""
+        self.resolved_seed = validate_resolved_seed(resolution.seed, resolution.source)
+        self._resolved_seed_lock = self.resolved_seed
+        self.seed_source = resolution.source
+        self.seed_identity = resolution.identity
+        self.ensure_resolved_seed_plusarg()
+
+    def ensure_resolved_seed_plusarg(self) -> None:
+        """Restore the managed seed plusarg after a preprocessor mutation."""
+        resolved_seed = self.get_resolved_seed()
+        if resolved_seed is not None and self.sim_rand_seed_plusarg is not None:
+            self.set_plusarg(self.sim_rand_seed_plusarg, resolved_seed)
+
+    def get_resolved_seed(self) -> int | None:
+        """Return the pre-resolved runtime seed, when this run has one."""
+        return getattr(self, "_resolved_seed_lock", self.resolved_seed)
 
     def get_plusdefine(self, key):
         """
@@ -485,6 +538,11 @@ class TestConfig:
             "xfail": self.xfail,
             "xfail_strict": self.xfail_strict,
             "default_timeout": self.default_timeout,
+            "sim_rand_seed": self.sim_rand_seed,
+            "sim_rand_seed_plusarg": self.sim_rand_seed_plusarg,
+            "resolved_seed": self.get_resolved_seed(),
+            "seed_source": self.seed_source,
+            "seed_identity": self.seed_identity,
         }
 
     @classmethod
@@ -495,7 +553,7 @@ class TestConfig:
         at load time and carried verbatim, so the rebuilt config runs the
         same regardless of the job's cwd — no re-resolution needed.
         """
-        return cls(
+        config = cls(
             d["name"],
             d["desc"],
             from_dict(ModelConfig, d["model"]),
@@ -517,7 +575,25 @@ class TestConfig:
             xfail=d["xfail"],
             xfail_strict=d["xfail_strict"],
             default_timeout=d["default_timeout"],
+            sim_rand_seed=d.get("sim_rand_seed"),
+            sim_rand_seed_plusarg=d.get("sim_rand_seed_plusarg"),
+            resolved_seed=d.get("resolved_seed"),
+            seed_source=d.get("seed_source"),
+            seed_identity=d.get("seed_identity"),
         )
+
+        if config.resolved_seed is not None:
+            try:
+                config.set_resolved_seed(
+                    SeedResolution(
+                        config.resolved_seed, config.seed_source, config.seed_identity
+                    )
+                )
+            except ValueError as e:
+                raise FatalRtlBuddyError(
+                    f"dispatch plan seed for {config.name!r} is invalid: {e}"
+                ) from e
+        return config
 
     def __str__(self):
         return pprint.pformat(self)
@@ -553,8 +629,21 @@ class TestConfigFile:
     xfail: bool = False
     xfail_strict: bool = False
     resources: DispatchResourcesFile | None = None
+    sim_rand_seed: int | None = field(rename="sim-rand-seed", default=None)
+    sim_rand_seed_plusarg: str | None = field(
+        rename="sim-rand-seed-plusarg", default=None
+    )
 
     def initialise(self, config_dir, tbs, suite_builder=None):
+        if self.sim_rand_seed is not None:
+            try:
+                validate_sim_seed(self.sim_rand_seed)
+            except ValueError as e:
+                raise FatalRtlBuddyError(f"test {self.name!r}: {e}") from e
+        if self.sim_rand_seed_plusarg == "":
+            raise FatalRtlBuddyError(
+                f"test {self.name!r}: sim-rand-seed-plusarg must not be empty"
+            )
         tb = tbs[self.tb]
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
@@ -586,6 +675,8 @@ class TestConfigFile:
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
             resources=self.resources,
+            sim_rand_seed=self.sim_rand_seed,
+            sim_rand_seed_plusarg=self.sim_rand_seed_plusarg,
         )
 
 

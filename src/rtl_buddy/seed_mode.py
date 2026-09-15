@@ -5,3 +5,4 @@ class SeedMode(StrEnum):
     DEFAULT = "default"
     NEW = "new"
     REPLAY = "replay"
+    MASTER = "master"

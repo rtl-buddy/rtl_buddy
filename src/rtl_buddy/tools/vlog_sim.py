@@ -1274,6 +1274,15 @@ class VlogSim:
         self.sim_mode = sim_mode
         # assert 'sim_to_stdout' in self.sim_mode NOTE: not used anywhere, may or may not become important in the future
         self.test_cfg = test_cfg
+        get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)
+        self._resolved_runtime_seed = (
+            get_resolved_seed() if callable(get_resolved_seed) else None
+        )
+        self._resolved_runtime_seed_source = getattr(test_cfg, "seed_source", None)
+        self._resolved_runtime_seed_identity = getattr(test_cfg, "seed_identity", None)
+        self._resolved_runtime_seed_plusarg = getattr(
+            test_cfg, "sim_rand_seed_plusarg", None
+        )
         self.test_name = self.test_cfg.get_name()
         self.run_id = run_id
         self.replay_run_id = replay_run_id
@@ -3896,6 +3905,10 @@ class VlogSim:
           - "default": use builder-config seed
           - "new": generate a fresh random seed
           - "replay": read seed from a previous run's .randseed file
+          - "master": use the seed resolved before preprocessing
+
+        A fixed per-test seed is also resolved before preprocessing and takes
+        precedence over the invocation's seed mode.
         """
         run_id = self.run_id if run_id is None else run_id
         replay_run_id = self.replay_run_id if replay_run_id is None else replay_run_id
@@ -3906,7 +3919,35 @@ class VlogSim:
 
         run_cmd = [self._get_simv_path()]
 
-        if seed_mode == SeedMode.REPLAY:
+        resolved_seed = self._resolved_runtime_seed
+        if resolved_seed is not None:
+            seed = resolved_seed
+            self.test_cfg.resolved_seed = resolved_seed
+            self.test_cfg.seed_source = self._resolved_runtime_seed_source
+            self.test_cfg.seed_identity = self._resolved_runtime_seed_identity
+            self.test_cfg.sim_rand_seed_plusarg = self._resolved_runtime_seed_plusarg
+            ensure_seed_plusarg = getattr(
+                self.test_cfg, "ensure_resolved_seed_plusarg", None
+            )
+            if callable(ensure_seed_plusarg):
+                ensure_seed_plusarg()
+            log_event(
+                logger,
+                logging.INFO,
+                "sim.seed_selected",
+                test=self.test_name,
+                run_id=run_id,
+                seed=seed,
+                source=self._resolved_runtime_seed_source,
+                identity=self._resolved_runtime_seed_identity,
+            )
+
+        elif seed_mode == SeedMode.MASTER:
+            raise FatalRtlBuddyError(
+                f"test {self.test_name!r}: master seed was not resolved before preproc"
+            )
+
+        elif seed_mode == SeedMode.REPLAY:
             seed_source_run_id = replay_run_id if replay_run_id is not None else run_id
             seed_source_path = self._get_randseed_path(run_id=seed_source_run_id)
             try:

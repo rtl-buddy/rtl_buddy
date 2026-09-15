@@ -710,6 +710,55 @@ def _sim_runner(tmp_path):
     )
 
 
+@pytest.mark.parametrize("fixed_seed,expected", [(41, 41), (None, 0)])
+def test_sim_oracle_resolves_seed_before_baseline_and_mutant_preproc(
+    minimal_project, monkeypatch, fixed_seed, expected
+):
+    from rtl_buddy.config import RootConfig, SuiteConfig
+    from rtl_buddy.runner.mut_runner import MutRunner
+    from rtl_buddy.tools.vlog_sim import VlogSim
+
+    root_path = minimal_project / "root_config.yaml"
+    root_path.write_text(
+        root_path.read_text().replace("sim-rand-seed: 1", "sim-rand-seed: 0")
+    )
+    suite_path = minimal_project / "tests.yaml"
+    seed_config = "    sim-rand-seed-plusarg: stimulus_seed\n"
+    if fixed_seed is not None:
+        seed_config += f"    sim-rand-seed: {fixed_seed}\n"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n", "    sim_timeout:\n" + seed_config
+        )
+    )
+    seen = []
+
+    def pre(sim, *args, **kwargs):
+        seen.append(
+            (
+                sim.test_cfg.get_resolved_seed(),
+                sim.test_cfg.get_plusarg("stimulus_seed"),
+                sim._resolved_runtime_seed,
+            )
+        )
+        return "stop after observing preproc seed"
+
+    monkeypatch.setattr(VlogSim, "pre", pre)
+    runner = MutRunner(
+        name="seed-oracle",
+        root_cfg=RootConfig(name="seed-test"),
+        mut_cfg=types.SimpleNamespace(
+            test_config=str(suite_path), tests=["basic"], assertions=False
+        ),
+        work_dir=str(minimal_project / "mut-work"),
+    )
+    runner._baseline_sim()
+    runner._eval_sim(
+        SuiteConfig(path=str(suite_path)).get_tests("basic")[0].model, "m0"
+    )
+    assert seen == [(expected, expected, expected)] * 2
+
+
 @pytest.mark.parametrize(
     "marker,expected",
     [("KILL", KILLED), ("ASSERT", KILLED), ("survive", SURVIVED), ("ERR", ERRORED)],
