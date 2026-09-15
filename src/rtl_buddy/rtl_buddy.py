@@ -102,7 +102,7 @@ from .dispatch import (
 )
 from .dispatch.argv import job_log_path
 from .dispatch.base import BuildJobSpec, ElabJobSpec, TestJobSpec, telemetry_key
-from .dispatch.gates import job_ids_for, wait_for_gates, write_gates
+from .dispatch.gates import release_batches, wait_for_gates, write_gates
 from .dispatch.plan import (
     read_plan_config,
     read_plan_configs,
@@ -2632,7 +2632,7 @@ class RtlBuddy:
         # neither is worth paying for in a job with `--gates` pointing at a
         # head that never got there.
         release_lock = threading.Lock()
-        release_state = {"resolved": False, "gates": None}
+        release_state = {"resolved": False, "gates": None, "disabled": None}
 
         def _resolve_gates_locked():
             """The manifest, or ``None`` with the reason logged. Once."""
@@ -2695,19 +2695,41 @@ class RtlBuddy:
                 # It costs that worker the remainder of a bounded wait, and
                 # only in the run where the head never wrote the file.
                 payload = _resolve_gates_locked()
-            if payload is None:
+                # A systemic failure — a wedged controller, an scontrol
+                # that will not run — is a property of this node and this
+                # run, not of the ids it was asked about. Paying its
+                # timeout once per remaining compile key would put the
+                # whole build job behind an optimization it has already
+                # been told it cannot have.
+                disabled = release_state["disabled"]
+            if payload is None or disabled is not None:
                 return
-            job_ids = job_ids_for(payload, [index for index, _ in members])
-            if not job_ids:
+            batches = release_batches(payload, [index for index, _ in members])
+            if not batches:
                 # The manifest knows nothing about these configs: a hand-run
                 # build job over a head's manifest, or a plan whose indices
                 # moved. Nothing to release and nothing wrong.
                 return
-            failures = release_dependency(
-                job_ids, cluster=payload.get("cluster"), cwd=suite_dir
-            )
-            failed = {job_id for job_id, _ in failures}
-            released = [job_id for job_id in job_ids if job_id not in failed]
+            # One call per cluster: these ids were issued by whichever
+            # controller accepted their array, and an id is unique only
+            # there (#509).
+            released, failures, skipped, systemic = [], [], [], None
+            for position, (cluster, job_ids) in enumerate(batches):
+                outcome = release_dependency(job_ids, cluster=cluster, cwd=suite_dir)
+                released.extend(outcome.released)
+                failures.extend(outcome.failures)
+                skipped.extend(outcome.skipped)
+                if outcome.systemic is not None:
+                    systemic = outcome.systemic
+                    # Whatever stopped this cluster's batch stops the rest
+                    # of them too, and every later key in this job.
+                    skipped.extend(
+                        job_id for _, ids in batches[position + 1 :] for job_id in ids
+                    )
+                    break
+            if systemic is not None:
+                with release_lock:
+                    release_state["disabled"] = systemic
             if released:
                 # On the console, not just in the job log: this is the line
                 # that says a 40-minute key stopped holding its tests, and
@@ -2724,10 +2746,15 @@ class RtlBuddy:
                     tests=[name for _, name in members],
                     job_ids=released,
                 )
-            for job_id, error in failures:
+            for position, (job_id, error) in enumerate(failures):
                 # A release that did not happen is a job that starts when
                 # this one ends — slower, never wrong — so it is a warning
-                # and the build continues.
+                # and the build continues. The one that ended the batch
+                # carries what it cost: the ids never attempted, and the
+                # fact that no later key will try either. It is the last
+                # one recorded by construction — the loop above breaks
+                # straight after appending it.
+                is_systemic = systemic is not None and position == len(failures) - 1
                 log_event(
                     logger,
                     logging.WARNING,
@@ -2735,6 +2762,18 @@ class RtlBuddy:
                     group=group_dir,
                     job_id=job_id,
                     error=error,
+                    skipped=len(skipped) if is_systemic else None,
+                )
+            if systemic is not None and not failures:
+                # The budget ran out between calls, so no single id failed:
+                # say it against the key rather than losing it.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_failed",
+                    group=group_dir,
+                    error=systemic,
+                    skipped=len(skipped),
                 )
 
         def _compile_group(group):
@@ -4277,6 +4316,10 @@ class RtlBuddy:
         # job it would be talking to has long exited, and a retry's jobs are
         # submitted ungated anyway.
         gate_entries = []
+        # Only read once, and only where there is a build job at all: a
+        # suite whose tests each compile in their own job has none, and the
+        # manifest it would key on does not exist either.
+        build_cluster = None if build_handle is None else build_handle.cluster
         try:
             # Per-invocation array dir (head pid) so a resubmit or an
             # overlapping run in the same suite tree never rewrites a
@@ -4305,7 +4348,23 @@ class RtlBuddy:
                 )
                 for (idx, plan_index, spec), handle in zip(group_entries, handles):
                     pending.append((idx, handle))
-                    gate_entries.append((plan_index, spec.test_name, handle.job_id))
+                    gate_entries.append(
+                        (
+                            plan_index,
+                            spec.test_name,
+                            handle.job_id,
+                            # Where THIS job was accepted. `--clusters=a,b`
+                            # places each array wherever it can start
+                            # first, so the fan-out can span clusters and
+                            # an id only means anything against the one
+                            # that issued it (#509). A backend that does
+                            # not record a cluster gets the build job's,
+                            # which is the same submission path.
+                            handle.cluster
+                            if handle.cluster is not None
+                            else build_cluster,
+                        )
+                    )
         except BaseException:
             # A mid-fan-out submit failure must not leak this suite's build
             # job or already-submitted arrays.
@@ -4319,25 +4378,8 @@ class RtlBuddy:
         # run simply keeps the pre-#548 behaviour.
         gates_json = getattr(getattr(build_handle, "spec", None), "gates_json", None)
         if gates_json is not None:
-            # The SIM jobs' cluster, not the build job's: these are the ids
-            # to be released, and an id is unique only within the cluster
-            # that issued it (#509). Unanimous or nothing — a `--clusters=a,b`
-            # fan-out that landed the arrays in two places has no single
-            # answer, and naming one of them would aim a release at a
-            # stranger's job id. `None` there falls back to the local
-            # cluster, where the release simply fails and logs.
-            sim_clusters = {handle.cluster for _, handle in pending}
             try:
-                write_gates(
-                    gates_json,
-                    run_token=run_token,
-                    cluster=(
-                        sim_clusters.pop()
-                        if len(sim_clusters) == 1
-                        else build_handle.cluster
-                    ),
-                    entries=gate_entries,
-                )
+                write_gates(gates_json, run_token=run_token, entries=gate_entries)
             except OSError as e:
                 log_event(
                     logger,
