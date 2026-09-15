@@ -81,6 +81,12 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
     """The ``rb _build-job`` invocation for one suite's shared compile."""
     argv = _rb_argv(spec)
     argv += ["_build-job", "-c", spec.test_config_path, "--share-build"]
+    # Beside --share-build because it qualifies it: the flag says "share a
+    # build", this says where that build lives (#542). Omitted entirely when
+    # no cache root is configured, so every existing project's argv — and
+    # every job script diff — is unchanged.
+    if spec.shared_build_root is not None:
+        argv += ["--shared-build-root", str(spec.shared_build_root)]
     if spec.parallel > 1:
         # Omitted at the default: an argv byte-identical to a pre-#495
         # head's keeps plan/manifest and job-script diffs quiet for every
@@ -132,6 +138,11 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
         argv += ["--plan", str(spec.plan_path)]
     if spec.share_build:
         argv += ["--share-build"]
+    # Same pairing as the build job's: a simulation job that resolved a
+    # different cache root would look for the build in a directory the
+    # build job never wrote (#542).
+    if spec.shared_build_root is not None:
+        argv += ["--shared-build-root", str(spec.shared_build_root)]
     if spec.expect_prebuilt:
         argv += ["--expect-prebuilt"]
     if spec.rebuild:

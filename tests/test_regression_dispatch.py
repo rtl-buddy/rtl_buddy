@@ -5175,6 +5175,41 @@ def test_the_collect_audit_warns_when_one_key_produced_two_binaries(caplog):
     assert events[0]["tests"] == ["alpha", "beta"]
 
 
+def test_the_collect_audit_still_groups_cache_mode_runs(caplog):
+    """A persistent cache root moves the shared directory; it does not change
+    what the audit keys on (#542).
+
+    ``build_dir`` is still the ``obj_dir_<key>`` directory — now under
+    ``<root>/<suite-namespace>/`` — and the ``simv`` entry is compared as a
+    whole, so the relative spelling cache mode may give it is no more and no
+    less comparable than the absolute one. Agreeing runs stay silent;
+    genuinely different binaries under one cache directory still warn.
+    """
+    import logging as _logging
+
+    cached = "/nfs/rb-cache/verif__blk/obj_dir_abc"
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(
+            [
+                _stamped_row("alpha", "k1", ["simv", 10, 1], cached),
+                _stamped_row("beta", "k1", ["simv", 10, 1], cached),
+            ]
+        )
+    assert _mismatch_events(caplog) == []
+
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(
+            [
+                _stamped_row("alpha", "k1", ["simv", 10, 1], cached),
+                _stamped_row("beta", "k1", ["simv", 11, 2], cached),
+            ]
+        )
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == cached
+    assert events[0]["tests"] == ["alpha", "beta"]
+
+
 def test_the_collect_audit_groups_by_the_shared_directory_not_the_digest(caplog):
     """The rebuild this audit exists to catch — an input edited mid-run and
     recompiled into the same directory — changes the inputs' digest along

@@ -195,6 +195,7 @@ def _make_sim(
     *,
     test_name,
     share_build=True,
+    shared_build_root=None,
     pd=None,
     exe="verilator",
     family="verilator",
@@ -223,6 +224,9 @@ def _make_sim(
         sim_mode={"sim_to_stdout": True},
         suite_dir=str(suite_dir) if suite_dir is not None else None,
         share_build=share_build,
+        shared_build_root=(
+            str(shared_build_root) if shared_build_root is not None else None
+        ),
         rebuild=rebuild,
         run_id=run_id,
     )
@@ -5231,8 +5235,9 @@ def _lock_events(monkeypatch):
     return seen
 
 
+@pytest.mark.parametrize("cached", [False, True], ids=["in-tree", "cache-root"])
 def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, cached
 ):
     """Double-checked locking: the waiter re-decides after acquiring.
 
@@ -5277,8 +5282,18 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
     monkeypatch.setattr(artifact_lock_module, "log_console_event", _note_wait)
     compile_events = _console_events(monkeypatch)
 
-    first = _make_sim(tmp_path, monkeypatch, test_name="test_a")
-    second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    # Parametrised over the cache root (#542) because the lock lives *in*
+    # the build directory, and in cache mode that directory is outside the
+    # workspace and shared with every other checkout on the host — so the
+    # two-writer case it serialises is the normal case there, not the
+    # exception. The waiter must still reuse rather than rebuild.
+    cache_root = tmp_path / "cache" if cached else None
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", shared_build_root=cache_root
+    )
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", shared_build_root=cache_root
+    )
     results = {}
 
     def _compile(key, sim):
@@ -5306,6 +5321,7 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
 
     _, fields = lock_events[0]
     shared_dir = Path(first._get_simv_path()).parent
+    assert (shared_dir.parent.parent == cache_root) is cached
     # The same directory-field schema every other compile.* build event
     # carries, so one consumer reads the whole family.
     assert {key: fields[key] for key in ("build_dir", "build_path")} == (
@@ -5562,4 +5578,984 @@ def test_an_unknown_stamp_age_says_so_rather_than_going_quiet():
     )
     assert message == (
         "test_a: reused shared build obj_dir_abc (age unknown); nothing compiled"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Persistent shared-build cache root (#542)
+# ---------------------------------------------------------------------------
+
+
+def _write_checkout(root, *, rtl="module top; endmodule\n"):
+    """One checkout of a project: a suite under ``verif/`` over RTL above it.
+
+    The shape the cache is for — RTL shared between suites, so the compile
+    key's source lines are paths *through* the project root rather than
+    inside the suite.
+    """
+    suite = root / "verif" / "blk"
+    suite.mkdir(parents=True, exist_ok=True)
+    src = root / "rtl" / "a.sv"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(rtl)
+    return suite
+
+
+def _cache_sim(checkout, monkeypatch, *, cache_root, test_name, compile_opts=None):
+    suite = checkout / "verif" / "blk"
+    return _make_sim(
+        checkout,
+        monkeypatch,
+        test_name=test_name,
+        suite_dir=suite,
+        project_root=checkout,
+        model_path=suite / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+        shared_build_root=cache_root,
+        compile_opts=compile_opts,
+    )
+
+
+def test_the_cache_namespace_is_the_suite_relative_to_the_project_root(tmp_path):
+    """One root, many suites, many checkouts — and no collisions (#542).
+
+    The namespace is the suite's place in the PROJECT, never in the
+    filesystem, which is the whole point: two checkouts of one project must
+    land in the same namespace or the cache serves neither of them.
+    """
+    suite = tmp_path / "verif" / "demo_tiny_alu"
+    suite.mkdir(parents=True)
+    assert (
+        vlog_sim_module.shared_build_namespace(suite, tmp_path)
+        == "verif__demo_tiny_alu"
+    )
+    # A suite that IS the project root has no relative components to name.
+    assert vlog_sim_module.shared_build_namespace(tmp_path, tmp_path) == "_root"
+    # Outside the root there is no relative spelling, so a digest of the
+    # absolute path keeps it unique instead of colliding on "..".
+    outside = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+    outside.mkdir()
+    namespace = vlog_sim_module.shared_build_namespace(outside, tmp_path)
+    assert len(namespace) == 12 and all(ch in "0123456789abcdef" for ch in namespace)
+
+
+def test_shared_build_dir_helper_cache_layout(tmp_path):
+    """``<root>/<suite-namespace>/obj_dir_<key>`` — and the in-tree default
+    is untouched by the new keyword arguments (#542)."""
+    suite = tmp_path / "verif" / "blk"
+    suite.mkdir(parents=True)
+    assert shared_build_dir(
+        suite, "cafe0123", cache_root="/nfs/cache", project_root=tmp_path
+    ) == Path("/nfs/cache/verif__blk/obj_dir_cafe0123")
+    assert shared_build_dir(suite, "cafe0123", project_root=tmp_path) == (
+        suite / "artefacts" / ".shared-builds" / "obj_dir_cafe0123"
+    )
+
+
+def test_two_checkouts_of_identical_content_share_one_cache_dir(tmp_path, monkeypatch):
+    """The reported gap, in one assertion (#542).
+
+    Two checkouts at different paths, byte-identical content, one cache
+    root: cache mode puts them in the same content-addressed directory and
+    the second reuses the first's build, while the in-tree key — a function
+    of the absolute ``run.f`` lines — puts them in two.
+    """
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    second = _write_checkout(tmp_path / "wt-b")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _cache_sim(
+        first.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    shared = Path(sim_a._get_simv_path()).parent
+    assert shared.parent == cache / "verif__blk"
+
+    sim_b = _cache_sim(
+        second.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_b._compile_plan().shared_dir == shared, (
+        "the key is still a function of the checkout path"
+    )
+    assert sim_b.compile() == 0
+    assert len(calls) == 1, "the second checkout recompiled instead of reusing"
+    assert sim_b.last_compile["reused"] is True
+
+    # ...and without a root, the same two checkouts get two keys, which is
+    # exactly the cold cache the issue describes.
+    plain_a = _make_sim(
+        first.parent.parent,
+        monkeypatch,
+        test_name="t",
+        suite_dir=first,
+        project_root=first.parent.parent,
+        model_path=first / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+    )
+    plain_b = _make_sim(
+        second.parent.parent,
+        monkeypatch,
+        test_name="t",
+        suite_dir=second,
+        project_root=second.parent.parent,
+        model_path=second / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+    )
+    assert (
+        plain_a._compile_plan().shared_dir.name
+        != plain_b._compile_plan().shared_dir.name
+    )
+
+
+def test_a_cache_mode_key_separates_two_checkouts_on_different_content(
+    tmp_path, monkeypatch
+):
+    """Content-addressed, so the reuse is never a clobber (#542).
+
+    Path-only keys would give these two the same directory and let them
+    rebuild over each other — which under dispatch is a build replaced
+    beneath a running fan-out (#539). Different content must mean a
+    different directory, and the first checkout's build must survive it.
+    """
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    _write_checkout(tmp_path / "wt-b", rtl="module top; /* patched */ endmodule\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _cache_sim(
+        first.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_a.compile() == 0
+    dir_a = Path(sim_a._get_simv_path()).parent
+
+    sim_b = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="t")
+    dir_b = Path(sim_b._compile_plan().shared_dir)
+    assert dir_b != dir_a
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+    assert (dir_a / "simv").is_file(), "the edit clobbered the other checkout's build"
+    assert sorted(path.name for path in (cache / "verif__blk").iterdir()) == sorted(
+        [dir_a.name, dir_b.name]
+    )
+
+
+def test_a_stamp_written_by_one_checkout_validates_from_another(tmp_path, monkeypatch):
+    """The other half of a persistent cache: the STAMP has to travel too.
+
+    A stamp full of one checkout's absolute paths validates for nobody
+    else, so the cache would be found and then rejected on every entry.
+    In cache mode the tracked inputs are spelled relative to the project
+    root and re-anchored against the reader's own (#542).
+    """
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    _write_checkout(tmp_path / "wt-b")
+    calls = []
+    # A dependency file, so the deps half of the stamp is exercised and not
+    # just `sources`: it is the list that is re-stat'ed rather than only
+    # compared.
+    _install_fake_builder(monkeypatch, calls, depends=["../../../../rtl/a.sv"])
+
+    sim_a = _cache_sim(
+        first.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_a.compile() == 0
+    stored = json.loads(_stamp_of(sim_a).read_text())
+    assert stored["root"] == os.path.realpath(tmp_path / "wt-a")
+    assert [entry[0] for entry in stored["sources"]] == ["rtl/a.sv"]
+    assert [entry[0] for entry in stored["deps"]] == ["rtl/a.sv"], (
+        "a dependency recorded absolute pins the stamp to one checkout"
+    )
+    # The executable lives in the cache, outside either project root, so it
+    # keeps the one absolute spelling both checkouts already agree on.
+    assert stored["simv"][0] == str(Path(sim_a._get_simv_path()))
+
+    sim_b = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="t")
+    plan = sim_b._compile_plan()
+    assert sim_b._build_stamp_is_valid(
+        plan.shared_dir, sim_b._get_simv_path(), plan.fingerprint
+    ), sim_b.stamp_mismatch_reason
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+
+    # ...and the re-stat is real: an edit in the SECOND checkout is seen
+    # through its own root, not the one the stamp names.
+    _touch(tmp_path / "wt-b" / "rtl" / "a.sv", "module top; /* edited */ endmodule\n")
+    sim_c = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="u")
+    assert sim_c.compile() == 0
+    assert len(calls) == 2
+
+
+def test_an_absolute_in_root_compile_flag_is_relativised_for_the_key(
+    tmp_path, monkeypatch
+):
+    """A ``+incdir+`` (or ``--Mdir``, or a bare source argument) spelled
+    absolute inside the project root is as much a function of the checkout
+    as a ``run.f`` line is, so cache mode relativises the command too
+    (#542)."""
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    _write_checkout(tmp_path / "wt-b")
+    (first.parent.parent / "inc").mkdir()
+    (tmp_path / "wt-b" / "inc").mkdir()
+
+    def _sim(checkout):
+        return _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"+incdir+{checkout / 'inc'}"],
+        )
+
+    sim_a, sim_b = _sim(tmp_path / "wt-a"), _sim(tmp_path / "wt-b")
+    assert "+incdir+inc" in sim_a._compile_plan().fingerprint["cmd"]
+    assert not any(
+        str(tmp_path / "wt-a") in token
+        for token in sim_a._compile_plan().fingerprint["cmd"]
+    )
+    assert sim_a._compile_plan().shared_dir == sim_b._compile_plan().shared_dir
+
+
+def test_the_default_mode_keeps_absolute_spellings_everywhere(tmp_path, monkeypatch):
+    """No root configured, nothing re-spelled: the in-tree stamp is the same
+    file this version wrote before #542, absolute paths and no ``root``."""
+    suite = _write_checkout(tmp_path / "wt-a")
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../../../rtl/a.sv"])
+    sim = _make_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        test_name="t",
+        suite_dir=suite,
+        project_root=tmp_path / "wt-a",
+        model_path=suite / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+    )
+    assert sim.compile() == 0
+    stored = json.loads(_stamp_of(sim).read_text())
+    assert "root" not in stored
+    assert all(os.path.isabs(entry[0]) for entry in stored["sources"])
+    assert all(os.path.isabs(entry[0]) for entry in stored["deps"])
+    assert os.path.isabs(stored["simv"][0])
+
+
+def test_the_cache_root_is_created_on_demand(tmp_path, monkeypatch):
+    """``mkdir -p``: the first run against a fresh NFS path must not need one."""
+    cache = tmp_path / "does" / "not" / "exist" / "yet"
+    suite = _write_checkout(tmp_path / "wt-a")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _cache_sim(tmp_path / "wt-a", monkeypatch, cache_root=cache, test_name="t")
+    assert sim.compile() == 0
+    assert (cache / "verif__blk").is_dir()
+    assert suite.is_dir()
+
+
+def test_a_relative_cache_root_anchors_to_the_project_root(tmp_path, monkeypatch):
+    """Not to the cwd: a build job on a compute node and every simulation job
+    read the same configured value from different directories (#542)."""
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    sim = _cache_sim(checkout, monkeypatch, cache_root=".rb-cache", test_name="t")
+    assert sim.shared_build_root == str(Path(os.path.realpath(checkout)) / ".rb-cache")
+
+
+def test_resolve_shared_build_root_precedence_and_expansion(tmp_path, monkeypatch):
+    """CLI over environment over config, and a blank value turns it off."""
+    resolve = vlog_sim_module.resolve_shared_build_root
+    assert resolve(None, tmp_path) is None
+    assert resolve("  ", tmp_path) is None
+    assert resolve("/abs/cache", tmp_path) == "/abs/cache"
+    monkeypatch.setenv("RB_CACHE_HOME", str(tmp_path / "env"))
+    assert resolve("$RB_CACHE_HOME/c", tmp_path) == str(tmp_path / "env" / "c")
+    assert resolve("~", tmp_path) == os.path.expanduser("~")
+
+
+def test_the_cli_resolves_the_cache_root_cli_over_env_over_config(monkeypatch):
+    """The three sources, in the documented order (#542)."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    class _Root:
+        def get_project_rootdir(self):
+            return "/proj"
+
+        def get_shared_build_root(self):
+            return "from-config"
+
+    app = RtlBuddy(name="test_shared_build_root")
+    app.root_cfg = _Root()
+    monkeypatch.delenv("RTL_BUDDY_SHARED_BUILD_ROOT", raising=False)
+    assert app.shared_build_root == "/proj/from-config"
+    monkeypatch.setenv("RTL_BUDDY_SHARED_BUILD_ROOT", "/from/env")
+    assert app.shared_build_root == "/from/env"
+    app._shared_build_root_flag = "/from/cli"
+    assert app.shared_build_root == "/from/cli"
+    # An explicit empty value is an override too: the cache goes off for
+    # this run without the project's config being edited.
+    app._shared_build_root_flag = ""
+    assert app.shared_build_root is None
+    # No root config, nothing to anchor to, nothing configured.
+    app.root_cfg = None
+    assert app.shared_build_root is None
+
+
+def test_share_build_off_ignores_a_configured_cache_root(tmp_path, monkeypatch):
+    """Cache mode is a property of the SHARED build: with no sharing there is
+    no directory a second checkout could reuse, and re-spelling the per-test
+    stamps would only cost one recompile."""
+    _write_checkout(tmp_path / "wt-a")
+    suite = tmp_path / "wt-a" / "verif" / "blk"
+    sim = _make_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        test_name="t",
+        share_build=False,
+        suite_dir=suite,
+        project_root=tmp_path / "wt-a",
+        model_path=suite / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+        shared_build_root=tmp_path / "cache",
+    )
+    assert sim.shared_build_root is None
+
+
+def test_switching_the_cache_root_on_or_off_rebuilds_once_and_says_why(
+    tmp_path, monkeypatch
+):
+    """A stamp from the other mode spells its inputs differently, so it is
+    read as "we do not know" rather than compared spelling to spelling (#542).
+
+    The in-tree stamp is the one that can meet both modes: with a cache root
+    the SHARED stamp moves to a new directory, but an unshareable builder
+    keeps stamping the test's own compile work dir either way. Re-anchoring
+    a relative entry there with no root to anchor to would stat it against
+    the process's working directory, so the answer is one rebuild — and a
+    reason that names the mode instead of blaming the compile line.
+    """
+    _write_source(tmp_path)
+    calls = []
+    pinned = tmp_path / "pinned" / "simv"
+    _install_fake_builder(monkeypatch, calls, simv=str(pinned))
+
+    def _sim(cache_root):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            exe="vcs",
+            family="vcs",
+            simv=str(pinned),
+            shared_build_root=cache_root,
+        )
+
+    cached = _sim(tmp_path / "cache")
+    assert cached.compile() == 0
+    assert len(calls) == 1
+    plain = _sim(None)
+    plan = plain._compile_plan()
+    assert not plain._build_stamp_is_valid(
+        plan.compile_work_dir, plain._get_simv_path(), plan.fingerprint
+    )
+    assert plain.stamp_mismatch_reason == (
+        "the stamp was written in the other shared-build mode"
+    )
+    assert plain.compile() == 0
+    assert len(calls) == 2
+    # ...and once is once: the rebuild's own stamp validates from then on.
+    assert _sim(None).compile() == 0
+    assert len(calls) == 2
+
+
+def _write_cmd_incdir(checkout, content="`define CMD_W 8\n"):
+    """A header reachable only through a compile-LINE `+incdir+`.
+
+    Not in `run.f` and not in `tests.yaml`'s filelist: it gets to the builder
+    through `builder-opts.compile-time`, which is exactly the input the
+    cache-mode key used to see as text alone.
+    """
+    header = checkout / "hdr" / "cmd.svh"
+    header.parent.mkdir(parents=True, exist_ok=True)
+    header.write_text(content)
+    return header
+
+
+def test_a_compile_line_incdir_is_content_addressed_in_cache_mode(
+    tmp_path, monkeypatch
+):
+    """The key must move when a compile-line input's CONTENT moves (#542 review).
+
+    Keyed on the relativised text alone, two checkouts whose `run.f` entries
+    matched but whose header under a `builder-opts` `+incdir+` differed took
+    the same persistent `obj_dir` — and the second rebuilt into it, replacing
+    a binary the first checkout's simulations may already be running. A
+    simulating job holds no build lock, so that is the clobber the
+    content-addressed key exists to prevent.
+    """
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+    _write_cmd_incdir(tmp_path / "wt-a")
+    _write_cmd_incdir(tmp_path / "wt-b", content="`define CMD_W 16\n")
+
+    def _sim(checkout):
+        return _cache_sim(
+            tmp_path / checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"+incdir+{tmp_path / checkout / 'hdr'}"],
+        )
+
+    differing = _sim("wt-a")._compile_plan().shared_dir
+    assert differing != _sim("wt-b")._compile_plan().shared_dir, (
+        "two checkouts with different header content share one obj_dir"
+    )
+
+    # ...and identical content still shares, which is the whole point of the
+    # cache: the key is addressed on the content, not on having one at all.
+    _write_cmd_incdir(tmp_path / "wt-b")
+    _as_a_fresh_process()
+    assert _sim("wt-a")._compile_plan().shared_dir == (
+        _sim("wt-b")._compile_plan().shared_dir
+    )
+
+
+def test_a_compile_line_source_and_library_dir_are_content_addressed(
+    tmp_path, monkeypatch
+):
+    """The same for a bare source argument and a `-y` library directory —
+    the other two shapes a compile line names an input in (#542 review)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    extra = checkout / "extra.sv"
+    extra.write_text("module extra; endmodule\n")
+    library = checkout / "lib"
+    library.mkdir()
+    (library / "cell.sv").write_text("module cell; endmodule\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=[str(extra), "-y", str(library)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(extra, "module extra; /* edited */ endmodule\n")
+    after_source = _key()
+    assert after_source != before
+    _touch(library / "cell.sv", "module cell; /* edited */ endmodule\n")
+    assert _key() != after_source
+    # A file APPEARING in a `-y` directory is tomorrow's module resolution,
+    # so the listing decides that too.
+    (library / "late.sv").write_text("module late; endmodule\n")
+    assert _key() != after_source
+
+
+def test_a_compile_line_path_outside_the_project_root_stays_text_only(
+    tmp_path, monkeypatch
+):
+    """Outside the root there is no checkout-independent spelling and no
+    hashing policy, so such a path keeps the one thing that IS comparable
+    between checkouts on a host: its absolute text (#542 review)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    outside = tmp_path / "vendor-ip"
+    outside.mkdir()
+    (outside / "vendor.svh").write_text("`define V 1\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=[f"+incdir+{outside}"],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(outside / "vendor.svh", "`define V 2\n")
+    assert _key() == before
+
+
+def test_an_output_path_on_the_compile_line_never_reaches_the_key(
+    tmp_path, monkeypatch
+):
+    """A key that hashed the build's own output would move on every build,
+    stranding one cache directory per run (#542 review).
+
+    `-o <abs path under the root>` is an unrecognised flag's argument, so it
+    is skipped rather than read as a bare source path — even once the file it
+    names exists.
+    """
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    output = checkout / "out" / "simv"
+    output.parent.mkdir()
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["-o", str(output)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    output.write_text("a binary\n")
+    assert _key() == before
+    _touch(output, "a different binary\n")
+    assert _key() == before
+
+
+def test_a_bare_source_after_a_boolean_flag_still_reaches_the_key(
+    tmp_path, monkeypatch
+):
+    """`--binary /proj/tb.sv` is the commonest way a compile line names a
+    source, so refusing every token that follows a flag would miss it (#542
+    review). Only a known OUTPUT option's argument is refused."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    extra = checkout / "extra.sv"
+    extra.write_text("module extra; endmodule\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["--binary", str(extra)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(extra, "module extra; /* edited */ endmodule\n")
+    assert _key() != before
+
+
+def test_a_path_inside_an_artefact_tree_never_reaches_the_key(tmp_path, monkeypatch):
+    """The general guard behind the output-option list: anything under an
+    `artefacts/`, a `.shared-builds/` or an `obj_dir*` is written by a build,
+    so an option this code does not recognise cannot smuggle one in (#542
+    review)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    produced = checkout / "verif" / "blk" / "artefacts" / "t" / "obj_dir_x" / "out.sv"
+    produced.parent.mkdir(parents=True)
+    produced.write_text("module out; endmodule\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["--binary", str(produced)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(produced, "module out; /* rebuilt */ endmodule\n")
+    assert _key() == before
+
+
+def test_a_run_f_incdir_is_not_walked_twice_for_the_key(tmp_path, monkeypatch):
+    """A directory `run.f` already names under the same spelling is skipped:
+    its identity is in `sources`, and a second walk buys nothing (#542
+    review)."""
+    checkout = tmp_path / "wt-a"
+    suite = _write_checkout(checkout)
+    (checkout / "inc").mkdir()
+    (checkout / "inc" / "w.svh").write_text("`define W 8\n")
+    sim = _make_sim(
+        checkout,
+        monkeypatch,
+        test_name="t",
+        suite_dir=suite,
+        project_root=checkout,
+        model_path=suite / "models.yaml",
+        filelist=["+incdir+../../inc", "../../rtl/a.sv"],
+        shared_build_root=tmp_path / "cache",
+        compile_opts=[f"+incdir+{checkout / 'inc'}"],
+    )
+    plan = sim._compile_plan()
+    assert "+incdir+inc" in [entry[0] for entry in plan.fingerprint["sources"]]
+    assert sim._fingerprint_cmd_inputs(plan.key_cmd, plan.fingerprint["sources"]) == []
+
+
+def test_the_default_mode_key_ignores_compile_line_content(tmp_path, monkeypatch):
+    """No cache root, no change: the in-tree key is the dict it always was,
+    and an edit under a compile-line `+incdir+` still rebuilds IN PLACE."""
+    checkout = tmp_path / "wt-a"
+    suite = _write_checkout(checkout)
+    header = _write_cmd_incdir(checkout)
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _make_sim(
+                checkout,
+                monkeypatch,
+                test_name="t",
+                suite_dir=suite,
+                project_root=checkout,
+                model_path=suite / "models.yaml",
+                filelist=["../../rtl/a.sv"],
+                compile_opts=[f"+incdir+{checkout / 'hdr'}"],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(header, "`define CMD_W 16\n")
+    assert _key() == before
+    # ...and the key function itself never reads the new field without it.
+    fingerprint = {
+        "cmd": ["verilator"],
+        "env": {},
+        "sources": [["src/top.sv", 31, 17, "0123456789abcdef"]],
+        "toolchain": {"exe": "/opt/verilator/bin/verilator"},
+    }
+    assert vlog_sim_module.VlogSim._compile_config_key(fingerprint) == (
+        vlog_sim_module.VlogSim._compile_config_key(
+            fingerprint, cmd_inputs=[["+incdir+hdr", [["cmd.svh", "beef"]]]]
+        )
+    )
+
+
+def _write_nested_filelists(checkout, *, source="module nested; endmodule\n"):
+    """A compile-line `-f` list that names a further list, which names RTL.
+
+    Byte-identical in every checkout on purpose: the bytes of the lists are
+    not what two branches differ in — the RTL they reach is.
+    """
+    (checkout / "rtl" / "nested.sv").write_text(source)
+    lists = checkout / "lists"
+    lists.mkdir(exist_ok=True)
+    (lists / "inner.f").write_text("// inner\n../rtl/nested.sv\n")
+    (lists / "top.f").write_text("// top\n-F inner.f\n")
+    return lists / "top.f"
+
+
+def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monkeypatch):
+    """A filelist is not an input whose own bytes decide anything: what it
+    NAMES is (#542 review).
+
+    Keyed on the list's hash alone, two checkouts with byte-identical
+    nested lists over different RTL took one persistent build directory —
+    and for VCS and Icarus, which report no dependencies, the stamp agreed
+    too, so the second checkout silently simulated the first's binary.
+    """
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+    top_a = _write_nested_filelists(tmp_path / "wt-a")
+    _write_nested_filelists(
+        tmp_path / "wt-b", source="module nested; /* patched */ endmodule\n"
+    )
+
+    def _key(name):
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                tmp_path / name,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["-f", str(tmp_path / name / "lists" / "top.f")],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    assert _key("wt-a") != _key("wt-b"), (
+        "two checkouts whose nested filelists reach different RTL share one dir"
+    )
+    # ...and identical RTL behind identical lists still shares, which is
+    # what the cache is for.
+    _write_nested_filelists(tmp_path / "wt-b")
+    assert _key("wt-a") == _key("wt-b")
+    # The whole chain is keyed, not just its head: both lists and the
+    # source they reach.
+    sim = _cache_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=["-f", str(top_a)],
+    )
+    plan = sim._compile_plan()
+    spellings = [
+        entry[0]
+        for entry in sim._fingerprint_cmd_inputs(
+            plan.key_cmd, plan.fingerprint["sources"]
+        )
+    ]
+    assert spellings == [
+        "-f lists/top.f",
+        "-F lists/inner.f",
+        "rtl/nested.sv",
+    ], spellings
+
+
+def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeypatch):
+    """A nested list may name an `+incdir+` of its own — listed like any
+    other — and a list that includes itself costs one visit, not a hang."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    (checkout / "hdr").mkdir()
+    (checkout / "hdr" / "w.svh").write_text("`define W 8\n")
+    lists = checkout / "lists"
+    lists.mkdir()
+    (lists / "top.f").write_text("+incdir+../hdr\n-F top.f\n")
+
+    def _sim():
+        _as_a_fresh_process()
+        return _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["-f", str(lists / "top.f")],
+        )
+
+    sim = _sim()
+    plan = sim._compile_plan()
+    entries = sim._fingerprint_cmd_inputs(plan.key_cmd, plan.fingerprint["sources"])
+    # The self-include contributes once, under the spelling it was first
+    # reached by, and is not followed a second time.
+    assert [entry[0] for entry in entries] == ["-f lists/top.f", "+incdir+hdr"]
+    # ...and the include directory is keyed by its listing, so a header
+    # inside it moves the key.
+    before = plan.shared_dir.name
+    _touch(checkout / "hdr" / "w.svh", "`define W 16\n")
+    assert _sim()._compile_plan().shared_dir.name != before
+
+
+def test_an_input_too_large_to_hash_keeps_two_checkouts_apart(tmp_path, monkeypatch):
+    """Above the hashing cap `_content_sha` answers None, and `[path, null]`
+    is the same answer for every checkout — so two branches with different
+    ROM images took one persistent build directory (#542 review).
+
+    The fallback is the input's stats. That costs this suite cross-checkout
+    reuse, since mtimes differ per checkout; a silently wrong binary costs
+    more.
+    """
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+    for name, rom in (("wt-a", "0" * 64), ("wt-b", "1" * 64)):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        (checkout / "rtl" / "rom.hex").write_text(rom)
+
+    def _key(name):
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                tmp_path / name,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=[str(tmp_path / name / "rtl" / "rom.hex")],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    assert _key("wt-a") != _key("wt-b"), (
+        "two checkouts with different unhashable images share one obj_dir"
+    )
+
+
+def test_an_unhashable_run_f_source_keeps_two_checkouts_apart(tmp_path, monkeypatch):
+    """The same hole on the `run.f` side, where the entry is a `sources`
+    stamp rather than a compile-line token (#542 review)."""
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+
+    def _key(name, rom):
+        checkout = tmp_path / name
+        suite = _write_checkout(checkout)
+        (checkout / "rtl" / "rom.hex").write_text(rom)
+        _as_a_fresh_process()
+        return (
+            _make_sim(
+                checkout,
+                monkeypatch,
+                test_name="t",
+                suite_dir=suite,
+                project_root=checkout,
+                model_path=suite / "models.yaml",
+                filelist=["../../rtl/a.sv", "../../rtl/rom.hex"],
+                shared_build_root=cache,
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    assert _key("wt-a", "0" * 64) != _key("wt-b", "1" * 64)
+
+
+def test_an_out_of_root_input_that_cannot_be_hashed_stays_stat_free(
+    tmp_path, monkeypatch
+):
+    """The fallback is for RELOCATED paths only.
+
+    A path left absolute is outside every project root, so two checkouts
+    naming it name the same bytes and "no hash" is no collision — while
+    folding its mtime into the key would strand a cache directory every
+    time somebody touched a toolchain header.
+    """
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
+    checkout = tmp_path / "wt-a"
+    suite = _write_checkout(checkout)
+    outside = tmp_path / "vendor"
+    outside.mkdir()
+    (outside / "big.sv").write_text("module big; endmodule\n" + "//" * 64)
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _make_sim(
+                checkout,
+                monkeypatch,
+                test_name="t",
+                suite_dir=suite,
+                project_root=checkout,
+                model_path=suite / "models.yaml",
+                filelist=["../../rtl/a.sv", str(outside / "big.sv")],
+                shared_build_root=cache,
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(outside / "big.sv", "module big; endmodule\n" + "//" * 65)
+    assert _key() == before
+
+
+def test_a_path_valued_define_is_never_relativised(tmp_path, monkeypatch):
+    """A define's value is compiled INTO the model, so it is not a path
+    rtl_buddy may relocate (#542 review).
+
+    Relativised, `+define+DATA="/wt-a/data.hex"` and
+    `+define+DATA="/wt-b/data.hex"` became one token, and two checkouts
+    shared a binary that had baked in the first one's absolute path.
+    """
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+
+    def _plan(name, opts):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=opts,
+        )._compile_plan()
+
+    def _define(name):
+        return f'+define+DATA="{tmp_path / name / "data.hex"}"'
+
+    plan_a = _plan("wt-a", [_define("wt-a")])
+    plan_b = _plan("wt-b", [_define("wt-b")])
+    assert plan_a.shared_dir.name != plan_b.shared_dir.name
+    assert _define("wt-a") in plan_a.fingerprint["cmd"], plan_a.fingerprint["cmd"]
+
+    # The same for the other value-bearing spellings, and for a bare
+    # `NAME=value` that is not a path at all.
+    for opt in (
+        f"-DDATA={tmp_path / 'wt-a' / 'data.hex'}",
+        f"-GROM={tmp_path / 'wt-a' / 'data.hex'}",
+        f"-pvalue+top.ROM={tmp_path / 'wt-a' / 'data.hex'}",
+        f"ROM={tmp_path / 'wt-a' / 'data.hex'}",
+    ):
+        assert opt in _plan("wt-a", [opt]).fingerprint["cmd"], opt
+
+    # ...while a genuine path option still relativises, so identical
+    # content at two paths still shares one build.
+    for name in ("wt-a", "wt-b"):
+        (tmp_path / name / "hdr").mkdir()
+        (tmp_path / name / "hdr" / "w.svh").write_text("`define W 8\n")
+    incdir_a = _plan("wt-a", [f"+incdir+{tmp_path / 'wt-a' / 'hdr'}"])
+    incdir_b = _plan("wt-b", [f"+incdir+{tmp_path / 'wt-b' / 'hdr'}"])
+    assert "+incdir+hdr" in incdir_a.fingerprint["cmd"]
+    assert incdir_a.shared_dir.name == incdir_b.shared_dir.name
+
+
+def test_an_output_option_argument_still_relativises_but_is_never_read(
+    tmp_path, monkeypatch
+):
+    """`-o <in-root path>` must not carry a checkout prefix into the key —
+    and must not be hashed either (#542 review)."""
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+        (tmp_path / name / "out").mkdir()
+
+    def _plan(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["-o", str(tmp_path / name / "out" / "simv")],
+        )._compile_plan()
+
+    plan_a = _plan("wt-a")
+    assert "out/simv" in plan_a.fingerprint["cmd"]
+    assert plan_a.shared_dir.name == _plan("wt-b").shared_dir.name
+    sim = _cache_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=["-o", str(tmp_path / "wt-a" / "out" / "simv")],
+    )
+    assert (
+        sim._fingerprint_cmd_inputs(plan_a.key_cmd, plan_a.fingerprint["sources"]) == []
     )

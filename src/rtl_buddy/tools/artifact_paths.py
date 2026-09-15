@@ -1,4 +1,6 @@
+import hashlib
 import json
+import os
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Iterable
@@ -248,14 +250,74 @@ def test_build_dir_name(test_name: str) -> str:
     return f"{BUILD_DIR_PREFIX}_{sanitize_artifact_component(test_name)}"
 
 
-def shared_build_dir(suite_dir: str | Path, compile_key: str) -> Path:
+#: What :func:`shared_build_namespace` calls a suite that IS the project
+#: root, where the relative path has no components at all.
+_ROOT_SUITE_NAMESPACE = "_root"
+
+
+def shared_build_namespace(suite_dir: str | Path, project_root: str | Path) -> str:
+    """The per-suite directory name a persistent build cache root holds (#542).
+
+    The suite directory spelled relative to the project root with ``/``
+    replaced by ``__`` (``verif/demo_tiny_alu`` -> ``verif__demo_tiny_alu``),
+    so one cache root can serve every suite of a project without two of them
+    meeting in one directory.
+
+    Deliberately says nothing about *which checkout* the suite came from:
+    the whole point of the cache is that two workspaces of one project — a
+    per-PR Jenkins workspace, a developer's ``git worktree`` — reuse each
+    other's builds, and a namespace carrying the checkout path would give
+    each of them a private tree that a workspace wipe then throws away. What
+    keeps two checkouts on *different content* apart is the compile key,
+    which is content-addressed in this mode, not the namespace.
+
+    A suite outside the project root (or one whose root cannot be spelled,
+    on Windows across drives) has no relative name to use, so it falls back
+    to a digest of its absolute path: unique, stable, and not shared with
+    any other suite.
+    """
+    suite = os.path.realpath(str(suite_dir))
+    root = os.path.realpath(str(project_root)) if project_root else None
+    if root is not None:
+        try:
+            relative = os.path.relpath(suite, root)
+        except ValueError:
+            # Different drives on Windows: there is no relative spelling.
+            relative = os.pardir
+        if relative != os.pardir and not relative.startswith(os.pardir + os.sep):
+            parts = [part for part in Path(relative).parts if part != os.curdir]
+            return (
+                "__".join(sanitize_artifact_component(part) for part in parts)
+                or _ROOT_SUITE_NAMESPACE
+            )
+    return hashlib.sha256(suite.encode("utf-8")).hexdigest()[:12]
+
+
+def shared_build_dir(
+    suite_dir: str | Path,
+    compile_key: str,
+    *,
+    cache_root: str | Path | None = None,
+    project_root: str | Path | None = None,
+) -> Path:
     """
     Return the compile-input-keyed build directory shared by all tests in a
     suite whose compile inputs hash to ``compile_key``.
 
     Lives under a dot-directory so it can never collide with a per-test
     artifact directory derived from a test name.
+
+    ``cache_root`` moves that directory out of the suite's artefact tree and
+    into a persistent cache (#542), under a per-suite namespace so several
+    suites — and several checkouts — can share one root. The in-tree default
+    is what every project without a configured root keeps, byte for byte.
     """
+    if cache_root is not None:
+        return (
+            Path(cache_root)
+            / shared_build_namespace(suite_dir, project_root)
+            / f"{BUILD_DIR_PREFIX}_{compile_key}"
+        )
     return (
         Path(suite_dir)
         / ARTIFACT_DIRNAME

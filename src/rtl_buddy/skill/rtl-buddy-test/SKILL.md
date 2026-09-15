@@ -101,3 +101,17 @@ stamp's age. `--rebuild` then forces a fresh compile; use it instead of deleting
 `artefacts/.shared-builds/`, and note that `--dispatch` implies `--share-build`,
 so dropping the flag there does not stop reuse. Read
 `rb --machine docs show known-issues` for the remaining limits.
+
+`shared-build-root` (`cfg-rtl-reg`, or `--shared-build-root`, or
+`RTL_BUDDY_SHARED_BUILD_ROOT`, in reverse precedence — it applies under
+`--dispatch` too, where the head forwards one resolved root to the build job
+and every sim job) moves those builds to
+`<root>/<suite-relative-to-project>/obj_dir_<key>` so a cache survives a
+workspace wipe. There the key is checkout-relative and content-addressed — filelist
+entries and in-root compile-line inputs (`+incdir+`, `-y`, `-v`, bare sources,
+and `-f`/`-F` lists expanded to what they name) alike, while a path-valued
+`+define+`/`-D`/`-G` stays verbatim and an unhashable input falls back to its
+stats: two checkouts with identical inputs reuse one directory, different
+inputs get their own, and enabling or disabling the root compiles once. Nothing prunes it —
+`find <root> -mindepth 2 -maxdepth 2 -name 'obj_dir_*' -mtime +14 -exec rm -rf
+{} +`, between runs and never during one.

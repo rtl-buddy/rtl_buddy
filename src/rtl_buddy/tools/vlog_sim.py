@@ -42,6 +42,7 @@ from .artifact_paths import (
     RESULT_JSON_NAME,
     SHARED_BUILDS_DIRNAME,
     shared_build_dir,
+    shared_build_namespace,
     test_artifact_dir,
     test_build_dir_name,
 )
@@ -397,6 +398,42 @@ _FILELIST_OPTION_RE = re.compile(r"^(\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*
 _INCDIR_OPTION = "+incdir+"
 _LIBRARY_DIR_OPTION = "-y"
 
+# Compile-LINE options that name a path, and what that path is (#542 review).
+# The value is ``("dir", recursive)`` or ``"file"``, matching what
+# :meth:`VlogSim._directory_listing` and :meth:`VlogSim._tracked_entry`
+# respectively need. Only the options whose argument is an *input* are here:
+# an output location (`-o`, `--Mdir`) must never reach the compile key, or a
+# warm rebuild would hash the binary it just produced and move its own key.
+_CMD_PATH_OPTIONS = {
+    _LIBRARY_DIR_OPTION: ("dir", False),
+    "-v": "file",
+    "-f": "filelist",
+    "-F": "filelist",
+}
+
+# How deep a nested `-f`/`-F` chain is followed when keying a persistent
+# cache, and the line shapes such a list may hold. Bounded so a pathological
+# (or, with the cycle guard, a merely repetitive) tree cannot turn a compile
+# key into a walk of the filesystem.
+#
+# Its own regex rather than `_FILELIST_OPTION_RE`: this one also accepts a
+# LOWERCASE `-f`, which rtl_buddy's generated `run.f` can never contain (the
+# filelist writer refuses one, `filelist.inline_f_disallowed`) but a
+# hand-written list the compile line points at may. Keeping the two separate
+# means adding it cannot change how a single generated `run.f` is stamped.
+_NESTED_FILELIST_MAX_DEPTH = 8
+_NESTED_FILELIST_OPTION_RE = re.compile(
+    r"^(\+(?:incdir|libext|define)\+|-[vyfF]\s+)?(.*)$"
+)
+
+# Compile-line options whose argument is an OUTPUT location. Their value must
+# never be read as an input: a key that hashed the binary a build produces
+# would move on every build and strand one cache directory per run. The
+# general guard is :func:`_is_managed_output_path` — this is the cheap,
+# certain half of it, for an output written somewhere the path says nothing
+# about (an absolute `builder-simv:`, say).
+_CMD_OUTPUT_OPTIONS = frozenset({"-o", "--Mdir", "-Mdir", "--exe-name"})
+
 # Directory names an `+incdir+` walk must not descend into (#478 review).
 #
 # rtl_buddy's own artefact trees are the load-bearing half: a `+incdir+.`
@@ -476,10 +513,23 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
 _NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PATTERNS
 
 # The stamp's own keys, as opposed to the compile fingerprint it wraps: the
-# builder's reported dependencies and the executable it produced. Removing
+# builder's reported dependencies, the executable it produced, and (in cache
+# mode) the project root its relative spellings are anchored to. Removing
 # them leaves exactly the dict `_compile_fingerprint` returned, which is
 # what both the stamp comparison and `_fingerprint_sha` work on.
-_STAMP_META = frozenset({"deps", "deps_format", "simv"})
+#
+# `root` is META and never an input on purpose (#542): it is the ONE field
+# whose whole job is to differ between two checkouts that must still
+# validate each other's stamp, so comparing it would defeat the mode it
+# belongs to. Nothing reads it back — the relative spellings are re-anchored
+# against the *reader's* own root — but it is what makes a stamp found in a
+# shared cache self-describing for a human and for `rb graph`.
+_STAMP_META = frozenset({"deps", "deps_format", "simv", "root"})
+
+#: Environment override for the persistent shared-build cache root (#542).
+#: Below ``--shared-build-root`` and above the root config's
+#: ``cfg-rtl-reg.shared-build-root``.
+SHARED_BUILD_ROOT_ENV = "RTL_BUDDY_SHARED_BUILD_ROOT"
 
 # A directory-valued source entry is `[line, None, None, None, listing]`:
 # four elements of the ordinary `[path, size, mtime_ns, sha]` shape, all
@@ -557,6 +607,59 @@ def _stat_entry(path: str) -> list:
     except OSError:
         return [path, None, None]
     return [path, stat.st_size, stat.st_mtime_ns]
+
+
+def resolve_shared_build_root(raw, project_root) -> str | None:
+    """The persistent shared-build cache root in force, absolute, or None (#542).
+
+    ``raw`` is whatever the caller resolved from ``--shared-build-root``,
+    :data:`SHARED_BUILD_ROOT_ENV` or the root config, in that precedence;
+    blank and ``None`` both mean "no cache, use the in-tree default".
+
+    A relative root anchors to the **project root**, not the cwd: the same
+    configured value is read again by a build job on a compute node and by
+    every simulation job, each with its own working directory, and a root
+    that moved with the cwd would give them different caches. ``~`` and
+    ``$VAR`` are expanded, because a cache root is exactly the kind of
+    site-specific path a shared config spells with one.
+    """
+    if raw is None:
+        return None
+    text = os.path.expandvars(os.path.expanduser(str(raw))).strip()
+    if not text:
+        return None
+    if not os.path.isabs(text):
+        text = os.path.join(str(project_root), text)
+    return os.path.normpath(text)
+
+
+def _relativise_paths(text: str, root: str) -> str:
+    """``text`` with every mention of ``root`` stripped to a relative path.
+
+    The one transform the cache-mode compile key and stamp spellings share
+    (#542), applied to whole ``run.f`` *lines* and whole command *tokens*
+    rather than to bare paths, because that is what both of those are: a
+    line is ``+incdir+/proj/rtl/inc`` or ``-y /proj/lib``, and a token is
+    ``--Mdir=/proj/verif/alu/artefacts/...`` or a plain source argument.
+    Substring replacement handles all of them without a per-option table
+    that would silently miss the next flag somebody adds — and a token
+    carrying two of them (``-CFLAGS=-I/proj/a -I/proj/b``) at once.
+
+    Paths *outside* ``root`` are left absolute, which is what makes them
+    still comparable: a toolchain header is at the same place for every
+    checkout on the host, so keeping its absolute spelling is both honest
+    and checkout-independent.
+
+    Not a general path function: it is deliberately textual and therefore
+    exact-prefix-only, so a workspace reached through a different symlink
+    spelling is a different (still correct) key rather than a wrong match.
+    """
+    if not isinstance(text, str) or not root or root == os.sep:
+        return text
+    if text == root:
+        return os.curdir
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return text.replace(prefix, "")
 
 
 # One content hash per (path, size, mtime_ns) per process. A suite
@@ -846,6 +949,73 @@ def _is_pruned_walk_dir(name: str) -> bool:
         or name in _PRUNED_WALK_DIRNAMES
         or name.startswith(_PRUNED_WALK_DIR_PREFIXES)
     )
+
+
+def _is_managed_output_path(path: str) -> bool:
+    """Does ``path`` name something inside an rtl_buddy-managed output tree?
+
+    The path-shaped half of what :func:`_is_pruned_walk_dir` does by name
+    (#542 review). A compile-line token resolving in there is a build
+    OUTPUT, not an input, and folding an output's content into the compile
+    key would move the key on every build — one new cache directory per run,
+    forever. So it stays what it already was on the command line: text.
+
+    Deliberately stricter than the ``+incdir+`` walk, which *does* track a
+    ``preproc`` hook's generated headers under ``artefacts/<test>/``. There
+    the directory is named as a search path and its outputs are excluded by
+    name; here a single path is named by an option this code may not
+    recognise, and "it is under an artefact tree" is the only signal
+    available. Missing such a header costs the key nothing it had before.
+    """
+    return any(
+        _is_pruned_walk_dir(part) for part in Path(path).parts if part not in ("/", "")
+    )
+
+
+def _key_spelling_is_relocated(spelling: str) -> bool:
+    """Does ``spelling`` name a path RELATIVE to a project root (#542 review)?
+
+    In cache mode that is exactly "inside the project root", because that is
+    the only thing :meth:`VlogSim._stamp_relpath` relativises. Those are the
+    paths of which every checkout has its OWN copy — so when one of them
+    cannot be content-hashed, the key must fall back to something rather
+    than to nothing, or two checkouts' differing copies collide.
+
+    A path left absolute is a path outside every project root: two checkouts
+    naming it name the same bytes on the same host, so "no hash" there is
+    not a collision and its stats have no business in the key.
+    """
+    match = _FILELIST_OPTION_RE.match(spelling)
+    path = match.group(2) if match else spelling
+    return bool(path) and not os.path.isabs(path)
+
+
+def _key_content_identity(spelling, entry, *, relocated: bool):
+    """What one tracked input contributes to a content-addressed key.
+
+    ``entry`` is a ``[path, size, mtime_ns, sha]`` stamp; ``spelling`` is the
+    name the key records, which is not always ``entry[0]`` (a directory
+    listing keys its files by name relative to the directory).
+
+    The hash when there is one. When there is not — an input over
+    :data:`_CONTENT_HASH_MAX_BYTES`, an unreadable one — an in-root path falls back
+    to ``[spelling, size, mtime_ns]`` (#542 review): a ROM image or a memory
+    init file above the cap is exactly the kind of input two branches
+    differ in, and recording it as ``[spelling, null]`` let two checkouts
+    with different images share one persistent build directory. The cost is
+    that such a suite stops sharing across checkouts at all, since mtimes
+    differ per checkout — correct over convenient, and documented.
+
+    The two shapes are different lengths, so a hashed entry can never
+    compare equal to an unhashed one.
+    """
+    if not isinstance(entry, list) or len(entry) != 4:
+        return entry
+    if entry[-1] is not None:
+        return [spelling, entry[-1]]
+    if relocated:
+        return [spelling, entry[1], entry[2]]
+    return [spelling, None]
 
 
 def _is_non_input_file(name: str) -> bool:
@@ -1259,6 +1429,7 @@ class VlogSim:
         replay_run_id=None,
         suite_dir=None,
         share_build=False,
+        shared_build_root=None,
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
@@ -1309,6 +1480,12 @@ class VlogSim:
         # with identical inputs share one simv (#293). The resolved shared
         # dir is only known once compile() has written the filelist.
         self.share_build = share_build
+        # Where those shared build dirs live, when a persistent cache root
+        # is configured (#542). Resolved below, once `_project_root` exists:
+        # a relative root anchors to the project, not to this process's cwd.
+        # None — the default — is the in-tree
+        # `<suite>/artefacts/.shared-builds/` layout, unchanged.
+        self._configured_shared_build_root = shared_build_root
         # `--rebuild`: distrust the stamp and compile anyway (#494). The
         # escape hatch for the case no stamp can see — a source restored to
         # byte-identical content by a tool that also changed how it is
@@ -1419,6 +1596,30 @@ class VlogSim:
         # (a vendored toolchain, an in-repo venv) is excluded from hashing,
         # and finding it costs a PATH walk that most instances never need.
         self._toolchain_prefix = _UNSET
+
+        # Cache mode (#542), settled here because it needs `_project_root`
+        # to anchor a relative root. It is a property of the SHARED build
+        # only: with `--share-build` off there is no directory a second
+        # checkout could reuse, so a configured root would buy nothing and
+        # only re-spell the per-test stamps.
+        self.shared_build_root = (
+            resolve_shared_build_root(
+                self._configured_shared_build_root, self._project_root
+            )
+            if share_build
+            else None
+        )
+        if self.shared_build_root is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.shared_build_root",
+                test=self.test_name,
+                root=self.shared_build_root,
+                namespace=shared_build_namespace(
+                    self.suite_work_dir, self._project_root
+                ),
+            )
 
         output_dir = Path(self.suite_work_dir) / "artefacts"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1915,6 +2116,52 @@ class VlogSim:
             toolchain_prefix=self._get_toolchain_prefix(),
         )
 
+    def _stamp_relpath(self, path):
+        """How this instance spells ``path`` in a build stamp and compile key.
+
+        Unchanged in the default mode, and relative to the project root in
+        cache mode (#542) — for every path under that root; anything outside
+        it (a toolchain header, the cache directory itself) keeps its
+        absolute spelling, which is already the same for every checkout on
+        the host. One canonical spelling per stamp, never a mix of both: a
+        reader re-anchors what it finds against *its own* root, so an entry
+        left absolute by accident would only ever validate for the checkout
+        that wrote it.
+        """
+        if self.shared_build_root is None:
+            return path
+        return _relativise_paths(path, self._project_root)
+
+    def _stamp_abspath(self, path):
+        """The inverse of :meth:`_stamp_relpath` for a *plain path* entry.
+
+        Re-anchors a stamp's relative ``deps``/``simv`` spelling against
+        THIS checkout's project root, which is what lets checkout B re-stat
+        the files checkout A recorded. Only plain paths go through it —
+        ``sources`` entries are ``run.f`` lines that carry option prefixes,
+        and they are only ever compared, never re-opened.
+        """
+        if self.shared_build_root is None or not isinstance(path, str):
+            return path
+        if os.path.isabs(path):
+            return path
+        return os.path.normpath(os.path.join(self._project_root, path))
+
+    def _stamp_tracked_entry(self, stored_path):
+        """:meth:`_tracked_entry` for a path spelled the way a stamp spells it.
+
+        Stats the file this checkout has (via :meth:`_stamp_abspath`) and
+        reports it under the stored spelling, so :func:`_entry_matches` —
+        which compares ``entry[0]`` first — is comparing content and stats
+        rather than two checkouts' prefixes.
+        """
+        return [stored_path] + self._tracked_entry(self._stamp_abspath(stored_path))[1:]
+
+    def _stamp_simv_entry(self, simv_path):
+        """The stamp's ``simv`` entry for ``simv_path``, in this mode's spelling."""
+        path = str(simv_path)
+        return [self._stamp_relpath(path)] + _stat_entry(path)[1:]
+
     def _is_suite_log(self, path) -> bool:
         """Is ``path`` the head's own ``rtl_buddy.log`` in the suite directory?
 
@@ -2135,18 +2382,319 @@ class VlogSim:
                 listing = self._directory_listing(
                     resolved, recursive=option == _INCDIR_OPTION
                 )
+            # In cache mode the line is re-spelled relative to the project
+            # root (#542) so two checkouts of the same content produce the
+            # same entry; in the default mode this is the raw line, byte for
+            # byte. Either way it is ONE canonical spelling per stamp.
+            stamp_line = self._stamp_relpath(line)
             if listing is not None:
-                # The raw line stays entry[0] here too, so a listing that
-                # changes moves the stamp and never the compile key.
-                stamps.append([line, None, None, None, listing])
+                # The line stays entry[0] here too, so a listing that
+                # changes moves the stamp and — outside cache mode — never
+                # the compile key.
+                stamps.append([stamp_line, None, None, None, listing])
             elif os.path.isfile(resolved):
-                # The raw line, not the resolved path, stays entry[0]:
-                # it is what run.f contains and what the compile key
-                # hashes.
-                stamps.append([line] + self._tracked_entry(resolved)[1:])
+                # The line, not the resolved path, stays entry[0]: it is
+                # what run.f contains and what the compile key hashes.
+                stamps.append([stamp_line] + self._tracked_entry(resolved)[1:])
             else:
-                stamps.append([line, None, None, None])
+                stamps.append([stamp_line, None, None, None])
         return stamps
+
+    def _key_input_path(self, resolved):
+        """``resolved`` if it is an in-root input worth reading, else None.
+
+        One gate for both ways a path reaches the key — a compile-line token
+        and a nested filelist's entry — so the two cannot disagree about
+        what counts as an input.
+        """
+        root = self._project_root
+        if not (resolved == root or resolved.startswith(root + os.sep)):
+            # Outside the project root: two checkouts naming it name the
+            # same bytes, so its absolute text is identity enough.
+            return None
+        cache_root = self.shared_build_root
+        if cache_root is not None and (
+            resolved == cache_root or resolved.startswith(cache_root + os.sep)
+        ):
+            # The build's own directory. Reading it would make the key a
+            # function of the output it names.
+            return None
+        if _is_managed_output_path(resolved):
+            # Anything under an artefact tree, a `.shared-builds/` or an
+            # `obj_dir*` is written by a build, not read by one.
+            return None
+        return resolved
+
+    def _cmd_token_roles(self, key_cmd):
+        """Which compile-line tokens name a PATH, and what kind (#542 review).
+
+        Yields ``(index, prefix, raw, kind)``: the token's position, the
+        ``run.f``-style option prefix the key records it under, the path as
+        written, and what to read out of it (``("dir", recursive)``,
+        ``"file"``, ``"filelist"``, or ``"output"``).
+
+        A token NOT yielded here is not a path, and that is the whole point
+        of the distinction (#542 review): the compile line's relativisation
+        used to apply to every token, so ``+define+DATA="/checkout/data.hex"``
+        became ``+define+DATA="data.hex"`` and two checkouts whose builds
+        baked in *different* absolute paths hashed to one key and shared one
+        binary. A define's value is compiled INTO the model; it is not a
+        path rtl_buddy may relocate, whoever it happens to point at. Same
+        for ``-D``, ``-G``, ``-pvalue+`` and any other ``key=value`` token:
+        they stay verbatim, so those checkouts get different keys.
+
+        The option this walker does recognise is one whose argument rtl_buddy
+        genuinely resolves as a search path or a source, which is the only
+        case where relocating is meaning-preserving.
+
+        ``"output"`` is yielded so ``-o <path>``'s TEXT relativises like any
+        other in-root path — a key must not carry the checkout prefix — while
+        :meth:`_cmd_path_tokens` drops it before anything is read: hashing
+        the binary a build produces would move the key on every build.
+        """
+        awaiting = None
+        for index, token in enumerate(key_cmd):
+            if not isinstance(token, str):
+                awaiting = None
+                continue
+            if awaiting is not None:
+                prefix, kind = awaiting
+                awaiting = None
+                yield (index, prefix, token, kind)
+                continue
+            if token.startswith(_INCDIR_OPTION):
+                # `+incdir+a+b` names two directories — the same reading
+                # every filelist parser gives it.
+                for part in token[len(_INCDIR_OPTION) :].split("+"):
+                    yield (index, _INCDIR_OPTION, part, ("dir", True))
+                continue
+            if token in _CMD_PATH_OPTIONS:
+                awaiting = (f"{token} ", _CMD_PATH_OPTIONS[token])
+                continue
+            if token in _CMD_OUTPUT_OPTIONS:
+                awaiting = (f"{token} ", "output")
+                continue
+            if token.startswith(_LIBRARY_DIR_OPTION) and len(token) > len(
+                _LIBRARY_DIR_OPTION
+            ):
+                yield (
+                    index,
+                    f"{_LIBRARY_DIR_OPTION} ",
+                    token[len(_LIBRARY_DIR_OPTION) :],
+                    ("dir", False),
+                )
+                continue
+            if token.startswith(("-", "+")):
+                # Some other option — a define, a warning switch, a flag.
+                # Its own text stays exactly as written; its argument, if it
+                # takes one, is judged on the next pass, because a boolean
+                # flag is routinely followed by a bare source
+                # (`--binary /proj/tb.sv`).
+                continue
+            if "=" in token:
+                # A bare `NAME=value`: a macro assignment, not a path, and
+                # its value may well be one that must stay absolute.
+                continue
+            yield (index, "", token, "file")
+
+    def _relativise_cmd(self, key_cmd):
+        """The compile line as the fingerprint records it.
+
+        Verbatim outside cache mode. Inside it, the tokens
+        :meth:`_cmd_token_roles` recognises as paths are relativised against
+        the project root and **everything else is left alone** — see that
+        method for why a define is not a path.
+        """
+        if self.shared_build_root is None:
+            return list(key_cmd)
+        relocatable = {index for index, _, _, _ in self._cmd_token_roles(key_cmd)}
+        return [
+            self._stamp_relpath(token) if index in relocatable else token
+            for index, token in enumerate(key_cmd)
+        ]
+
+    def _nested_filelist_tokens(self, filelist_path, *, seen, depth):
+        """Everything a nested ``-f``/``-F`` filelist names, recursively.
+
+        A filelist the COMPILE LINE points at is an input whose bytes decide
+        nothing on their own: what matters is the sources, include
+        directories and further filelists it names (#542 review). Hashing
+        only the list itself let two checkouts with byte-identical nested
+        lists over *different* RTL take one persistent build directory — and
+        for VCS and Icarus, which emit no dependency file, the stamp agreed
+        too, so the reuse was silent and the binary was the other checkout's.
+
+        ``run.f`` has no such gap: :meth:`_write_filelist` unrolls every
+        ``-F`` chain before writing, so the generated list is already flat
+        and its entries are stamped one by one.
+
+        Never raises and never fails a build: an unreadable list, a
+        malformed line and a missing entry are all simply not keyed on, and
+        the compile that follows reports the real problem far better than a
+        key derivation could. That is also why this reads the lines itself
+        rather than through :class:`~rtl_buddy.tools.vlog_filelist.VlogFilelist`,
+        whose reader is a *validator* — it raises on a malformed line and
+        refuses ``-f`` outright, neither of which may happen here.
+
+        Bounded by :data:`_NESTED_FILELIST_MAX_DEPTH` and cycle-safe on
+        ``realpath``, so a list that includes itself costs one visit.
+        """
+        real = os.path.realpath(filelist_path)
+        if depth > _NESTED_FILELIST_MAX_DEPTH or real in seen:
+            return
+        seen.add(real)
+        try:
+            with open(filelist_path) as filelist_fp:
+                lines = [
+                    stripped
+                    for stripped in (raw_line.strip() for raw_line in filelist_fp)
+                    if stripped and not stripped.startswith("//")
+                ]
+        except OSError:
+            return
+        base = os.path.dirname(os.path.abspath(filelist_path))
+        for line in lines:
+            match = _NESTED_FILELIST_OPTION_RE.match(line)
+            option = (match.group(1) or "").strip() if match else ""
+            entry_path = match.group(2) if match else line
+            if option in ("+define+", "+libext+"):
+                # Not paths. A define's value stays part of the list's own
+                # content hash, which is what already covers it.
+                continue
+            if entry_path.startswith('"') and entry_path.endswith('"'):
+                try:
+                    parsed = shlex.split(entry_path)
+                except ValueError:
+                    parsed = []
+                if len(parsed) == 1:
+                    entry_path = parsed[0]
+            parts = entry_path.split("+") if option == _INCDIR_OPTION else [entry_path]
+            for part in parts:
+                if not part:
+                    continue
+                resolved = self._key_input_path(
+                    os.path.normpath(os.path.join(base, part))
+                )
+                if resolved is None:
+                    continue
+                spelled = self._stamp_relpath(resolved)
+                if option in ("-f", "-F"):
+                    if os.path.realpath(resolved) in seen:
+                        # A list already visited on this chain contributes
+                        # once, under the spelling it was first reached by.
+                        continue
+                    yield (f"{option} {spelled}", resolved, "file")
+                    yield from self._nested_filelist_tokens(
+                        resolved, seen=seen, depth=depth + 1
+                    )
+                elif option == _INCDIR_OPTION:
+                    yield (f"{_INCDIR_OPTION}{spelled}", resolved, ("dir", True))
+                elif option == _LIBRARY_DIR_OPTION:
+                    yield (
+                        f"{_LIBRARY_DIR_OPTION} {spelled}",
+                        resolved,
+                        ("dir", False),
+                    )
+                else:
+                    yield (spelled, resolved, "file")
+
+    def _cmd_path_tokens(self, key_cmd):
+        """Compile-LINE inputs inside the project root, with their kind.
+
+        Yields ``(spelling, resolved, kind)`` — the ``run.f``-style spelling
+        the compile key records (``+incdir+rel``, ``-y rel``, or a bare
+        ``rel``), the absolute path it resolves to, and what to read out of
+        it.
+
+        Recognition is the same rule :func:`_relativise_paths` uses — an
+        ABSOLUTE path under the project root — because that is the only
+        spelling whose meaning this class can settle. A *relative*
+        compile-line path is resolved by the builder against its own working
+        directory, not by rtl_buddy, so guessing at it here would be a
+        different guess from the one the build makes. (Inside a nested
+        filelist a relative entry IS unambiguous — it anchors to the list —
+        and :meth:`_nested_filelist_tokens` resolves it.)
+
+        Only ``+incdir+`` and ``-y`` are listed as directories: a directory
+        under any other option is not an input search path, and walking it
+        would be inventing one.
+        """
+        root_prefix = self._project_root + os.sep
+        for _, prefix, raw, kind in self._cmd_token_roles(key_cmd):
+            if kind == "output" or not raw.startswith(root_prefix):
+                continue
+            resolved = self._key_input_path(os.path.normpath(raw))
+            if resolved is None:
+                continue
+            spelling = f"{prefix}{self._stamp_relpath(raw)}"
+            if kind == "filelist":
+                # The list's own bytes, and then everything it names.
+                yield (spelling, resolved, "file")
+                yield from self._nested_filelist_tokens(resolved, seen=set(), depth=1)
+                continue
+            yield (spelling, resolved, kind)
+
+    def _fingerprint_cmd_inputs(self, key_cmd, sources):
+        """Content identity for the inputs the compile LINE names (#542 review).
+
+        ``sources`` covers what ``run.f`` names, and the cache-mode key
+        content-addresses every entry of it. The compile line can name
+        inputs too — an ``+incdir+``, a ``-y``, a ``-v``, or a bare source
+        path reaching the builder through ``builder-opts.compile-time`` or
+        a subclass's extra flags — and those entered the key as relativised
+        TEXT alone. Two checkouts whose ``run.f`` entries matched but whose
+        header content under such an ``+incdir+`` differed therefore picked
+        the SAME persistent ``obj_dir``, and the second rebuilt into it:
+        the clobber the content-addressed key exists to prevent, and under
+        dispatch a simulating job holds no build lock, so its ``simv`` can
+        be replaced underneath it.
+
+        So each such path contributes what its ``run.f`` equivalent
+        contributes — a file its ``sha``, an ``+incdir+``/``-y`` directory
+        the ``[name, sha]`` pairs of its listing, pruned and filtered by the
+        same rules — and the key moves when that content moves.
+
+        A path ``run.f`` already names under the same spelling is skipped:
+        its identity is in ``sources``, and hashing it twice would only buy
+        a second walk of the same tree.
+
+        Cache mode only, and never part of the fingerprint: the stamp's
+        comparison is an exact-equality bucket, so a listing stored there
+        would reintroduce the mtime sensitivity #494 removed — and adding a
+        key to the fingerprint would invalidate every stamp ever written,
+        including every default-mode one.
+        """
+        covered = {entry[0] for entry in sources if isinstance(entry, list) and entry}
+        entries = []
+        for spelling, resolved, kind in self._cmd_path_tokens(key_cmd):
+            if spelling in covered:
+                continue
+            # Everything here is in-root by construction, so an input that
+            # cannot be hashed falls back to its stats rather than to
+            # nothing (#542 review) — see :func:`_key_content_identity`.
+            if kind == "file":
+                if not os.path.isfile(resolved):
+                    continue
+                entry = _key_content_identity(
+                    spelling, self._tracked_entry(resolved), relocated=True
+                )
+            else:
+                if not os.path.isdir(resolved):
+                    continue
+                listing = self._directory_listing(resolved, recursive=kind[1])
+                if listing is None:
+                    continue
+                entry = [
+                    spelling,
+                    [
+                        _key_content_identity(inner[0], inner, relocated=True)
+                        if isinstance(inner, list) and inner
+                        else inner
+                        for inner in listing
+                    ],
+                ]
+            entries.append(entry)
+        return entries
 
     def _fingerprint_toolchain(self, exe):
         """Which simulator install this build would come out of.
@@ -2205,14 +2753,58 @@ class VlogSim:
         here would silently disable reuse rather than error.
         """
         return {
-            "cmd": list(key_cmd),
+            # Relativised in cache mode (#542), but only the tokens that
+            # really are paths: an `-o`, a `-y` or a bare source argument
+            # under the project root would otherwise make every entry of
+            # this dict a function of the checkout path, while a
+            # `+define+DATA="/checkout/data.hex"` must keep the value the
+            # model is about to bake in (#542 review). See
+            # :meth:`_cmd_token_roles`.
+            "cmd": self._relativise_cmd(key_cmd),
             "env": dict(sorted(self._get_extra_compile_env().items())),
             "sources": self._fingerprint_filelist_sources(filelist_path),
             "toolchain": self._fingerprint_toolchain(key_cmd[0]),
         }
 
     @staticmethod
-    def _compile_config_key(fingerprint):
+    def _key_source_entry(entry, *, content: bool):
+        """One ``sources`` entry as the compile key reads it.
+
+        Path-only by default — ``entry[0]``, the run.f line — which is what
+        keeps an edit rebuilding *in place* rather than stranding one
+        obj_dir per edit. With ``content`` (cache mode, #542) the entry's
+        content digest joins it: the ``sha`` of a file, and the
+        ``[name, sha]`` pairs of a directory entry's listing. Size and
+        mtime are excluded from both, exactly as :func:`_entry_identity`
+        excludes them, so a ``touch`` or a rebuilt byte-identical generated
+        file never moves the key.
+
+        An entry whose shape this version did not write contributes itself
+        unchanged: an unrecognised shape is "we do not know", and the key's
+        job is to be a stable function of whatever it was handed.
+        """
+        if not content or not isinstance(entry, list) or not entry:
+            return entry[0] if isinstance(entry, list) and entry else entry
+        relocated = isinstance(entry[0], str) and _key_spelling_is_relocated(entry[0])
+        if _is_directory_entry(entry):
+            # The directory decides, not each file: a listing's names are
+            # relative to it by construction, so asking them would say
+            # "relative" even for an include tree outside the project.
+            return [
+                entry[0],
+                [
+                    _key_content_identity(inner[0], inner, relocated=relocated)
+                    if isinstance(inner, list) and inner
+                    else inner
+                    for inner in entry[-1]
+                ],
+            ]
+        if len(entry) == 4:
+            return _key_content_identity(entry[0], entry, relocated=relocated)
+        return entry
+
+    @staticmethod
+    def _compile_config_key(fingerprint, *, content: bool = False, cmd_inputs=None):
         """Short stable hash naming the shared build dir.
 
         Excludes source size/mtime/content-hash — and the toolchain's
@@ -2222,17 +2814,45 @@ class VlogSim:
         ``entry[0]``, the run.f line, is read out of each source entry, so
         adding the content hash to the stamp in #494 left every existing
         key unchanged.
+
+        ``content`` inverts that trade for the persistent cache (#542), and
+        only there. A cache root outlives the workspace and is shared by
+        every checkout on the host, so "rebuild in place" stops being a
+        saving and becomes a hazard: two worktrees on different commits
+        whose ``run.f`` has the same *shape* would take turns overwriting
+        one obj_dir, and under dispatch a build replaced beneath a running
+        fan-out makes its simulation jobs decline and fail (#539). Hashing
+        the content instead makes the directory content-addressed —
+        identical inputs anywhere reuse it, different inputs get their own —
+        at the price of one directory per distinct input set, which is what
+        a cache is for. The stamp check still runs on top of it.
+
+        The caller pairs ``content`` with a fingerprint whose paths are
+        already relativised (:meth:`_stamp_relpath`); the two halves of
+        "checkout-independent" are not separable, and neither is ever
+        applied on the in-tree default path.
+
+        ``cmd_inputs`` is the same content identity for the inputs the
+        compile LINE names rather than ``run.f`` — see
+        :meth:`_fingerprint_cmd_inputs`, which is where the reasoning is.
+        It joins the key only under ``content``, as its own field, so the
+        default key's dict is literally the dict it always was.
         """
         config = {
             "cmd": fingerprint["cmd"],
             "env": fingerprint["env"],
-            "filelist": [entry[0] for entry in fingerprint["sources"]],
+            "filelist": [
+                VlogSim._key_source_entry(entry, content=content)
+                for entry in fingerprint["sources"]
+            ],
             # The install, not its version: a rebuilt-in-place simulator
             # should reuse this dir (the stamp catches the staleness), while
             # a genuinely different install gets its own, so an A/B keeps
             # both builds instead of overwriting one with the other.
             "toolchain": fingerprint["toolchain"]["exe"],
         }
+        if content:
+            config["cmd_inputs"] = cmd_inputs or []
         digest = hashlib.sha256(
             json.dumps(config, sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -2395,7 +3015,14 @@ class VlogSim:
                 declared = os.path.normpath(os.path.join(compile_cwd, prerequisite))
                 if os.path.realpath(declared) != filelist_path:
                     seen.setdefault(declared, None)
-        return [self._tracked_entry(path) for path in sorted(seen)]
+        # Sorted by the STORED spelling, not by the absolute path: the list
+        # is compared position by position, and in cache mode a project path
+        # sorts relative while a toolchain header stays absolute — so two
+        # checkouts at different prefixes would otherwise interleave the two
+        # kinds differently and never match (#542). Identical to
+        # `sorted(seen)` in the default mode, where the spelling is the path.
+        spelled = sorted((self._stamp_relpath(path), path) for path in seen)
+        return [[stored] + self._tracked_entry(path)[1:] for stored, path in spelled]
 
     def _deps_unchanged(self, test_name, deps, *, quiet=False):
         """Have any of the stamp's recorded inputs changed on disk?
@@ -2424,7 +3051,7 @@ class VlogSim:
                 return self._note_stamp_mismatch(
                     "the stamp's dependency list is corrupt"
                 )
-            if not _entry_matches(entry, self._tracked_entry(entry[0])):
+            if not _entry_matches(entry, self._stamp_tracked_entry(entry[0])):
                 # The one question worth answering when a warm run
                 # unexpectedly recompiles.
                 if not quiet:
@@ -2497,6 +3124,17 @@ class VlogSim:
             # honest reading is one rebuild — after which the stamp says
             # which it is.
             return self._note_stamp_mismatch("the stamp predates dependency tracking")
+        if (stored.get("root") is not None) != (self.shared_build_root is not None):
+            # A stamp's tracked inputs are spelled relative to a project root
+            # in cache mode and absolute outside it (#542). Comparing across
+            # the two would be comparing spellings, and re-anchoring a
+            # *relative* entry with no root to fall back on would stat it
+            # against this process's working directory — so the honest reading
+            # of a stamp from the other mode is one rebuild. This is also why
+            # enabling or disabling the cache root recompiles once.
+            return self._note_stamp_mismatch(
+                "the stamp was written in the other shared-build mode"
+            )
         # The executable is an *output*, so the input fingerprint says
         # nothing about it. That was harmless while the output always lived
         # in a directory named after those inputs, and stops being harmless
@@ -2505,7 +3143,7 @@ class VlogSim:
         # test_a's stamp keeps validating after test_b overwrote the binary
         # they both point at, and test_a silently simulates test_b's build
         # (#369).
-        if stored.get("simv") != _stat_entry(str(simv_path)):
+        if stored.get("simv") != self._stamp_simv_entry(simv_path):
             if not quiet:
                 log_event(
                     logger,
@@ -2833,8 +3471,28 @@ class VlogSim:
         plan.fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
 
         if plan.unsupported_reason is None:
+            cache_root = self.shared_build_root
             shared_dir = shared_build_dir(
-                self.suite_work_dir, self._compile_config_key(plan.fingerprint)
+                self.suite_work_dir,
+                # Content-addressed exactly where the directory is
+                # persistent and shared between checkouts (#542).
+                self._compile_config_key(
+                    plan.fingerprint,
+                    content=cache_root is not None,
+                    # Everything the compile line names that `run.f` does
+                    # not, so an `+incdir+` reaching the builder through
+                    # `builder-opts.compile-time` is as content-addressed as
+                    # a filelist entry (#542 review).
+                    cmd_inputs=(
+                        self._fingerprint_cmd_inputs(
+                            key_cmd, plan.fingerprint["sources"]
+                        )
+                        if cache_root is not None
+                        else None
+                    ),
+                ),
+                cache_root=cache_root,
+                project_root=self._project_root,
             )
             plan.shared_dir = shared_dir
             self._shared_build_dir = str(shared_dir)
@@ -3228,7 +3886,9 @@ class VlogSim:
         it actually ran.
         """
         if self.last_build_stamp is not None:
-            self.last_build_stamp["simv"] = _stat_entry(simv_path)
+            # Spelled exactly as the stamp spells it, so the head's audit
+            # compares two stats and never two prefixes (#542).
+            self.last_build_stamp["simv"] = self._stamp_simv_entry(simv_path)
 
     def adopt_group_build(self):
         """Take the build a same-key sibling just made, or say why not (#535).
@@ -3303,10 +3963,15 @@ class VlogSim:
         stored_format = stored.get("deps_format")
         if stored_format != _DEPS_FORMAT:
             return None, f"stamp dependency format {stored_format} != {_DEPS_FORMAT}"
+        if (stored.get("root") is not None) != (self.shared_build_root is not None):
+            # Same fail-closed reading as `_build_stamp_is_valid`'s: the
+            # exact-equality bucket below skips `root` on purpose, so nothing
+            # else here would notice the two spellings (#542).
+            return None, "stamp written in the other shared-build mode"
         simv_path = self._get_simv_path()
-        if not Path(simv_path).is_file() or stored.get("simv") != _stat_entry(
-            simv_path
-        ):
+        if not Path(simv_path).is_file() or stored.get(
+            "simv"
+        ) != self._stamp_simv_entry(simv_path):
             return None, "simv changed"
         # Everything but the tracked inputs, compared exactly. The compile
         # key already fixes the command and the toolchain's identity, so
@@ -3324,7 +3989,7 @@ class VlogSim:
             if not isinstance(entry[0], str):
                 # `os.stat` takes a file *descriptor* for an int.
                 return None, "unreadable dependency entry"
-            if not _entry_matches(entry, self._tracked_entry(entry[0])):
+            if not _entry_matches(entry, self._stamp_tracked_entry(entry[0])):
                 return "drift", self._note_group_input_drift(entry[0])
         # Listed now, under the lock: the plan's listing predates the wait
         # for it, and a file another process added to a tracked directory
@@ -3929,7 +4594,17 @@ class VlogSim:
                                 **fingerprint,
                                 "deps": deps,
                                 "deps_format": _DEPS_FORMAT,
-                                "simv": _stat_entry(self._get_simv_path()),
+                                "simv": self._stamp_simv_entry(self._get_simv_path()),
+                                # What the relative spellings above are
+                                # anchored to, in cache mode (#542). Never
+                                # compared — see `_STAMP_META` — but it is
+                                # what makes a stamp sitting in a shared
+                                # cache say which checkout last wrote it.
+                                **(
+                                    {"root": self._project_root}
+                                    if self.shared_build_root is not None
+                                    else {}
+                                ),
                             },
                             sort_keys=True,
                         ),
