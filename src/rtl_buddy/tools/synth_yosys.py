@@ -21,6 +21,7 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.manifest import project_relative
 from ..phys.publish import invalidate_half, publish_synth
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
@@ -466,6 +467,50 @@ def emit_frontend_read_cmds(
 
     validate_frontend(opts, root_cfg)
     raise AssertionError("unreachable: validate_frontend rejects other frontends")
+
+
+def library_fingerprint(paths, root_cfg) -> list[str]:
+    """The technology libraries a generated script reads, as identity (#570).
+
+    Both backends resolve Liberty (and, for OpenROAD, LEF) from the
+    platform's PDK corner with the config's own ``lib-paths`` /
+    ``lef-paths`` appended, and both then name the resolved files in the
+    script. The config fingerprint recorded only *that* the run was
+    mapped, so the classic experiment — one design, one effort, two
+    corners named explicitly rather than through a platform — produced
+    two netlists with two areas under one ``options_sha256``, and a
+    reader comparing runs was told they were the same experiment.
+
+    **Paths, not contents.** A Liberty file is tens of megabytes and the
+    fingerprint is taken once per run; hashing the library set would put
+    a pass over the PDK into every synthesis to tell apart experiments
+    that the *names* already tell apart. A corner that is edited in place
+    under one path is the case a path cannot catch, and it is not the
+    case the reviewer describes or that a synthesis flow creates.
+
+    **In script order, not sorted.** ``read_liberty`` is order-sensitive
+    — a cell defined twice resolves to the file that supplied it last —
+    so two runs naming one set of libraries in two orders are two
+    experiments, and a sort would digest them as one.
+
+    Spelled project-relative where they sit inside the project, as every
+    other path in these documents is
+    (:func:`rtl_buddy.phys.manifest.project_relative`), so a checkout
+    moved between machines is not read as a different library set. A PDK
+    outside the project keeps its absolute path, which is the only
+    identity it has.
+
+    A ``root_cfg`` that cannot name a project root — absent, or a stand-in
+    that answers only the queries its caller needs — falls back to the
+    paths as resolved. This feeds `_publish_phys_model`, which never fails
+    a synthesis whose netlist is already on disk and already judged, and a
+    fingerprint helper is the last place worth raising from.
+    """
+    get_root = getattr(root_cfg, "get_project_rootdir", None)
+    root = get_root() if get_root is not None else None
+    if not root:
+        return [str(path) for path in paths]
+    return [project_relative(path, root) for path in paths]
 
 
 def elaboration_fingerprint(opts: SynthToolOpts) -> dict:
@@ -1091,14 +1136,19 @@ class YosysSynth:
         - `mapped`: which branch the script took, since the two consume
           different things below.
 
-        The two branches differ in exactly one field each. **Unmapped**
+        The two branches differ in what they consume below. **Unmapped**
         emits `abc {opts.abc_args}`, so `abc_args` is fed. **Mapped**
         does not: it hard-codes `_ABC_SCRIPT_NO_TIMING` /
         `_ABC_SCRIPT_WITH_TIMING` and passes ABC the delay target parsed
         out of the SDC, so `abc_args` is dropped -- a mapped run that
         sets it runs identically to one that does not -- and the target
         (`_period_ps`, `null` when the SDC named no clock, which also
-        selects the untimed script) is fed in its place.
+        selects the untimed script) is fed in its place. Mapped also feeds
+        `libs`, the resolved Liberty set the script reads
+        (:func:`library_fingerprint`): `mapped: true` alone said the run
+        was mapped without saying what against, so two corners named
+        through `lib-paths` digested identically (#570). The unmapped
+        branch has none by definition -- that is what makes it unmapped.
 
         `strategy` is in neither: this backend has no OpenROAD stage and
         no script line reads it.
@@ -1118,6 +1168,7 @@ class YosysSynth:
         }
         if mapped:
             fed["abc_period_ps"] = self._period_ps
+            fed["libs"] = library_fingerprint(self._resolve_lib_paths(), self.root_cfg)
         else:
             fed["abc_args"] = opts.abc_args
         return fed

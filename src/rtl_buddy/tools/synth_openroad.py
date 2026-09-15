@@ -11,6 +11,7 @@ from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
     elaboration_defines,
+    library_fingerprint,
     elaboration_fingerprint,
     emit_frontend_read_cmds,
     find_conflicting_driver_warnings,
@@ -757,13 +758,23 @@ class OpenRoadSynth:
           neither source: the ABC line is `_ABC_SCRIPT_AREA`, hard-coded,
           and the effort's `yosys.abc-args` is ignored on this backend too.
         - `map`: `resynth`, the command `strategy` maps to
-          (`_resynth_cmd`), and the sha256 of the pre-STA Tcl the effort
-          supplies. Those are the only two inputs `_write_or_script` reads
-          that the config block does not already record -- the rest of
-          the stage-2 opts is inert on this path, so the dataclass is not
-          digested.
+          (`_resynth_cmd`), the sha256 of the pre-STA Tcl the effort
+          supplies, and `lefs`, the resolved LEF set `_write_or_script`
+          reads. The rest of the stage-2 opts is inert on this path, so
+          the dataclass is not digested.
         - `params` and `defines`: the elaboration values, which shape the
           netlist as surely as an ABC script does.
+        - `libs`: the resolved Liberty set (:func:`library_fingerprint`),
+          at the top because both stages read it -- stage 1 for
+          `read_liberty`, `abc -liberty` and `stat -liberty`, stage 2 for
+          the timing it maps and reports against.
+
+        The libraries are not determined by `platform` alone, so recording
+        the platform name is not enough (#570): `_resolve_lib_paths` and
+        `_resolve_lef_paths` append the config's own `lib-paths` /
+        `lef-paths` to the platform's, and with no platform at all those
+        lists are the whole of it. Two corners named that way digested
+        identically while producing two netlists with two areas.
 
         The Tcl is hashed rather than embedded because it is content and
         not a path: an effort carries the snippet inline, so there is no
@@ -786,7 +797,9 @@ class OpenRoadSynth:
                 "pre_sta_tcl_sha256": text_sha256(
                     self.effort_cfg.get_openroad_pre_sta_tcl().rstrip()
                 ),
+                "lefs": library_fingerprint(self._resolve_lef_paths(), self.root_cfg),
             },
+            "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
             "params": self.synth_cfg.get_params(),
             "defines": self.synth_cfg.get_defines(),
         }

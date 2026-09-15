@@ -58,6 +58,8 @@ def _make_synth_cfg(
     platform=None,
     reglvl=None,
     tool_overrides=None,
+    lib_paths=None,
+    lef_paths=None,
 ):
     from rtl_buddy.config.model import ModelConfig
 
@@ -73,6 +75,8 @@ def _make_synth_cfg(
         platform=platform,
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
+        lib_paths=list(lib_paths or []),
+        lef_paths=list(lef_paths or []),
     )
 
 
@@ -5212,13 +5216,15 @@ def _effort_cfg(name="standard", synth_args="", abc_args="", pre_sta_tcl=""):
     )
 
 
-def _yosys_digest(tmp_path, *, mapped, tool_overrides=None, effort=None):
+def _yosys_digest(
+    tmp_path, *, mapped, tool_overrides=None, effort=None, lib_paths=None
+):
     """The options digest a YosysSynth would publish on `mapped`'s branch."""
     from rtl_buddy.phys.provenance import options_digest
 
     ys = YosysSynth(
         name="t/yosys",
-        synth_cfg=_make_synth_cfg(tool_overrides=tool_overrides),
+        synth_cfg=_make_synth_cfg(tool_overrides=tool_overrides, lib_paths=lib_paths),
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
         effort_cfg=effort or _effort_cfg(),
@@ -5271,13 +5277,92 @@ def test_a_yosys_run_digests_the_synth_args_its_script_appends(tmp_path):
     )
 
 
-def _openroad_digest(tmp_path, *, tool_overrides=None, effort=None, strategy=""):
+def test_a_mapped_yosys_run_digests_the_liberty_it_mapped_against(tmp_path):
+    """The finding (#570 round-15 review, Codex P2). The digest recorded
+    `mapped: true` and not *what against*, so the classic experiment — one
+    design, one effort, two corners named through `lib-paths` — produced
+    two netlists with two areas under one `options_sha256`, and a reader
+    comparing runs was told they were the same experiment."""
+    slow = _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib"])
+    fast = _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/fast.lib"])
+
+    assert slow is not None and slow != fast
+
+    # A second library is a different library set, not the same one.
+    assert (
+        _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"])
+        != slow
+    )
+    # `read_liberty` is order-sensitive, so an order is an experiment.
+    assert _yosys_digest(
+        tmp_path, mapped=True, lib_paths=["/pdk/io.lib", "/pdk/slow.lib"]
+    ) != _yosys_digest(
+        tmp_path, mapped=True, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"]
+    )
+    # And the same set twice is the same experiment.
+    assert _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib"]) == slow
+
+
+def test_an_unmapped_yosys_run_has_no_library_to_digest(tmp_path):
+    """`mapped` is `bool(self._resolve_lib_paths())`, so the unmapped branch
+    has an empty set by definition — recording it there would be a key that
+    can only ever hold one value."""
+    assert "libs" in _yosys_digest_fed(tmp_path, mapped=True)
+    assert "libs" not in _yosys_digest_fed(tmp_path, mapped=False)
+
+
+def _yosys_digest_fed(tmp_path, *, mapped, lib_paths=None):
+    """The mapping `_yosys_digest` hashes, for the tests that read keys."""
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(lib_paths=lib_paths or ["/pdk/slow.lib"]),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+        effort_cfg=_effort_cfg(),
+    )
+    return ys._phys_options(mapped=mapped)
+
+
+def test_the_library_fingerprint_is_project_relative_where_it_can_be(tmp_path):
+    """Spelled the way every other path in these documents is, so the same
+    checkout on two machines is one library set rather than two. A PDK
+    outside the project keeps the absolute path that is its only
+    identity."""
+    from rtl_buddy.tools.synth_yosys import library_fingerprint
+
+    class _Root:
+        def get_project_rootdir(self):
+            return str(tmp_path)
+
+    inside = tmp_path / "pdk" / "slow.lib"
+    assert library_fingerprint([str(inside), "/opt/pdk/fast.lib"], _Root()) == [
+        "pdk/slow.lib",
+        "/opt/pdk/fast.lib",
+    ]
+    # No project root to spell against: the resolved paths stand. A
+    # fingerprint helper is the last place worth raising from — it feeds
+    # a publish that never fails a synthesis already on disk.
+    assert library_fingerprint([str(inside)], None) == [str(inside)]
+    assert library_fingerprint([str(inside)], object()) == [str(inside)]
+
+
+def _openroad_digest(
+    tmp_path,
+    *,
+    tool_overrides=None,
+    effort=None,
+    strategy="",
+    lib_paths=None,
+    lef_paths=None,
+):
     """The options digest an OpenRoadSynth would publish."""
     from rtl_buddy.phys.provenance import options_digest
 
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(tool_overrides=tool_overrides),
+        synth_cfg=_make_synth_cfg(
+            tool_overrides=tool_overrides, lib_paths=lib_paths, lef_paths=lef_paths
+        ),
         tool_cfg=_make_or_tool_cfg(strategy=strategy),
     )
     or_synth.effort_cfg = effort or _effort_cfg()
@@ -5310,6 +5395,31 @@ def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_pat
         == base
     )
     assert _openroad_digest(tmp_path, effort=_effort_cfg(abc_args="-fast")) == base
+
+
+def test_an_openroad_run_digests_the_libraries_and_lefs_it_resolves(tmp_path):
+    """The platform name does not determine them: `_resolve_lib_paths` and
+    `_resolve_lef_paths` append the config's own `lib-paths` / `lef-paths`
+    to the platform's, and with no platform at all those lists are the
+    whole of it. Recording the platform alone left two corners — and two
+    LEF sets, which decide what stage 2 can place — digesting as one
+    (#570)."""
+    base = _openroad_digest(tmp_path, lib_paths=["/pdk/slow.lib"])
+    assert base is not None
+
+    assert _openroad_digest(tmp_path, lib_paths=["/pdk/fast.lib"]) != base
+    assert (
+        _openroad_digest(tmp_path, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"]) != base
+    )
+    # LEF is stage 2's own input and moves the digest on its own.
+    assert (
+        _openroad_digest(
+            tmp_path, lib_paths=["/pdk/slow.lib"], lef_paths=["/pdk/macro.lef"]
+        )
+        != base
+    )
+    # The same pair twice is the same experiment.
+    assert _openroad_digest(tmp_path, lib_paths=["/pdk/slow.lib"]) == base
 
 
 def test_an_openroad_run_digests_the_strategy_as_the_command_it_selects(tmp_path):
