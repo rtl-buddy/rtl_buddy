@@ -112,6 +112,12 @@ class RootRtlField:
     ``lint/cdc/``), where the ``./<flow>_regression.yaml`` filename
     convention cannot find it (#389). Relative paths anchor to the
     directory containing ``root_config.yaml``.
+
+    ``shared-build-root`` is the odd one out: not a manifest but the
+    persistent shared-build cache root (#542). It lives here because this
+    is the block that owns project-wide regression settings — and
+    deliberately not in ``cfg-dispatch``, since ``--share-build`` works
+    with no dispatch backend at all.
     """
 
     path: str = field(rename="reg-cfg-path")
@@ -122,7 +128,14 @@ class RootRtlField:
     fpv_path: str | None = field(rename="fpv-reg-cfg-path", default=None)
     lint_path: str | None = field(rename="lint-reg-cfg-path", default=None)
     elab_path: str | None = field(rename="elab-reg-cfg-path", default=None)
+    shared_build_root: str | None = field(rename="shared-build-root", default=None)
 
+
+#: ``cfg-rtl-reg`` keys that are not a flow's regression manifest. Listed
+#: so the lenient loader's unknown-key warning does not flag them (#542) —
+#: it exists to catch a misspelled ``*-reg-cfg-path``, not every setting
+#: the block grows.
+_REG_CFG_NON_PATH_KEYS = frozenset({"shared-build-root"})
 
 #: ``cfg-rtl-reg`` YAML key and :class:`RootRtlField` attribute per flow.
 #: One table, consulted by the ``rb <flow>-regression`` commands and the
@@ -168,7 +181,11 @@ def load_reg_cfg_paths(root_cfg_path: str | Path) -> RootRtlField | None:
         block = (data or {}).get("cfg-rtl-reg")
         if not isinstance(block, dict):
             return None
-        unknown = sorted(set(block) - {key for key, _ in REG_CFG_PATH_KEYS.values()})
+        unknown = sorted(
+            set(block)
+            - {key for key, _ in REG_CFG_PATH_KEYS.values()}
+            - _REG_CFG_NON_PATH_KEYS
+        )
         if unknown:
             log_event(
                 logger,
@@ -1132,6 +1149,17 @@ class RootConfig:
         if not os.path.isdir(path):
             path = "."
         return path
+
+    def get_shared_build_root(self) -> str | None:
+        """``cfg-rtl-reg.shared-build-root`` as configured, or None (#542).
+
+        The raw value: resolving it (``~``, ``$VAR``, relative-to-project)
+        belongs to :func:`~rtl_buddy.tools.vlog_sim.resolve_shared_build_root`,
+        which every consumer shares so the CLI flag, the environment
+        override and this key cannot anchor differently.
+        """
+        reg = getattr(self, "cfg_rtl_reg", None)
+        return getattr(reg, "shared_build_root", None) if reg is not None else None
 
     def get_project_path(self, subpath: str):
         """

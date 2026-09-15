@@ -216,6 +216,8 @@ cfg-tools:
 
 `cfg-rtl-reg.reg-cfg-path` is the fallback when `regression.yaml` is absent from the current directory. Optional flow fallbacks are `elab-reg-cfg-path`, `synth-reg-cfg-path`, `power-reg-cfg-path`, `fpga-reg-cfg-path`, `cdc-reg-cfg-path`, `fpv-reg-cfg-path`, and `lint-reg-cfg-path`. Relative paths resolve from `root_config.yaml`. A root-local manifest takes precedence over its fallback.
 
+`cfg-rtl-reg.shared-build-root` is optional and is not a manifest: it is the persistent directory shared builds are cached under, replacing the in-tree `artefacts/.shared-builds/` so the cache survives a workspace wipe. Relative paths resolve from the project root; `~` and `$VAR` are expanded. `--shared-build-root` overrides it, and `RTL_BUDDY_SHARED_BUILD_ROOT` sits between the two. It applies only with `--share-build` (which `--dispatch` implies), and enabling or disabling it recompiles each shared build once. See [Persistent build cache](../concepts/tests.md#persistent-build-cache).
+
 ### Parallel dispatch
 
 ```yaml

@@ -195,6 +195,7 @@ def _make_sim(
     *,
     test_name,
     share_build=True,
+    shared_build_root=None,
     pd=None,
     exe="verilator",
     family="verilator",
@@ -223,6 +224,9 @@ def _make_sim(
         sim_mode={"sim_to_stdout": True},
         suite_dir=str(suite_dir) if suite_dir is not None else None,
         share_build=share_build,
+        shared_build_root=(
+            str(shared_build_root) if shared_build_root is not None else None
+        ),
         rebuild=rebuild,
         run_id=run_id,
     )
@@ -5339,8 +5343,9 @@ def _lock_events(monkeypatch):
     return seen
 
 
+@pytest.mark.parametrize("cached", [False, True], ids=["in-tree", "cache-root"])
 def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, cached
 ):
     """Double-checked locking: the waiter re-decides after acquiring.
 
@@ -5385,8 +5390,18 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
     monkeypatch.setattr(artifact_lock_module, "log_console_event", _note_wait)
     compile_events = _console_events(monkeypatch)
 
-    first = _make_sim(tmp_path, monkeypatch, test_name="test_a")
-    second = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    # Parametrised over the cache root (#542) because the lock lives *in*
+    # the build directory, and in cache mode that directory is outside the
+    # workspace and shared with every other checkout on the host — so the
+    # two-writer case it serialises is the normal case there, not the
+    # exception. The waiter must still reuse rather than rebuild.
+    cache_root = tmp_path / "cache" if cached else None
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", shared_build_root=cache_root
+    )
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", shared_build_root=cache_root
+    )
     results = {}
 
     def _compile(key, sim):
@@ -5414,6 +5429,7 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
 
     _, fields = lock_events[0]
     shared_dir = Path(first._get_simv_path()).parent
+    assert (shared_dir.parent.parent == cache_root) is cached
     # The same directory-field schema every other compile.* build event
     # carries, so one consumer reads the whole family.
     assert {key: fields[key] for key in ("build_dir", "build_path")} == (
@@ -5671,3 +5687,393 @@ def test_an_unknown_stamp_age_says_so_rather_than_going_quiet():
     assert message == (
         "test_a: reused shared build obj_dir_abc (age unknown); nothing compiled"
     )
+
+
+# ---------------------------------------------------------------------------
+# Persistent shared-build cache root (#542)
+# ---------------------------------------------------------------------------
+
+
+def _write_checkout(root, *, rtl="module top; endmodule\n"):
+    """One checkout of a project: a suite under ``verif/`` over RTL above it.
+
+    The shape the cache is for — RTL shared between suites, so the compile
+    key's source lines are paths *through* the project root rather than
+    inside the suite.
+    """
+    suite = root / "verif" / "blk"
+    suite.mkdir(parents=True, exist_ok=True)
+    src = root / "rtl" / "a.sv"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(rtl)
+    return suite
+
+
+def _cache_sim(checkout, monkeypatch, *, cache_root, test_name, compile_opts=None):
+    suite = checkout / "verif" / "blk"
+    return _make_sim(
+        checkout,
+        monkeypatch,
+        test_name=test_name,
+        suite_dir=suite,
+        project_root=checkout,
+        model_path=suite / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+        shared_build_root=cache_root,
+        compile_opts=compile_opts,
+    )
+
+
+def test_the_cache_namespace_is_the_suite_relative_to_the_project_root(tmp_path):
+    """One root, many suites, many checkouts — and no collisions (#542).
+
+    The namespace is the suite's place in the PROJECT, never in the
+    filesystem, which is the whole point: two checkouts of one project must
+    land in the same namespace or the cache serves neither of them.
+    """
+    suite = tmp_path / "verif" / "demo_tiny_alu"
+    suite.mkdir(parents=True)
+    assert (
+        vlog_sim_module.shared_build_namespace(suite, tmp_path)
+        == "verif__demo_tiny_alu"
+    )
+    # A suite that IS the project root has no relative components to name.
+    assert vlog_sim_module.shared_build_namespace(tmp_path, tmp_path) == "_root"
+    # Outside the root there is no relative spelling, so a digest of the
+    # absolute path keeps it unique instead of colliding on "..".
+    outside = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+    outside.mkdir()
+    namespace = vlog_sim_module.shared_build_namespace(outside, tmp_path)
+    assert len(namespace) == 12 and all(ch in "0123456789abcdef" for ch in namespace)
+
+
+def test_shared_build_dir_helper_cache_layout(tmp_path):
+    """``<root>/<suite-namespace>/obj_dir_<key>`` — and the in-tree default
+    is untouched by the new keyword arguments (#542)."""
+    suite = tmp_path / "verif" / "blk"
+    suite.mkdir(parents=True)
+    assert shared_build_dir(
+        suite, "cafe0123", cache_root="/nfs/cache", project_root=tmp_path
+    ) == Path("/nfs/cache/verif__blk/obj_dir_cafe0123")
+    assert shared_build_dir(suite, "cafe0123", project_root=tmp_path) == (
+        suite / "artefacts" / ".shared-builds" / "obj_dir_cafe0123"
+    )
+
+
+def test_two_checkouts_of_identical_content_share_one_cache_dir(tmp_path, monkeypatch):
+    """The reported gap, in one assertion (#542).
+
+    Two checkouts at different paths, byte-identical content, one cache
+    root: cache mode puts them in the same content-addressed directory and
+    the second reuses the first's build, while the in-tree key — a function
+    of the absolute ``run.f`` lines — puts them in two.
+    """
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    second = _write_checkout(tmp_path / "wt-b")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _cache_sim(
+        first.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    shared = Path(sim_a._get_simv_path()).parent
+    assert shared.parent == cache / "verif__blk"
+
+    sim_b = _cache_sim(
+        second.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_b._compile_plan().shared_dir == shared, (
+        "the key is still a function of the checkout path"
+    )
+    assert sim_b.compile() == 0
+    assert len(calls) == 1, "the second checkout recompiled instead of reusing"
+    assert sim_b.last_compile["reused"] is True
+
+    # ...and without a root, the same two checkouts get two keys, which is
+    # exactly the cold cache the issue describes.
+    plain_a = _make_sim(
+        first.parent.parent,
+        monkeypatch,
+        test_name="t",
+        suite_dir=first,
+        project_root=first.parent.parent,
+        model_path=first / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+    )
+    plain_b = _make_sim(
+        second.parent.parent,
+        monkeypatch,
+        test_name="t",
+        suite_dir=second,
+        project_root=second.parent.parent,
+        model_path=second / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+    )
+    assert (
+        plain_a._compile_plan().shared_dir.name
+        != plain_b._compile_plan().shared_dir.name
+    )
+
+
+def test_a_cache_mode_key_separates_two_checkouts_on_different_content(
+    tmp_path, monkeypatch
+):
+    """Content-addressed, so the reuse is never a clobber (#542).
+
+    Path-only keys would give these two the same directory and let them
+    rebuild over each other — which under dispatch is a build replaced
+    beneath a running fan-out (#539). Different content must mean a
+    different directory, and the first checkout's build must survive it.
+    """
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    _write_checkout(tmp_path / "wt-b", rtl="module top; /* patched */ endmodule\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _cache_sim(
+        first.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_a.compile() == 0
+    dir_a = Path(sim_a._get_simv_path()).parent
+
+    sim_b = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="t")
+    dir_b = Path(sim_b._compile_plan().shared_dir)
+    assert dir_b != dir_a
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+    assert (dir_a / "simv").is_file(), "the edit clobbered the other checkout's build"
+    assert sorted(path.name for path in (cache / "verif__blk").iterdir()) == sorted(
+        [dir_a.name, dir_b.name]
+    )
+
+
+def test_a_stamp_written_by_one_checkout_validates_from_another(tmp_path, monkeypatch):
+    """The other half of a persistent cache: the STAMP has to travel too.
+
+    A stamp full of one checkout's absolute paths validates for nobody
+    else, so the cache would be found and then rejected on every entry.
+    In cache mode the tracked inputs are spelled relative to the project
+    root and re-anchored against the reader's own (#542).
+    """
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    _write_checkout(tmp_path / "wt-b")
+    calls = []
+    # A dependency file, so the deps half of the stamp is exercised and not
+    # just `sources`: it is the list that is re-stat'ed rather than only
+    # compared.
+    _install_fake_builder(monkeypatch, calls, depends=["../../../../rtl/a.sv"])
+
+    sim_a = _cache_sim(
+        first.parent.parent, monkeypatch, cache_root=cache, test_name="t"
+    )
+    assert sim_a.compile() == 0
+    stored = json.loads(_stamp_of(sim_a).read_text())
+    assert stored["root"] == os.path.realpath(tmp_path / "wt-a")
+    assert [entry[0] for entry in stored["sources"]] == ["rtl/a.sv"]
+    assert [entry[0] for entry in stored["deps"]] == ["rtl/a.sv"], (
+        "a dependency recorded absolute pins the stamp to one checkout"
+    )
+    # The executable lives in the cache, outside either project root, so it
+    # keeps the one absolute spelling both checkouts already agree on.
+    assert stored["simv"][0] == str(Path(sim_a._get_simv_path()))
+
+    sim_b = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="t")
+    plan = sim_b._compile_plan()
+    assert sim_b._build_stamp_is_valid(
+        plan.shared_dir, sim_b._get_simv_path(), plan.fingerprint
+    ), sim_b.stamp_mismatch_reason
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+
+    # ...and the re-stat is real: an edit in the SECOND checkout is seen
+    # through its own root, not the one the stamp names.
+    _touch(tmp_path / "wt-b" / "rtl" / "a.sv", "module top; /* edited */ endmodule\n")
+    sim_c = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="u")
+    assert sim_c.compile() == 0
+    assert len(calls) == 2
+
+
+def test_an_absolute_in_root_compile_flag_is_relativised_for_the_key(
+    tmp_path, monkeypatch
+):
+    """A ``+incdir+`` (or ``--Mdir``, or a bare source argument) spelled
+    absolute inside the project root is as much a function of the checkout
+    as a ``run.f`` line is, so cache mode relativises the command too
+    (#542)."""
+    cache = tmp_path / "cache"
+    first = _write_checkout(tmp_path / "wt-a")
+    _write_checkout(tmp_path / "wt-b")
+    (first.parent.parent / "inc").mkdir()
+    (tmp_path / "wt-b" / "inc").mkdir()
+
+    def _sim(checkout):
+        return _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"+incdir+{checkout / 'inc'}"],
+        )
+
+    sim_a, sim_b = _sim(tmp_path / "wt-a"), _sim(tmp_path / "wt-b")
+    assert "+incdir+inc" in sim_a._compile_plan().fingerprint["cmd"]
+    assert not any(
+        str(tmp_path / "wt-a") in token
+        for token in sim_a._compile_plan().fingerprint["cmd"]
+    )
+    assert sim_a._compile_plan().shared_dir == sim_b._compile_plan().shared_dir
+
+
+def test_the_default_mode_keeps_absolute_spellings_everywhere(tmp_path, monkeypatch):
+    """No root configured, nothing re-spelled: the in-tree stamp is the same
+    file this version wrote before #542, absolute paths and no ``root``."""
+    suite = _write_checkout(tmp_path / "wt-a")
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../../../rtl/a.sv"])
+    sim = _make_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        test_name="t",
+        suite_dir=suite,
+        project_root=tmp_path / "wt-a",
+        model_path=suite / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+    )
+    assert sim.compile() == 0
+    stored = json.loads(_stamp_of(sim).read_text())
+    assert "root" not in stored
+    assert all(os.path.isabs(entry[0]) for entry in stored["sources"])
+    assert all(os.path.isabs(entry[0]) for entry in stored["deps"])
+    assert os.path.isabs(stored["simv"][0])
+
+
+def test_the_cache_root_is_created_on_demand(tmp_path, monkeypatch):
+    """``mkdir -p``: the first run against a fresh NFS path must not need one."""
+    cache = tmp_path / "does" / "not" / "exist" / "yet"
+    suite = _write_checkout(tmp_path / "wt-a")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _cache_sim(tmp_path / "wt-a", monkeypatch, cache_root=cache, test_name="t")
+    assert sim.compile() == 0
+    assert (cache / "verif__blk").is_dir()
+    assert suite.is_dir()
+
+
+def test_a_relative_cache_root_anchors_to_the_project_root(tmp_path, monkeypatch):
+    """Not to the cwd: a build job on a compute node and every simulation job
+    read the same configured value from different directories (#542)."""
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    sim = _cache_sim(checkout, monkeypatch, cache_root=".rb-cache", test_name="t")
+    assert sim.shared_build_root == str(Path(os.path.realpath(checkout)) / ".rb-cache")
+
+
+def test_resolve_shared_build_root_precedence_and_expansion(tmp_path, monkeypatch):
+    """CLI over environment over config, and a blank value turns it off."""
+    resolve = vlog_sim_module.resolve_shared_build_root
+    assert resolve(None, tmp_path) is None
+    assert resolve("  ", tmp_path) is None
+    assert resolve("/abs/cache", tmp_path) == "/abs/cache"
+    monkeypatch.setenv("RB_CACHE_HOME", str(tmp_path / "env"))
+    assert resolve("$RB_CACHE_HOME/c", tmp_path) == str(tmp_path / "env" / "c")
+    assert resolve("~", tmp_path) == os.path.expanduser("~")
+
+
+def test_the_cli_resolves_the_cache_root_cli_over_env_over_config(monkeypatch):
+    """The three sources, in the documented order (#542)."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    class _Root:
+        def get_project_rootdir(self):
+            return "/proj"
+
+        def get_shared_build_root(self):
+            return "from-config"
+
+    app = RtlBuddy(name="test_shared_build_root")
+    app.root_cfg = _Root()
+    monkeypatch.delenv("RTL_BUDDY_SHARED_BUILD_ROOT", raising=False)
+    assert app.shared_build_root == "/proj/from-config"
+    monkeypatch.setenv("RTL_BUDDY_SHARED_BUILD_ROOT", "/from/env")
+    assert app.shared_build_root == "/from/env"
+    app._shared_build_root_flag = "/from/cli"
+    assert app.shared_build_root == "/from/cli"
+    # An explicit empty value is an override too: the cache goes off for
+    # this run without the project's config being edited.
+    app._shared_build_root_flag = ""
+    assert app.shared_build_root is None
+    # No root config, nothing to anchor to, nothing configured.
+    app.root_cfg = None
+    assert app.shared_build_root is None
+
+
+def test_share_build_off_ignores_a_configured_cache_root(tmp_path, monkeypatch):
+    """Cache mode is a property of the SHARED build: with no sharing there is
+    no directory a second checkout could reuse, and re-spelling the per-test
+    stamps would only cost one recompile."""
+    _write_checkout(tmp_path / "wt-a")
+    suite = tmp_path / "wt-a" / "verif" / "blk"
+    sim = _make_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        test_name="t",
+        share_build=False,
+        suite_dir=suite,
+        project_root=tmp_path / "wt-a",
+        model_path=suite / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+        shared_build_root=tmp_path / "cache",
+    )
+    assert sim.shared_build_root is None
+
+
+def test_switching_the_cache_root_on_or_off_rebuilds_once_and_says_why(
+    tmp_path, monkeypatch
+):
+    """A stamp from the other mode spells its inputs differently, so it is
+    read as "we do not know" rather than compared spelling to spelling (#542).
+
+    The in-tree stamp is the one that can meet both modes: with a cache root
+    the SHARED stamp moves to a new directory, but an unshareable builder
+    keeps stamping the test's own compile work dir either way. Re-anchoring
+    a relative entry there with no root to anchor to would stat it against
+    the process's working directory, so the answer is one rebuild — and a
+    reason that names the mode instead of blaming the compile line.
+    """
+    _write_source(tmp_path)
+    calls = []
+    pinned = tmp_path / "pinned" / "simv"
+    _install_fake_builder(monkeypatch, calls, simv=str(pinned))
+
+    def _sim(cache_root):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            exe="vcs",
+            family="vcs",
+            simv=str(pinned),
+            shared_build_root=cache_root,
+        )
+
+    cached = _sim(tmp_path / "cache")
+    assert cached.compile() == 0
+    assert len(calls) == 1
+    plain = _sim(None)
+    plan = plain._compile_plan()
+    assert not plain._build_stamp_is_valid(
+        plan.compile_work_dir, plain._get_simv_path(), plan.fingerprint
+    )
+    assert plain.stamp_mismatch_reason == (
+        "the stamp was written in the other shared-build mode"
+    )
+    assert plain.compile() == 0
+    assert len(calls) == 2
+    # ...and once is once: the rebuild's own stamp validates from then on.
+    assert _sim(None).compile() == 0
+    assert len(calls) == 2
