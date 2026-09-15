@@ -5969,3 +5969,293 @@ def test_switching_the_cache_root_on_or_off_rebuilds_once_and_says_why(
     # ...and once is once: the rebuild's own stamp validates from then on.
     assert _sim(None).compile() == 0
     assert len(calls) == 2
+
+
+def _write_cmd_incdir(checkout, content="`define CMD_W 8\n"):
+    """A header reachable only through a compile-LINE `+incdir+`.
+
+    Not in `run.f` and not in `tests.yaml`'s filelist: it gets to the builder
+    through `builder-opts.compile-time`, which is exactly the input the
+    cache-mode key used to see as text alone.
+    """
+    header = checkout / "hdr" / "cmd.svh"
+    header.parent.mkdir(parents=True, exist_ok=True)
+    header.write_text(content)
+    return header
+
+
+def test_a_compile_line_incdir_is_content_addressed_in_cache_mode(
+    tmp_path, monkeypatch
+):
+    """The key must move when a compile-line input's CONTENT moves (#542 review).
+
+    Keyed on the relativised text alone, two checkouts whose `run.f` entries
+    matched but whose header under a `builder-opts` `+incdir+` differed took
+    the same persistent `obj_dir` — and the second rebuilt into it, replacing
+    a binary the first checkout's simulations may already be running. A
+    simulating job holds no build lock, so that is the clobber the
+    content-addressed key exists to prevent.
+    """
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+    _write_cmd_incdir(tmp_path / "wt-a")
+    _write_cmd_incdir(tmp_path / "wt-b", content="`define CMD_W 16\n")
+
+    def _sim(checkout):
+        return _cache_sim(
+            tmp_path / checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"+incdir+{tmp_path / checkout / 'hdr'}"],
+        )
+
+    differing = _sim("wt-a")._compile_plan().shared_dir
+    assert differing != _sim("wt-b")._compile_plan().shared_dir, (
+        "two checkouts with different header content share one obj_dir"
+    )
+
+    # ...and identical content still shares, which is the whole point of the
+    # cache: the key is addressed on the content, not on having one at all.
+    _write_cmd_incdir(tmp_path / "wt-b")
+    _as_a_fresh_process()
+    assert _sim("wt-a")._compile_plan().shared_dir == (
+        _sim("wt-b")._compile_plan().shared_dir
+    )
+
+
+def test_a_compile_line_source_and_library_dir_are_content_addressed(
+    tmp_path, monkeypatch
+):
+    """The same for a bare source argument and a `-y` library directory —
+    the other two shapes a compile line names an input in (#542 review)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    extra = checkout / "extra.sv"
+    extra.write_text("module extra; endmodule\n")
+    library = checkout / "lib"
+    library.mkdir()
+    (library / "cell.sv").write_text("module cell; endmodule\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=[str(extra), "-y", str(library)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(extra, "module extra; /* edited */ endmodule\n")
+    after_source = _key()
+    assert after_source != before
+    _touch(library / "cell.sv", "module cell; /* edited */ endmodule\n")
+    assert _key() != after_source
+    # A file APPEARING in a `-y` directory is tomorrow's module resolution,
+    # so the listing decides that too.
+    (library / "late.sv").write_text("module late; endmodule\n")
+    assert _key() != after_source
+
+
+def test_a_compile_line_path_outside_the_project_root_stays_text_only(
+    tmp_path, monkeypatch
+):
+    """Outside the root there is no checkout-independent spelling and no
+    hashing policy, so such a path keeps the one thing that IS comparable
+    between checkouts on a host: its absolute text (#542 review)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    outside = tmp_path / "vendor-ip"
+    outside.mkdir()
+    (outside / "vendor.svh").write_text("`define V 1\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=[f"+incdir+{outside}"],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(outside / "vendor.svh", "`define V 2\n")
+    assert _key() == before
+
+
+def test_an_output_path_on_the_compile_line_never_reaches_the_key(
+    tmp_path, monkeypatch
+):
+    """A key that hashed the build's own output would move on every build,
+    stranding one cache directory per run (#542 review).
+
+    `-o <abs path under the root>` is an unrecognised flag's argument, so it
+    is skipped rather than read as a bare source path — even once the file it
+    names exists.
+    """
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    output = checkout / "out" / "simv"
+    output.parent.mkdir()
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["-o", str(output)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    output.write_text("a binary\n")
+    assert _key() == before
+    _touch(output, "a different binary\n")
+    assert _key() == before
+
+
+def test_a_bare_source_after_a_boolean_flag_still_reaches_the_key(
+    tmp_path, monkeypatch
+):
+    """`--binary /proj/tb.sv` is the commonest way a compile line names a
+    source, so refusing every token that follows a flag would miss it (#542
+    review). Only a known OUTPUT option's argument is refused."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    extra = checkout / "extra.sv"
+    extra.write_text("module extra; endmodule\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["--binary", str(extra)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(extra, "module extra; /* edited */ endmodule\n")
+    assert _key() != before
+
+
+def test_a_path_inside_an_artefact_tree_never_reaches_the_key(tmp_path, monkeypatch):
+    """The general guard behind the output-option list: anything under an
+    `artefacts/`, a `.shared-builds/` or an `obj_dir*` is written by a build,
+    so an option this code does not recognise cannot smuggle one in (#542
+    review)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    produced = checkout / "verif" / "blk" / "artefacts" / "t" / "obj_dir_x" / "out.sv"
+    produced.parent.mkdir(parents=True)
+    produced.write_text("module out; endmodule\n")
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _cache_sim(
+                checkout,
+                monkeypatch,
+                cache_root=cache,
+                test_name="t",
+                compile_opts=["--binary", str(produced)],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(produced, "module out; /* rebuilt */ endmodule\n")
+    assert _key() == before
+
+
+def test_a_run_f_incdir_is_not_walked_twice_for_the_key(tmp_path, monkeypatch):
+    """A directory `run.f` already names under the same spelling is skipped:
+    its identity is in `sources`, and a second walk buys nothing (#542
+    review)."""
+    checkout = tmp_path / "wt-a"
+    suite = _write_checkout(checkout)
+    (checkout / "inc").mkdir()
+    (checkout / "inc" / "w.svh").write_text("`define W 8\n")
+    sim = _make_sim(
+        checkout,
+        monkeypatch,
+        test_name="t",
+        suite_dir=suite,
+        project_root=checkout,
+        model_path=suite / "models.yaml",
+        filelist=["+incdir+../../inc", "../../rtl/a.sv"],
+        shared_build_root=tmp_path / "cache",
+        compile_opts=[f"+incdir+{checkout / 'inc'}"],
+    )
+    plan = sim._compile_plan()
+    assert "+incdir+inc" in [entry[0] for entry in plan.fingerprint["sources"]]
+    assert sim._fingerprint_cmd_inputs(plan.key_cmd, plan.fingerprint["sources"]) == []
+
+
+def test_the_default_mode_key_ignores_compile_line_content(tmp_path, monkeypatch):
+    """No cache root, no change: the in-tree key is the dict it always was,
+    and an edit under a compile-line `+incdir+` still rebuilds IN PLACE."""
+    checkout = tmp_path / "wt-a"
+    suite = _write_checkout(checkout)
+    header = _write_cmd_incdir(checkout)
+
+    def _key():
+        _as_a_fresh_process()
+        return (
+            _make_sim(
+                checkout,
+                monkeypatch,
+                test_name="t",
+                suite_dir=suite,
+                project_root=checkout,
+                model_path=suite / "models.yaml",
+                filelist=["../../rtl/a.sv"],
+                compile_opts=[f"+incdir+{checkout / 'hdr'}"],
+            )
+            ._compile_plan()
+            .shared_dir.name
+        )
+
+    before = _key()
+    _touch(header, "`define CMD_W 16\n")
+    assert _key() == before
+    # ...and the key function itself never reads the new field without it.
+    fingerprint = {
+        "cmd": ["verilator"],
+        "env": {},
+        "sources": [["src/top.sv", 31, 17, "0123456789abcdef"]],
+        "toolchain": {"exe": "/opt/verilator/bin/verilator"},
+    }
+    assert vlog_sim_module.VlogSim._compile_config_key(fingerprint) == (
+        vlog_sim_module.VlogSim._compile_config_key(
+            fingerprint, cmd_inputs=[["+incdir+hdr", [["cmd.svh", "beef"]]]]
+        )
+    )
