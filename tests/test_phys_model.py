@@ -826,6 +826,61 @@ def test_a_symlinked_artefacts_dir_still_round_trips_back_to_the_files(tmp_path)
     assert os.path.samefile(resolved, model_path)
 
 
+def _project_with_in_project_artefact_link(tmp_path):
+    """A project whose ``artefacts/`` links to storage *inside* the project.
+
+    The awkward middle case: both routes to the same run are under the
+    project root, so discovery can legitimately report either, and the
+    manifest's ``phys_dir`` only describes one of them.
+    """
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    store = root / "scratch_artefacts"
+    (store / "demo_synth").mkdir(parents=True)
+    suite = root / "verif" / "demo"
+    suite.mkdir(parents=True)
+    (suite / "artefacts").symlink_to(store, target_is_directory=True)
+    return root, store / "demo_synth", suite / "artefacts" / "demo_synth"
+
+
+def test_project_root_survives_a_manifest_read_through_the_link_target(tmp_path):
+    """The finding (#561 round-15 review, Codex P2). Discovery admits a
+    directory once by its real path, so when `os.walk` reaches
+    `scratch_artefacts/` before the `artefacts` link the run is reported
+    through the target. Counting `phys_dir`'s components back off *that*
+    path climbed two levels above the project, and every artefact the
+    manifest named resolved to nothing — `rb phys` reporting a missing model
+    that was sitting right there, on nothing but directory-order luck."""
+    root, target_route, logical_route = _project_with_in_project_artefact_link(tmp_path)
+    model_path = write_model(build_synth_model(top="demo_top"), logical_route)
+    write_manifest(_synth_manifest(root, logical_route, model_path), logical_route)
+
+    assert project_root_for(target_route / MANIFEST_FILENAME) == str(root)
+    resolved = resolve(
+        target_route / MANIFEST_FILENAME,
+        "verif/demo/artefacts/demo_synth/phys-model.json",
+    )
+    assert os.path.samefile(resolved, model_path)
+
+
+def test_discovery_of_an_in_project_artefact_link_lands_on_the_files(tmp_path):
+    """Whichever of the two routes the walk happens to report, the manifest
+    it hands back has to resolve onto its own artefacts — that is the
+    invariant, and it must not depend on the order `os.walk` reads a
+    directory in."""
+    root, _target, logical_route = _project_with_in_project_artefact_link(tmp_path)
+    model_path = write_model(build_synth_model(top="demo_top"), logical_route)
+    write_manifest(_synth_manifest(root, logical_route, model_path), logical_route)
+
+    found = discover_manifests(root)
+
+    assert len(found) == 1
+    assert project_root_for(found[0]) == str(root)
+    assert os.path.samefile(
+        resolve(found[0], load_manifest(found[0])["model"]), model_path
+    )
+
+
 def test_discovery_terminates_on_a_symlink_loop(tmp_path):
     """Following links costs a loop risk, so a directory is admitted once by
     its real path: the link back to an ancestor is not descended into, and

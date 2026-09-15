@@ -56,6 +56,22 @@ rb regression --share-build
 
 Verilator, VCS, and Icarus support cross-test sharing. Reuse is reported once per build directory per process on the console, and every test's `compile.log` (and the log file) records its own reuse; add `--rebuild` to compile even when the stamp says the build is current. See [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and backend limitations.
 
+## Replay a seeded regression
+
+Pass one master seed to reproduce every selected test's runtime seed:
+
+```bash
+rb regression --master-seed 20260914
+rb regression --master-seed 20260914 --dispatch slurm
+```
+
+The master seed appears once in the run summary and machine payload. Each
+test's resolved seed is independent of suite order and dispatch timing, and a
+dispatched plan carries both values to its worker. Repeating the command with
+the same project layout and master seed reproduces the seeds without reading
+old artefacts. See [Run with randomized seeds](tests.md#run-with-randomized-seeds)
+for derivation, preprocessor access, fixed-test overrides, and result records.
+
 ## Run in parallel
 
 The default `--dispatch local` runs tests sequentially in the current process. For parallel execution:

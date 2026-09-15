@@ -100,6 +100,7 @@ from .dispatch.base import BuildJobSpec, ElabJobSpec, TestJobSpec, telemetry_key
 from .dispatch.plan import (
     read_plan_config,
     read_plan_configs,
+    read_plan_master_seed,
     read_plan_token,
     write_plan,
 )
@@ -141,6 +142,15 @@ from .runner.power_results import PowerSkipResults
 from .runner.synth_runner import SynthRunner
 from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
+from .seeding import (
+    SEED_DERIVATION_VERSION,
+    SeedResolution,
+    expanded_test_seed_identity,
+    suite_seed_identity,
+    validate_master_seed,
+    validate_resolved_seed,
+    resolve_test_seed,
+)
 from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
 from .tools.axi_profile_rtl_buddy import (
@@ -1339,6 +1349,33 @@ class RtlBuddy:
 
         return relpath if len(relpath) < len(path) else path
 
+    @staticmethod
+    def _checked_master_seed(master_seed: int | None) -> int | None:
+        if master_seed is None:
+            return None
+        try:
+            return validate_master_seed(master_seed)
+        except ValueError as e:
+            raise FatalRtlBuddyError(str(e)) from e
+
+    def _resolve_test_seed(
+        self,
+        test_cfg,
+        *,
+        master_seed: int | None,
+        suite_config_path: str,
+        run_id: int | None,
+        seed_mode: SeedMode,
+    ):
+        return resolve_test_seed(
+            test_cfg,
+            self.root_cfg,
+            master_seed=master_seed,
+            suite_config_path=suite_config_path,
+            run_id=run_id,
+            seed_mode=seed_mode,
+        )
+
     def _resolve_coverage_dir_summary_paths(
         self, coverage_dir_summary=None, coverage_dir_summary_file=None
     ):
@@ -1437,6 +1474,13 @@ class RtlBuddy:
                 "-l", "--rnd-last", help="reuse last generated seed", show_default=False
             ),
         ] = None,
+        master_seed: Annotated[
+            int | None,
+            typer.Option(
+                "--master-seed",
+                help="derive an exact, stable runtime seed for each selected test",
+            ),
+        ] = None,
         share_build: Annotated[
             bool,
             typer.Option(
@@ -1483,6 +1527,12 @@ class RtlBuddy:
         """
         run a simple test
         """
+        master_seed = self._checked_master_seed(master_seed)
+        if master_seed is not None and (rnd_new or rnd_last):
+            raise FatalRtlBuddyError(
+                "--master-seed cannot be combined with --rnd-new or --rnd-last"
+            )
+
         # Keep direct callers that used the old scalar keyword working while
         # Typer supplies a list for the variadic CLI argument.
         test_names = [test_name] if isinstance(test_name, str) else test_name
@@ -1580,6 +1630,7 @@ class RtlBuddy:
             command="test",
             test="all" if test_selection is None else ", ".join(test_selection),
             test_config=test_config,
+            master_seed=master_seed,
         )
 
         seed_mode: SeedMode = SeedMode.DEFAULT
@@ -1588,6 +1639,8 @@ class RtlBuddy:
             seed_mode = SeedMode.NEW
         elif rnd_last:
             seed_mode = SeedMode.REPLAY
+        elif master_seed is not None:
+            seed_mode = SeedMode.MASTER
         self.share_build = share_build
         self.rebuild = rebuild
 
@@ -1619,6 +1672,7 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 reg_level=reg_level,
                 start_level=start_level,
+                master_seed=master_seed,
             )
         else:
             # Same two preconditions the dispatched regression states: no
@@ -1648,6 +1702,7 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 reg_level=reg_level,
                 start_level=start_level,
+                master_seed=master_seed,
             )
             self._announce_dispatched_suite(
                 state,
@@ -1681,6 +1736,8 @@ class RtlBuddy:
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
         metadata = [self._builder_metadata_line(self.suite_cfg, test_selection)]
+        if master_seed is not None:
+            metadata.append(f"Master Seed: {master_seed}")
         cov_metadata, coverage_payload = self.coverage.build_metadata(
             suite_results,
             outdir=str(ctx.command_root),
@@ -1717,6 +1774,8 @@ class RtlBuddy:
                 payload["reservation_advice"] = [
                     finding.as_event() for finding in reservation_findings
                 ]
+            if master_seed is not None:
+                payload["master_seed"] = master_seed
             self._emit_machine_result("test", exit_code, **payload)
         raise typer.Exit(exit_code)
 
@@ -1888,12 +1947,9 @@ class RtlBuddy:
         if self.machine:
             payload = {
                 "results": [
-                    {
-                        "name": r["test_name"],
-                        "run_id": r["randmode_i"],
-                        "result": r["results"].results["result"],
-                        "desc": r["results"].results["desc"],
-                    }
+                    self._machine_test_row(
+                        r["test_name"], r["results"], run_id=r["randmode_i"]
+                    )
                     for r in suite_results
                 ]
             }
@@ -2012,6 +2068,20 @@ class RtlBuddy:
                 show_default="--run-id when --seed-mode replay",
             ),
         ] = None,
+        master_seed: Annotated[
+            int,
+            typer.Option(
+                "--master-seed",
+                help="exact master seed selected by the dispatching command",
+            ),
+        ] = None,
+        resolved_seed: Annotated[
+            int,
+            typer.Option(
+                "--resolved-seed",
+                help="resolved simulator seed selected by the dispatching command",
+            ),
+        ] = None,
         share_build: Annotated[
             bool,
             typer.Option(
@@ -2055,6 +2125,7 @@ class RtlBuddy:
         """
         internal: run one (test, run_id) and write its result JSON (#351)
         """
+        master_seed = self._checked_master_seed(master_seed)
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2096,13 +2167,101 @@ class RtlBuddy:
             test=test_name,
             run_id=run_id,
             seed_mode=seed_mode.value,
+            master_seed=master_seed,
+            resolved_seed=resolved_seed,
             result_json=str(result_json_path),
             plan=plan,
         )
 
+        plan_config = (
+            read_plan_config(self._abs_invocation_path(plan), test_name)
+            if plan is not None
+            else None
+        )
         test_cfg, setup_error = self._resolve_job_test_cfg(
             suite_cfg, test_name, suite_dir, plan_path=plan
         )
+        if plan is not None:
+            plan_master_seed = self._checked_master_seed(
+                read_plan_master_seed(self._abs_invocation_path(plan))
+            )
+            if master_seed is None:
+                master_seed = plan_master_seed
+            elif plan_master_seed is not None and master_seed != plan_master_seed:
+                raise FatalRtlBuddyError(
+                    f"--master-seed {master_seed} does not match dispatch plan "
+                    f"master seed {plan_master_seed}"
+                )
+        if test_cfg is not None:
+            planned_seed = test_cfg.get_resolved_seed()
+            if plan_config is not None:
+                if planned_seed is not None:
+                    try:
+                        validate_resolved_seed(planned_seed, test_cfg.seed_source)
+                    except ValueError as e:
+                        raise FatalRtlBuddyError(
+                            f"dispatch plan seed for {test_name!r} is invalid: {e}"
+                        ) from e
+                    test_cfg.set_resolved_seed(
+                        SeedResolution(
+                            seed=planned_seed,
+                            source=test_cfg.seed_source,
+                            identity=test_cfg.seed_identity,
+                        )
+                    )
+                elif (
+                    master_seed is not None
+                    or test_cfg.sim_rand_seed is not None
+                    or test_cfg.sim_rand_seed_plusarg is not None
+                ):
+                    raise FatalRtlBuddyError(
+                        f"dispatch plan has no resolved seed for seeded test "
+                        f"{test_name!r}"
+                    )
+                if resolved_seed != planned_seed:
+                    raise FatalRtlBuddyError(
+                        f"--resolved-seed {resolved_seed!r} does not match dispatch "
+                        f"plan seed {planned_seed!r} for {test_name!r}"
+                    )
+            else:
+                resolution = self._resolve_test_seed(
+                    test_cfg,
+                    master_seed=master_seed,
+                    suite_config_path=suite_cfg.get_path(),
+                    run_id=run_id,
+                    seed_mode=seed_mode,
+                )
+                if resolved_seed is not None:
+                    try:
+                        validate_resolved_seed(
+                            resolved_seed, resolution.source if resolution else None
+                        )
+                    except ValueError as e:
+                        raise FatalRtlBuddyError(str(e)) from e
+                    if resolution is not None and resolution.seed != resolved_seed:
+                        raise FatalRtlBuddyError(
+                            f"--resolved-seed {resolved_seed} does not match derived "
+                            f"seed {resolution.seed} for {test_name!r}"
+                        )
+                    if resolution is None:
+                        suite_identity = suite_seed_identity(
+                            suite_cfg.get_path(), self.root_cfg.get_project_rootdir()
+                        )
+                        resolution = SeedResolution(
+                            seed=resolved_seed,
+                            source=test_cfg.seed_source or "dispatch",
+                            identity=test_cfg.seed_identity
+                            or expanded_test_seed_identity(
+                                suite_identity, test_cfg.get_name(), run_id
+                            ),
+                        )
+                        test_cfg.set_resolved_seed(resolution)
+            current_seed = test_cfg.get_resolved_seed()
+            if plan_config is not None and current_seed != planned_seed:
+                raise FatalRtlBuddyError(
+                    f"dispatch plan seed {planned_seed!r} changed to "
+                    f"{current_seed!r} for {test_name!r}"
+                )
         # Resolve the head's run token BEFORE running the sim, and never let a
         # token-read failure abort: the plan was just read for the config, so
         # it is readable now; reading it again after the sim would risk the job
@@ -2133,6 +2292,7 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 test_runner_mode={"sim_to_stdout": False},
                 suite_dir=suite_dir,
+                master_seed=master_seed,
             )
             res = run_results[0]
             reported_name = test_cfg.get_name()
@@ -2157,6 +2317,7 @@ class RtlBuddy:
                     "run_id": run_id,
                     "result": res.results["result"],
                     "desc": res.results["desc"],
+                    **({"seed": res.results["seed"]} if "seed" in res.results else {}),
                 },
                 result_json=str(result_json_path),
             )
@@ -2870,6 +3031,7 @@ class RtlBuddy:
         replay_run_id,
         test_runner_mode,
         suite_dir,
+        master_seed: int | None = None,
     ):
         test_runner = TestRunner(
             name=self.name + "/testrunner",
@@ -2897,6 +3059,17 @@ class RtlBuddy:
             # so a known-failing test can live in a suite/regression.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
+        get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)
+        resolved_seed = get_resolved_seed() if callable(get_resolved_seed) else None
+        if resolved_seed is not None:
+            seed_record = {
+                "master_seed": master_seed,
+                "resolved_seed": resolved_seed,
+                "source": getattr(test_cfg, "seed_source", None),
+                "identity": getattr(test_cfg, "seed_identity", None),
+            }
+            for res in results:
+                res.results["seed"] = dict(seed_record)
         compile_record = test_runner.last_compile
         if compile_record is not None:
             # Same key the dispatch path folds in from the build envelope
@@ -3045,6 +3218,8 @@ class RtlBuddy:
             row["suite"] = suite
         if run_id is not None:
             row["run_id"] = run_id
+        if "seed" in res:
+            row["seed"] = res["seed"]
         cov = self._machine_coverage(test_results)
         if cov is not None:
             row["coverage"] = cov
@@ -3092,9 +3267,15 @@ class RtlBuddy:
         run_ids=None,
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
+        master_seed: int | None = None,
     ):
         if run_ids is None:
             run_ids = [None]
+        if master_seed is not None and len(run_ids) != 1:
+            raise FatalRtlBuddyError(
+                "--master-seed requires one run id per expanded test"
+            )
+        seed_run_id = run_ids[0] if len(run_ids) == 1 else None
 
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         suite_results = []
@@ -3106,6 +3287,13 @@ class RtlBuddy:
             run_ids=run_ids,
             suite_results=suite_results,
         ):
+            self._resolve_test_seed(
+                expanded_test_cfg,
+                master_seed=master_seed,
+                suite_config_path=suite_cfg.get_path(),
+                run_id=seed_run_id,
+                seed_mode=seed_mode,
+            )
             # A sweep-expanded test may carry its own `builder:`; resolve
             # per expansion so the stamped builder matches what runs.
             exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
@@ -3118,6 +3306,7 @@ class RtlBuddy:
                 replay_run_id=replay_run_id,
                 test_runner_mode=test_runner_mode,
                 suite_dir=suite_dir,
+                master_seed=master_seed,
             )
             self._append_results(
                 expanded_test_cfg.name,
@@ -3372,6 +3561,7 @@ class RtlBuddy:
         run_ids=None,
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
+        master_seed: int | None = None,
     ):
         """Plan + build job + array fan-out for one suite; no waiting (#351).
 
@@ -3409,6 +3599,8 @@ class RtlBuddy:
                 start_level=start_level,
                 run_ids=run_ids,
                 suite_results=suite_results,
+                seed_mode=seed_mode,
+                master_seed=master_seed,
             )
         else:
             entries = prepared["entries"]
@@ -3432,6 +3624,7 @@ class RtlBuddy:
             str(suite_cfg.get_path()),
             [e["cfg"] for e in entries],
             run_token,
+            master_seed=master_seed,
         )
 
         # The suite's own `compile:` block, if any (#497) — the most
@@ -3598,6 +3791,8 @@ class RtlBuddy:
                     run_id=run_id,
                     seed_mode=seed_mode,
                     replay_run_id=replay_run_id,
+                    master_seed=master_seed,
+                    resolved_seed=cfg.get_resolved_seed(),
                     builder_mode=self.rtl_builder_mode,
                     builder_override=self._builder_override,
                     extra_sim_timeout=self._extra_sim_timeout_override,
@@ -3757,6 +3952,8 @@ class RtlBuddy:
         start_level,
         run_ids,
         suite_results,
+        seed_mode: SeedMode = SeedMode.DEFAULT,
+        master_seed: int | None = None,
     ):
         """Expand the suite ONCE for dispatch; return the runnable entries.
 
@@ -3769,6 +3966,11 @@ class RtlBuddy:
         plan instead of re-running the sweep hook. ``test_name`` narrows the
         expansion to one base test (randtest dispatch).
         """
+        if master_seed is not None and len(run_ids) != 1:
+            raise FatalRtlBuddyError(
+                "--master-seed requires one run id per expanded test"
+            )
+        seed_run_id = run_ids[0] if len(run_ids) == 1 else None
         entries = []
         for cfg in self._iter_suite_runnables(
             suite_cfg,
@@ -3778,6 +3980,13 @@ class RtlBuddy:
             run_ids=run_ids,
             suite_results=suite_results,
         ):
+            self._resolve_test_seed(
+                cfg,
+                master_seed=master_seed,
+                suite_config_path=suite_cfg.get_path(),
+                run_id=seed_run_id,
+                seed_mode=seed_mode,
+            )
             builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(cfg.get_builder_name())
             exp_builder = builder_cfg.get_name()
             # A builder that cannot share a build recompiles inside every sim
@@ -4777,6 +4986,13 @@ class RtlBuddy:
             int,
             typer.Option("-s", "--start-level", help="regression level to start at"),
         ] = 0,
+        master_seed: Annotated[
+            int | None,
+            typer.Option(
+                "--master-seed",
+                help="derive an exact, stable runtime seed for every selected test",
+            ),
+        ] = None,
         coverage_merge: Annotated[
             bool,
             typer.Option(
@@ -4869,6 +5085,7 @@ class RtlBuddy:
         """
         run rtl regression
         """
+        master_seed = self._checked_master_seed(master_seed)
         merge_mode_count = sum(
             1
             for enabled in [
@@ -4900,6 +5117,7 @@ class RtlBuddy:
             reg_level=reg_level,
             start_level=start_level,
             share_build=share_build,
+            master_seed=master_seed,
         )
 
         start_dir = str(self.invocation_cwd)
@@ -4951,6 +5169,15 @@ class RtlBuddy:
 
         reg_dir = os.path.dirname(self.reg_cfg.get_path())
         emit_console_text(f"Running regression from {reg_dir}", style="cyan")
+        seed_mode = SeedMode.MASTER if master_seed is not None else SeedMode.DEFAULT
+        if master_seed is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "regression.seed_plan",
+                master_seed=master_seed,
+                derivation_version=SEED_DERIVATION_VERSION,
+            )
 
         # Dispatch implies share_build — the dispatched build job is what lets
         # the sim jobs skip compilation.
@@ -5002,6 +5229,8 @@ class RtlBuddy:
                     start_level=start_level,
                     run_ids=[None],
                     suite_results=suite_results,
+                    seed_mode=seed_mode,
+                    master_seed=master_seed,
                 )
                 prepared_suites.append(
                     {
@@ -5045,6 +5274,8 @@ class RtlBuddy:
                         dispatch_namespace=prepared["dispatch_namespace"],
                         reg_level=reg_level,
                         start_level=start_level,
+                        seed_mode=seed_mode,
+                        master_seed=master_seed,
                     )
                     self._announce_dispatched_suite(
                         state,
@@ -5121,8 +5352,9 @@ class RtlBuddy:
                     reg_level=reg_level,
                     start_level=start_level,
                     run_ids=[None],
-                    seed_mode=SeedMode.DEFAULT,
+                    seed_mode=seed_mode,
                     replay_run_id=None,
+                    master_seed=master_seed,
                 )
                 reg_results.append(
                     {
@@ -5154,6 +5386,8 @@ class RtlBuddy:
             self._builder_metadata_line(list(self.reg_cfg.get_suite_configs())),
             f"Builder Mode: {self.rtl_builder_mode}",
         ]
+        if master_seed is not None:
+            metadata.append(f"Master Seed: {master_seed}")
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
@@ -5249,6 +5483,8 @@ class RtlBuddy:
                 payload["reservation_advice"] = [
                     finding.as_event() for finding in reservation_findings
                 ]
+            if master_seed is not None:
+                payload["master_seed"] = master_seed
             self._emit_machine_result("regression", exit_code, **payload)
         raise typer.Exit(exit_code)
 

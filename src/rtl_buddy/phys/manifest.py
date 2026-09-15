@@ -400,6 +400,18 @@ def resolve(manifest_path, relative_path) -> str | None:
     return str(Path(root) / relative_path)
 
 
+def _joins_back(root, phys_dir: str, phys_dir_abs) -> bool:
+    """Whether ``root / phys_dir`` is the directory the manifest is in.
+
+    The check that turns :func:`project_root_for`'s component count into
+    an answer that can be wrong out loud rather than quietly. Compared on
+    the *resolved* paths, because the whole point is that the two
+    spellings may differ by a link.
+    """
+    joined = os.path.join(str(root), phys_dir)
+    return os.path.realpath(joined) == os.path.realpath(phys_dir_abs)
+
+
 def project_root_for(manifest_path) -> str | None:
     """Infer the project root a manifest's relative paths hang off.
 
@@ -410,6 +422,24 @@ def project_root_for(manifest_path) -> str | None:
     :func:`project_relative`). Walking a resolved path up by
     ``len(phys_dir.parts)`` would then climb out of scratch entirely and
     return a root no manifest path joins onto.
+
+    The count alone is only right when the manifest is *read* through the
+    same route it was written through, and one ordinary layout breaks
+    that: an ``artefacts/`` link whose target is itself inside the
+    project. :func:`discover_manifests` admits each directory once by its
+    real path, so whichever of the two routes ``os.walk`` reaches first
+    wins — and when that is the target (``scratch_artefacts/<run>/``
+    rather than ``verif/demo/artefacts/<run>/``) the count climbs off the
+    wrong stem and every path the manifest names resolves to nothing.
+    Which route wins is directory-order luck, so the same tree answers
+    differently on two machines.
+
+    So the count is *checked*: the root it proposes has to join back onto
+    the directory the manifest actually sits in. When it does not, the
+    marker walk (:func:`project_root_for_dir`) gets the second try, and
+    it is taken only if it joins back too. Failing both, the counted root
+    stands — it is no worse than before, and a manifest read from outside
+    any project has no better answer available.
     """
     manifest_path = Path(os.path.abspath(manifest_path))
     try:
@@ -419,10 +449,15 @@ def project_root_for(manifest_path) -> str | None:
     phys_dir = manifest.get("phys_dir")
     if not phys_dir or os.path.isabs(phys_dir):
         return str(manifest_path.parent)
-    root = manifest_path.parent
+    counted = manifest_path.parent
     for _ in Path(phys_dir).parts:
-        root = root.parent
-    return str(root)
+        counted = counted.parent
+    if _joins_back(counted, phys_dir, manifest_path.parent):
+        return str(counted)
+    walked = project_root_for_dir(manifest_path.parent)
+    if _joins_back(walked, phys_dir, manifest_path.parent):
+        return walked
+    return str(counted)
 
 
 def may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:

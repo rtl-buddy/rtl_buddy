@@ -466,8 +466,8 @@ class Toolset:
         """
         return phys_query.load_context(
             self.project_root,
-            phys_dir=self._rooted(args.get("phys_dir")),
-            manifest=self._rooted(args.get("manifest")),
+            phys_dir=self._rooted(self._phys_path_arg(args, "phys_dir")),
+            manifest=self._rooted(self._phys_path_arg(args, "manifest")),
         )
 
     def _h_phys_runs(self, args: dict) -> dict:
@@ -506,6 +506,39 @@ class Toolset:
             str(_req(args, "path")),
             limit=self._phys_limit(args),
         )
+
+    @staticmethod
+    def _phys_path_arg(args: dict, key: str) -> str | None:
+        """A discovery override, read as a path or refused as one.
+
+        The path half of what :meth:`_phys_limit` does for the row cap,
+        and it exists for the same reason: the server forwards a host's
+        arguments to the handler exactly as they arrived, so an
+        ``inputSchema`` saying ``"type": "string"`` is documentation
+        until a handler checks it. ``{"phys_dir": 3}`` or
+        ``{"manifest": []}`` reached :meth:`_rooted` and died inside
+        :class:`~pathlib.Path` with a ``TypeError`` that
+        :meth:`Toolset.call` does not catch -- a protocol-level failure
+        for a bad argument, where every other bad question gets the
+        ``ok: false`` envelope, and no sentence anywhere telling the
+        agent which constraint it broke.
+
+        Absent stays absent: these two are optional, and ``None`` is how
+        :meth:`_rooted` and
+        :func:`~rtl_buddy.phys.query.resolve_manifest_path` already
+        spell "no override, discover the newest run". A host that sends
+        an explicit ``null`` means the same thing and is read the same
+        way. Everything that is not a string is the mistake.
+        """
+        value = args.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ToolError(
+                f"{key} must be a path string, not {value!r}; "
+                "omit it to read the newest run under the project root"
+            )
+        return value
 
     @staticmethod
     def _phys_limit(args: dict, default: int = phys_query.DEFAULT_RANK_LIMIT) -> int:

@@ -49,6 +49,18 @@ def test_extra_sim_timeout_is_forwarded_to_a_sim_job():
     assert _flag_value(argv, "--extra-sim-timeout") == "900"
 
 
+def test_master_and_resolved_seeds_are_forwarded_to_a_sim_job():
+    argv = sim_job_argv(_test_spec(master_seed=20260914, resolved_seed=410729))
+    assert _flag_value(argv, "--master-seed") == "20260914"
+    assert _flag_value(argv, "--resolved-seed") == "410729"
+
+
+def test_seed_plan_flags_are_absent_when_unset():
+    argv = sim_job_argv(_test_spec())
+    assert "--master-seed" not in argv
+    assert "--resolved-seed" not in argv
+
+
 def test_extra_sim_timeout_absent_when_unset():
     assert "--extra-sim-timeout" not in sim_job_argv(_test_spec())
 
