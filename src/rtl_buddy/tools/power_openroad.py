@@ -17,7 +17,11 @@ _SNAPSHOT_ATTEMPTS = 3
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
-from ..phys.manifest import project_relative, project_root_for_dir
+from ..phys.manifest import (
+    project_relative,
+    project_root_for_dir,
+    project_root_or_none,
+)
 from ..phys.provenance import TRACE_SOURCES, activity_block
 from ..phys.publish import (
     confirm_digest,
@@ -30,6 +34,26 @@ from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResu
 from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
 from .synth_yosys import library_fingerprint
+
+
+def _within(root: str, path: str) -> bool:
+    """Is ``path`` inside ``root``, by either spelling of the pair?
+
+    Logical first, for the reason
+    :func:`~rtl_buddy.phys.manifest.project_relative` gives: a suite
+    whose ``artefacts/`` is a link to scratch storage is an ordinary
+    layout, and its run directories are inside the project *as the
+    project is read* even though they resolve out of it. The resolved
+    comparison is the second chance, for the reverse arrangement — a
+    project reached through a link the candidate path is not.
+    """
+    for base, candidate in (
+        (os.path.abspath(root), os.path.abspath(path)),
+        (os.path.realpath(root), os.path.realpath(path)),
+    ):
+        if candidate == base or candidate.startswith(base + os.sep):
+            return True
+    return False
 
 
 class OpenRoadPower(BasePower):
@@ -65,6 +89,14 @@ class OpenRoadPower(BasePower):
         artefact_root = Path(suite_dir) / "artefacts" / power_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
+        # Where `phys-model.json` and its manifest go. Every other file
+        # this flow writes — the script, the log, the two reports, the
+        # netlist copy — stays in `artefact_dir`, because they are this
+        # run's raw output and the model is the one document two runs
+        # share. Rebound by `_bind_phys_dir` when `phys-run:` names a
+        # synthesis to publish beside (#589); until then, and for a
+        # config that says nothing, the two are the same directory.
+        self.phys_dir = self.artefact_dir
         # The upstream netlist this run measures, and the hash of the
         # private copy OpenROAD is actually given; see
         # `_snapshot_netlist`. Both `None` until the run resolves them,
@@ -166,6 +198,69 @@ class OpenRoadPower(BasePower):
         reports; the stale-clear removes it exactly as it removes them.
         """
         return os.path.join(self.artefact_dir, "power_netlist.v")
+
+    def _bind_phys_dir(self) -> None:
+        """Point `phys_dir` at the run `phys-run:` names, or leave it (#589).
+
+        Without the field a merged model is an accident of naming: the
+        two halves meet because a power run happens to be called after
+        the synthesis it reads *and* configured in the same directory, so
+        both write `artefacts/<one name>/`. Rename either side — or split
+        a project's suites into `synth/` and `power/` — and each half
+        lands in its own directory, each model half-filled, with nothing
+        saying why. `phys-run:` states the pairing instead.
+
+        The directory is *derived*, never taken: the run names an entry
+        in the same `synth.yaml` this analysis already reaches through
+        `synth-path:`, and its half is published into that suite's
+        `artefacts/<run>/` — the path a synthesis of that name writes its
+        own half into. So the knob survives the suite moving, and the
+        config layer having refused any separator in the value leaves
+        exactly one component to join: it cannot name a directory outside
+        that artefacts tree.
+
+        The named run's directory need not exist yet. A power analysis
+        may legitimately land first and the synthesis fill the other half
+        later, which is the whole point of publishing into a directory
+        chosen rather than inherited.
+
+        Called from `_write_script`, which is where this flow validates
+        its configuration (see `run`): a `phys-run:` no entry in the
+        referenced suite carries is broken on every machine and is
+        reported as a failed run rather than as a by-product warning
+        minutes later, and a resolution that failed leaves `phys_dir` at
+        this run's own directory — the right target for the withdrawal
+        `run()` then makes, since nothing was ever published to the
+        directory that could not be resolved.
+        """
+        run = self.power_cfg.get_phys_run()
+        if not run:
+            return
+        # The config layer requires `synth`/`synth-path` of every
+        # `netlist-source: synth` entry, and refuses `phys-run` on any
+        # other kind.
+        suite_path = self.power_cfg.get_synth_suite_path()
+        assert suite_path is not None
+        phys_dir = os.path.normpath(
+            os.path.join(os.path.dirname(suite_path), "artefacts", run)
+        )
+        # Where it lands is asked before whether the run exists: a
+        # `synth-path:` pointing out of the project is wrong about the
+        # directory whatever the suite turns out to contain, and asking in
+        # this order keeps a suite that cannot be loaded at all from
+        # answering with a parse error instead.
+        root = project_root_or_none(self.artefact_dir)
+        if root is not None and not _within(root, phys_dir):
+            raise RuntimeError(
+                f"power run '{self.power_cfg.get_name()}': phys-run "
+                f"'{run}' resolves to {phys_dir}, outside the project at "
+                f"{root} — `synth-path:` reaches into another checkout, so "
+                "the merged model would be written where this project's "
+                "`rb phys` never looks"
+            )
+        # Raises when the suite has no such entry, which is the check.
+        self.power_cfg.resolve_phys_run_cfg()
+        self.phys_dir = phys_dir
 
     def _source_identity(self, source: str) -> tuple[int, int]:
         """`(size, mtime_ns)` of the upstream netlist, as a change witness.
@@ -577,6 +672,11 @@ class OpenRoadPower(BasePower):
         ]
 
     def _write_script(self) -> str:
+        # Before anything else this generates: a `phys-run:` that cannot
+        # be resolved is a configuration error, and the withdrawal the
+        # caller makes on the way out needs to know which directory this
+        # run publishes into (#589).
+        self._bind_phys_dir()
         platform = self._resolve_platform()
         pdk = platform.get_pdk()
         liberty = platform.get_sta_lib_path()
@@ -717,7 +817,9 @@ class OpenRoadPower(BasePower):
         own half into them -- but this flow's half is nulled out, because
         publication happens only on a pass and a failed rerun would otherwise
         leave the previous run's per-instance watts discoverable with the
-        report behind them already deleted (#558).
+        report behind them already deleted (#558). They are withdrawn from
+        `phys_dir`, which is where this run published them and need not be
+        the directory the reports above are cleared from (#589).
 
         :returns: ``None``, or the reason the withdrawal did not happen —
             which every caller turns into a failed run, because the reports
@@ -750,12 +852,13 @@ class OpenRoadPower(BasePower):
         return self._invalidate_phys_half()
 
     def _invalidate_phys_half(self) -> str | None:
-        """Null this flow's half of any model + manifest already here (#558).
+        """Null this flow's half of the model + manifest it publishes (#558).
 
         The counterpart of `_publish_phys_model`, called from the clear so a
         run that never reaches publication withdraws the previous one's
         per-instance rows rather than leaving them over a deleted report. The
-        synthesis half is untouched.
+        synthesis half is untouched -- which matters more under `phys-run:`,
+        where the directory being written is a synthesis run's own (#589).
 
         A withdrawal that *succeeded* is bookkeeping and logs at DEBUG. One
         that failed is not: the clear that called this has already deleted
@@ -766,7 +869,7 @@ class OpenRoadPower(BasePower):
 
         :returns: ``None`` on success, else `invalidate_half`'s ``error``.
         """
-        result = invalidate_half(self.artefact_dir, "instances")
+        result = invalidate_half(self.phys_dir, "instances")
         if result["error"]:
             log_event(
                 logger,
@@ -1048,6 +1151,12 @@ class OpenRoadPower(BasePower):
     def _publish_phys_model(self, parsed: dict) -> str | None:
         """Write `phys-model.json` + its manifest for a run that passed (#558).
 
+        Into `phys_dir`, which is this run's own artefact directory unless
+        `phys-run:` named a synthesis to publish beside (#589). The report
+        paths the manifest records still point into the run's own
+        directory, and they are project-relative there as everywhere, so
+        a reader reaches them from either place.
+
         Never fails the power analysis. The design totals are already parsed
         and already reported by the time this runs; the per-instance rows are
         the by-product, and an OpenSTA that skipped or garbled them costs the
@@ -1124,7 +1233,7 @@ class OpenRoadPower(BasePower):
         source = self.power_cfg.get_activity_source()
         trace = activity.saif or activity.vcd
         published = publish_power(
-            artefact_dir=self.artefact_dir,
+            artefact_dir=self.phys_dir,
             top=inputs.get("top"),
             backend="openroad",
             run=self.power_cfg.get_name(),
@@ -1199,5 +1308,23 @@ class OpenRoadPower(BasePower):
                 power=self.power_cfg.get_name(),
                 instances=self._instances_report_path(),
                 error=published["error"],
+            )
+        if self.power_cfg.get_phys_run() and published["paired"] is False:
+            # Only under `phys-run:`. The pairing was asked for by name,
+            # and the netlist hashes say the module rows in that
+            # directory were counted off a netlist this analysis did not
+            # read -- so the gate dropped them and the model written
+            # there is this half alone. Said out loud, because a config
+            # that names the run it wants to pair with and then quietly
+            # produces a half-filled model is the same silence the field
+            # exists to end (#589). Not a failure: the watts are sound
+            # and re-running the synthesis pairs them.
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.phys_pair_mismatch",
+                power=self.power_cfg.get_name(),
+                phys_run=self.power_cfg.get_phys_run(),
+                phys_dir=self.phys_dir,
             )
         return published["model"]

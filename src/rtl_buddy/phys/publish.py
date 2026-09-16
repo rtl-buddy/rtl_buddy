@@ -387,9 +387,11 @@ def publish_synth(
         between would be hashed as the bytes the run consumed. ``None``
         for a run that read no SDC, could not read it, or found it
         changed underneath the analysis.
-    :returns: ``{"model", "manifest", "rows", "error"}``; the paths are
-        ``None`` when ``error`` is set, and ``rows`` is ``None`` when the
-        breakdown could not be read — which is the caller's cue to warn.
+    :returns: ``{"model", "manifest", "rows", "paired", "error"}``; the
+        paths are ``None`` when ``error`` is set, and ``rows`` is ``None``
+        when the breakdown could not be read — which is the caller's cue
+        to warn. ``paired`` reports what became of the half that was
+        already in the directory; see :func:`_pairing_verdict`.
     """
 
     def _build(recorded):
@@ -499,8 +501,9 @@ def publish_power(
         matters more here than anywhere: a `netlist-source: pnr` run
         reads `<top>.routed.sdc` out of another command's artefact
         directory, which a concurrent `rb pnr` rewrites in place.
-    :returns: the same ``{"model", "manifest", "rows", "error"}`` shape
-        :func:`publish_synth` returns.
+    :returns: the same ``{"model", "manifest", "rows", "paired", "error"}``
+        shape :func:`publish_synth` returns. ``paired`` is what a run
+        given an explicit ``phys-run:`` warns on (#589).
     """
 
     def _build(recorded):
@@ -646,9 +649,11 @@ def _publish(
         rows = fresh[half_key]
         with _publication_lock(artefact_dir):
             existing_model, existing_manifest = _existing_pair(artefact_dir)
-            if not model_mod.may_inherit_other_half(
+            inherit = model_mod.may_inherit_other_half(
                 existing_model, fresh, own_half=half_key
-            ):
+            )
+            paired = _pairing_verdict(existing_model, half_key, inherit)
+            if not inherit:
                 existing_manifest = None
             model = model_mod.merge_model(existing_model, fresh, own_half=half_key)
             model["publication"] = publication
@@ -671,13 +676,55 @@ def _publish(
             manifest["publication"] = publication
             manifest_path = manifest_mod.write_manifest(manifest, artefact_dir)
     except Exception as e:  # noqa: BLE001 - a by-product never fails a run
-        return {"model": None, "manifest": None, "rows": None, "error": str(e)}
+        return {
+            "model": None,
+            "manifest": None,
+            "rows": None,
+            "paired": None,
+            "error": str(e),
+        }
     return {
         "model": model_path,
         "manifest": manifest_path,
         "rows": None if rows is None else len(rows),
+        "paired": paired,
         "error": None,
     }
+
+
+#: The half each producer does *not* own — the one it may carry forward,
+#: and the one :func:`_pairing_verdict` is about. Spelled from
+#: :data:`_HALF_BLOCK`'s keys so a third half could not be added to one
+#: mapping and forgotten in the other.
+_OTHER_HALF = {
+    half: other for half in _HALF_BLOCK for other in _HALF_BLOCK if other != half
+}
+
+
+def _pairing_verdict(existing_model, half_key: str, inherit: bool) -> bool | None:
+    """Whether this publish paired with a half that was already here.
+
+    Three answers, and the third is the one worth having. ``True``: the
+    other half was here and this run's netlist is the netlist it was
+    measured on, so the document this publish writes is a whole model.
+    ``False``: it was here and the hashes do not agree, so the gate
+    dropped it and what gets written is this half alone — the rows were
+    *discarded*, not merely absent. ``None``: there was nothing to pair
+    with, which is the ordinary state of a directory whose other producer
+    has not run yet and says nothing about anything.
+
+    Told apart because a caller that was *told* which run to publish
+    beside can say so (#589): a mismatch it stays quiet about is the
+    silent half-filled model again, one directory further on. A caller
+    that merely landed in a shared directory has no such expectation to
+    disappoint, and reads this the way it always did — by looking at the
+    model it got back.
+    """
+    if not isinstance(existing_model, dict):
+        return None
+    if existing_model.get(_OTHER_HALF[half_key]) is None:
+        return None
+    return inherit
 
 
 def _existing_pair(artefact_dir) -> tuple[dict | None, dict | None]:

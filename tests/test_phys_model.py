@@ -2470,3 +2470,82 @@ def test_a_manifest_outside_a_ledger_has_no_experiment(tmp_path):
     plain = tmp_path / "verif" / "demo" / "artefacts" / "demo_synth"
     plain.mkdir(parents=True)
     assert experiment_for(plain / MANIFEST_FILENAME) is None
+
+
+# ---------------------------------------------------------------------------
+# What a publish reports about the half that was already there (#589)
+# ---------------------------------------------------------------------------
+
+
+def test_a_publish_into_an_empty_directory_reports_nothing_to_pair_with(tmp_path):
+    """`None`, not `False`: a directory whose other producer has not run
+    yet says nothing about this run's netlist, and a caller must not read
+    it as a refusal."""
+    _root, artefacts = _project(tmp_path)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        netlist_sha256=NETLIST_SHA256,
+        instances_path=artefacts / "power_instances.rpt",
+    )
+    assert published["paired"] is None
+
+
+def test_a_publish_reports_pairing_with_a_half_measured_on_its_netlist(tmp_path):
+    _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+    )
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        netlist_sha256=NETLIST_SHA256,
+        instances_path=artefacts / "power_instances.rpt",
+    )
+
+    assert published["paired"] is True
+
+
+def test_a_publish_reports_a_half_the_gate_dropped(tmp_path):
+    """The answer worth having: the rows were here and were *discarded*,
+    which is what a run told to publish beside a named synthesis warns on."""
+    _root, artefacts = _project(tmp_path)
+    netlist = artefacts / "synth_netlist.v"
+    netlist.write_text(NETLIST_AFTER_AN_RTL_EDIT)
+    (artefacts / "synth_stat.json").write_text(STAT_JSON)
+    (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
+    publish_synth(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="yosys",
+        run="demo",
+        stats_path=artefacts / "synth_stat.json",
+        netlist_path=netlist,
+    )
+
+    published = publish_power(
+        artefact_dir=artefacts,
+        top="demo_top",
+        backend="openroad",
+        run="demo",
+        netlist_sha256=NETLIST_SHA256,
+        instances_path=artefacts / "power_instances.rpt",
+    )
+
+    assert published["paired"] is False
+    assert load_model(published["model"])["modules"] is None

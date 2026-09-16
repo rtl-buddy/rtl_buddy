@@ -219,13 +219,32 @@ def project_root_for_dir(artefact_dir) -> str:
     rest of the module supports. The resolved walk is the fallback, so a
     directory reached through a link from outside the project still finds
     the root it really sits under.
+
+    A directory in no project at all answers with itself, which is what
+    keeps the paths joinable: relative to a root that is the directory,
+    they are bare filenames. A caller that needs to tell that case apart
+    — one deciding whether a path *escapes* the project, which has no
+    answer when there is no project — asks
+    :func:`project_root_or_none` instead.
+    """
+    return project_root_or_none(artefact_dir) or str(
+        Path(os.path.abspath(artefact_dir))
+    )
+
+
+def project_root_or_none(artefact_dir) -> str | None:
+    """The project root above ``artefact_dir``, or ``None`` if it is in none.
+
+    The marker walk :func:`project_root_for_dir` is built on, without its
+    fallback. Both spellings are tried, logical first, for the reason
+    that function gives.
     """
     logical = Path(os.path.abspath(artefact_dir))
     for start in (logical, Path(artefact_dir).resolve()):
         for candidate in (start, *start.parents):
             if any((candidate / marker).exists() for marker in _ROOT_MARKERS):
                 return str(candidate)
-    return str(logical)
+    return None
 
 
 def build_manifest(
