@@ -18,7 +18,7 @@ from rtl_buddy.config.dispatch import (
     TestbenchCompileFile as TbCompile,
     aggregate_compile_resources,
 )
-from rtl_buddy.config.dispatch import time_to_seconds
+from rtl_buddy.config.dispatch import greedy_schedule, time_to_seconds
 from rtl_buddy.dispatch.rightsize import (
     RightsizeFinding,
     _override_note,
@@ -1690,6 +1690,140 @@ def test_a_raise_shares_its_delta_across_repeated_contributors():
     assert 2 * time_to_seconds(time_a.suggested) == time_to_seconds(
         time_a.suggested_total
     )
+
+
+def _reaggregate(finding, schedule, parallel, governing):
+    """The makespan the suggested edit actually produces."""
+    value = time_to_seconds(finding.suggested)
+    makespan, _, _ = greedy_schedule(
+        [value if name == governing else seconds for name, seconds in schedule],
+        parallel,
+    )
+    return makespan
+
+
+def test_a_raise_reschedules_before_trusting_the_arithmetic():
+    """Raising a repeated build can push a later copy behind a neighbour.
+
+    Plan order A=60m, B=66m, A=60m over two workers is a 120-minute
+    makespan with both A's on one worker. Dividing a 180-minute target's
+    shortfall by A's two occurrences suggests 90m — but at 90m the second
+    A no longer fits beside B and lands after it, so the job reserves 156m
+    and times out again. The proposal is scheduled rather than predicted
+    (#551 review round 6).
+    """
+    schedule = [("A", 3600), ("B", 3960), ("A", 3600)]
+    tb_a = _tb("A")
+    findings = _build_advice(
+        {"state": "TIMEOUT", "elapsed_s": 7200, "timelimit_s": 7200},
+        parallel=2,
+        compile_origins={
+            "time": {
+                **tb_a,
+                "sources": [tb_a],
+                "aggregated": True,
+                "contributors": [tb_a, tb_a],
+                "contributor_value": 3600,
+                "schedule": schedule,
+                "parallel": 2,
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+    target = time_to_seconds(time_a.suggested_total)
+    assert target == 10800
+    # The naive arithmetic would have said 01:30:00 and delivered 156m.
+    assert time_to_seconds(time_a.suggested) > 5400
+    # What matters: applying the number reaches the target.
+    assert _reaggregate(time_a, schedule, 2, "A") >= target
+
+
+def test_a_serial_queue_raise_survives_rescheduling():
+    """parallel 1: the order cannot change, so the share stands."""
+    schedule = [("A", 1800), ("A", 1800)]
+    tb_a = _tb("A")
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 3600, "timelimit_s": 3600},
+        compile_origins={
+            "time": {
+                **tb_a,
+                "sources": [tb_a],
+                "aggregated": True,
+                "contributors": [tb_a, tb_a],
+                "contributor_value": 1800,
+                "schedule": schedule,
+                "parallel": 1,
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.suggested == "00:45:00"  # unchanged by the reschedule
+    assert _reaggregate(time_a, schedule, 1, "A") == time_to_seconds(
+        time_a.suggested_total
+    )
+
+
+def test_a_single_occurrence_raise_survives_rescheduling():
+    """One build in the queue: its own value IS the makespan."""
+    schedule = [("A", 3600)]
+    tb_a = _tb("A")
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 3600, "timelimit_s": 3600},
+        compile_origins={
+            "time": {
+                **tb_a,
+                "sources": [tb_a],
+                "aggregated": True,
+                # Two contributors recorded but only one is this key, so
+                # the share is the whole delta.
+                "contributors": [tb_a, _tb("B")],
+                "contributor_value": 3600,
+                "schedule": schedule,
+                "parallel": 1,
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.suggested == "01:30:00"
+    assert _reaggregate(time_a, schedule, 1, "A") >= time_to_seconds(
+        time_a.suggested_total
+    )
+
+
+def test_an_unreachable_target_falls_back_to_the_whole_job_figure():
+    """The bounded search gives up safely, never short.
+
+    Here the provenance names a key the schedule does not contain, so no
+    edit to it moves the makespan at all. The fallback is the whole-job
+    figure, which over-reserves — a build whose own time IS the target
+    cannot finish before it, so neither can the queue (#551 rev 6).
+    """
+    tb_a = _tb("A")
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 3600, "timelimit_s": 3600},
+        compile_origins={
+            "time": {
+                **tb_a,
+                "sources": [tb_a],
+                "aggregated": True,
+                "contributors": [tb_a, tb_a],
+                "contributor_value": 1800,
+                # No "A" in the queue: nothing this key does reaches it.
+                "schedule": [("Z", 1800), ("Z", 1800)],
+                "parallel": 1,
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.direction == "raise"
+    assert time_a.suggested == "01:30:00"  # the whole-job target itself
+    assert time_a.suggested_total is None
+    assert time_a.aggregate_delta is None
 
 
 def test_a_raise_on_distinct_contributors_keeps_the_whole_delta():

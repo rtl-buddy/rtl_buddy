@@ -96,6 +96,7 @@ from ..config.dispatch import (
     compile_parallel_origin,
     format_mem,
     format_time,
+    greedy_schedule,
     mem_to_bytes,
     sbatch_arg_sets_cpu_count_directly,
     time_to_seconds,
@@ -828,6 +829,24 @@ def analyze_build_reservation(
             return True
         return False
 
+    def _rescheduled_total(entry, value):
+        """The makespan this field's queue reaches with the key set to ``value``.
+
+        ``None`` when the provenance map carries no schedule — an older
+        state dict, or a field that is not a queue at all (``mem`` adds up
+        regardless of order) — in which case the caller keeps the
+        arithmetic it already had.
+        """
+        schedule = entry.get("schedule")
+        if not schedule:
+            return None
+        governing = entry.get("testbench")
+        makespan, _, _ = greedy_schedule(
+            [value if name == governing else seconds for name, seconds in schedule],
+            entry.get("parallel") or 1,
+        )
+        return makespan
+
     def raise_fields(resource_field, suggested_value, current_value, render):
         """Turn a whole-job `raise` into the contributor's own new value.
 
@@ -865,11 +884,35 @@ def analyze_build_reservation(
         occurrences = sum(
             1 for source in entry.get("contributors") or [] if source == primary
         )
-        share = -(-delta // max(1, occurrences))
+        candidate = own + -(-delta // max(1, occurrences))
+
+        # ...and that arithmetic assumes the schedule survives the edit,
+        # which it need not. Raising one copy of a repeated build can push
+        # a later copy BEHIND a neighbour that was running alongside it,
+        # so the queue absorbs part of the raise: A=60, B=66, A=60 over two
+        # workers is a 120-minute makespan, and A=90 re-schedules to 156,
+        # not the 180 the arithmetic promised. A raise that under-delivers
+        # is the one shape this must never emit — it re-times-out and the
+        # advice looks applied (#551 review round 6). So the proposal is
+        # SCHEDULED, not predicted, and the remaining gap closed until it
+        # clears the target.
+        reached = _rescheduled_total(entry, candidate)
+        rounds = 0
+        while reached is not None and reached < suggested_value and rounds < 8:
+            candidate += suggested_value - reached
+            reached = _rescheduled_total(entry, candidate)
+            rounds += 1
+        if reached is not None and reached < suggested_value:
+            # Still short after a bounded search: fall back to the whole-job
+            # figure, which is safe by construction — a build whose own time
+            # IS the target cannot finish before it, so the makespan cannot
+            # either. It over-reserves rather than under-reserves, and the
+            # reader still gets a number to write.
+            return plain
         return {
-            "suggested": render(own + share),
+            "suggested": render(candidate),
             "suggested_total": render(suggested_value),
-            "aggregate_delta": f"+{render(share)}",
+            "aggregate_delta": f"+{render(candidate - own)}",
         }
 
     def with_aggregate(edit, override):

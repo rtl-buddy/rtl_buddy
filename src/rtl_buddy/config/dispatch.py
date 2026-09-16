@@ -1286,6 +1286,33 @@ def compile_parallel_origin(suite_owned: bool, suite_path=None) -> str:
     return "cfg-dispatch.compile.parallel"
 
 
+def greedy_schedule(durations, parallel):
+    """Schedule ``durations`` over ``parallel`` workers, in list order (#551).
+
+    The build job hands its groups to a ThreadPool in plan order, so each
+    build goes to whichever worker frees up first and the job ends when the
+    last worker does. Returns ``(makespan, workers, finish)`` — the worker
+    lists hold indices into ``durations``, and ``finish`` is each worker's
+    end time, so a caller can ask which workers the job is waiting on.
+
+    Shared with right-sizing, which re-runs it on a PROPOSED edit: raising
+    one repeated build can push a later copy of it behind a neighbour and
+    move less wall clock than the arithmetic predicted, so the only honest
+    check is to schedule the change and look (#551 review round 6).
+    """
+    durations = list(durations)
+    if not durations:
+        return 0, [], []
+    slots = max(1, min(int(parallel or 1), len(durations)))
+    workers = [[] for _ in range(slots)]
+    finish = [0] * slots
+    for index, value in enumerate(durations):
+        slot = min(range(slots), key=lambda k: finish[k])
+        workers[slot].append(index)
+        finish[slot] += value
+    return max(finish), workers, finish
+
+
 def aggregate_compile_resources(
     dispatch_cfg, suite_compile=None, testbenches=(), parallel=1
 ) -> tuple[JobResources, dict]:
@@ -1404,7 +1431,7 @@ def aggregate_compile_resources(
                 out.append(source)
         return out
 
-    def _record(field_name, winners, contributors=(), primary_value=None):
+    def _record(field_name, winners, contributors=(), primary_value=None, **extra):
         """Record what produced this field's value, and how.
 
         ``winners`` are the sources that INDEPENDENTLY produce it — more
@@ -1435,6 +1462,7 @@ def aggregate_compile_resources(
             # THAT key becomes, or applying it re-aggregates over the
             # target (#551 review round 3).
             "contributor_value": primary_value,
+            **extra,
         }
 
     # --- cpus: the widest single build, never below the whole-job value ---
@@ -1524,17 +1552,9 @@ def aggregate_compile_resources(
     # `ceil(sum / parallel)` is only a LOWER bound on that — 30, 30 and 20
     # minutes over two workers finish in 50, not 40 — and a lower bound is
     # exactly the wrong side to reserve from (#551 review).
-    # More workers than builds changes nothing and a cluster-wide
-    # `parallel` can be far larger than one suite's plan, so only the
-    # slots that can be used are allocated.
-    slots = max(1, min(parallel, len(time_bids)))
-    workers = [[] for _ in range(slots)]
-    finish = [0] * slots
-    for index, (value, _, _) in enumerate(time_bids):
-        slot = min(range(slots), key=lambda k: finish[k])
-        workers[slot].append(index)
-        finish[slot] += value
-    makespan = max(finish) if time_bids else 0
+    makespan, workers, finish = greedy_schedule(
+        [value for value, _, _ in time_bids], parallel
+    )
     # No separate "longest single build" floor: a greedy schedule never
     # finishes before its longest element, so the makespan already contains
     # it — and at `parallel: 1` it is the serial total.
@@ -1578,5 +1598,17 @@ def aggregate_compile_resources(
         time_winners.append(_floor_source("time"))
         # The whole-job value binds: keep the spelling the config uses.
         resolved.time = floor.time
-    _record("time", time_winners, time_contributors, time_primary)
+    _record(
+        "time",
+        time_winners,
+        time_contributors,
+        time_primary,
+        # The queue itself, in plan order, so right-sizing can re-run the
+        # schedule on a proposed edit instead of assuming the assignment
+        # survives it (#551 review round 6). Names, because the edit is to
+        # a testbench's key and every build of that testbench moves with
+        # it. Internal to the provenance map — no machine-output surface.
+        schedule=[(name, value) for value, name, _ in time_bids],
+        parallel=parallel,
+    )
     return resolved, origins

@@ -21,6 +21,7 @@ from rtl_buddy.config.dispatch import (
     combine_for_in_job_compile,
     compile_parallel,
     compile_resource_origins,
+    greedy_schedule,
     aggregate_compile_resources,
     mem_to_bytes,
     resolve_compile_resources,
@@ -1148,6 +1149,43 @@ def test_tied_workers_running_one_testbench_collapse_to_one_source():
         parallel=2,
     )
     assert [s["testbench"] for s in origins["time"]["sources"]] == ["tb_a"]
+
+
+def test_the_queue_itself_rides_with_the_time_aggregate():
+    """Right-sizing re-runs the schedule, so it needs the queue, not a number.
+
+    Plan order and the worker count both matter: raising one build can
+    move a later one to another worker (#551 review round 6).
+    """
+    _, origins = aggregate_compile_resources(
+        _AGG_CFG,
+        None,
+        [
+            ("A", TbCompile(time="01:00:00")),
+            ("B", TbCompile(time="01:06:00")),
+            ("A", TbCompile(time="01:00:00")),
+        ],
+        parallel=2,
+    )
+    entry = origins["time"]
+    assert entry["schedule"] == [("A", 3600), ("B", 3960), ("A", 3600)]
+    assert entry["parallel"] == 2
+    # ...and the recorded queue reproduces the reservation it was sized from.
+    makespan, _, _ = greedy_schedule([s for _, s in entry["schedule"]], 2)
+    assert makespan == 7200
+
+
+def test_greedy_schedule_assigns_each_build_to_the_first_free_worker():
+    """The model right-sizing re-runs, pinned on its own."""
+    # 30, 30, 20 over two workers: the third joins the first, not the second.
+    makespan, workers, finish = greedy_schedule([30, 30, 20], 2)
+    assert (makespan, workers, finish) == (50, [[0, 2], [1]], [50, 30])
+    # More workers than builds changes nothing.
+    assert greedy_schedule([30, 30, 20], 9)[0] == 30
+    # One worker is the serial total.
+    assert greedy_schedule([30, 30, 20], 1)[0] == 80
+    # Nothing to schedule.
+    assert greedy_schedule([], 4) == (0, [], [])
 
 
 def test_a_single_contributor_is_not_an_aggregate():
