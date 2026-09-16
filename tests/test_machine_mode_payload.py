@@ -9,7 +9,11 @@ import json
 import logging
 from types import SimpleNamespace
 
-from rtl_buddy.logging_utils import render_summary, setup_logging
+from rtl_buddy.logging_utils import (
+    render_summary,
+    set_print_failures_only,
+    setup_logging,
+)
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.coverage import CoverageReporter
 from rtl_buddy.tools.vlog_cov import CoverageMetrics
@@ -363,3 +367,96 @@ def test_render_summary_emits_summary_event_in_machine_mode(tmp_path):
     assert summary, events
     assert summary[0]["rows"] == [{"name": "basic", "result": "PASS"}]
     assert "Merged Coverage: L:0.92 B:0.88 T:0.75 F:1.00" in summary[0]["metadata"]
+
+
+def test_print_failures_only_keeps_machine_summary_rows(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, color=False, log_path=log_path)
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Regression Results Summary",
+        columns=[("name", "Test"), ("result", "Result")],
+        rows=[
+            {"name": "row_pass", "result": "PASS"},
+            {"name": "row_skip", "result": "SKIP"},
+            {"name": "row_fail", "result": "FAIL"},
+        ],
+        logger=logging.getLogger("rtl_buddy.tests.machine"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "row_fail" in stderr
+    assert "row_pass" not in stderr
+    assert "row_skip" not in stderr
+    assert "Results: 1 PASS, 1 FAIL, 1 SKIP (3 total)" in stderr
+
+    events = [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
+    summary = [e for e in events if e.get("event") == "summary"][0]
+    assert [row["name"] for row in summary["rows"]] == [
+        "row_pass",
+        "row_skip",
+        "row_fail",
+    ]
+    assert summary["counts"] == {"PASS": 1, "SKIP": 1, "FAIL": 1}
+
+
+def test_machine_summary_tally_without_the_filter(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, color=False, log_path=log_path)
+
+    render_summary(
+        title="Regression Results Summary",
+        columns=[("name", "Test"), ("result", "Result")],
+        rows=[
+            {"name": "row_pass", "result": "PASS"},
+            {"name": "row_fail", "result": "FAIL"},
+        ],
+        logger=logging.getLogger("rtl_buddy.tests.machine"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "row_pass" in stderr
+    assert "Results: 1 PASS, 1 FAIL (2 total)" in stderr
+
+
+def test_machine_summary_tally_follows_the_rows(tmp_path, capsys):
+    setup_logging(machine=True, color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    render_summary(
+        title="Regression Results Summary",
+        columns=[("name", "Test"), ("result", "Result")],
+        rows=[
+            {"name": "row_pass", "result": "PASS"},
+            {"name": "row_fail", "result": "FAIL"},
+        ],
+        logger=logging.getLogger("rtl_buddy.tests.machine"),
+        metadata=["Builder: vcs"],
+    )
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert lines[-1] == "Results: 1 PASS, 1 FAIL (2 total)"
+    assert "row_fail" in lines[-2]
+    assert lines.index("Builder: vcs") == 1
+
+
+def test_machine_summary_without_verdict_column_has_no_counts(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, color=False, log_path=log_path)
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Filelist Summary",
+        columns=[("name", "Name"), ("files", "Files")],
+        rows=[{"name": "core", "files": "3"}],
+        logger=logging.getLogger("rtl_buddy.tests.machine"),
+    )
+
+    assert "core" in capsys.readouterr().err
+    events = [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
+    summary = [e for e in events if e.get("event") == "summary"][0]
+    assert "counts" not in summary

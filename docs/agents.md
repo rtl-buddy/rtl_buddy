@@ -105,7 +105,10 @@ Machine mode:
 - writes `rtl_buddy.log` as JSON Lines;
 - disables Rich formatting, colors, and spinners;
 - prints one structured JSON result to stdout for supported commands;
-- captures Python hook stdout as `hook.stdout` events so it cannot corrupt the result.
+- captures Python hook stdout as `hook.stdout` events so it cannot corrupt the result;
+- for `test`, `regression`, and `fpv`, renders the result summary as plain text on stderr and records it as a `summary` event carrying `rows` and `counts`.
+
+Add `--print-failures-only` to drop `PASS`, `SKIP`, and `XFAIL` rows from that stderr render on a long run; the `summary` event still carries every row.
 
 A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process explicitly; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
 
