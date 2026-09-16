@@ -1263,6 +1263,63 @@ def test_phys_focus_validates_before_dialling(mcp_project: Path):
     assert "cells/area/leakage/dynamic/total" in envelope["error"]
 
 
+def test_a_focus_target_that_is_not_a_string_is_refused_before_the_hub(
+    mcp_project: Path,
+):
+    """The finding (#563 round-17, Codex P2). ``str()`` is a renderer, not a
+    validator: ``false`` came out as ``"False"`` and ``[]`` as ``"[]"``, each
+    reached the hub as a target, was cached there as the latest focus, and
+    came back ``ok: true``. The hub replays the latest focus to every pane
+    that registers, so one malformed call went on being delivered to tabs
+    opened long after it — and a pane cannot report it, because a target
+    matching no row is what a miss looks like.
+
+    Port 1 refuses connections, so reaching it would mean no validation."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
+
+    for bad, shown in (
+        (False, "False"),
+        (True, "True"),
+        ([], "[]"),
+        ({}, "{}"),
+        (3, "3"),
+    ):
+        refused = ts.call("phys_focus", {"target": bad})
+
+        assert refused["ok"] is False, bad
+        # The value it could not read is quoted back, as the limit and
+        # path refusals quote their own.
+        assert "'target' must be a string" in refused["error"], bad
+        assert f"not {shown}" in refused["error"], bad
+        assert "instance path" in refused["error"]
+
+    # The guarantee belongs to the shared helper, so the coverage pane's
+    # focus verb keeps it too.
+    assert ts.call("cov_focus", {"target": []})["ok"] is False
+
+    # An absent or blank target is still the missing argument it looks
+    # like, refused in the words it always was.
+    for blank in (None, "", "   "):
+        refused = ts.call("phys_focus", {"target": blank})
+        assert refused["ok"] is False, blank
+        assert "missing required argument 'target'" in refused["error"], blank
+
+
+def test_a_phys_focus_metric_that_is_not_a_pane_metric_is_refused(mcp_project: Path):
+    """The other argument, checked for the same hole and not having it: the
+    enum is a tuple, so membership answers every type rather than raising on
+    an unhashable one, and a value that is not one of the five is refused
+    whatever it is."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
+
+    for bad in (False, [], {}, 0, "switching"):
+        refused = ts.call("phys_focus", {"target": "module:sub", "metric": bad})
+
+        assert refused["ok"] is False, bad
+        assert "metric" in refused["error"], bad
+        assert "cells/area/leakage/dynamic/total" in refused["error"], bad
+
+
 def test_phys_focus_reports_a_dead_hub_rather_than_crashing(mcp_project: Path):
     """The handle said yes at start; the socket may still say no."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))

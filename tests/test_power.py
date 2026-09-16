@@ -856,13 +856,17 @@ def test_power_script_wraps_the_walk_in_a_catch(tmp_path):
 
 def test_power_script_records_the_liberty_cell_of_each_instance(tmp_path):
     """`report_power` prints the path and the powers, never the master — so
-    the walk writes the mapping the model's module column needs."""
+    the walk writes the mapping the model's module column needs. Under a
+    staging name, like the report beside it: a `foreach` that raised part-way
+    would otherwise leave half the mapping at the published path (#560)."""
     backend = _make_power_backend(tmp_path)
 
     script = Path(backend._write_script()).read_text()
 
-    assert f"open {backend._instances_cells_path()} w" in script
+    staged = backend._staging_path(backend._instances_cells_path())
+    assert f"open {staged} w" in script
     assert "get_property $rb_inst ref_name" in script
+    assert f"file rename -force {staged} {backend._instances_cells_path()}" in script
 
 
 def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None, log=""):
@@ -1769,3 +1773,272 @@ def test_a_log_without_the_marker_is_scanned_whole(tmp_path, monkeypatch):
 
     assert isinstance(result, PowerFailResults)
     assert "1 ERROR(s) in OpenROAD log" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# Publishing the per-instance reports only on success (#560 round-17)
+# ---------------------------------------------------------------------------
+
+
+def test_the_per_instance_block_writes_under_staging_names(tmp_path):
+    """The finding (#560 round-17, Codex P2). Tcl's `>` creates the file
+    before the command it redirects runs, so a `report_power -instances` that
+    emits two thirds of the design and then raises leaves a nonempty report at
+    the published path — and the `catch` around it hides that it failed. The
+    block therefore redirects into a staging name and never into the published
+    one."""
+    backend = _make_power_backend(tmp_path)
+    instances = backend._instances_report_path()
+    cells = backend._instances_cells_path()
+
+    script = Path(backend._write_script()).read_text()
+
+    assert (
+        f"report_power -instances $rb_insts > {backend._staging_path(instances)}"
+        in script
+    )
+    assert f"report_power -instances $rb_insts > {instances}\n" not in script
+    assert f"open {backend._staging_path(cells)} w" in script
+    assert f"open {cells} w" not in script
+
+
+def test_the_per_instance_reports_are_renamed_on_success_only(tmp_path):
+    """The publication is two renames, and Tcl reaches them only when every
+    command before them returned — an atomic publish-on-success. A block that
+    raised leaves the staging files, which the trailing deletes remove."""
+    backend = _make_power_backend(tmp_path)
+    instances = backend._instances_report_path()
+    cells = backend._instances_cells_path()
+    instances_tmp = backend._staging_path(instances)
+    cells_tmp = backend._staging_path(cells)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    rename_cells = lines.index(f"    file rename -force {cells_tmp} {cells}")
+    rename_insts = lines.index(f"    file rename -force {instances_tmp} {instances}")
+    report = lines.index(f"    report_power -instances $rb_insts > {instances_tmp}")
+    # Both renames follow the command that can fail, and both are inside the
+    # `catch` block — the closing brace comes after them.
+    assert report < rename_cells < rename_insts
+    assert lines.index("}") > rename_insts
+    # And the staging files a failed block leaves do not outlive the script.
+    assert f"catch {{file delete -force {cells_tmp}}}" in lines
+    assert f"catch {{file delete -force {instances_tmp}}}" in lines
+
+
+def test_a_partial_per_instance_report_is_not_published_as_complete(
+    tmp_path, monkeypatch
+):
+    """What the staging name buys. A block that emitted rows and then raised
+    leaves them under the staging name and nothing at the published one, which
+    is the state the publish already reads as "this run produced no
+    breakdown" — a null half plus the existing warning, not two thirds of a
+    design presented as all of it."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerPassResults
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _emits_then_raises(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        # The rows the redirection had already flushed when the Tcl error
+        # unwound the block — under the staging name, never renamed.
+        Path(backend._staging_path(backend._instances_report_path())).write_text(
+            _INSTANCE_RPT
+        )
+        Path(backend._staging_path(backend._instances_cells_path())).write_text(
+            _INSTANCE_CELLS
+        )
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _emits_then_raises)
+    result = backend.run()
+
+    assert isinstance(result, PowerPassResults)
+    assert load_model(result.results["phys_model"])["instances"] is None
+
+
+def test_a_staging_report_left_by_a_killed_run_does_not_survive_the_clear(
+    tmp_path, monkeypatch
+):
+    """An OpenROAD killed inside the block never reaches its trailing deletes,
+    and a staging file left in the artefact directory would be the next run's
+    to rename over its own."""
+    backend = _make_power_backend(tmp_path)
+    orphan = Path(backend._staging_path(backend._instances_report_path()))
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(_INSTANCE_RPT)
+
+    _backend, _result = _run_power_with(tmp_path, monkeypatch)
+
+    assert not orphan.exists()
+
+
+# ---------------------------------------------------------------------------
+# Publishing the top the script was generated from (#560 round-17)
+# ---------------------------------------------------------------------------
+
+
+def test_the_published_top_is_the_one_the_script_was_generated_from(
+    tmp_path, monkeypatch
+):
+    """The finding (#560 round-17, Codex P2). Resolving a second time at
+    publish re-reads the synth YAML this analysis references, minutes after
+    OpenROAD was launched against the first answer: a `top:` edited in between
+    would have these watts attributed to a design they do not describe, and
+    merged against a co-named publication of another one."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    script_inputs = backend._resolve_inputs()
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        # The referenced synth.yaml is edited while OpenROAD works: the same
+        # entry now names another design.
+        backend._resolve_inputs = lambda: {**script_inputs, "top": "other_top"}
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    result = backend.run()
+
+    model = load_model(result.results["phys_model"])
+    assert model["design"]["top"] == "demo_top"
+
+
+def test_a_referenced_entry_that_vanishes_mid_run_does_not_null_the_top(
+    tmp_path, monkeypatch
+):
+    """The other half of the same finding: a resolution that *raises* at
+    publish used to fall back to `{}` and record no top at all, so the run
+    lost the design it had just measured."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+
+        def _gone():
+            raise FatalRtlBuddyError("synth entry 'demo_synth' not found")
+
+        backend._resolve_inputs = _gone
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    result = backend.run()
+
+    assert load_model(result.results["phys_model"])["design"]["top"] == "demo_top"
+
+
+# ---------------------------------------------------------------------------
+# A stale half that cannot be withdrawn stops the run (#560 round-17)
+# ---------------------------------------------------------------------------
+
+
+def _lock_the_publication(monkeypatch):
+    """Make every `_publication_lock` acquisition time out, as a holder that
+    outlives `PUBLISH_LOCK_TIMEOUT_SEC` does."""
+    import contextlib as _contextlib
+    from rtl_buddy.phys import publish as publish_mod
+
+    @_contextlib.contextmanager
+    def _held(_artefact_dir):
+        raise TimeoutError("phys-publish.lock: another publish has held the lock")
+        yield  # pragma: no cover - unreachable, keeps this a context manager
+
+    monkeypatch.setattr(publish_mod, "_publication_lock", _held)
+
+
+def test_a_half_that_cannot_be_withdrawn_stops_the_power_run(tmp_path, monkeypatch):
+    """The finding (#560 round-17, Codex P2). The clear has already deleted
+    the per-instance report, so a withdrawal that failed leaves the previous
+    run's watts discoverable over nothing. Logging that at DEBUG and running
+    anyway made the stale rows survive every failure after it; the run stops
+    instead."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend, result = _run_power_with(
+        tmp_path, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+    model_path = Path(result.results["phys_model"])
+    assert load_model(model_path)["instances"]
+
+    _lock_the_publication(monkeypatch)
+
+    def _never_reached(cmd, **kwargs):  # pragma: no cover - the point of the gate
+        raise AssertionError("OpenROAD ran over a publication it could not withdraw")
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _never_reached)
+    rerun = backend.run()
+
+    assert isinstance(rerun, PowerFailResults)
+    desc = rerun.results["desc"]
+    assert "could not be withdrawn" in desc
+    assert "phys-publish.lock" in desc
+    # And the rows are still there, which is exactly why the run stopped.
+    assert load_model(model_path)["instances"]
+
+
+def test_a_failed_withdrawal_is_named_in_a_post_openroad_failure(tmp_path, monkeypatch):
+    """`_fail_after_openroad` runs the same clear. The run was over either
+    way, but the user has to learn that the artefact directory still publishes
+    rows over the report it just deleted."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend, result = _run_power_with(
+        tmp_path, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    _lock_the_publication(monkeypatch)
+
+    def _dies(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        return MagicMock(returncode=3)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _dies)
+    # The start-of-run gate fires first; reach the post-OpenROAD path by
+    # letting that one through and failing the tool instead.
+    monkeypatch.setattr(backend, "_clear_stale_report", _one_clean_clear(backend))
+    rerun = backend.run()
+
+    assert isinstance(rerun, PowerFailResults)
+    assert "exited with code 3" in rerun.results["desc"]
+    assert "could not be withdrawn" in rerun.results["desc"]
+
+
+def _one_clean_clear(backend):
+    """`_clear_stale_report` that succeeds once and fails thereafter.
+
+    The start-of-run clear and the post-OpenROAD one are the same method, so
+    a test that wants the second to report a failed withdrawal has to let the
+    first through.
+    """
+    real = backend._clear_stale_report
+    calls = {"n": 0}
+
+    def _clear():
+        result = real()
+        calls["n"] += 1
+        return None if calls["n"] == 1 else result
+
+    return _clear

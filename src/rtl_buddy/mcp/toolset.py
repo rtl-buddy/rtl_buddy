@@ -839,7 +839,7 @@ class Toolset:
         # Optional keys are omitted rather than sent as null: the wire
         # schema is additionalProperties:false with no nullable hints,
         # so a null would be rejected by the hub, not ignored by it.
-        payload: dict[str, Any] = {"target": str(_req(args, "target")).strip()}
+        payload: dict[str, Any] = {"target": _focus_target("cov_focus", args)}
         metric = args.get("metric")
         if metric is not None:
             if metric not in _COV_METRICS:
@@ -871,7 +871,7 @@ class Toolset:
         # ``rb hub send phys-focus`` follows, because the pane matches
         # ``target`` as a string and the wire schema is
         # additionalProperties:false with no nullable hints.
-        payload: dict[str, Any] = {"target": str(_req(args, "target")).strip()}
+        payload: dict[str, Any] = {"target": _focus_target("phys_focus", args)}
         metric = args.get("metric")
         if metric is not None:
             if metric not in _PHYS_METRICS:
@@ -881,6 +881,43 @@ class Toolset:
                 )
             payload["metric"] = metric
         return self._hub_emit("phys_focus", payload)
+
+
+def _focus_target(tool: str, args: dict) -> str:
+    """The ``target`` a focus verb points a pane at, or a refusal.
+
+    ``target`` is the whole of what these two tools do, and the server
+    forwards a host's arguments to the handler exactly as they arrived —
+    so an ``inputSchema`` saying ``"type": "string"`` is documentation
+    until a handler checks it, the same gap :meth:`_phys_path_arg` and
+    :meth:`_phys_limit` close on the reads.
+
+    :func:`str` is a renderer, not a validator: it answers ``false`` with
+    ``"False"``, ``[]`` with ``"[]"`` and ``{}`` with ``"{}"``. Each of
+    those used to reach the hub as a target, be cached there as the
+    latest focus, and come back ``ok: true`` — and the hub replays the
+    latest focus to every pane that registers, so one malformed call went
+    on being delivered to tabs opened long after it. A pane cannot report
+    it either: a target that matches no row is what a miss looks like.
+
+    So the value has to *be* a string. ``bool`` is not one and is not
+    coerced into one; a number is not one either, since a target is a
+    module name or an instance path and neither is a number.
+
+    An absent target, and a string that is nothing but whitespace, stay
+    :func:`_req`'s to refuse — the pane matches these strings exactly, so
+    a trailing space is a miss rather than a near miss, and a value that
+    strips to nothing is the missing argument it looks like. What is new
+    is the type, and the value is quoted back so the caller can see what
+    it sent.
+    """
+    value = _req(args, "target")
+    if not isinstance(value, str):
+        raise ToolError(
+            f"{tool}: 'target' must be a string naming a module or an "
+            f"instance path, not {value!r}"
+        )
+    return value.strip()
 
 
 def _req(args: dict, key: str):

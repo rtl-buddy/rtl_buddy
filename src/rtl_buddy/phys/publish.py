@@ -103,7 +103,14 @@ enough to pass, so a rerun that fails earlier would leave the previous
 run's half published over artefacts its own stale-clear has just
 deleted. :func:`invalidate_half` is the other half of the contract: the
 flows call it where they clear, and it nulls the producer's own half of
-whatever is already in the directory.
+whatever is already in the directory. A withdrawal that *fails* — the
+lock it needs held past its timeout, a directory it cannot write — is
+the one by-product failure the flows do not shrug off, because what it
+leaves behind is not a by-product: the raw artefacts under the half are
+already deleted, so continuing would leave the previous run's rows and
+the manifest paths beside them discoverable over files that no longer
+exist. :func:`withdrawal_failure_desc` spells that out, and all three
+flows fail the run with it.
 """
 
 from __future__ import annotations
@@ -267,6 +274,35 @@ def invalidate_half(artefact_dir, own_half: str) -> dict:
     except Exception as e:  # noqa: BLE001 - a by-product never fails a run
         return {"model": None, "manifest": None, "error": str(e)}
     return {"model": model_path, "manifest": manifest_path, "error": None}
+
+
+def withdrawal_failure_desc(error: str) -> str:
+    """Why a run whose own half could not be withdrawn stops (#560).
+
+    :func:`invalidate_half` never raises — the resilience rule this module
+    is built on — so a withdrawal that failed comes back as an ``error``
+    string, and the flows used to log it at DEBUG and carry on. They
+    cannot: the withdrawal is called from the stale-clear, *after* that
+    clear has deleted the reports the published half was read from. A run
+    that proceeds past a failed withdrawal and then dies before it
+    publishes leaves the previous run's rows standing, with the manifest
+    still naming reports that are gone — a breakdown of a design this
+    directory no longer holds, indistinguishable from a current one.
+
+    So the three flows fail with this instead. The failure is honest and
+    re-runnable: whatever holds the publication lock lets go, and the
+    rerun both withdraws and republishes.
+
+    :param error: the ``error`` :func:`invalidate_half` returned.
+    """
+    return (
+        "the previous run's physical half could not be withdrawn "
+        f"({error}), and the reports behind it have already been cleared — "
+        "phys-model.json and phys-manifest.json in the artefact directory "
+        "would go on publishing rows over files that no longer exist, so "
+        "this run stops rather than proceed over them; re-run once whatever "
+        "holds the publication lock has finished"
+    )
 
 
 def publish_synth(

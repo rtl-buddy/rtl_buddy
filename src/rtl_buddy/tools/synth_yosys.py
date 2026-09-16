@@ -22,7 +22,11 @@ from ..config.synth import (
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.manifest import project_relative
-from ..phys.publish import invalidate_half, publish_synth
+from ..phys.publish import (
+    invalidate_half,
+    publish_synth,
+    withdrawal_failure_desc,
+)
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
@@ -878,7 +882,7 @@ class YosysSynth:
             f.write(script)
         return script_path
 
-    def _clear_stale_netlists(self) -> None:
+    def _clear_stale_netlists(self) -> str | None:
         """Remove the previous run's netlists, before anything can return.
 
         `synth_netlist.v` / `synth.rtlil` are this flow's real product and the
@@ -908,6 +912,12 @@ class YosysSynth:
         rerun that fails here would otherwise leave the previous run's
         per-module rows discoverable with the `synth_stat.json` behind them
         already gone (#558).
+
+        :returns: ``None``, or the reason the withdrawal did not happen —
+            which every caller turns into a failed run, because the
+            `synth_stat.json` behind the still-published half has just been
+            deleted here. See
+            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
         """
         stale = clear_stale_artefacts(
             [
@@ -925,18 +935,36 @@ class YosysSynth:
                 synth=self.synth_cfg.get_name(),
                 paths=stale,
             )
-        self._invalidate_phys_half()
+        return self._invalidate_phys_half()
 
-    def _invalidate_phys_half(self) -> None:
+    def _invalidate_phys_half(self) -> str | None:
         """Null this flow's half of any model + manifest already here (#558).
 
         The counterpart of `_publish_phys_model`, called from the clear above
         so every path that ends without publishing -- a failure, a crash, a
         gate that returns early -- leaves no module rows standing over
         artefacts that have just been deleted. The power half is untouched.
+
+        A withdrawal that *succeeded* is bookkeeping and logs at DEBUG. One
+        that failed is not: the clear that called this has already deleted
+        the `synth_stat.json` the published rows were read from, so they are
+        now standing over nothing, and carrying on would let a run that dies
+        before publishing leave them there. It warns and hands the reason
+        back for the caller to fail on (#560).
+
+        :returns: ``None`` on success, else `invalidate_half`'s ``error``.
         """
         result = invalidate_half(self.artefact_dir, "modules")
-        if result["model"] or result["manifest"] or result["error"]:
+        if result["error"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_half_stale",
+                synth=self.synth_cfg.get_name(),
+                error=result["error"],
+            )
+            return result["error"]
+        if result["model"] or result["manifest"]:
             log_event(
                 logger,
                 logging.DEBUG,
@@ -944,8 +972,8 @@ class YosysSynth:
                 synth=self.synth_cfg.get_name(),
                 model=result["model"],
                 manifest=result["manifest"],
-                error=result["error"],
             )
+        return None
 
     def _fail_after_yosys(self, desc: str) -> SynthFailResults:
         """Fail a run that has already invoked Yosys, publishing no netlist.
@@ -958,12 +986,30 @@ class YosysSynth:
         (#469). Every post-Yosys failure return goes through here so the two
         halves cannot drift apart, and so a new failure gate added to this
         method inherits the cleanup by using it.
+
+        The clear withdraws this flow's published half as it goes, and a
+        withdrawal it could not make is said out loud in the description this
+        run already fails with: the run was over either way, but the user has
+        to know the artefact directory still publishes module rows over the
+        `synth_stat.json` just deleted (#560).
         """
-        self._clear_stale_netlists()
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
-        self._clear_stale_netlists()
+        # The clear withdraws whatever this flow published here last time,
+        # and nothing else starts if it could not: the `synth_stat.json`
+        # behind those rows has just been deleted, so a run that went ahead
+        # and then failed would leave a breakdown of a design this directory
+        # no longer holds discoverable as a current one (#560).
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=withdrawal_failure_desc(stale_error),
+            )
         log_event(
             logger,
             logging.INFO,
@@ -1100,13 +1146,9 @@ class YosysSynth:
             # start-of-run cleanup only removed the previous one. Drop it, or
             # `rb pnr` / `rb power` would consume a netlist whose shared net
             # folded to x.
-            self._clear_stale_netlists()
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc=(
-                    f"{len(conflicting)} 'multiple conflicting drivers' "
-                    f"warning(s) in {log_path}"
-                ),
+            return self._fail_after_yosys(
+                f"{len(conflicting)} 'multiple conflicting drivers' "
+                f"warning(s) in {log_path}"
             )
 
         area_um2 = self._parse_area_um2(log_text)
