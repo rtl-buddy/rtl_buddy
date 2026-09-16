@@ -621,7 +621,43 @@ def test_power_suite_loads_xfail_flags(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_power_backend(tmp_path):
+class _FakePdk:
+    """A `cfg-pdks` corner as the power script reads it: two LEF paths."""
+
+    def __init__(self, tech_lef, macro_lef=None):
+        self._tech_lef = tech_lef
+        self._macro_lef = macro_lef
+
+    def get_name(self):
+        return "fake_pdk"
+
+    def get_tech_lef(self):
+        return self._tech_lef
+
+    def get_macro_lef(self):
+        return self._macro_lef
+
+
+class _FakePlatform:
+    """A `cfg-pnr-platforms` entry: one Liberty, over one PDK corner.
+
+    Named paths rather than a `MagicMock`, because the power fingerprint
+    digests the technology the script reads and a mock answers every call
+    with a different object (#570).
+    """
+
+    def __init__(self, liberty="/pdk/fake/nangate45_typ.lib", pdk=None):
+        self._liberty = liberty
+        self._pdk = pdk or _FakePdk("/pdk/fake/tech.lef")
+
+    def get_sta_lib_path(self):
+        return self._liberty
+
+    def get_pdk(self):
+        return self._pdk
+
+
+def _make_power_backend(tmp_path, platform=None):
     """An OpenRoadPower over a synthetic netlist, with input/platform
     resolution stubbed out — the run() gate under test is downstream of both."""
     from unittest.mock import MagicMock
@@ -667,7 +703,7 @@ def _make_power_backend(tmp_path):
         "sdc": str(sdc),
         "top": "demo_top",
     }
-    backend._resolve_platform = lambda: MagicMock()
+    backend._resolve_platform = lambda: platform or _FakePlatform()
     return backend
 
 
@@ -889,6 +925,408 @@ def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None, log=""
 
     monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
     return backend, backend.run()
+
+
+def _run_prepared_power(backend, monkeypatch, *, instances=None, cells=None):
+    """`_run_power_with`, for a backend the caller has already shaped."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        if instances is not None:
+            Path(backend._instances_report_path()).write_text(instances)
+        if cells is not None:
+            Path(backend._instances_cells_path()).write_text(cells)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    return backend.run()
+
+
+def _make_pnr_power_backend(tmp_path, routed_sdc_text, pnr_run="demo_pnr"):
+    """A `netlist-source: pnr` backend with no explicit `constraints:`.
+
+    Which is the ordinary spelling: the routed SDC is an artefact of the
+    `rb pnr` run this reads, so nobody names it in `power.yaml`.
+    `_resolve_inputs` is the thing that knows where it is, and it is
+    stubbed here exactly as the synth fixture stubs it.
+
+    ``pnr_run`` names the upstream `rb pnr` entry, so a caller can build
+    two backends that differ in nothing but which routed database they
+    read.
+    """
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.netlist_source = "pnr"
+    backend.power_cfg.constraints = None
+    backend.power_cfg.pnr_name = pnr_run
+    pnr_artefact = tmp_path / "pnr_artefacts" / pnr_run
+    pnr_artefact.mkdir(parents=True, exist_ok=True)
+    odb = pnr_artefact / "demo_top.routed.odb"
+    odb.write_bytes(b"")
+    routed = pnr_artefact / "demo_top.routed.sdc"
+    routed.write_text(routed_sdc_text)
+    backend._resolve_inputs = lambda: {
+        "netlist": None,
+        "odb": str(odb),
+        "sdc": str(routed),
+        "top": "demo_top",
+    }
+    return backend, routed
+
+
+def test_a_pnr_power_run_records_the_routed_sdc_it_actually_read(tmp_path, monkeypatch):
+    """The config block is what tells two runs apart, and for a `pnr` run
+    the constraints are not in the config at all: with no explicit
+    `constraints:` the analysis reads `<pnr artefact>/<top>.routed.sdc`,
+    the post-CTS constraints the router wrote. Publishing the config
+    field recorded `null` and hashed nothing, so two analyses against
+    two different routed SDCs -- different clock periods, a different
+    CTS -- fingerprinted identically while measuring different timing."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    backend, routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    config = load_model(result.results["phys_model"])["provenance"]["power"]["config"]
+    # Project-relative, as every path in these documents is.
+    assert config["constraints"].endswith("demo_top.routed.sdc")
+    assert config["constraints_sha256"] == sha256_of(routed)
+
+
+def test_two_pnr_runs_with_different_routed_sdcs_read_apart(tmp_path, monkeypatch):
+    """The point of recording it: the hash is what a reader compares."""
+    from rtl_buddy.phys.model import load_model
+
+    hashes = []
+    for period in ("3", "7"):
+        root = tmp_path / f"p{period}"
+        root.mkdir()
+        backend, _ = _make_pnr_power_backend(
+            root, f"create_clock -period {period} [get_ports clk]\n"
+        )
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        hashes.append(recorded["config"]["constraints_sha256"])
+
+    assert hashes[0] and hashes[1] and hashes[0] != hashes[1]
+
+
+def test_a_trace_rewritten_in_place_gives_the_run_a_new_identity(tmp_path, monkeypatch):
+    """`rb test` overwrites `artefacts/<test>/dump.saif` every time the
+    test behind it runs, and `rb saif` converts it in place, so the path a
+    `power.yaml` names is a name and not an identity. Two analyses of the
+    same netlist against two captures of one trace are two measurements,
+    and before the hash their activity blocks were byte-identical."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.provenance import activity_label
+    from rtl_buddy.phys.publish import sha256_of
+    from rtl_buddy.config.power import PowerActivity
+
+    backend = _make_power_backend(tmp_path)
+    trace = tmp_path / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
+    trace.parent.mkdir(parents=True)
+    backend.power_cfg.mode = "dynamic"
+    backend.power_cfg.activity = PowerActivity(
+        saif=str(trace),
+        vcd=None,
+        scope="tb/u_dut",
+        default_toggle_rate=0.1,
+        default_static_prob=0.5,
+    )
+
+    blocks = []
+    for capture in ("(SAIFILE first)\n", "(SAIFILE second)\n"):
+        trace.write_text(capture)
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        assert recorded["activity"]["trace_sha256"] == sha256_of(trace)
+        blocks.append(recorded["activity"])
+
+    # Everything a reader sees is the same; the identity is not.
+    assert blocks[0]["trace"] == blocks[1]["trace"]
+    assert blocks[0]["test"] == blocks[1]["test"] == "csr_smoke"
+    assert activity_label(blocks[0]) == activity_label(blocks[1])
+    assert blocks[0]["trace_sha256"] != blocks[1]["trace_sha256"]
+    assert blocks[0] != blocks[1]
+
+
+def _saif_backend(tmp_path):
+    """A dynamic backend reading a SAIF the test can rewrite."""
+    from rtl_buddy.config.power import PowerActivity
+
+    backend = _make_power_backend(tmp_path)
+    trace = tmp_path / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
+    trace.parent.mkdir(parents=True, exist_ok=True)
+    backend.power_cfg.mode = "dynamic"
+    backend.power_cfg.activity = PowerActivity(
+        saif=str(trace),
+        vcd=None,
+        scope="tb/u_dut",
+        default_toggle_rate=0.1,
+        default_static_prob=0.5,
+    )
+    return backend, trace
+
+
+def test_the_trace_is_hashed_before_openroad_reads_it(tmp_path, monkeypatch):
+    """The finding (#570 round-15 review, Codex P2). The hash was taken in
+    `_publish_phys_model`, *after* an analysis that runs for minutes, so a
+    `dump.saif` the test behind it re-captured mid-run was identified by
+    its replacement and the document claimed bytes the watts beside them
+    were never measured from. The identity is now taken as the subprocess
+    is launched, which is the only moment the file on disk is the file
+    being read."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+    from rtl_buddy.tools import power_openroad
+
+    backend, trace = _saif_backend(tmp_path)
+    trace.write_text("(SAIFILE measured)\n")
+    measured = sha256_of(trace)
+    seen = []
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        # Taken already, by the time the tool that reads the trace starts.
+        seen.append(backend._trace_sha256)
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+        Path(backend._instances_cells_path()).write_text(_INSTANCE_CELLS)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    result = backend.run()
+
+    assert seen == [measured]
+    activity = load_model(result.results["phys_model"])["provenance"]["power"][
+        "activity"
+    ]
+    assert activity["trace_sha256"] == measured
+
+
+def test_a_trace_rewritten_under_the_run_is_recorded_as_unknown(
+    tmp_path, monkeypatch, caplog
+):
+    """Hashing at the start narrows the window; it does not close it. So
+    the hash is confirmed when OpenROAD returns, and a trace that moved
+    in between has *no* identity this run can vouch for — the first hash
+    names bytes OpenROAD may not have finished reading, the second names
+    bytes it certainly did not start with. `null` is the model's word for
+    unknown, and the warning is what stops it reading as "this run
+    measured no trace"."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+    from rtl_buddy.tools import power_openroad
+
+    backend, trace = _saif_backend(tmp_path)
+    trace.write_text("(SAIFILE first)\n")
+
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        # The next run of the test behind this trace, landing mid-analysis.
+        trace.write_text("(SAIFILE recaptured under the run)\n")
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+        Path(backend._instances_cells_path()).write_text(_INSTANCE_CELLS)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    with caplog.at_level("WARNING"):
+        result = backend.run()
+
+    activity = load_model(result.results["phys_model"])["provenance"]["power"][
+        "activity"
+    ]
+    # Neither hash is recorded: not the bytes at the start, not the ones
+    # on disk now.
+    assert activity["trace_sha256"] is None
+    assert sha256_of(trace) is not None
+    # The path is still recorded — what the run read is known, which
+    # bytes it read is not.
+    assert activity["trace"].endswith("dump.saif")
+    assert "trace_changed_during_run" in caplog.text
+
+
+def test_a_static_run_hashes_no_trace_and_reads_none(tmp_path, monkeypatch):
+    """The fixture's own shape: `mode: static` with a trace still named in
+    the config. The Tcl emits no `read_saif`, so there is nothing to
+    identify -- and a VCD is the largest file in an artefact tree, which
+    is reason enough not to read one the analysis ignored."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.config.power import PowerActivity
+
+    backend = _make_power_backend(tmp_path)
+    trace = tmp_path / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
+    trace.parent.mkdir(parents=True)
+    trace.write_text("(SAIFILE)\n")
+    backend.power_cfg.activity = PowerActivity(
+        saif=str(trace),
+        vcd=None,
+        scope="tb/u_dut",
+        default_toggle_rate=0.1,
+        default_static_prob=0.5,
+    )
+
+    reads = []
+    real_open = open
+
+    def _counting_open(path, *args, **kwargs):
+        if str(path) == str(trace):
+            reads.append(str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _counting_open)
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    activity = load_model(result.results["phys_model"])["provenance"]["power"][
+        "activity"
+    ]
+    assert activity["source"] == "default"
+    assert activity["trace"] is None and activity["trace_sha256"] is None
+    assert reads == []
+
+
+def test_the_power_options_digest_ignores_the_field_no_backend_reads(
+    tmp_path, monkeypatch
+):
+    """`tool_overrides` is accepted in `power.yaml` and read by nothing --
+    `PowerConfig.get_tool_overrides()` has no caller -- so two analyses
+    that differ only in it are the same analysis. Digesting it reported a
+    difference the numbers cannot have, and implied the block had been
+    applied."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    for overrides in (None, {"openroad": {"corner": "fast"}}):
+        root = tmp_path / f"cfg{len(digests)}"
+        root.mkdir()
+        backend = _make_power_backend(root)
+        backend.power_cfg.tool_overrides = overrides
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None
+    assert digests[0] == digests[1]
+
+
+def test_two_power_runs_over_two_netlists_do_not_share_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The finding (#570 round-16, Codex P2). `netlist_source` names the
+    *kind* of upstream, not which one, so two power entries differing only
+    in `synth:`/`synth-path:` fed OpenROAD two different netlists and came
+    out with one config fingerprint — and `rb phys runs` reads manifests
+    only, so a listing showed two designs as one experiment."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    for index, netlist_text in enumerate(
+        (
+            "module demo_top(); endmodule\n",
+            "module demo_top(); // a second synthesis\nendmodule\n",
+        )
+    ):
+        root = tmp_path / f"run{index}"
+        root.mkdir()
+        backend = _make_power_backend(root)
+        upstream = root / "upstream_netlist.v"
+        upstream.write_text(netlist_text)
+        backend.power_cfg.synth_name = f"synth{index}"
+        backend._resolve_inputs = lambda root=root, upstream=upstream: {
+            "netlist": str(upstream),
+            "odb": None,
+            "sdc": str(root / "constraints.sdc"),
+            "top": "demo_top",
+        }
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None
+    assert digests[0] != digests[1]
+
+
+def test_two_pnr_power_runs_over_two_databases_do_not_share_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The other half of the same finding. A `netlist-source: pnr` run
+    records no netlist hash at all, so without the resolved database's path
+    two analyses of two routed designs — same platform, same activity, same
+    routed SDC text — were one fingerprint."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    for index in range(2):
+        root = tmp_path / f"pnr{index}"
+        root.mkdir()
+        backend, _routed = _make_pnr_power_backend(
+            root,
+            "create_clock -period 3 [get_ports clk]\n",
+            pnr_run=f"pnr_run{index}",
+        )
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None
+    assert digests[0] != digests[1]
+
+
+def test_the_upstream_identity_in_the_digest_is_not_an_absolute_path(
+    tmp_path, monkeypatch
+):
+    """A digest that moved with the checkout would tell one run apart from
+    itself, and the publish path cannot relativise this one: it rewrites the
+    paths *inside* the config block, by which time the options mapping has
+    already been hashed."""
+    # The marker `project_root_for_dir` walks up for; without a project
+    # around it every path is outside the tree and kept verbatim, which is
+    # the documented fallback and not the case under test.
+    (tmp_path / "root_config.yaml").write_text("")
+    backend, _routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    _run_prepared_power(backend, monkeypatch)
+
+    identity = backend._upstream_identity()
+
+    assert identity["netlist_sha256"] is None
+    assert identity["input_path"] is not None
+    assert not Path(identity["input_path"]).is_absolute()
+    assert identity["input_path"].endswith("demo_top.routed.odb")
 
 
 def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
@@ -1640,3 +2078,139 @@ def _one_clean_clear(backend):
         return None if calls["n"] == 1 else result
 
     return _clear
+
+
+# ---------------------------------------------------------------------------
+# The constraints hash is of the bytes the tool read (#570 round-17)
+# ---------------------------------------------------------------------------
+
+
+def test_a_routed_sdc_replaced_mid_run_records_no_constraints_hash(
+    tmp_path, monkeypatch, caplog
+):
+    """The finding (#570 round-17, Codex P2). The digest used to be taken
+    inside the publish, minutes after OpenROAD started — so a `<top>.routed.sdc`
+    rewritten by a concurrent `rb pnr` was hashed as the constraints these
+    watts were measured under, which is the exact substitution the hash exists
+    to catch. Hashed at launch and confirmed on return instead; a file that
+    moved has no identity this run can vouch for."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+    from rtl_buddy.tools import power_openroad
+
+    backend, routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        # A concurrent `rb pnr` re-routing the same entry, landing
+        # mid-analysis and rewriting the SDC in place.
+        routed.write_text("create_clock -period 9 [get_ports clk]\n")
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    with caplog.at_level("WARNING"):
+        result = backend.run()
+
+    config = load_model(result.results["phys_model"])["provenance"]["power"]["config"]
+    # Neither hash: not the bytes at the start, not the ones on disk now.
+    assert config["constraints_sha256"] is None
+    assert sha256_of(routed) is not None
+    # The path is still recorded — which file the run read is known, which
+    # bytes it read is not.
+    assert config["constraints"].endswith("demo_top.routed.sdc")
+    assert "constraints_changed_during_run" in caplog.text
+
+
+def test_an_unchanged_sdc_is_recorded_by_the_hash_taken_at_launch(
+    tmp_path, monkeypatch
+):
+    """The success path is untouched: hash-before and confirm-after agree,
+    and what is recorded is the file the analysis read."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    backend, routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    config = load_model(result.results["phys_model"])["provenance"]["power"]["config"]
+    assert config["constraints_sha256"] == sha256_of(routed)
+
+
+# ---------------------------------------------------------------------------
+# The power fingerprint covers the technology it reads (#570 round-17)
+# ---------------------------------------------------------------------------
+
+
+def test_two_power_runs_over_two_libraries_do_not_share_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The finding (#570 round-17, Codex P2). `_write_script` emits
+    `read_liberty` / `read_lef` from the resolved platform, and the options
+    mapping recorded only the platform *name* — so a `cfg-pnr-platforms` entry
+    repointed at another corner analysed a different technology under one
+    fingerprint, and a run listing showed the two as one experiment."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    for corner in ("typ", "fast"):
+        root = tmp_path / corner
+        root.mkdir()
+        backend = _make_power_backend(
+            root,
+            platform=_FakePlatform(
+                liberty=f"/pdk/fake/nangate45_{corner}.lib",
+                pdk=_FakePdk(f"/pdk/fake/tech_{corner}.lef"),
+            ),
+        )
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None
+    assert digests[0] != digests[1]
+
+
+def test_the_power_fingerprint_lists_the_technology_in_script_order(tmp_path):
+    """`read_liberty` and `read_lef` are order-sensitive, so the list is the
+    script's order and not a sort — the same rule the synthesis library
+    fingerprints keep."""
+    backend = _make_power_backend(
+        tmp_path,
+        platform=_FakePlatform(
+            liberty="/pdk/fake/zz_last.lib",
+            pdk=_FakePdk("/pdk/fake/aa_tech.lef", "/pdk/fake/mm_macro.lef"),
+        ),
+    )
+    backend._write_script()
+
+    assert backend._phys_technology() == [
+        "/pdk/fake/zz_last.lib",
+        "/pdk/fake/aa_tech.lef",
+        "/pdk/fake/mm_macro.lef",
+    ]
+
+
+def test_a_platform_without_macro_lef_lists_only_what_the_script_reads(tmp_path):
+    """The macro LEF line is conditional in the script, so it is conditional
+    in the fingerprint: a null entry would be a file the run never read."""
+    backend = _make_power_backend(tmp_path)
+    backend._write_script()
+
+    assert backend._phys_technology() == [
+        "/pdk/fake/nangate45_typ.lib",
+        "/pdk/fake/tech.lef",
+    ]

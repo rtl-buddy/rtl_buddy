@@ -17,7 +17,10 @@ _SNAPSHOT_ATTEMPTS = 3
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
+from ..phys.manifest import project_relative, project_root_for_dir
+from ..phys.provenance import TRACE_SOURCES, activity_block
 from ..phys.publish import (
+    confirm_digest,
     invalidate_half,
     publish_power,
     sha256_of,
@@ -26,6 +29,7 @@ from ..phys.publish import (
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
+from .synth_yosys import library_fingerprint
 
 
 class OpenRoadPower(BasePower):
@@ -68,6 +72,19 @@ class OpenRoadPower(BasePower):
         # database and never a netlist at all.
         self._netlist_source_path: str | None = None
         self._netlist_sha256: str | None = None
+        # The activity trace's identity, taken as OpenROAD is launched
+        # and confirmed when it returns; see `_hash_trace`. `None` both
+        # before the run and for a static run that reads no trace.
+        self._trace_sha256: str | None = None
+        # The SDC's identity, on the same schedule as the trace's and for
+        # the same reason; see `_hash_constraints`. `None` before the run
+        # and for a run whose SDC could not be read.
+        self._constraints_sha256: str | None = None
+        # The technology files `_write_script` named, in the order it
+        # named them: `read_liberty` then `read_lef`. Captured there
+        # because the fingerprint has to be of what the script read, and
+        # `None` until it runs (#570).
+        self._script_technology: dict | None = None
         # What `_resolve_inputs()` said when the script was generated —
         # the top `link_design` names, the SDC `read_sdc` reads. `None`
         # until `_write_script` runs; see `_publish_phys_model` for why
@@ -234,6 +251,128 @@ class OpenRoadPower(BasePower):
             "finished"
         )
 
+    def _trace_path(self) -> str | None:
+        """The activity trace this run hands OpenROAD, or ``None``.
+
+        ``None`` for a static run, which reads no trace at all:
+        :func:`~rtl_buddy.phys.provenance.activity_block` drops a
+        retained trace from such a run's block anyway, and a VCD is the
+        largest file in an artefact tree — a whole pass over one to
+        identify a file the Tcl never opens is a whole pass for nothing.
+        """
+        if self.power_cfg.get_activity_source() not in TRACE_SOURCES:
+            return None
+        activity = self.power_cfg.get_activity()
+        return activity.saif or activity.vcd
+
+    def _hash_trace(self) -> None:
+        """Identify the trace by its bytes, as OpenROAD is launched (#570).
+
+        **Not snapshotted, unlike the netlist.** The netlist is copied
+        into this run's own directory precisely so the hash and the bytes
+        the tool parses are one file no concurrent writer can reach, and
+        that is the stronger guarantee. It is not available here: a SAIF
+        is megabytes and a VCD of a long test is gigabytes, so a copy per
+        power run would multiply the largest artefact in the tree by the
+        number of corners analysed, on a filesystem that is holding the
+        original for the same reason. The netlist is worth the copy
+        because it is small; the trace is not.
+
+        So the trace is hashed in place, immediately before the
+        subprocess starts, and the residual race is the interval between
+        this read and OpenROAD's own — milliseconds, against the minutes
+        the analysis itself takes, and against the whole analysis that
+        the old placement left exposed. `_confirm_trace_unchanged` closes
+        the report on the other end.
+        """
+        self._trace_sha256 = sha256_of(self._trace_path())
+
+    def _constraints_path(self) -> str | None:
+        """The SDC this run hands OpenROAD, as the script named it (#570).
+
+        `_write_script`'s own resolution, not a fresh one: on a
+        `netlist-source: pnr` run with no explicit `constraints:` the SDC
+        is `<pnr artefact>/<top>.routed.sdc`, which re-resolving could
+        answer differently, and the point of the digest is to identify
+        the file the generated Tcl reads.
+        """
+        return (self._script_inputs or {}).get("sdc")
+
+    def _hash_constraints(self) -> None:
+        """Identify the SDC by its bytes, as OpenROAD is launched (#570).
+
+        Taken here rather than at publication for the reason the trace's
+        is. A `netlist-source: pnr` run reads `<top>.routed.sdc` out of
+        another command's artefact directory, where a concurrent `rb pnr`
+        rewrites it in place; a synthesis SDC is a source file a person
+        edits. Either way a digest computed after an analysis that runs
+        for minutes identifies the replacement and records it as the
+        constraints these watts were measured under — the exact
+        substitution the digest exists to catch, one file over.
+
+        Hashed in place rather than snapshotted: an SDC is a page of
+        text, so the read is free, but it is also small enough that
+        `_confirm_constraints_unchanged` can simply read it again on the
+        way out and close the window from both ends.
+        """
+        self._constraints_sha256 = sha256_of(self._constraints_path())
+
+    def _confirm_constraints_unchanged(self) -> None:
+        """Withdraw the SDC hash if the file moved under the run (#570).
+
+        The trace's rule, applied to the constraints:
+        :func:`~rtl_buddy.phys.publish.confirm_digest` says whether the
+        bytes hashed at launch are still there, and a mismatch records
+        ``null`` rather than a digest nothing can vouch for. The warning
+        is what keeps that null from reading as "this run had no
+        constraints", which is the opposite of what happened.
+        """
+        self._constraints_sha256, changed = confirm_digest(
+            self._constraints_path(), self._constraints_sha256
+        )
+        if changed:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.constraints_changed_during_run",
+                power=self.power_cfg.get_name(),
+                constraints=self._constraints_path(),
+            )
+
+    def _confirm_trace_unchanged(self) -> None:
+        """Withdraw the trace hash if the file moved under the run (#570).
+
+        `dump.saif` is rewritten in place by the next run of the test
+        behind it, and a power analysis is long enough for that to happen
+        while it is reading. Re-hashing at the end and comparing is what
+        turns "the trace probably did not change" into a statement the
+        document can make: equal, and the recorded hash identifies bytes
+        that were on disk for the whole of the run.
+
+        Unequal, and the honest record is that the identity is *unknown*.
+        Neither hash is the answer — the first names bytes OpenROAD may
+        not have finished reading, the second names bytes it certainly
+        did not start with — and a hash nothing can vouch for is worse
+        than no hash, because the provenance gate reads a recorded hash
+        as evidence. ``None`` is the model's own word for unknown, which
+        is what a static run and an unreadable file already record, so
+        the withdrawal needs no new vocabulary. The warning is what makes
+        it findable: a null here otherwise reads as "this run measured no
+        trace", which is the opposite of what happened.
+        """
+        if self._trace_sha256 is None:
+            return
+        if sha256_of(self._trace_path()) == self._trace_sha256:
+            return
+        log_event(
+            logger,
+            logging.WARNING,
+            "power.trace_changed_during_run",
+            power=self.power_cfg.get_name(),
+            trace=self._trace_path(),
+        )
+        self._trace_sha256 = None
+
     # ------------------------------------------------------------------
     # Inputs resolution
     # ------------------------------------------------------------------
@@ -284,6 +423,51 @@ class OpenRoadPower(BasePower):
             "odb": None,
             "sdc": self.power_cfg.get_constraints(),
             "top": top,
+        }
+
+    def _upstream_identity(self) -> dict:
+        """Which upstream run this analysis actually read, for the digest.
+
+        `netlist_source` names the *kind* of upstream — "synth" or "pnr" —
+        and nothing more. Two power entries pointing at two different
+        synth entries, or at two suites through `synth-path`, resolve
+        different netlists under one spelling of it; `_resolve_inputs`
+        hands OpenROAD that difference and the config fingerprint did not
+        record it, so two runs measuring two designs fingerprinted
+        identically and a run listing showed them as one experiment
+        (#570).
+
+        Digest what the run consumed. A `netlist-source: synth` run
+        already holds the strongest statement available — the sha256 of
+        the netlist copy it measured — and it is better than a path here:
+        two entries that resolve byte-identical netlists *are* one
+        experiment, which is the comparison this block exists to make. A
+        `netlist-source: pnr` run reads a routed database that nothing
+        hashes (an .odb is large, and is read once), so the ODB's path
+        stands in for its contents; it names the pnr run's own artefact
+        directory, which is exactly what two pnr entries differ in.
+
+        Project-relative, because a digest that moved with the checkout
+        would tell one run apart from itself. This is the one path the
+        publish cannot relativise on our behalf: `_publish` rewrites the
+        paths *inside* the config block, and by the time it runs the
+        options mapping has already been digested.
+
+        Unknown stays ``null`` rather than becoming a placeholder — the
+        strict-or-absent rule :func:`options_digest` keeps.
+        """
+        if self.power_cfg.get_netlist_source() != "pnr":
+            return {"netlist_sha256": self._netlist_sha256, "input_path": None}
+        # The capture `_write_script` took, not a fresh resolution: this
+        # names the database OpenROAD was given (#560).
+        odb = (self._script_inputs or {}).get("odb")
+        return {
+            "netlist_sha256": None,
+            "input_path": (
+                project_relative(odb, project_root_for_dir(self.artefact_dir))
+                if odb
+                else None
+            ),
         }
 
     def _resolve_platform(self):
@@ -403,6 +587,13 @@ class OpenRoadPower(BasePower):
         # measured — `_publish_phys_model` reads the capture rather than
         # resolving again (#560).
         self._script_inputs = inputs
+        # And the technology the `read_liberty` / `read_lef` lines below
+        # name, in the order they name it, for `_phys_technology` (#570).
+        self._script_technology = {
+            "liberty": liberty,
+            "tech_lef": tech_lef,
+            "macro_lef": macro_lef,
+        }
         netlist = inputs["netlist"]
         sdc = inputs["sdc"]
         odb = inputs["odb"]
@@ -736,6 +927,13 @@ class OpenRoadPower(BasePower):
             cmd=" ".join(cmd),
         )
 
+        # Last thing before the subprocess: the trace's and the SDC's
+        # identities are of the bytes on disk as OpenROAD starts, and the
+        # narrower that window is the less there is to confirm
+        # afterwards (#570).
+        self._hash_trace()
+        self._hash_constraints()
+
         with task_status(f"power {self.power_cfg.get_name()} [openroad]"):
             result = subprocess.run(
                 cmd,
@@ -818,6 +1016,35 @@ class OpenRoadPower(BasePower):
             phys_model=phys_model,
         )
 
+    def _phys_technology(self) -> list[str]:
+        """The Liberty + LEF the generated script reads, as identity (#570).
+
+        `_write_script` emits `read_liberty <liberty>` and one or two
+        `read_lef` lines from the resolved platform, and the options
+        mapping recorded only the platform *name*. A `cfg-pnr-platforms`
+        entry repointed at another corner — a different Liberty, a
+        different tech LEF — is the same name, so two analyses of two
+        technologies fingerprinted identically and a run listing showed
+        them as one experiment. The synthesis fingerprints already close
+        this on their own library lists; this closes it on the power
+        flow's, through the same
+        :func:`~rtl_buddy.tools.synth_yosys.library_fingerprint` — paths
+        rather than contents (a Liberty is tens of megabytes), spelled
+        project-relative, and in script order, because `read_liberty` and
+        `read_lef` are order-sensitive.
+
+        Read from the capture `_write_script` took rather than resolved
+        again: the mapping has to describe the technology the run
+        consumed, not whatever `cfg-pnr-platforms` says now.
+        """
+        resolved = self._script_technology or {}
+        named = [
+            resolved.get("liberty"),
+            resolved.get("tech_lef"),
+            resolved.get("macro_lef"),
+        ]
+        return library_fingerprint([path for path in named if path], self.root_cfg)
+
     def _publish_phys_model(self, parsed: dict) -> str | None:
         """Write `phys-model.json` + its manifest for a run that passed (#558).
 
@@ -849,13 +1076,53 @@ class OpenRoadPower(BasePower):
         analysis reads a copy nothing else can rewrite (#560). A
         `netlist-source: pnr` run resolves no netlist at all -- it reads the
         routed ODB -- so it records none, and nothing is inherited in either
-        direction.
+        direction. The manifest records where that copy is as well as
+        what it hashed to, so a result read back from an archive can reach
+        the netlist and re-check the hash rather than take it on faith
+        (#560).
 
-        The manifest records where that copy is as well as what it hashed
-        to, so a result read back from an archive can reach the netlist
-        and re-check the hash rather than take it on faith (#560).
+        The mode and the activity go in beside them (#568). Without them
+        the model records a µW figure with no statement of what it is a
+        figure OF: static leakage-plus-internal and a SAIF-driven dynamic
+        total print in the same column, and two runs of one design that
+        differ only in their stimulus are one document read twice. Both
+        are the resolved values this run actually dispatched on -- the
+        same `get_mode()` / `get_activity_source()` pair
+        `_emit_activity_cmds` branches on -- so the record cannot claim a
+        source the Tcl did not use. The trace is identified by its
+        SHA-256 as well as its path: `dump.saif` is rewritten in place by
+        the next run of the test behind it, so the path alone cannot tell
+        a re-captured trace from the one this run measured. That hash is
+        `_hash_trace`'s, taken as OpenROAD was launched and confirmed
+        when it returned, not re-read here -- a hash taken at this point
+        would identify a replacement written while the analysis ran, and
+        `_confirm_trace_unchanged` records `null` rather than a hash
+        nothing can vouch for. Two reads of one file, and only on a run
+        that read it at all.
+
+        The constraints recorded are the RESOLVED SDC, the `sdc` of the
+        resolution `_write_script` generated from, and not the config's
+        `constraints:` field. On a
+        `netlist-source: pnr` run they are not the same thing: with no
+        explicit `constraints:` the analysis reads `<pnr
+        artefact>/<top>.routed.sdc`, the post-CTS constraints the router
+        wrote, and the field is empty -- so the config block recorded
+        `null` and its hash with it, and two runs against two different
+        routed SDCs fingerprinted identically while measuring different
+        timing. The rest of the block is what the run dispatched on; this
+        one field was what it was configured with, which is the same
+        value only when the reader spelt it out. Its hash is
+        `_hash_constraints`' -- taken as OpenROAD was launched and
+        confirmed when it returned, for the reason the trace's is: a
+        routed SDC is rewritten in place by a concurrent `rb pnr`, and a
+        digest computed here would name the replacement (#570).
         """
+        self._confirm_trace_unchanged()
+        self._confirm_constraints_unchanged()
         inputs = self._script_inputs or {}
+        activity = self.power_cfg.get_activity()
+        source = self.power_cfg.get_activity_source()
+        trace = activity.saif or activity.vcd
         published = publish_power(
             artefact_dir=self.artefact_dir,
             top=inputs.get("top"),
@@ -872,6 +1139,49 @@ class OpenRoadPower(BasePower):
                 if self._netlist_sha256 is not None
                 else None
             ),
+            mode=self.power_cfg.get_mode(),
+            activity=activity_block(
+                source=source,
+                trace=trace,
+                # Taken as OpenROAD was launched and confirmed when it
+                # returned (`_hash_trace`), not re-read now: the analysis
+                # is long, `dump.saif` is rewritten in place by the next
+                # run of the test behind it, and a hash taken afterwards
+                # would identify the replacement rather than the bytes
+                # this run measured. `None` where the run read no trace,
+                # or where the trace changed underneath it and the
+                # identity is therefore unknown.
+                trace_sha256=self._trace_sha256,
+                scope=activity.scope,
+                toggle_rate=activity.default_toggle_rate,
+                duty=activity.default_static_prob,
+            ),
+            platform=self.power_cfg.get_platform(),
+            constraints=inputs.get("sdc"),
+            constraints_sha256=self._constraints_sha256,
+            options={
+                "tool": self.power_cfg.get_tool_name(),
+                "netlist_source": self.power_cfg.get_netlist_source(),
+                # The Liberty and LEF the script reads: the platform name
+                # alone does not determine them, so two corners behind one
+                # name digested identically (#570).
+                "technology": self._phys_technology(),
+                # Which upstream run, not merely which kind of one; see
+                # `_upstream_identity` (#570).
+                **self._upstream_identity(),
+                "mode": self.power_cfg.get_mode(),
+                "activity_source": source,
+                "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),
+                # `tool_overrides` is deliberately absent. Nothing in this
+                # backend reads it -- `PowerConfig.get_tool_overrides()` has
+                # no caller at all, so a `power.yaml` that carries the block
+                # runs exactly as one that does not -- and a fingerprint over
+                # a field that shapes nothing tells two identical analyses
+                # apart, which is the one thing the digest exists not to do.
+                # Recording it would also be a quiet claim that it was
+                # applied. If the field is ever wired in, it belongs back
+                # here in the same change.
+            },
             report_path=self._report_path(),
             instances_path=self._instances_report_path(),
             cells_path=self._instances_cells_path(),

@@ -49,6 +49,7 @@ from .graph import extract as extract_mod
 from .graph import query as graph_query_mod
 from .graph import results as graph_results_mod
 from .mcp import server as mcp_server_mod
+from .phys import manifest as phys_manifest_mod
 from .phys import query as phys_query_mod
 from .mcp import toolset as mcp_toolset_mod
 from .artifact_lock import ArtifactLocks
@@ -556,6 +557,10 @@ class RtlBuddy:
             ),
             no_args_is_help=True,
         )
+        self.phys_app.command(
+            "runs",
+            help="every run with physical artefacts under the project, newest first",
+        )(self.do_phys_runs)
         self.phys_app.command(
             "summary",
             help="the run's totals, its heaviest modules and its hottest instances",
@@ -6976,13 +6981,18 @@ class RtlBuddy:
     # rb phys — read verbs over physical artefacts already on disk (#558)
     # ------------------------------------------------------------------
 
-    def _phys_context(self, verb, *, phys_dir=None, manifest=None):
-        """Load the physical manifest and model for a `rb phys` verb.
+    def _phys_root(self, verb):
+        """The project root a `rb phys` verb reads under, event logged.
 
         Lock-free like the `rb cov` and `rb graph` read verbs: nothing is
         written, and taking the exclusive artefact lock would make `rb
         phys summary` fail while a synthesis is running in the same tree
         — which is exactly when someone asks what the last one measured.
+
+        Split out from `_phys_context` for `rb phys runs`, whose subject
+        is the set of runs rather than one of them: it resolves no
+        manifest and loads no model, so it needs the root and the
+        command event and nothing else.
         """
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root, list_only=True)
@@ -6992,6 +7002,11 @@ class RtlBuddy:
             f"command.{verb.replace(' ', '_')}",
             command=verb,
         )
+        return root, ctx
+
+    def _phys_context(self, verb, *, phys_dir=None, manifest=None):
+        """Load the physical manifest and model for a `rb phys` verb."""
+        root, ctx = self._phys_root(verb)
         try:
             return phys_query_mod.load_context(
                 root,
@@ -7118,6 +7133,138 @@ class RtlBuddy:
         ):
             if artefacts.get(key):
                 emit_console_text(f"{label} {artefacts[key]}", stream="stdout")
+
+    @staticmethod
+    def _phys_backends(backends) -> str:
+        """The two backend names as one cell: `yosys+openroad`.
+
+        A half that did not run here is left out rather than written as
+        `none`: the column is about what produced this run's numbers, and
+        two words of padding per row on a table that is already wide buys
+        nothing a reader could not see from the absence.
+        """
+        names = [
+            backends.get(half) for half in ("synth", "power") if backends.get(half)
+        ]
+        return "+".join(names) if names else "-"
+
+    @staticmethod
+    def _phys_power_cell(entry) -> str:
+        """The mode and what drove it: `dynamic (saif csr_smoke)`.
+
+        The label is the payload's, not this table's, so the CLI, the MCP
+        payload and the pane's dropdown all say the same words about the
+        same run. A run with no power half prints `-`, and one from
+        before the mode was recorded prints what it does know rather than
+        inventing a mode it never wrote down.
+        """
+        mode = entry.get("mode")
+        label = (entry.get("activity") or {}).get("label")
+        if mode and label:
+            return f"{mode} ({label})"
+        return mode or label or "-"
+
+    def do_phys_runs(
+        self,
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "runs to list, newest first (0 for all); "
+                    "truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RUNS_LIMIT,
+    ):
+        """
+        list every run with physical artefacts under the project, newest first,
+        with the top, backends, power mode and configuration each one recorded
+        """
+        root, _ctx = self._phys_root("phys runs")
+        payload = phys_query_mod.runs_payload(root, limit=limit)
+
+        if self.machine:
+            self._emit_machine_result("phys runs", 0, **payload)
+            raise typer.Exit(0)
+
+        runs = payload["runs"]
+        if not runs:
+            # Not an error, unlike the other three verbs: they were asked
+            # about a run, and this one is asking what runs there are.
+            emit_console_text(
+                f"no {phys_manifest_mod.MANIFEST_FILENAME} under {root} - "
+                "run `rb synth` or `rb power` first",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+            raise typer.Exit(0)
+
+        metadata = [
+            "* the newest run - what `rb phys summary` reads without --phys-dir"
+        ]
+        if len(runs) < payload["count"]:
+            metadata.append(
+                f"{len(runs)}/{payload['count']} runs shown; --limit 0 for all"
+            )
+        render_summary(
+            title="Physical - Runs",
+            columns=[
+                ("run", "Run"),
+                ("top", "Top"),
+                ("backends", "Backends"),
+                ("power", "Power"),
+                ("config", "Config"),
+                ("xplr", "Experiment"),
+                ("generated", "Generated"),
+            ],
+            rows=[
+                {
+                    "run": ("* " if entry["newest"] else "") + (entry["run"] or "-"),
+                    "top": entry["top"] or "-",
+                    "backends": self._phys_backends(entry["backends"]),
+                    "power": self._phys_power_cell(entry),
+                    "config": entry["fingerprint"] or "-",
+                    "xplr": (entry["xplr"] or {}).get("id") or "-",
+                    "generated": entry["generated_at"] or "-",
+                }
+                for entry in runs
+            ],
+            metadata=metadata,
+            logger=logger,
+        )
+        # The directories go under the table rather than in it. They are
+        # the one cell a reader COPIES -- into `--phys-dir`, or into the
+        # pane's run selector -- and a table column wraps a long path
+        # across two lines, which turns the one column that has to
+        # survive a copy-paste into the one that does not.
+        emit_console_text("\nphys dirs:", stream="stdout", markup=False)
+        width = max(len(entry["run"] or "-") for entry in runs)
+        for entry in runs:
+            marker = "*" if entry["newest"] else " "
+            emit_console_text(
+                f" {marker} {(entry['run'] or '-'):<{width}}  {entry['phys_dir']}",
+                stream="stdout",
+                markup=False,
+            )
+            # A row whose document could not be read still names a
+            # directory worth reporting; the reason would not fit in a
+            # cell, and dropping the row would under-report the project.
+            if entry["error"]:
+                emit_console_text(
+                    f"    {entry['error']}",
+                    style="yellow",
+                    stream="stdout",
+                    markup=False,
+                )
+        emit_console_text(
+            "\nread one with `rb phys summary --phys-dir <phys dir>`",
+            stream="stdout",
+            markup=False,
+        )
+        raise typer.Exit(0)
 
     def do_phys_summary(
         self,

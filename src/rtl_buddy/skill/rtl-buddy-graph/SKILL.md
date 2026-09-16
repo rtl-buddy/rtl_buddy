@@ -39,8 +39,8 @@ rb --machine graph path NODE_A NODE_B
   `tests.yaml`; graph payloads can cost more than those files.
 
 `rb mcp` exposes the same query and hierarchy payloads over stdio, plus the
-coverage (`cov_summary`, `cov_module`) and physical-metrics (`phys_summary`,
-`phys_module`, `phys_instance`) families, which read artefacts already on disk
+coverage (`cov_summary`, `cov_module`) and physical-metrics (`phys_runs`,
+`phys_summary`, `phys_module`, `phys_instance`) families, which read artefacts already on disk
 and run no EDA tool. It is a convenience surface, not a prerequisite; the
 `--machine` CLI remains complete.
 

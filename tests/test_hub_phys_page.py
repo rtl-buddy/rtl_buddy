@@ -112,16 +112,26 @@ _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
 def _write_run(
-    root: Path, run: str, *, modules=None, instances=None, mtime=None, publication=None
+    root: Path,
+    run: str,
+    *,
+    modules=None,
+    instances=None,
+    mtime=None,
+    publication=None,
+    artefacts=None,
 ):
     """One run's artefact directory, written the way the producers do.
 
     ``publication`` stamps both documents with one token, as a real
     publish does. Left off, they carry ``None`` — the shape a document
     written before publications were stamped has.
+
+    ``artefacts`` overrides where the run lands, for the containment
+    tests that need a run in a tree the project's walk will not enter.
     """
 
-    phys_dir = root / "verif" / "blk" / "artefacts" / run
+    phys_dir = (artefacts or root / "verif" / "blk" / "artefacts") / run
     phys_dir.mkdir(parents=True, exist_ok=True)
 
     model = None
@@ -233,6 +243,10 @@ def test_payload_is_the_cli_builder_plus_a_hub_block(phys_project: Path):
     ctx = phys_query.load_context(phys_project)
     expected = phys_query.summary_payload(ctx, limit=0)
     hub = payload.pop("hub")
+    # The run selector's menu, and it is the `rb phys runs` payload
+    # verbatim too — one builder, three surfaces (#568).
+    runs = payload.pop("runs")
+    assert runs == phys_query.runs_payload(phys_project, limit=phys_page.RUNS_LIMIT)
     assert payload == expected
     assert hub["schema_version"] == phys_page.PAGE_SCHEMA_VERSION
     assert hub["metrics"] == ["cells", "area", "leakage", "dynamic", "total"]
@@ -324,6 +338,10 @@ def test_a_half_the_run_did_not_produce_is_named_not_guessed(tmp_path: Path):
         "rows": None,
         "produced_by": "rb synth",
         "netlist_hash": False,
+        # A synthesis has no power mode and no activity; the keys are
+        # there so the pane can walk both halves alike (#568).
+        "mode": None,
+        "activity": None,
     }
     assert payload["missing_halves"] == ["modules"]
     assert payload["counts"]["modules"] is None
@@ -1152,10 +1170,13 @@ def test_a_failed_load_forgets_the_model_it_was_showing():
     empty = js.split("function showEmpty(message) {")[1]
     assert empty.strip().splitlines()[0].strip() == "forgetModel();"
     assert js.count("forgetModel()") == 2
-    # Both failure paths reach it: the error status and the body that
-    # would not parse (or an ingest that threw on it).
-    assert "if (!res.ok) { showEmpty(res.body && res.body.error); return; }" in js
-    assert "showEmpty('could not read ' + PHY_URL" in js
+    # Both failure paths reach it through `loadFailed`: the error status
+    # and the body that would not parse (or an ingest that threw on it).
+    assert (
+        "if (!res.ok) { loadFailed(requested, res.body && res.body.error); return; }"
+        in js
+    )
+    assert "loadFailed(requested, 'could not read ' + url" in js
     # And with no payload, the replay paths pend instead of acting —
     # the mechanism that already exists for the fetch they beat.
     assert "state.pending = payload;" in js
@@ -1235,19 +1256,19 @@ def test_a_superseded_reload_neither_installs_nor_blanks(tmp_path: Path):
     assert seen["current"] is True
 
     js = _page_js()
-    body = js.split("function load() {")[1].split("\n  }")[0]
+    body = js.split("function load(dir) {")[1].split("\n  }")[0]
     # The token is taken before the request goes out, so the response
     # carries the load it belongs to.
     assert "var generation = nextGeneration(state);" in body
-    assert body.index("nextGeneration(state)") < body.index("fetch(PHY_URL")
+    assert body.index("nextGeneration(state)") < body.index("fetch(url")
     # Both arms guard, and the failure arm above all: a stale failure is
     # the one that destroys data the reader can see.
     assert body.count("if (!settle(state, generation)) { return; }") == 2
     success = body.split("}).then(function (res) {")[1]
-    assert success.index("settle(state, generation)") < success.index("showEmpty(")
+    assert success.index("settle(state, generation)") < success.index("loadFailed(")
     assert success.index("settle(state, generation)") < success.index("ingest(")
     failure = body.split("}).catch(function (e) {")[1]
-    assert failure.index("settle(state, generation)") < failure.index("showEmpty(")
+    assert failure.index("settle(state, generation)") < failure.index("loadFailed(")
     # The generation is not payload state: a failed load must not reset
     # the counter a later response is still checked against.
     forget = js.split("function forgetModel() {")[1].split("\n  }")[0]
@@ -1482,9 +1503,25 @@ def test_a_focus_arriving_mid_reload_waits_for_the_new_model():
     # was held is resolved against the new model's rows rather than the
     # ones it was waiting out.
     ingest = js.split("function ingest(payload) {")[1].split("\n  }")[0]
-    assert ingest.index("state.payload = payload;") < ingest.index(
-        "var focus = state.pending, selection = state.pendingSelection;"
-    )
+    assert ingest.index("state.payload = payload;") < ingest.index("drainPending();")
+
+
+def test_a_refused_switch_still_answers_the_focus_it_held():
+    """The other way a load stops being in flight with a model on screen.
+
+    A `dir=` the server would not read leaves the reader on the run they
+    already had (`loadFailed`), so a focus held for the switch that did
+    not happen belongs to that run -- stranded for its lifetime if only
+    ingest drained the slots."""
+
+    js = _page_js()
+    failed = js.split("function loadFailed(requested, message) {")[1].split("\n  }")[0]
+    # Only on the arm that keeps the model. The other calls showEmpty,
+    # which drops the payload, and a held target waits for a real one.
+    assert failed.count("drainPending();") == 1
+    assert failed.index("drainPending();") < failed.index("showEmpty(message);")
+    assert js.count("drainPending();") == 2
+    assert "function drainPending() {" in js
 
 
 def test_the_first_hello_is_polite():
@@ -1595,6 +1632,30 @@ async def test_http_phys_json_served(hub_and_viewer):
     assert payload["hub"]["schema_version"] == phys_page.PAGE_SCHEMA_VERSION
     assert payload["totals"]["cell_count"] == 162
     assert payload["modules"][0]["module"] == "blk"
+
+
+@pytest.mark.asyncio
+async def test_http_phys_json_selects_a_run_by_dir(hub_and_viewer):
+    """The route the dropdown drives (#568). Bare stays newest; ``?dir=``
+    picks one; outside the project root is refused before anything is
+    read."""
+
+    _hub, viewer = hub_and_viewer
+    base = f"http://127.0.0.1:{viewer.http_port}/phy.json"
+
+    _status, _headers, body = await asyncio.to_thread(_http_get, base)
+    assert json.loads(body)["run"] == "both"
+
+    _status, _headers, body = await asyncio.to_thread(
+        _http_get, base + "?dir=verif/blk/artefacts/old_synth"
+    )
+    payload = json.loads(body)
+    assert payload["run"] == "old_synth"
+    assert payload["runs"]["count"] == 2
+
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        await asyncio.to_thread(_http_get, base + "?dir=../elsewhere")
+    assert refused.value.code == 403
 
 
 @pytest.mark.asyncio
@@ -2000,3 +2061,451 @@ def test_the_rename_did_not_leak_into_the_wire():
     assert 'href="/sch"' in body
     assert 'href="/gph"' in body
     assert 'href="/cov"' in body
+
+
+# ---------------------------------------------------------------------------
+# the run selector (#568) — ?dir= on the route, the dropdown in the pane
+# ---------------------------------------------------------------------------
+
+
+def test_bare_phy_json_still_serves_the_newest_run(phys_project: Path):
+    """The default is unchanged: a pane nobody has touched opens on the
+    run that finished last."""
+
+    status, body = phys_page.phys_payload_bytes(phys_project)
+    payload = json.loads(body)
+
+    assert status == 200
+    assert payload["run"] == "both"
+    assert payload["runs"]["runs"][0]["newest"] is True
+
+
+def test_a_dir_query_selects_that_run(phys_project: Path):
+    status, body = phys_page.phys_payload_bytes(
+        phys_project, requested_dir="verif/blk/artefacts/old_synth"
+    )
+    payload = json.loads(body)
+
+    assert status == 200
+    assert payload["run"] == "old_synth"
+    # And the menu it came from is still whole, so the reader can switch
+    # back without a second request.
+    assert [entry["run"] for entry in payload["runs"]["runs"]] == [
+        "both",
+        "old_synth",
+    ]
+
+
+def test_a_dir_outside_the_project_is_refused(phys_project: Path, tmp_path: Path):
+    """The argument comes off a query string and a browser tab is
+    reachable by anything that can reach the port."""
+
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    for requested in ("../elsewhere", str(outside), "verif/../../elsewhere"):
+        status, body = phys_page.phys_payload_bytes(
+            phys_project, requested_dir=requested
+        )
+        assert status == 403, requested
+        assert "outside the project root" in json.loads(body)["error"]
+
+
+def test_a_dir_with_no_manifest_is_a_404_naming_the_listing(phys_project: Path):
+    (phys_project / "verif" / "blk" / "artefacts" / "empty").mkdir()
+
+    status, body = phys_page.phys_payload_bytes(
+        phys_project, requested_dir="verif/blk/artefacts/empty"
+    )
+
+    assert status == 404
+    error = json.loads(body)["error"]
+    assert "phys-manifest.json" in error and "rb phys runs" in error
+
+
+def test_containment_admits_the_artefacts_symlink_layout(tmp_path: Path):
+    """A suite whose ``artefacts/`` is a link to scratch storage is a
+    supported layout that discovery walks into and ``rb phys runs`` lists
+    — so resolving before the containment test would 403 exactly the runs
+    the selector had just offered."""
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    (scratch / "nightly").mkdir(parents=True)
+    (root / "verif" / "blk" / "artefacts").symlink_to(scratch)
+
+    admitted = phys_page.contained_phys_dir(root, "verif/blk/artefacts/nightly")
+    assert admitted == root / "verif" / "blk" / "artefacts" / "nightly"
+    # And the traversal it still refuses.
+    assert phys_page.contained_phys_dir(root, "../scratch") is None
+
+
+def test_containment_refuses_an_in_project_link_that_leaves_the_project(
+    tmp_path: Path,
+):
+    """The logical test lets a path that stays under the root through
+    without resolving it, which is what keeps the scratch layout above
+    selectable. On its own that is broader than discovery's rule: any
+    link inside the project would do, including one to somewhere the
+    project has nothing to do with.
+
+    So where the logical path passes but resolves outside, the route
+    asks discovery's own predicate — an ``artefacts`` component below
+    the root — and admits only what the walk would have entered. The
+    supported layout is unaffected; a `vendor/` or `$HOME` link is not
+    a run and is not readable through this route."""
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk" / "artefacts").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "nightly").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    (scratch / "nightly").mkdir(parents=True)
+
+    # Not part of the artefact layout: discovery will not walk it.
+    (root / "vendor").symlink_to(elsewhere)
+    # An `artefacts` link inside a suite: the supported one, which
+    # discovery does walk.
+    (root / "verif" / "blk" / "artefacts" / "runs").symlink_to(scratch)
+
+    assert phys_page.contained_phys_dir(root, "vendor/nightly") is None
+    assert phys_page.contained_phys_dir(root, "vendor") is None
+    assert phys_page.contained_phys_dir(root, "verif/blk/artefacts/runs/nightly") == (
+        root / "verif" / "blk" / "artefacts" / "runs" / "nightly"
+    )
+
+
+def test_the_route_and_discovery_draw_one_boundary(tmp_path: Path):
+    """Not two spellings of it. A directory the walk refuses to enter is
+    one the route must refuse to read, and the predicate is the same
+    function in both places."""
+    from rtl_buddy.phys import manifest as manifest_mod
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "nightly").mkdir(parents=True)
+    (root / "verif" / "blk" / "artefacts").symlink_to(outside)
+    (root / "vendor").symlink_to(outside)
+    _write_run(root, "nightly", modules=MODULE_ROWS)
+
+    walked = manifest_mod.discover_manifests(root)
+    assert [os.path.relpath(path, root) for path in walked] == [
+        os.path.join("verif", "blk", "artefacts", "nightly", "phys-manifest.json")
+    ]
+    # The run the walk found is readable; the same bytes under the name
+    # the walk refused are not.
+    assert phys_page.contained_phys_dir(root, "verif/blk/artefacts/nightly")
+    assert phys_page.contained_phys_dir(root, "vendor/nightly") is None
+
+
+def test_containment_judges_each_crossed_link_not_the_endpoint(tmp_path: Path):
+    """The finding (#570 round-15 review, Codex P1). The predicate was
+    asked once, of the requested path as a whole, and it looks for an
+    `artefacts` component — which a component *below* a rejected link
+    satisfies just as well as the link's own position does. So `vendor ->
+    /srv/other` with `?dir=vendor/artefacts/run` was approved on the
+    strength of an `artefacts` belonging to the tree on the far side of
+    the link, and /phy.json served a manifest and a model from outside the
+    project: a run `rb phys runs` does not list, and will not list,
+    because the walk refuses that link at its first component."""
+    from rtl_buddy.phys import manifest as manifest_mod
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    outside = tmp_path / "srv" / "other"
+    (outside / "artefacts" / "run").mkdir(parents=True)
+    _write_run(outside, "run", modules=MODULE_ROWS, artefacts=outside / "artefacts")
+    (root / "vendor").symlink_to(outside)
+
+    # The walk enters nothing: `vendor` is a link whose own position
+    # below the root has no `artefacts` in it.
+    assert manifest_mod.discover_manifests(root) == []
+    assert phys_page.contained_phys_dir(root, "vendor/artefacts/run") is None
+    # Nor any deeper spelling that buries the magic name further down.
+    assert phys_page.contained_phys_dir(root, "vendor/artefacts/run/.") is None
+
+    status, body = phys_page.phys_payload_bytes(
+        root, requested_dir="vendor/artefacts/run"
+    )
+    assert status == 403
+    assert "vendor/artefacts/run" in json.loads(body)["error"]
+
+
+def test_containment_still_serves_a_run_behind_the_artefacts_link(tmp_path: Path):
+    """The other half of the same walk: judging each link on its own
+    position must not cost the supported layout, where the link *is* the
+    `artefacts` component and everything below it is an ordinary
+    directory."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (root / "verif" / "blk" / "artefacts").symlink_to(scratch)
+    _write_run(root, "nightly", modules=MODULE_ROWS)
+
+    admitted = phys_page.contained_phys_dir(root, "verif/blk/artefacts/nightly")
+    assert admitted == root / "verif" / "blk" / "artefacts" / "nightly"
+
+    status, body = phys_page.phys_payload_bytes(
+        root, requested_dir="verif/blk/artefacts/nightly"
+    )
+    assert status == 200
+    assert json.loads(body)["run"] == "nightly"
+
+
+def test_every_route_the_run_listing_offers_is_one_the_route_serves(tmp_path: Path):
+    """The invariant behind both: `?dir=` is handed back out of the `runs`
+    block, so every spelling that block carries has to survive the
+    containment test. Discovery only reports a route it walked, and the
+    walk asks this same predicate of the same links in the same order, so
+    the agreement holds by construction rather than by inspection."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "verif" / "blk").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (root / "verif" / "blk" / "artefacts").symlink_to(scratch)
+    _write_run(root, "nightly", modules=MODULE_ROWS)
+    # And a tree the walk refuses, carrying a run of its own.
+    outside = tmp_path / "srv" / "other"
+    (outside / "artefacts").mkdir(parents=True)
+    _write_run(
+        outside, "stranger", modules=MODULE_ROWS, artefacts=outside / "artefacts"
+    )
+    (root / "vendor").symlink_to(outside)
+
+    status, body = phys_page.phys_payload_bytes(root)
+    listing = json.loads(body)["runs"]["runs"]
+
+    assert [entry["run"] for entry in listing] == ["nightly"]
+    for entry in listing:
+        assert phys_page.contained_phys_dir(root, entry["phys_dir"]) is not None
+    assert phys_page.contained_phys_dir(root, "vendor/artefacts/stranger") is None
+
+
+def test_the_runs_block_is_bounded_and_says_it_is(tmp_path: Path):
+    """A dropdown is scrolled, not searched. The block carries the
+    untruncated count, so the pane can say the list is a head."""
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    for index in range(4):
+        _write_run(root, f"run{index}", modules=MODULE_ROWS, mtime=1_000_000 + index)
+
+    payload = phys_page.build_phys_payload(root, runs_limit=2)
+
+    assert payload["runs"]["count"] == 4
+    assert len(payload["runs"]["runs"]) == 2
+    assert [entry["run"] for entry in payload["runs"]["runs"]] == ["run3", "run2"]
+
+
+def test_run_entries_read_as_one_line_that_tells_two_runs_apart():
+    """The label the dropdown shows. Two runs of one design share the
+    top, so the parts after it are the ones that do the work."""
+
+    out = _node(
+        _marked_js("run-selector")
+        + """
+        var saif = {
+          run: 'nightly', top: 'blk',
+          backends: { synth: 'yosys', power: 'openroad' },
+          mode: 'dynamic', activity: { label: 'saif csr_smoke' },
+          xplr: { id: 'exp-0007' }
+        };
+        var bare = { run: 'quick', top: 'blk',
+                     backends: { synth: null, power: null } };
+        var powerOnly = { phys_dir: 'verif/blk/artefacts/p', top: 'blk',
+                          backends: { synth: null, power: 'openroad' },
+                          mode: 'static', activity: { label: 'defaults' } };
+        console.log(JSON.stringify([
+          runLabel(saif), runLabel(bare), runLabel(powerOnly)
+        ]));
+        """
+    )
+    saif, bare, power_only = json.loads(out)
+    assert saif == (
+        "nightly · blk · yosys+openroad · dynamic (saif csr_smoke) · exp-0007"
+    )
+    # Nothing recorded is nothing shown — no `none`, no empty separators.
+    assert bare == "quick · blk"
+    # An unnamed run falls back to the directory, which is the key the
+    # entry selects with anyway.
+    assert power_only == "verif/blk/artefacts/p · blk · openroad · static (defaults)"
+
+
+def test_the_shown_run_and_the_newest_are_marked_separately():
+    """Different facts, and either can be the surprising one: the pane
+    opens on the newest, and a reader who has switched away needs to see
+    both where they are and where the default went.
+
+    The newest mark says what choosing it *does*, not only what the run
+    is: it is the one entry that puts the pane back on follow-newest
+    rather than pinning a directory (see `runValue`)."""
+
+    out = _node(
+        _marked_js("run-selector")
+        + """
+        var shown = 'verif/blk/artefacts/old/phys-manifest.json';
+        console.log(JSON.stringify([
+          runMarks({ manifest: shown, newest: false }, shown),
+          runMarks({ manifest: 'other', newest: true }, shown),
+          runMarks({ manifest: shown, newest: true }, shown),
+          runMarks({ manifest: 'other', newest: false }, shown),
+          runMarks({ manifest: 'other', newest: false }, null)
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        " [shown]",
+        " [newest — follows]",
+        " [shown, newest — follows]",
+        "",
+        "",
+    ]
+
+
+def test_choosing_the_newest_run_keeps_following_discovery():
+    """The bug this pins: selecting the newest entry used to pin its
+    directory, so the pane stopped following the newest the moment a
+    reader chose to be on it — every reload afterwards asked for a
+    directory that a later run had overtaken, and the run they picked
+    *because* it was the latest was the one they stopped seeing new
+    results for.
+
+    The newest entry selects with the empty value, which the load arm
+    reads as "no run named" and fetches bare `/phy.json` for. An
+    explicitly chosen older run still pins."""
+
+    out = _node(
+        _marked_js("run-selector")
+        + _marked_js("run-url")
+        + """
+        var newest = { phys_dir: 'verif/blk/artefacts/nightly', newest: true };
+        var older = { phys_dir: 'verif/blk/artefacts/old', newest: false };
+        var unlisted = { phys_dir: '', newest: false };
+        console.log(JSON.stringify({
+          newest: runValue(newest),
+          older: runValue(older),
+          unlisted: runValue(unlisted),
+          followUrl: phyUrl('/phy.json', requestedDir(runValue(newest))),
+          pinnedUrl: phyUrl('/phy.json', requestedDir(runValue(older))),
+          requested: [requestedDir(''), requestedDir(runValue(older))]
+        }));
+        """
+    )
+    picked = json.loads(out)
+
+    # The newest run is not selected by its directory — it is selected by
+    # the absence of one, which is what "follow discovery" is on the wire.
+    assert picked["newest"] == ""
+    assert picked["followUrl"] == "/phy.json"
+    assert picked["requested"][0] is None
+    # An older run is pinned, exactly as before.
+    assert picked["older"] == "verif/blk/artefacts/old"
+    assert picked["pinnedUrl"] == "/phy.json?dir=verif%2Fblk%2Fartefacts%2Fold"
+    assert picked["requested"][1] == "verif/blk/artefacts/old"
+    assert picked["unlisted"] == ""
+
+
+def test_the_run_url_appends_its_query_to_a_base_that_has_one():
+    """`PHY_URL` is injected, so it is not always the bare route."""
+
+    out = _node(
+        _marked_js("run-url")
+        + """
+        console.log(JSON.stringify([
+          phyUrl('/phy.json?token=x', 'verif/b/artefacts/n'),
+          phyUrl('/phy.json?token=x', null)
+        ]));
+        """
+    )
+    with_query, bare = json.loads(out)
+    assert with_query == "/phy.json?token=x&dir=verif%2Fb%2Fartefacts%2Fn"
+    assert bare == "/phy.json?token=x"
+
+
+def test_the_run_on_screen_is_an_entry_even_when_the_listing_headed_it_off():
+    """The listing is bounded, so the run being shown can legitimately
+    not be in it. A selector whose value disagrees with the page under it
+    is worse than a long list."""
+
+    out = _node(
+        _marked_js("run-selector")
+        + """
+        var payload = {
+          run: 'old', top: 'blk', manifest: 'verif/blk/artefacts/old/m.json',
+          artefacts: { phys_dir: 'verif/blk/artefacts/old' },
+          backends: { synth: 'yosys', power: null },
+          power_mode: null, power_activity: null, xplr: null
+        };
+        var entry = shownEntry(payload);
+        console.log(JSON.stringify([
+          entry.phys_dir, entry.manifest, entry.newest, runLabel(entry),
+          shownEntry(null)
+        ]));
+        """
+    )
+    phys_dir, manifest, newest, label, empty = json.loads(out)
+    assert phys_dir == "verif/blk/artefacts/old"
+    assert manifest == "verif/blk/artefacts/old/m.json"
+    # Never the newest: the payload header cannot know, and claiming it
+    # would put two `newest` marks in one list.
+    assert newest is False
+    assert label == "old · blk · yosys"
+    assert empty is None
+
+
+def test_switching_runs_refetches_rather_than_filtering_client_side():
+    """The pane holds one model at a time and another run's rows are not
+    in this body, so the dropdown re-fetches with ``?dir=`` and flows
+    through the ordinary ingest — where ``modelIdentity`` drops the lens
+    and the selection that were statements about the run being left."""
+
+    js = _page_js()
+    assert '<select id="run-select">' in phys_page.PHYS_PAGE_HTML
+    assert "'dir=' + encodeURIComponent(dir)" in js
+    listener = js.split("els.runSelect.addEventListener('change', function () {")[1]
+    assert "load(els.runSelect.value);" in listener.split("});")[0]
+    # Reload re-reads what is SHOWN, not the newest: a reader who selected
+    # a partition and re-ran it is asking about that one.
+    reload_body = js.split("document.getElementById('reload').addEventListener(")[1]
+    assert "load(state.dir);" in reload_body.split("});")[0]
+
+
+def test_a_refused_switch_keeps_the_run_that_is_on_screen():
+    """403 and 404 are answers about the run that was ASKED for. Blanking
+    the pane would cost the reader both it and the one they were reading."""
+
+    js = _page_js()
+    body = js.split("function loadFailed(requested, message) {")[1].split("\n  }")[0]
+    assert "if (state.payload) {" in body
+    assert "renderRunPicker();" in body
+    assert "showEmpty(message);" in body
+    # The refused directory never becomes the run the pane thinks it is
+    # showing, so the next reload does not ask for it again.
+    load_body = js.split("function load(dir) {")[1].split("\n  }")[0]
+    success = load_body.split("}).then(function (res) {")[1]
+    assert success.index("loadFailed(") < success.index("state.dir = requested;")
+
+
+def test_focus_applies_to_the_run_the_pane_is_showing():
+    """The routing decision (#568): `phys_focus` is unchanged on the wire.
+    A sender addresses the pane, the pane addresses one run, and the
+    reader is the one who chose it."""
+
+    js = _page_js()
+    assert "An inbound `phys_focus` applies to the run this pane is SHOWING." in js
+    # Two fields are read off the envelope and no third: a run hint on
+    # the wire would let a sender move a view its user is working in, and
+    # would need the lockstep schema bump the protocol reserves.
+    focus = js.split("function applyFocus(payload) {")[1].split("\n  }")[0]
+    assert "payload.target" in focus and "payload.metric" in focus
+    assert "payload.run" not in focus and "payload.phys_dir" not in focus
+    assert "payload.dir" not in focus
+    # And the pane sends none either — it is a phys_focus consumer only.
+    assert "emit('phys_focus'" not in js

@@ -58,6 +58,8 @@ def _make_synth_cfg(
     platform=None,
     reglvl=None,
     tool_overrides=None,
+    lib_paths=None,
+    lef_paths=None,
 ):
     from rtl_buddy.config.model import ModelConfig
 
@@ -73,6 +75,8 @@ def _make_synth_cfg(
         platform=platform,
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
+        lib_paths=list(lib_paths or []),
+        lef_paths=list(lef_paths or []),
     )
 
 
@@ -5024,16 +5028,28 @@ def test_openroad_stage1_script_emits_the_stat_json_dump(tmp_path):
 
 
 def _run_yosys_with(
-    tmp_path, monkeypatch, *, stats_text=None, log_text="", netlist_text=None
+    tmp_path,
+    monkeypatch,
+    *,
+    stats_text=None,
+    log_text="",
+    netlist_text=None,
+    constraints=None,
+    during_run=None,
 ):
-    """Run a YosysSynth whose fake Yosys writes `stats_text` and a log."""
+    """Run a YosysSynth whose fake Yosys writes `stats_text` and a log.
+
+    ``during_run`` is called while the fake Yosys is "running", which is
+    where a test puts whatever the world does to this run's inputs
+    underneath it.
+    """
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
         desc="",
         model=model,
         tool="yosys",
-        constraints=None,
+        constraints=constraints,
         params=None,
         defines=None,
         platform=None,
@@ -5045,6 +5061,8 @@ def _run_yosys_with(
     )
 
     def _run_managed_process(cmd, stdout, stderr, **kwargs):
+        if during_run is not None:
+            during_run()
         stdout.write(log_text)
         if stats_text is not None:
             Path(ys._stats_path()).write_text(stats_text)
@@ -5191,6 +5209,385 @@ def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# what feeds the config digest, per backend and per path (#570)
+# ---------------------------------------------------------------------------
+
+
+def _effort_cfg(name="standard", synth_args="", abc_args="", pre_sta_tcl=""):
+    from rtl_buddy.config.synth import (
+        SynthEffortConfig,
+        SynthEffortConfigFile,
+        SynthEffortOpenroadFile,
+        SynthEffortYosysFile,
+    )
+
+    return SynthEffortConfig(
+        SynthEffortConfigFile(
+            name=name,
+            yosys=SynthEffortYosysFile(synth_args=synth_args, abc_args=abc_args),
+            openroad=SynthEffortOpenroadFile(pre_sta_tcl=pre_sta_tcl),
+        )
+    )
+
+
+def _yosys_digest(
+    tmp_path, *, mapped, tool_overrides=None, effort=None, lib_paths=None
+):
+    """The options digest a YosysSynth would publish on `mapped`'s branch."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(tool_overrides=tool_overrides, lib_paths=lib_paths),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+        effort_cfg=effort or _effort_cfg(),
+    )
+    return options_digest(ys._phys_options(mapped=mapped))
+
+
+def test_a_mapped_yosys_run_ignores_abc_args_and_says_so_in_its_digest(tmp_path):
+    """`_write_script` hard-codes the ABC script on the mapped branch --
+    `_ABC_SCRIPT_WITH_TIMING`/`_ABC_SCRIPT_NO_TIMING`, chosen by whether the
+    SDC named a clock -- and never reads `abc_args`. Digesting the resolved
+    dataclass therefore told two byte-identical netlists apart by a string
+    Yosys was never given."""
+    plain = _yosys_digest(tmp_path, mapped=True)
+    with_abc = _yosys_digest(
+        tmp_path, mapped=True, tool_overrides={"yosys": {"abc_args": "-fast"}}
+    )
+    assert plain is not None
+    assert plain == with_abc
+
+    # The unmapped branch does emit `abc <abc_args>`, so there the same
+    # field is a real difference. Which is the point: the subset is per
+    # path, not per backend.
+    assert _yosys_digest(tmp_path, mapped=False) != _yosys_digest(
+        tmp_path, mapped=False, tool_overrides={"yosys": {"abc_args": "-fast"}}
+    )
+    # And the two branches are themselves distinguishable.
+    assert _yosys_digest(tmp_path, mapped=False) != plain
+
+
+def test_a_yosys_run_never_digests_the_strategy_no_yosys_script_reads(tmp_path):
+    """`strategy` is a stage-2 OpenROAD knob. This backend has no stage 2,
+    and no line of its script consumes the field."""
+    for mapped in (True, False):
+        assert _yosys_digest(tmp_path, mapped=mapped) == _yosys_digest(
+            tmp_path, mapped=mapped, tool_overrides={"yosys": {"strategy": "TIMING"}}
+        )
+
+
+def test_a_yosys_run_digests_the_synth_args_its_script_appends(tmp_path):
+    """The counterpart: an input the script does read has to move the
+    digest, or the fingerprint reports two experiments as one."""
+    assert _yosys_digest(tmp_path, mapped=True) != _yosys_digest(
+        tmp_path, mapped=True, tool_overrides={"yosys": {"synth_args": "-flatten"}}
+    )
+    # The effort's value reaches the script through the same resolved
+    # field, so it moves the digest too.
+    assert _yosys_digest(tmp_path, mapped=True) != _yosys_digest(
+        tmp_path, mapped=True, effort=_effort_cfg(synth_args="-flatten")
+    )
+
+
+def test_a_mapped_yosys_run_digests_the_liberty_it_mapped_against(tmp_path):
+    """The finding (#570 round-15 review, Codex P2). The digest recorded
+    `mapped: true` and not *what against*, so the classic experiment — one
+    design, one effort, two corners named through `lib-paths` — produced
+    two netlists with two areas under one `options_sha256`, and a reader
+    comparing runs was told they were the same experiment."""
+    slow = _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib"])
+    fast = _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/fast.lib"])
+
+    assert slow is not None and slow != fast
+
+    # A second library is a different library set, not the same one.
+    assert (
+        _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"])
+        != slow
+    )
+    # `read_liberty` is order-sensitive, so an order is an experiment.
+    assert _yosys_digest(
+        tmp_path, mapped=True, lib_paths=["/pdk/io.lib", "/pdk/slow.lib"]
+    ) != _yosys_digest(
+        tmp_path, mapped=True, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"]
+    )
+    # And the same set twice is the same experiment.
+    assert _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib"]) == slow
+
+
+def test_an_unmapped_yosys_run_has_no_library_to_digest(tmp_path):
+    """`mapped` is `bool(self._resolve_lib_paths())`, so the unmapped branch
+    has an empty set by definition — recording it there would be a key that
+    can only ever hold one value."""
+    assert "libs" in _yosys_digest_fed(tmp_path, mapped=True)
+    assert "libs" not in _yosys_digest_fed(tmp_path, mapped=False)
+
+
+def _yosys_digest_fed(tmp_path, *, mapped, lib_paths=None):
+    """The mapping `_yosys_digest` hashes, for the tests that read keys."""
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(lib_paths=lib_paths or ["/pdk/slow.lib"]),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+        effort_cfg=_effort_cfg(),
+    )
+    return ys._phys_options(mapped=mapped)
+
+
+def test_the_library_fingerprint_is_project_relative_where_it_can_be(tmp_path):
+    """Spelled the way every other path in these documents is, so the same
+    checkout on two machines is one library set rather than two. A PDK
+    outside the project keeps the absolute path that is its only
+    identity."""
+    from rtl_buddy.tools.synth_yosys import library_fingerprint
+
+    class _Root:
+        def get_project_rootdir(self):
+            return str(tmp_path)
+
+    inside = tmp_path / "pdk" / "slow.lib"
+    assert library_fingerprint([str(inside), "/opt/pdk/fast.lib"], _Root()) == [
+        "pdk/slow.lib",
+        "/opt/pdk/fast.lib",
+    ]
+    # No project root to spell against: the resolved paths stand. A
+    # fingerprint helper is the last place worth raising from — it feeds
+    # a publish that never fails a synthesis already on disk.
+    assert library_fingerprint([str(inside)], None) == [str(inside)]
+    assert library_fingerprint([str(inside)], object()) == [str(inside)]
+
+
+def test_the_slang_plugin_is_fingerprinted_as_the_script_loads_it(tmp_path):
+    """The finding (#570 round-15 review, Codex P2). The digest recorded the
+    raw `plugin_path`, and the script loads `resolve_plugin_path`'s answer.
+    That was wrong in both directions: a plugin selected through
+    `RTL_BUDDY_SLANG_PLUGIN` leaves the field empty, so two runs against two
+    different yosys-slang builds digested identically, and a relative path
+    digested apart from the absolute path it resolves to."""
+    from rtl_buddy.config.synth import SynthToolOpts
+    from rtl_buddy.tools.synth_yosys import (
+        SLANG_PLUGIN_ENV,
+        elaboration_fingerprint,
+    )
+
+    class _Root:
+        def get_project_rootdir(self):
+            return str(tmp_path)
+
+    def _fed(plugin_path, env=None, root_cfg=None):
+        import os as _os
+
+        opts = SynthToolOpts(frontend="slang", plugin_path=plugin_path)
+        previous = _os.environ.get(SLANG_PLUGIN_ENV)
+        if env is None:
+            _os.environ.pop(SLANG_PLUGIN_ENV, None)
+        else:
+            _os.environ[SLANG_PLUGIN_ENV] = env
+        try:
+            return elaboration_fingerprint(opts, root_cfg)["plugin_path"]
+        finally:
+            if previous is None:
+                _os.environ.pop(SLANG_PLUGIN_ENV, None)
+            else:
+                _os.environ[SLANG_PLUGIN_ENV] = previous
+
+    # The env fallback is an identity, not an absence.
+    assert _fed(None, env="/opt/a/slang.so") == "/opt/a/slang.so"
+    assert _fed(None, env="/opt/a/slang.so") != _fed(None, env="/opt/b/slang.so")
+    # Two spellings of one plugin converge.
+    absolute = str(tmp_path / "plug" / "slang.so")
+    assert _fed("plug/slang.so", root_cfg=_Root()) == absolute
+    assert _fed(absolute, root_cfg=_Root()) == absolute
+    # Nothing configured at all is still nothing.
+    assert _fed(None) is None
+
+
+def test_the_verilog_frontend_records_no_plugin_at_all(tmp_path):
+    """The gate is unchanged: the verilog read emitter loads no plugin, so
+    resolving one for it would report a difference the script cannot have."""
+    from rtl_buddy.config.synth import SynthToolOpts
+    from rtl_buddy.tools.synth_yosys import elaboration_fingerprint
+
+    fed = elaboration_fingerprint(
+        SynthToolOpts(frontend="verilog", plugin_path="/opt/a/slang.so"), None
+    )
+    assert "plugin_path" not in fed and "single_unit" not in fed
+
+
+def test_a_synth_run_digests_the_merged_define_table_its_script_fed(tmp_path):
+    """The finding (#570 round-15 review, Codex P2). `_write_script` feeds
+    the frontend `elaboration_defines()` — the generated filelist's
+    `+define+` entries with the run's `defines:` layered on top — but the
+    digest recorded `synth.yaml`'s field alone. A filelist whose
+    `+define+WIDTH=8` became `+define+WIDTH=16` therefore elaborated a
+    different design under an identical fingerprint."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+
+    def _digest(filelist_defines):
+        ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(defines={"MODE": "fast"}))
+        fl = Path(ys._filelist_path())
+        fl.parent.mkdir(parents=True, exist_ok=True)
+        fl.write_text(
+            "".join(f"+define+{d}\n" for d in filelist_defines) + f"-v {sv}\n"
+        )
+        ys._write_script(str(fl))
+        return options_digest(ys._phys_options(mapped=False))
+
+    narrow = _digest(["WIDTH=8"])
+    wide = _digest(["WIDTH=16"])
+
+    assert narrow is not None and narrow != wide
+    # A bare entry is its own value, and adding one is a change.
+    assert _digest(["WIDTH=8", "DEBUG"]) != narrow
+    # And the same filelist twice is the same experiment.
+    assert _digest(["WIDTH=8"]) == narrow
+
+
+def test_the_openroad_backend_digests_its_merged_defines_too(tmp_path):
+    """Both backends feed their frontend the same merged mapping, so both
+    have to digest it — the round-14 rule is per script, not per tool."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    lib = tmp_path / "slow.lib"
+    lib.write_text("")
+
+    def _digest(filelist_defines):
+        or_synth = _make_openroad(
+            tmp_path, synth_cfg=_make_synth_cfg(lib_paths=[str(lib)])
+        )
+        fl = Path(or_synth._filelist_path())
+        fl.parent.mkdir(parents=True, exist_ok=True)
+        fl.write_text(
+            "".join(f"+define+{d}\n" for d in filelist_defines) + f"-v {sv}\n"
+        )
+        or_synth._write_yosys_script(str(fl))
+        return options_digest(or_synth._phys_options())
+
+    assert _digest(["WIDTH=8"]) != _digest(["WIDTH=16"])
+    assert _digest(["WIDTH=8"]) == _digest(["WIDTH=8"])
+
+
+def _openroad_digest(
+    tmp_path,
+    *,
+    tool_overrides=None,
+    effort=None,
+    strategy="",
+    lib_paths=None,
+    lef_paths=None,
+):
+    """The options digest an OpenRoadSynth would publish."""
+    from rtl_buddy.phys.provenance import options_digest
+
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            tool_overrides=tool_overrides, lib_paths=lib_paths, lef_paths=lef_paths
+        ),
+        tool_cfg=_make_or_tool_cfg(strategy=strategy),
+    )
+    or_synth.effort_cfg = effort or _effort_cfg()
+    return options_digest(or_synth._phys_options())
+
+
+def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_path):
+    """`_write_yosys_script` appends `effort_cfg.get_yosys_synth_args()` to
+    `synth -top` and never looks at `opts.synth_args`. The digest used to
+    be the other way round: a `tool_overrides.openroad.synth_args` that
+    changed nothing moved it, and an effort that changed the netlist did
+    not."""
+    base = _openroad_digest(tmp_path)
+    assert base is not None
+
+    # The effort's args are what stage 1 runs with, so they are identity.
+    assert _openroad_digest(tmp_path, effort=_effort_cfg(synth_args="-flatten")) != base
+
+    # The tool option of the same name is not read by either stage.
+    assert (
+        _openroad_digest(
+            tmp_path, tool_overrides={"openroad": {"synth_args": "-flatten"}}
+        )
+        == base
+    )
+    # Nor is `abc_args`, from either source: stage 1's ABC line is
+    # `_ABC_SCRIPT_AREA`, hard-coded.
+    assert (
+        _openroad_digest(tmp_path, tool_overrides={"openroad": {"abc_args": "-fast"}})
+        == base
+    )
+    assert _openroad_digest(tmp_path, effort=_effort_cfg(abc_args="-fast")) == base
+
+
+def test_an_openroad_run_digests_the_libraries_and_lefs_it_resolves(tmp_path):
+    """The platform name does not determine them: `_resolve_lib_paths` and
+    `_resolve_lef_paths` append the config's own `lib-paths` / `lef-paths`
+    to the platform's, and with no platform at all those lists are the
+    whole of it. Recording the platform alone left two corners — and two
+    LEF sets, which decide what stage 2 can place — digesting as one
+    (#570)."""
+    base = _openroad_digest(tmp_path, lib_paths=["/pdk/slow.lib"])
+    assert base is not None
+
+    assert _openroad_digest(tmp_path, lib_paths=["/pdk/fast.lib"]) != base
+    assert (
+        _openroad_digest(tmp_path, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"]) != base
+    )
+    # LEF is stage 2's own input and moves the digest on its own.
+    assert (
+        _openroad_digest(
+            tmp_path, lib_paths=["/pdk/slow.lib"], lef_paths=["/pdk/macro.lef"]
+        )
+        != base
+    )
+    # The same pair twice is the same experiment.
+    assert _openroad_digest(tmp_path, lib_paths=["/pdk/slow.lib"]) == base
+
+
+def test_an_openroad_run_digests_the_strategy_as_the_command_it_selects(tmp_path):
+    """Strategy reaches the script only through `_resynth_cmd`'s table, so
+    the digest records the command and not the string: `TIMING` and
+    `TIMING_ANNEAL` are one run, and anything that selects no resynthesis
+    is another."""
+    annealing = _openroad_digest(tmp_path, strategy="TIMING")
+    assert annealing == _openroad_digest(tmp_path, strategy="timing_anneal")
+    assert annealing != _openroad_digest(tmp_path, strategy="TIMING_GENETIC")
+    assert annealing != _openroad_digest(tmp_path, strategy="AREA")
+    # `AREA` and an unrecognised value both emit nothing, and both runs
+    # produce the same netlist.
+    assert _openroad_digest(tmp_path, strategy="AREA") == _openroad_digest(
+        tmp_path, strategy="whatever"
+    )
+
+
+def test_an_openroad_run_digests_the_pre_sta_tcl_it_actually_runs(tmp_path):
+    """The effort's `pre-sta-tcl` is executed verbatim by
+    `_write_or_script`, and it is content rather than a path, so nothing
+    else in the config block can identify it. Two efforts sharing a name
+    and differing in the Tcl are two experiments."""
+    base = _openroad_digest(tmp_path)
+    floorplan = _openroad_digest(
+        tmp_path, effort=_effort_cfg(pre_sta_tcl="initialize_floorplan\n")
+    )
+    assert base != floorplan
+    assert floorplan != _openroad_digest(
+        tmp_path, effort=_effort_cfg(pre_sta_tcl="global_placement\n")
+    )
+    # Trailing whitespace never reaches OpenROAD -- the writer rstrips it --
+    # so it is not a different experiment.
+    assert floorplan == _openroad_digest(
+        tmp_path, effort=_effort_cfg(pre_sta_tcl="initialize_floorplan\n\n  ")
+    )
+
+
+# ---------------------------------------------------------------------------
 # A stale half that cannot be withdrawn stops the run (#560 round-17)
 # ---------------------------------------------------------------------------
 
@@ -5270,3 +5667,86 @@ def test_the_openroad_backend_stops_on_the_same_failed_withdrawal(
 
     assert isinstance(result, SynthFailResults)
     assert "could not be withdrawn" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# The constraints hash is of the bytes the tool read (#570 round-17)
+# ---------------------------------------------------------------------------
+
+
+def test_an_sdc_edited_during_a_synth_records_no_constraints_hash(
+    tmp_path, monkeypatch, caplog
+):
+    """The finding (#570 round-17, Codex P2). The digest used to be computed
+    inside the publish, minutes after the script had read the SDC for its ABC
+    delay target — so a file edited while Yosys worked was recorded as the
+    constraints this netlist was built under, the exact substitution the hash
+    exists to catch. Hashed at script generation and confirmed when the run
+    ends instead; a file that moved has no identity this run can vouch for."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    sdc = tmp_path / "demo.sdc"
+    sdc.write_text("create_clock -period 2.0 [get_ports clk]\n")
+
+    with caplog.at_level("WARNING"):
+        _ys, result = _run_yosys_with(
+            tmp_path,
+            monkeypatch,
+            stats_text=_STAT_JSON,
+            constraints=str(sdc),
+            during_run=lambda: sdc.write_text(
+                "create_clock -period 9.0 [get_ports clk]\n"
+            ),
+        )
+
+    config = load_model(result.results["phys_model"])["provenance"]["synth"]["config"]
+    # Neither hash: not the bytes at the start, not the ones on disk now.
+    assert config["constraints_sha256"] is None
+    assert sha256_of(sdc) is not None
+    # The path is still recorded — which file the run read is known.
+    assert config["constraints"].endswith("demo.sdc")
+    assert "constraints_changed_during_run" in caplog.text
+
+
+def test_an_untouched_sdc_is_recorded_by_the_hash_taken_at_generation(
+    tmp_path, monkeypatch
+):
+    """The success path is untouched: hash-before and confirm-after agree,
+    and what is recorded is the file the script read."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    sdc = tmp_path / "demo.sdc"
+    sdc.write_text("create_clock -period 2.0 [get_ports clk]\n")
+
+    _ys, result = _run_yosys_with(
+        tmp_path, monkeypatch, stats_text=_STAT_JSON, constraints=str(sdc)
+    )
+
+    config = load_model(result.results["phys_model"])["provenance"]["synth"]["config"]
+    assert config["constraints_sha256"] == sha256_of(sdc)
+
+
+def test_the_openroad_backend_hashes_its_sdc_at_script_generation(tmp_path):
+    """Both synthesis backends record the same field, so both take it on the
+    same schedule: stage 1's script generation, which is the earliest point in
+    a run that has one."""
+    from rtl_buddy.phys.publish import sha256_of
+
+    sdc = tmp_path / "demo.sdc"
+    sdc.write_text("create_clock -period 2.0 [get_ports clk]\n")
+    or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(constraints=str(sdc)))
+
+    assert or_synth._constraints_sha256 is None
+    or_synth._hash_constraints()
+    captured = or_synth._constraints_sha256
+    assert captured == sha256_of(sdc)
+
+    # Replaced after the capture, as a concurrent editor would: the
+    # confirmation withdraws the digest rather than recording the
+    # replacement as what this run read.
+    sdc.write_text("create_clock -period 9.0 [get_ports clk]\n")
+    or_synth._confirm_constraints_unchanged()
+
+    assert or_synth._constraints_sha256 is None
