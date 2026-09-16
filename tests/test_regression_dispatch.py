@@ -5804,3 +5804,153 @@ def test_the_gates_skipped_event_has_a_dedicated_human_message():
     assert "/w/verif/blk" in message and "singleton" in message
     assert "waits for its build job" in message
     assert "dispatch gates_skipped" not in message
+
+
+def test_a_partial_build_envelope_is_used_for_what_it_names_only(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A build job that released a key and then died (#548).
+
+    Its envelope exists — it is rewritten per compile key so a released
+    simulation can read its own verdict — but it stops at the key the job
+    reached. `basic` really compiled and its jobs really ran, so its row
+    is the build job's verdict; `extra` was never compiled and its job was
+    cancelled with the build, which is the same story as no envelope at
+    all. The head must not read the file's mere existence as "the build
+    finished".
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _PartialBuild(_FakeBackend):
+        def __init__(self):
+            super().__init__(write_results=False)  # no sim envelope appears
+
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=[],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "error_tail": ["%Error: Exiting due to 1 error(s)"],
+                    }
+                ],
+                partial=True,
+            )
+            return super().submit_build(spec)
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    # The record it DOES hold is used, exactly as a complete one would be.
+    assert "compile failed in build job" in rows["basic"]["desc"]
+    # The test it never reached falls back to the missing-result story.
+    assert "produced no result" in rows["extra"]["desc"]
+
+    partial = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.build_result_partial"
+    ]
+    assert len(partial) == 1, partial
+    assert partial[0]["decided"] == 1
+    assert partial[0]["planned"] == 2
+
+
+def test_a_partial_build_envelope_does_not_feed_reservation_advice(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Its records are a fraction of the compiles the reservation paid for.
+
+    Advising a smaller compile block from them would shrink it towards a
+    build job that died rather than towards one that finished (#548).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _PartialBuild(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["basic"],
+                failed=[],
+                builds=[{"test": "basic", "builder": "verilator", "duration_sec": 2.0}],
+                partial=True,
+            )
+            return super().submit_build(spec)
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    states = []
+    original = rtl_buddy_module.RtlBuddy._dispatch_collect
+
+    def _spy(self, backend_arg, state, *args, **kwargs):
+        out = original(self, backend_arg, state, *args, **kwargs)
+        states.append(state)
+        return out
+
+    monkeypatch.setattr(rtl_buddy_module.RtlBuddy, "_dispatch_collect", _spy)
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert states and states[0]["build_compile_work"] is None
+
+
+def test_the_partial_envelope_events_have_dedicated_human_messages():
+    from rtl_buddy.logging_utils import _human_message
+
+    head = _human_message(
+        "dispatch.build_result_partial",
+        {
+            "suite_dir": "/w/verif/blk",
+            "job_id": "1234",
+            "decided": 1,
+            "planned": 4,
+        },
+    )
+    assert "1234" in head and "/w/verif/blk" in head and "did not finish" in head
+    assert "dispatch build_result_partial" not in head
+
+    job = _human_message(
+        "build_job.partial_result_failed",
+        {
+            "path": "/w/.dispatch/build-result-7.json",
+            "error": "[Errno 28] No space left on device",
+        },
+    )
+    assert "build-result-7.json" in job and "No space left" in job
+    assert "build_job partial_result_failed" not in job

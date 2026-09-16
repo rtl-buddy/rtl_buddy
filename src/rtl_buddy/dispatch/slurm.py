@@ -327,12 +327,16 @@ def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
     return selected or None
 
 
-# The whole of one key's release, not one call of it. A key fanned out over
-# a thousand runs is a thousand `scontrol` calls, and at one 30 s timeout
-# each an unreachable controller would hold the build job — and the compile
-# slot it occupies — for hours to buy an optimization. The batch gets a
-# budget instead, and the first systemic failure ends it (#548 review).
-_RELEASE_BUDGET_S = 60
+# The whole of one key's release, not one call of it and not one cluster's
+# share of it. A key fanned out over a thousand runs is a thousand
+# `scontrol` calls, and at one 30 s timeout each an unreachable controller
+# would hold the build job — and the compile slot it occupies — for hours
+# to buy an optimization. The batch gets a budget instead, and the first
+# systemic failure ends it. The caller (the build job) holds ONE deadline
+# per compile key and passes what is left of it as `budget_s`, so a key
+# whose jobs span several clusters does not get a fresh budget per cluster
+# (#548 review).
+RELEASE_BUDGET_S = 60
 
 
 class ReleaseOutcome(NamedTuple):
@@ -375,7 +379,7 @@ def release_dependency(
     (#509) — the caller batches by it. One call per id: ``scontrol
     update`` addresses a single job.
 
-    The whole batch shares ``budget_s`` (default :data:`_RELEASE_BUDGET_S`)
+    The whole batch shares ``budget_s`` (default :data:`RELEASE_BUDGET_S`)
     and each call is time-boxed to what is left of it, so the cost of this
     is bounded by the batch and not by the fan-out.
 
@@ -388,17 +392,13 @@ def release_dependency(
     released: list[str] = []
     failures: list[tuple[str, str]] = []
     systemic: str | None = None
-    deadline = time.monotonic() + (_RELEASE_BUDGET_S if budget_s is None else budget_s)
+    deadline = time.monotonic() + (RELEASE_BUDGET_S if budget_s is None else budget_s)
     pending = list(job_ids)
     while pending:
         job_id = pending.pop(0)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            systemic = (
-                f"release budget of "
-                f"{_RELEASE_BUDGET_S if budget_s is None else budget_s:g}s "
-                "exhausted"
-            )
+            systemic = "release budget exhausted"
             pending.insert(0, job_id)
             break
         try:

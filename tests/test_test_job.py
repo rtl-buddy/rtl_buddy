@@ -2695,9 +2695,16 @@ def _fake_release(monkeypatch: pytest.MonkeyPatch, *, refuses=None, systemic=Non
     calls = []
     refuses, systemic = refuses or {}, systemic or {}
 
-    def release(job_ids, *, cluster=None, cwd=None):
+    def release(job_ids, *, cluster=None, cwd=None, budget_s=None):
         job_ids = list(job_ids)
-        calls.append({"job_ids": job_ids, "cluster": cluster, "cwd": cwd})
+        calls.append(
+            {
+                "job_ids": job_ids,
+                "cluster": cluster,
+                "cwd": cwd,
+                "budget_s": budget_s,
+            }
+        )
         released, failures = [], []
         for position, job_id in enumerate(job_ids):
             if job_id in systemic:
@@ -3152,7 +3159,7 @@ def test_a_release_that_ran_out_of_budget_is_reported_against_the_key(
     _two_key_build_job(stub_runner, failing=None)
     calls = []
 
-    def release(job_ids, *, cluster=None, cwd=None):
+    def release(job_ids, *, cluster=None, cwd=None, budget_s=None):
         calls.append(list(job_ids))
         return slurm_module.ReleaseOutcome([], [], list(job_ids), "budget exhausted")
 
@@ -3189,3 +3196,214 @@ def test_a_release_that_ran_out_of_budget_is_reported_against_the_key(
     # will try either is what the message says, not a number here.
     assert failed[0]["skipped"] == 1 and "job_id" not in failed[0]
     assert failed[0]["group"] == "obj_dir_basic"
+
+
+def test_the_build_verdict_is_on_disk_before_the_key_is_released(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordering the whole release depends on (#548 review).
+
+    A released simulation whose stamp fails to validate asks the build
+    envelope whether the build exists. `No envelope` is `inconclusive`,
+    and inconclusive RECOMPILES — under the simulation reservation, into
+    the shared directory every sibling element is pointed at, several
+    elements at once. So the envelope has to name the key before its
+    dependency is cleared, not when the whole job ends.
+    """
+    _two_key_build_job(stub_runner, failing=None)
+    envelope_path = minimal_project / "build-result-1.json"
+    seen = []
+
+    def release(job_ids, *, cluster=None, cwd=None, budget_s=None):
+        # What a released sim would read, read at the moment it is released.
+        seen.append(load_build_result_json(envelope_path))
+        return slurm_module.ReleaseOutcome(list(job_ids), [], [], None)
+
+    monkeypatch.setattr(rtl_buddy_module, "release_dependency", release)
+    monkeypatch.setattr(
+        rtl_buddy_module.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--result-json",
+            str(envelope_path),
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    # The first key's release already had its own verdict, and only its own.
+    assert seen[0] is not None, "no envelope existed when the first key released"
+    assert seen[0]["built"] == ["basic"]
+    assert seen[0]["partial"] is True
+    assert [entry["test"] for entry in seen[0]["builds"]] == ["basic"]
+    # The second key's release sees both, still marked partial.
+    assert seen[1]["built"] == ["basic", "extra"]
+    assert seen[1]["partial"] is True
+
+    # And the envelope the head finally reads is complete.
+    final = load_build_result_json(envelope_path)
+    assert final["partial"] is False
+    assert final["built"] == ["basic", "extra"]
+    # One record per config, and each built exactly once — the partial
+    # writes must not duplicate what the tail writes.
+    assert [entry["test"] for entry in final["builds"]] == ["basic", "extra"]
+
+
+def test_a_failed_key_is_named_in_the_partial_envelope_too(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """It is not released, but its verdict still lands as it happens.
+
+    The failure detail (#498) is what a later-released sibling on the same
+    key would read, and the head reads it for the summary row.
+    """
+    _two_key_build_job(stub_runner, failing="extra")
+    envelope_path = minimal_project / "build-result-1.json"
+    _fake_release(monkeypatch)
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--result-json",
+            str(envelope_path),
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    final = load_build_result_json(envelope_path)
+    assert final["built"] == ["basic"] and final["failed"] == ["extra"]
+    assert final["partial"] is False
+
+
+def test_a_build_job_without_result_json_still_releases(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No envelope to write is not a reason to hold the key.
+
+    A hand-run build job has nowhere to persist a verdict; the release is
+    still correct, and a sim job that cannot read one behaves as it did
+    before any of this existed.
+    """
+    _two_key_build_job(stub_runner, failing=None)
+    calls = _fake_release(monkeypatch)
+    gates = _gates(minimal_project / "gates-1.json", [(0, "basic", "1000_1")])
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [call["job_ids"] for call in calls] == [["1000_1"]]
+
+
+def test_one_release_budget_covers_a_key_that_spans_clusters(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A key on three controllers must not get three times the wait.
+
+    The budget bounds what a release costs the build job, so it belongs to
+    the key, not to each cluster batch it happens to split into (#548
+    review).
+    """
+    _two_key_build_job(stub_runner, failing=None)
+    calls = []
+    # A clock that only moves when a release is made, so an incidental
+    # `time.monotonic()` elsewhere in the job cannot shift the reading.
+    # 40 s per cluster batch: the first two fit in the key's 60 s, the
+    # third finds it spent.
+    now = [0.0]
+    monkeypatch.setattr(rtl_buddy_module.time, "monotonic", lambda: now[0])
+
+    def release(job_ids, *, cluster=None, cwd=None, budget_s=None):
+        calls.append({"cluster": cluster, "budget_s": budget_s})
+        now[0] += 40.0
+        return slurm_module.ReleaseOutcome(list(job_ids), [], [], None)
+
+    monkeypatch.setattr(rtl_buddy_module, "release_dependency", release)
+    monkeypatch.setattr(
+        rtl_buddy_module.shutil, "which", lambda name: f"/usr/bin/{name}"
+    )
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [
+            (0, "basic", "1_1", "east"),
+            (0, "basic", "2_1", "west"),
+            (0, "basic", "3_1", "north"),
+        ],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--parallel",
+            "1",
+            "--gates",
+            str(gates),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Each batch is given what is LEFT of the key's budget, and the third
+    # is never attempted because there is none.
+    assert [(call["cluster"], call["budget_s"]) for call in calls] == [
+        ("east", pytest.approx(60.0)),
+        ("west", pytest.approx(20.0)),
+    ]
+    failed = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.release_failed"
+    ]
+    assert len(failed) == 1 and failed[0]["skipped"] == 1
+    assert "budget" in failed[0]["error"]

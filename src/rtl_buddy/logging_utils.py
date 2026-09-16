@@ -1190,6 +1190,22 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({', '.join(str(job_id) for job_id in job_ids)}); they start "
                 "now instead of waiting for the rest of the build job"
             )
+        case "build_job.partial_result_failed":
+            return (
+                f"build job: could not update {fields.get('path')} with the "
+                f"compile keys built so far ({fields.get('error')}). The "
+                "simulation jobs released for those keys will find no verdict "
+                "for themselves and recompile if their stamp does not "
+                "validate; check the directory's permissions and free space."
+            )
+        case "dispatch.build_result_partial":
+            return (
+                f"dispatch: the build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')} did not finish — its result names "
+                f"{fields.get('decided')} of {fields.get('planned')} planned "
+                "test(s). Those ran; the rest were never compiled and their "
+                "jobs were cancelled with the build. See the build log."
+            )
         case "dispatch.gates_skipped":
             return (
                 f"dispatch: {fields.get('suite_dir')}: {fields.get('reason')}. "

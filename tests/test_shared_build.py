@@ -3441,12 +3441,14 @@ def _seed_build_transcript(sim):
     return path
 
 
-def _write_build_envelope(tmp_path, *, failed, builds=None, built=None):
+def _write_build_envelope(tmp_path, *, failed, builds=None, built=None, partial=False):
     """A build job's envelope. ``built`` defaults to "test_a, if it passed".
 
     Pass it explicitly for the case the envelope names this test in
     NEITHER list — a config the build job never reached, which is the one
-    thing that still earns a gated retry (#535).
+    thing that still earns a gated retry (#535). ``partial`` is the
+    envelope a build job rewrites mid-run, which is what a released key's
+    simulation jobs read while later keys are still compiling (#548).
     """
     from rtl_buddy.runner.result_io import write_build_result_json
 
@@ -3457,6 +3459,7 @@ def _write_build_envelope(tmp_path, *, failed, builds=None, built=None):
         built=built,
         failed=failed,
         builds=builds,
+        partial=partial,
     )
 
 
@@ -3858,6 +3861,111 @@ def test_a_gated_job_does_not_recompile_a_build_the_build_job_made(
     assert "no stamp or no simv" in desc
     assert "not recompiling" in desc
     assert "\n" not in desc
+
+
+def test_a_released_job_declines_on_a_partial_envelope(tmp_path, monkeypatch, caplog):
+    """The verdict counts while the build job is still compiling (#548).
+
+    A released simulation starts the moment its own compile key is built,
+    which is while later keys are still going — so the envelope it reads
+    is the one the build job is still rewriting. It names this test, and
+    that is the whole question: the binary exists, so recompiling under
+    the simulation reservation is the one answer that cannot help, exactly
+    as for the complete envelope. Reading `partial` as "not decided yet"
+    would put this job, and every element released beside it, into the
+    shared build directory at once.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    own_sha = vlog_sim_module._fingerprint_sha(sim._compile_plan().fingerprint)
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=[],
+        builds=[{"test": "test_a", "reused": False, "fingerprint_sha": own_sha}],
+        partial=True,
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == []  # no builder ran
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert not (compile_log.parent / "compile.retry.log").exists()
+    rejected = _events(caplog, "compile.build_stamp_rejected")
+    assert rejected and rejected[0]["inputs_differ"] is False
+    assert "not recompiling" in sim.compile_fail_desc
+
+
+def test_a_partial_envelope_that_has_not_reached_this_test_still_retries(
+    tmp_path, monkeypatch, caplog
+):
+    """Listed in neither list is "never reached", partial or not (#548).
+
+    Under a partial envelope that is the ordinary state of a key the build
+    job has not got to — but such a job was never released either, so it
+    is running after the build job ended and the retry it earns is the
+    pre-#548 recovery path, unchanged.
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    compile_log = _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path, failed=[], built=["test_b"], builds=[], partial=True
+    )
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0  # the retry ran, and passed
+
+    assert len(calls) == 1
+    assert _events(caplog, "compile.prebuilt_stamp_invalid")
+    assert compile_log.read_text() == _BUILD_TRANSCRIPT
+    assert sim.compile_fail_desc is None
+
+
+def test_a_complete_envelope_is_byte_identical_to_a_pre_partial_one(tmp_path):
+    """The key is only ever written true, so nothing downstream moves."""
+    import json
+
+    from rtl_buddy.runner.result_io import (
+        load_build_result_json,
+        write_build_result_json,
+    )
+
+    complete = write_build_result_json(
+        tmp_path / "complete.json", built=["a"], failed=[], builds=[{"test": "a"}]
+    )
+    raw = json.loads(complete.read_text())
+    assert "partial" not in raw
+    assert load_build_result_json(complete)["partial"] is False
+
+    partial = write_build_result_json(
+        tmp_path / "partial.json",
+        built=["a"],
+        failed=[],
+        builds=[{"test": "a"}],
+        partial=True,
+    )
+    assert json.loads(partial.read_text())["partial"] is True
+    assert load_build_result_json(partial)["partial"] is True
+    # Additive: the schema version does not move, so an older head reading
+    # a partial envelope still gets its compile-fail mapping.
+    assert (
+        json.loads(partial.read_text())["schema_version"]
+        == (json.loads(complete.read_text())["schema_version"])
+    )
 
 
 def _stamp_path(sim):
