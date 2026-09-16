@@ -327,6 +327,7 @@ def publish_power(
     run: str | None = None,
     netlist_source: str | None = None,
     netlist_sha256: str | None = None,
+    netlist_path=None,
     report_path=None,
     instances_path=None,
     cells_path=None,
@@ -355,6 +356,13 @@ def publish_power(
         reads a routed database and not a netlist, and for a caller that
         could not read the file; nothing is then inherited in either
         direction, which is the strict reading and the safe one.
+    :param netlist_path: where those bytes are — the run's own copy,
+        which it keeps. The hash says the analysis was pinned to one
+        netlist; the path is how a reader coming to the manifest later,
+        from an archive or a CI artefact, reaches the netlist to check
+        the hash against. ``None`` wherever ``netlist_sha256`` is: the
+        two are halves of one identity and a path without the hash names
+        bytes nothing vouches for.
     :returns: the same ``{"model", "manifest", "rows", "error"}`` shape
         :func:`publish_synth` returns.
     """
@@ -394,6 +402,7 @@ def publish_power(
                 "backend": backend,
                 "run": run,
                 "netlist_source": netlist_source,
+                "netlist_path": netlist_path,
                 "report": report_path,
                 "instances": instances_path,
                 "cells": cells_path,

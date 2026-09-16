@@ -1322,25 +1322,45 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
                 "entry pointing at a cfg-pdks corner"
             )
+        # Two outcomes share this event, and they are opposites. A null
+        # `error` is a publication that happened and came out short of its
+        # per-row half; a set `error` is a publication that did not happen
+        # at all — the `phys-publish.lock` wait timed out, the write failed
+        # — and nothing may then be said about what phys-model.json holds,
+        # because whatever is there belongs to some earlier run (#560).
+        case "synth.phys_model_incomplete" if fields.get("error"):
+            return (
+                f'synthesis "{fields.get("synth")}": phys-model.json was not '
+                f"written — publishing the physical model failed "
+                f"({fields.get('error')}). The design totals are reported with "
+                "the run either way; any phys-model.json and phys-manifest.json "
+                "in the run's artefact directory are an earlier publication's "
+                "and do not describe this run"
+            )
         case "synth.phys_model_incomplete":
-            reason = fields.get("error")
-            why = f" ({reason})" if reason else ""
             return (
                 f'synthesis "{fields.get("synth")}": phys-model.json has no '
                 "per-module breakdown — the stat -json dump "
-                f"{fields.get('stats')} was not produced or could not be read"
-                f"{why}. The design totals scraped from the log are still "
+                f"{fields.get('stats')} was not produced or could not be read. "
+                "The design totals scraped from the log are still "
                 "recorded, and phys-model.json in the run's artefact "
                 "directory carries them with its modules half null"
             )
+        case "power.phys_model_incomplete" if fields.get("error"):
+            return (
+                f'power run "{fields.get("power")}": phys-model.json was not '
+                f"written — publishing the physical model failed "
+                f"({fields.get('error')}). The design totals are reported with "
+                "the run either way; any phys-model.json and phys-manifest.json "
+                "in the run's artefact directory are an earlier publication's "
+                "and do not describe this run"
+            )
         case "power.phys_model_incomplete":
-            reason = fields.get("error")
-            why = f" ({reason})" if reason else ""
             return (
                 f'power run "{fields.get("power")}": phys-model.json has no '
                 "per-instance breakdown — the per-instance report "
                 f"{fields.get('instances')} was not produced or could not be "
-                f"read{why}. The design totals from the report_power Total row "
+                "read. The design totals from the report_power Total row "
                 "are still recorded, and phys-model.json in the run's artefact "
                 "directory carries them with its instances half null"
             )
