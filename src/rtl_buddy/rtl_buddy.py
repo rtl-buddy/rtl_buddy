@@ -5294,7 +5294,6 @@ class RtlBuddy:
                 )
                 exit_code |= self._exit_code_from_results(suite_results)
             reservation_findings = _raise_first(reservation_findings)
-            _log_reservation_advice(reservation_findings)
         else:
             for suite_cfg in self.reg_cfg.get_suite_configs():
                 suite_cfg_dir = os.path.dirname(suite_cfg.get_path())
@@ -5423,6 +5422,7 @@ class RtlBuddy:
         # Render in both modes: in machine mode this emits the "summary" log
         # event (and plain text to stderr), leaving stdout for the envelope.
         self._render_regression_summary(reg_results, metadata=metadata)
+        _log_reservation_advice(reservation_findings)
         if reservation_findings and not self.machine:
             self._render_reservation_advice(reservation_findings)
         if self.machine:
