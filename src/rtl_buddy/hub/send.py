@@ -83,6 +83,17 @@ so ``rb hub send`` keeps working against a hub whose model vocabulary has
 moved on — the wire contract is the schema, not the local model."""
 
 
+_PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
+"""``phys_focus.metric`` enum, mirroring the wire schema.
+
+Spelled here rather than derived from the physical model for the reason
+:data:`_COV_METRICS` is: the wire contract is the schema, and ``rb hub
+send`` has to keep working against a hub whose model vocabulary has
+moved on. ``dynamic`` is in the list although no model column carries
+it — it is internal + switching, summed by the pane.
+"""
+
+
 _FILE_LINE_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
 """Parses ``path/to/file.sv:42`` and ``path/to/file.sv:42:5``.
 
@@ -295,6 +306,52 @@ def cmd_cov_focus(
         payload["item"] = item
     with _open_or_exit() as h:
         h.emit("cov_focus", payload)
+
+
+@send_app.command(
+    "phys-focus",
+    help=(
+        "Broadcast phys_focus{target} — point the hub's synth+power pane "
+        "(http://127.0.0.1:<http_port>/phy) at one target of the run's "
+        "physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or "
+        "'module:alu'; an unprefixed string is read as an instance path. "
+        "--metric foregrounds one physical metric. The hub caches the "
+        "focus and replays it to the pane on connect, so sending this "
+        "before the browser tab is open works."
+    ),
+)
+def cmd_phys_focus(
+    target: Annotated[
+        str,
+        typer.Argument(help="physical target, e.g. module:alu or u_cpu/u_alu"),
+    ],
+    metric: Annotated[
+        Optional[str],
+        typer.Option(
+            "--metric",
+            help="cells|area|leakage|dynamic|total — which metric to foreground.",
+        ),
+    ] = None,
+) -> None:
+    # Emit what was validated, not the raw argument — same rule as
+    # `cov-focus`: the pane matches these strings, so a trailing space is
+    # a miss rather than a near miss, and a later MCP `phys_focus` tool
+    # has to put the same bytes on the wire for the same input.
+    target = target.strip()
+    if not target:
+        raise typer.BadParameter("target must be non-empty")
+    if metric is not None and metric not in _PHYS_METRICS:
+        raise typer.BadParameter(
+            f"metric must be one of {'/'.join(_PHYS_METRICS)}, got {metric!r}",
+            param_hint="--metric",
+        )
+    # Optional keys are omitted rather than sent as null: the wire schema
+    # is additionalProperties:false with no nullable hints.
+    payload: dict[str, object] = {"target": target}
+    if metric is not None:
+        payload["metric"] = metric
+    with _open_or_exit() as h:
+        h.emit("phys_focus", payload)
 
 
 @send_app.command(

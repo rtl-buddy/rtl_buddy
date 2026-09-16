@@ -101,6 +101,50 @@ def test_cov_card_advertises_on_data_presence():
     assert ready["cov"]["note"] is None
 
 
+def test_phys_card_advertises_on_data_presence():
+    """The pane ships (rtl-buddy/rtl_buddy#558), so the card is live and
+    availability follows the artefacts — same rule as the graph's and
+    the coverage pane's.
+
+    The note names BOTH producing commands: either one alone fills a
+    half of the physical model and gives the pane something to render.
+    """
+
+    phys = _apps(landing_page.build_state_payload(hub_addr="h:1"))["phys"]
+    assert phys["status"] == "live"
+    assert phys["available"] is False
+    assert "rb synth" in phys["note"] and "rb power" in phys["note"]
+
+    ready = _apps(landing_page.build_state_payload(hub_addr="h:1", phys_available=True))
+    assert ready["phys"]["available"] is True
+    assert ready["phys"]["note"] is None
+
+
+def test_phys_presence_is_reported_beside_the_graphs():
+    """The page's empty-state test reads data presence, not the card list, so
+    physical artefacts have to appear as a block of their own — otherwise a
+    project whose only build is an `rb synth` shows a live phys card above
+    "Nothing built for this project yet" (rtl-buddy/rtl_buddy#558)."""
+
+    assert landing_page.build_state_payload(hub_addr="h:1")["phys"] == {
+        "present": False
+    }
+    built = landing_page.build_state_payload(hub_addr="h:1", phys_available=True)
+    assert built["phys"] == {"present": True}
+
+
+def test_the_empty_state_counts_every_kind_of_build():
+    """One predicate in the page, and every data-presence half the state
+    carries has to be in it."""
+
+    body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    match = re.search(r"var nothingBuilt = ([^;]+);", body)
+    assert match, "the empty-state predicate moved"
+    predicate = match.group(1)
+    for term in ("hub.active_model", "graph.present", "phys.present"):
+        assert term in predicate, term
+
+
 def test_already_open_comes_from_the_peer_registry():
     """One client per origin: a second tab supersedes the first."""
 
@@ -353,7 +397,7 @@ def test_the_origin_label_map_renames_only_the_display():
     out = _node(
         _marked_js("origin-labels")
         + """
-        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+        var origins = ['view', 'graph', 'cov', 'phys', 'wave', 'src', 'cli',
                        'notebook', 'quantum'];
         console.log(JSON.stringify(origins.map(originLabel)));
         console.log(JSON.stringify([originLabel(null), originLabel(undefined),
@@ -366,6 +410,7 @@ def test_the_origin_label_map_renames_only_the_display():
         "sch",
         "gph",
         "cov",
+        "phy",
         "wave",
         "src",
         "cli",
@@ -379,7 +424,7 @@ def test_the_origin_label_map_renames_only_the_display():
 def test_both_peer_lists_go_through_the_map():
     js = _page_js()
     # Word for word the panes' map — see their copies of this test.
-    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };" in js
     assert "peers.map(originLabel).join(', ')" in js  # the "this hub" table
     assert "peers.map(originLabel).join(' ')" in js  # the bottom strip
 
@@ -395,12 +440,20 @@ def test_each_card_carries_a_long_name_and_a_short_one():
     )
     assert (apps["graph"]["name"], apps["graph"]["short"]) == ("rtl-buddy-graph", "gph")
     assert (apps["cov"]["name"], apps["cov"]["short"]) == ("rtl-buddy-coverage", "cov")
+    assert (apps["phys"]["name"], apps["phys"]["short"]) == ("rtl-buddy-phys", "phy")
     # The rename did not reach the wire, or the "already open" join breaks.
-    assert [app["origin"] for app in (apps["view"], apps["graph"], apps["cov"])] == [
+    assert [
+        app["origin"]
+        for app in (apps["view"], apps["graph"], apps["cov"], apps["phys"])
+    ] == [
         "view",
         "graph",
         "cov",
+        "phys",
     ]
+    # The page route is the SHORT name, so `phys` is the only one of the
+    # two spellings that ever reaches the wire.
+    assert apps["phys"]["route"] == "/phy"
     # The PAGE route is the app's short name since #423; the ORIGIN
     # asserted above is what did not move, and that is the real fence.
     assert apps["view"]["route"] == "/sch"
