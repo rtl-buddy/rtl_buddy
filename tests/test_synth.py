@@ -5188,3 +5188,85 @@ def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch
 
     assert isinstance(ys.run(), SynthFailResults)
     assert not stale.exists()
+
+
+# ---------------------------------------------------------------------------
+# A stale half that cannot be withdrawn stops the run (#560 round-17)
+# ---------------------------------------------------------------------------
+
+
+def _lock_the_publication(monkeypatch):
+    """Make every `_publication_lock` acquisition time out, as a holder that
+    outlives `PUBLISH_LOCK_TIMEOUT_SEC` does."""
+    import contextlib
+
+    from rtl_buddy.phys import publish as publish_mod
+
+    @contextlib.contextmanager
+    def _held(_artefact_dir):
+        raise TimeoutError("phys-publish.lock: another publish has held the lock")
+        yield  # pragma: no cover - unreachable, keeps this a context manager
+
+    monkeypatch.setattr(publish_mod, "_publication_lock", _held)
+
+
+def test_a_half_that_cannot_be_withdrawn_stops_the_synth_run(tmp_path, monkeypatch):
+    """The finding (#560 round-17, Codex P2). The clear deletes
+    `synth_stat.json` and then withdraws the module rows read from it; a
+    withdrawal that failed used to log at DEBUG and let the run proceed, so a
+    rerun that died before publishing left the previous run's areas
+    discoverable over a file that no longer exists. Yosys does not start."""
+    from rtl_buddy.phys.model import load_model
+
+    ys, result = _run_yosys_with(
+        tmp_path,
+        monkeypatch,
+        stats_text=_STAT_JSON,
+        log_text="Chip area for module '\\my_module': 12.500000\n",
+    )
+    model_path = Path(result.results["phys_model"])
+    assert load_model(model_path)["modules"]
+
+    _lock_the_publication(monkeypatch)
+
+    def _never_reached(*a, **kw):  # pragma: no cover - the point of the gate
+        raise AssertionError("Yosys ran over a publication it could not withdraw")
+
+    monkeypatch.setattr(synth_yosys_module, "run_managed_process", _never_reached)
+    rerun = ys.run()
+
+    assert isinstance(rerun, SynthFailResults)
+    desc = rerun.results["desc"]
+    assert "could not be withdrawn" in desc
+    assert "phys-publish.lock" in desc
+    # Still there, which is exactly why the run stopped.
+    assert load_model(model_path)["modules"]
+
+
+def test_the_openroad_backend_stops_on_the_same_failed_withdrawal(
+    tmp_path, monkeypatch
+):
+    """Both synthesis backends publish the same half into the same directory,
+    so both have to refuse to run over one they could not withdraw."""
+    from rtl_buddy.phys.publish import publish_synth
+    from rtl_buddy.tools import synth_openroad as synth_openroad_module
+
+    or_synth = _make_openroad(tmp_path)
+    publish_synth(
+        artefact_dir=or_synth.artefact_dir,
+        top="my_module",
+        backend="openroad",
+        run="test_synth",
+        area_um2=12.5,
+    )
+
+    _lock_the_publication(monkeypatch)
+
+    def _never_reached(*a, **kw):  # pragma: no cover - the point of the gate
+        raise AssertionError("OpenROAD ran over a publication it could not withdraw")
+
+    monkeypatch.setattr(synth_openroad_module.subprocess, "run", _never_reached)
+    result = or_synth.run()
+
+    assert isinstance(result, SynthFailResults)
+    assert "could not be withdrawn" in result.results["desc"]
