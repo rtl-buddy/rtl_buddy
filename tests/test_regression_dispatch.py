@@ -2249,6 +2249,66 @@ def test_reservation_advice_table_lists_raise_findings_first(
     assert directions == ["raise", "reduce", "reduce", "reduce"]
 
 
+def _raise_in_the_second_suite_backend(minimal_project, monkeypatch):
+    """Two colocated suites; only the second one's first test is OOM-killed.
+
+    Suites are analyzed in submission order, so every `reduce` is found
+    before the run's single `raise`.
+    """
+    fits = {
+        "state": "COMPLETED",
+        "elapsed_s": 10,
+        "timelimit_s": 3600,
+        "req_mem_bytes": 8 * 2**30,
+        "max_rss_bytes": 2**30,
+    }
+    killed = dict(fits, state="OUT_OF_MEMORY", max_rss_bytes=8 * 2**30)
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": fits,
+            "fake-2": fits,
+            "fake-3": killed,
+            "fake-4": fits,
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _write_colocated_suites(minimal_project)
+    _mark_stub_builder_verilator(minimal_project)
+    return ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+
+
+def test_rightsize_advice_events_are_raise_first_across_suites(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The logged events follow the regression-wide order, not each suite's.
+
+    Emitting per suite puts suite 1's `reduce` records ahead of suite 2's
+    `raise`, contradicting both the payload and the documented ordering.
+    """
+    argv = _raise_in_the_second_suite_backend(minimal_project, monkeypatch)
+    result, _ = _invoke(["--machine", *argv])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert advice[0]["direction"] == "raise"
+    assert advice[0]["test"] == "other_basic"
+    assert advice[0]["resource"] == "mem"
+    assert [a["direction"] for a in advice[1:]] == ["reduce"] * (len(advice) - 1)
+
+    log_lines = (minimal_project / "rtl_buddy.log").read_text().splitlines()
+    records = [json.loads(line) for line in log_lines if line.strip()]
+    logged = [r for r in records if r.get("event") == "rightsize.advice"]
+    assert [(r["test"], r["resource"], r["direction"]) for r in logged] == [
+        (a["test"], a["resource"], a["direction"]) for a in advice
+    ]
+
+
 def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
