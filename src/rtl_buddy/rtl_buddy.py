@@ -2677,7 +2677,7 @@ class RtlBuddy:
             release_state["gates"] = payload
             return payload
 
-        def _release_group(group_dir, members):
+        def _release_group(group_dir, members, *, verdict_error=None):
             """Clear the `afterok` of this key's sims. Never raises.
 
             ``members`` is ``[(plan index, test name), …]`` for the rows
@@ -2685,8 +2685,28 @@ class RtlBuddy:
             the group, right after its last member returned, so two keys
             finishing at different times release at different times — which
             is the entire point.
+
+            ``verdict_error`` is why this key's build record did not reach
+            disk, when it did not. Releasing then would start jobs that
+            cannot read the one file that tells them the build exists, so
+            the key keeps its gate instead.
             """
             if gates_path is None or not members or cancellation_has_started():
+                return
+            if verdict_error is not None:
+                # The envelope these jobs would consult is not on disk, so
+                # releasing them starts jobs that cannot learn this build
+                # exists. They keep their `afterok` and run after this job,
+                # which is where they were before any of this — slower, and
+                # the one outcome that is never wrong.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_skipped",
+                    group=group_dir,
+                    tests=[name for _, name in members],
+                    error=verdict_error,
+                )
                 return
             with release_lock:
                 # Held across the wait on purpose: the manifest is resolved
@@ -2889,12 +2909,22 @@ class RtlBuddy:
         recorded_ok = {}  # plan index -> did it build?
 
         def _record_group(rows):
-            """Persist this group's outcomes; called before its release.
+            """Persist this group's outcomes; ``None`` or why it did not.
 
-            Best-effort like every other envelope write in this job: a
-            partial write that fails costs a released job its decisive
-            answer (it recompiles, as it did before this existed) and must
-            never cost the job its exit status.
+            Called before the group's release, and its answer decides
+            whether that release happens at all. A released simulation
+            whose stamp fails to validate reads this file to learn that
+            the build exists; if the write failed there is nothing for it
+            to read, and clearing its dependency would start it into the
+            one verdict this whole mechanism exists to avoid — a recompile
+            under the simulation reservation, into the shared directory
+            its siblings are pointed at (#548 review). So a failed write
+            costs the key its early start, never the job's exit status.
+
+            ``result_json_path is None`` is not that case: it is a build
+            job run by hand, with no head, and so no gated simulation that
+            could consult an envelope — the head passes ``--result-json``
+            on every submission that passes ``--gates``.
             """
             entries = {
                 index: (
@@ -2908,7 +2938,7 @@ class RtlBuddy:
                     recorded_entries[index] = entry
                     recorded_ok[index] = ok
                 if result_json_path is None:
-                    return
+                    return None
                 ordered = sorted(recorded_entries)
                 snapshot = [recorded_entries[index] for index in ordered]
                 names = {
@@ -2936,6 +2966,8 @@ class RtlBuddy:
                         path=str(result_json_path),
                         error=str(exc),
                     )
+                    return str(exc)
+                return None
 
         def _compile_group(group):
             """Compile one group's configs serially; rows for the caller.
@@ -3075,7 +3107,7 @@ class RtlBuddy:
             # a file that does not name it yet, is told nothing decisive,
             # and recompiles into the directory it was gated on (#548
             # review).
-            _record_group(rows)
+            verdict_error = _record_group(rows)
             # Per ROW, not per group: a member that failed, or one whose
             # build left no stamp for the sim to validate, keeps its gate
             # and the pre-#548 recovery path.
@@ -3087,6 +3119,7 @@ class RtlBuddy:
                     if built
                     and getattr(runner, "last_build_stamp", unreported) is not None
                 ],
+                verdict_error=verdict_error,
             )
             return rows
 
@@ -5265,7 +5298,19 @@ class RtlBuddy:
                 return False
             return not build_partial or test_name in build_decided
 
-        if build_partial:
+        if build_partial and attempt == 0:
+            # Distinct TEST NAMES, on both sides, because that is the unit
+            # the build job compiles: `suite_results` holds one row per
+            # (test, run_id) plus the skipped ones, so counting it would
+            # report "1 of 100 planned" for a single config fanned out over
+            # a hundred runs (#548 review). The first attempt's full fleet
+            # is one row per submitted job, and every planned config has at
+            # least one — the skipped rows never reached a job, or the
+            # build job. Once per suite: a retry pass re-reads the same
+            # envelope and would repeat the warning.
+            planned_names = {
+                handle.spec.test_name for _, handle in state.get("pending") or ()
+            }
             log_event(
                 logger,
                 logging.WARNING,
@@ -5273,7 +5318,7 @@ class RtlBuddy:
                 suite_dir=build_handle.spec.suite_dir,
                 job_id=build_handle.job_id,
                 decided=len(build_decided),
-                planned=len(suite_results),
+                planned=len(planned_names) or None,
             )
         # Keyed, not .get(): a state carrying pending jobs always set run_token
         # in _dispatch_suite_submit, so a missing key is a bug that must fail

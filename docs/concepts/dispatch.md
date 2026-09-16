@@ -110,6 +110,7 @@ What is *not* released:
 
 - A key whose compile **failed**. Its jobs keep the gate, start after the build job, read the build record and decline the recompile exactly as before.
 - A key whose compile succeeded but left **no stamp** (`stamp_written: false`). There is nothing for the simulation job to validate early.
+- A key whose build record could not be written — the envelope above is what a released job reads to learn the build exists, so without it the release would send that job into the recompile the record exists to prevent. Logged as `dispatch.release_skipped`.
 - Every job of a suite whose submission already carries a dependency of its own — `--dependency=…` in `cfg-dispatch.sbatch-args`, or an exported `SBATCH_DEPENDENCY`. That expression is appended after the generated `afterok` and is therefore the job's effective gate, and `Dependency=` clears an expression whole rather than one clause of it, so a release would drop the site's own serialisation (`--dependency=singleton` around a licensed simulator, for instance). The head writes no gates file for such a suite and logs `dispatch.gates_skipped` once.
 - Every job, when there is no `scontrol` on the PATH of the **compute node** running the build job — that is where the release is issued from, not the submit host. It is an optional Slurm binary; without it the build job logs `dispatch.release_unavailable` once and the run behaves as it did before this existed.
 

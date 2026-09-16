@@ -5954,3 +5954,50 @@ def test_the_partial_envelope_events_have_dedicated_human_messages():
     )
     assert "build-result-7.json" in job and "No space left" in job
     assert "build_job partial_result_failed" not in job
+
+
+def test_a_partial_envelope_counts_configs_not_result_rows(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "1 of 100 planned" for one config over a hundred runs (#548 review).
+
+    The build job compiles CONFIGS — one per distinct test name — while
+    `suite_results` holds one row per (test, run_id) plus every skipped
+    test. Counting rows makes a wide seed fan-out look like a build job
+    that reached almost nothing.
+    """
+
+    class _PartialBuild(_RecordingBackend):
+        def submit_build(self, spec):
+            handle = _FakeBackend.submit_build(self, spec)
+            write_build_result_json(
+                spec.result_json,
+                built=["basic"],
+                failed=[],
+                builds=[{"test": "basic", "builder": "verilator"}],
+                partial=True,
+            )
+            return handle
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["--machine", "randtest", "basic", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # One config, five runs.
+    assert [spec.run_id for spec in backend.submitted] == [1, 2, 3, 4, 5]
+
+    partial = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.build_result_partial"
+    ]
+    # Once per suite, whatever the fan-out, and in configs on both sides.
+    assert len(partial) == 1, partial
+    assert partial[0]["decided"] == 1
+    assert partial[0]["planned"] == 1

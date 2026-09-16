@@ -3407,3 +3407,92 @@ def test_one_release_budget_covers_a_key_that_spans_clusters(
     ]
     assert len(failed) == 1 and failed[0]["skipped"] == 1
     assert "budget" in failed[0]["error"]
+
+
+def test_a_key_whose_verdict_did_not_reach_disk_is_not_released(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No record, no release (#548 review).
+
+    Releasing a key whose build record could not be written starts jobs
+    that cannot read the one file saying the build exists — so a stamp
+    that fails to validate sends them into a recompile under the
+    simulation reservation, which is the outcome the record exists to
+    prevent. The key keeps its gate; the next key, whose write lands,
+    still releases.
+    """
+    _two_key_build_job(stub_runner, failing=None)
+    calls = _fake_release(monkeypatch)
+    envelope_path = minimal_project / "build-result-1.json"
+    writes = []
+    real_write = rtl_buddy_module.write_build_result_json
+
+    def _write(path, *, built, failed, builds=None, partial=False):
+        writes.append(list(built))
+        if partial and len(writes) == 1:
+            # The first key's record is the one that cannot be written.
+            raise OSError("[Errno 30] Read-only file system")
+        return real_write(
+            path, built=built, failed=failed, builds=builds, partial=partial
+        )
+
+    monkeypatch.setattr(rtl_buddy_module, "write_build_result_json", _write)
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--parallel",
+            "1",
+            "--result-json",
+            str(envelope_path),
+            "--gates",
+            str(gates),
+        ],
+    )
+    # Still exit 0: a lost early start must not cancel the fan-out.
+    assert result.exit_code == 0, result.output
+    assert set(_build_payload(result.output)["built"]) == {"basic", "extra"}
+
+    # The failed key was not released; the next one, whose record landed,
+    # was.
+    assert [call["job_ids"] for call in calls] == [["1000_2"]]
+
+    # With --result-json the job logs beside its envelope, not into the
+    # suite log the head owns (#437).
+    records = _records(job_log_path(envelope_path))
+    skipped = [r for r in records if r.get("event") == "dispatch.release_skipped"]
+    assert len(skipped) == 1, skipped
+    assert skipped[0]["tests"] == ["basic"]
+    assert "Read-only file system" in skipped[0]["error"]
+    assert [
+        r["tests"] for r in records if r.get("event") == "dispatch.key_released"
+    ] == [["extra"]]
+
+
+def test_the_release_skipped_event_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "dispatch.release_skipped",
+        {
+            "group": "obj_dir_ab",
+            "tests": ["basic", "extra"],
+            "error": "[Errno 28] No space left on device",
+        },
+    )
+    assert "obj_dir_ab" in message and "No space left" in message
+    assert "2 simulation job(s)" in message
+    assert "dispatch release_skipped" not in message

@@ -1206,6 +1206,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "test(s). Those ran; the rest were never compiled and their "
                 "jobs were cancelled with the build. See the build log."
             )
+        case "dispatch.release_skipped":
+            tests = fields.get("tests") or []
+            return (
+                f"dispatch: compile key {fields.get('group')} is built, but "
+                "its build record could not be written "
+                f"({fields.get('error')}) — so its "
+                f"{len(tests)} simulation job(s) are not released early. "
+                "A released job that cannot read that record would recompile "
+                "the build instead of reusing it; these wait for the build "
+                "job, as they did before."
+            )
         case "dispatch.gates_skipped":
             return (
                 f"dispatch: {fields.get('suite_dir')}: {fields.get('reason')}. "
