@@ -235,6 +235,17 @@ def test_summary_tally_is_rendered_without_the_filter(tmp_path, capsys):
     assert _TALLY in log_path.read_text()
 
 
+def test_summary_tally_follows_the_rows(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+
+    _render_verdict_summary(logging.getLogger("rtl_buddy.tests"))
+
+    lines = [line for line in log_path.read_text().splitlines() if line.strip()]
+    assert lines[-1].endswith(_TALLY)
+    assert "row_xpass" in lines[-2]
+
+
 def test_print_failures_only_hiding_every_row_keeps_headers(tmp_path, capsys):
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
     set_print_failures_only(True)

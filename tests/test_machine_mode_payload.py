@@ -422,6 +422,26 @@ def test_machine_summary_tally_without_the_filter(tmp_path, capsys):
     assert "Results: 1 PASS, 1 FAIL (2 total)" in stderr
 
 
+def test_machine_summary_tally_follows_the_rows(tmp_path, capsys):
+    setup_logging(machine=True, color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    render_summary(
+        title="Regression Results Summary",
+        columns=[("name", "Test"), ("result", "Result")],
+        rows=[
+            {"name": "row_pass", "result": "PASS"},
+            {"name": "row_fail", "result": "FAIL"},
+        ],
+        logger=logging.getLogger("rtl_buddy.tests.machine"),
+        metadata=["Builder: vcs"],
+    )
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert lines[-1] == "Results: 1 PASS, 1 FAIL (2 total)"
+    assert "row_fail" in lines[-2]
+    assert lines.index("Builder: vcs") == 1
+
+
 def test_machine_summary_without_verdict_column_has_no_counts(tmp_path, capsys):
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(machine=True, color=False, log_path=log_path)

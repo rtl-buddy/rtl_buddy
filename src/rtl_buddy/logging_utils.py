@@ -1878,6 +1878,7 @@ def _plain_summary_lines(
     columns: Iterable[tuple[str, str]],
     rows: list[Mapping[str, Any]],
     metadata: list[str] | None = None,
+    footer: list[str] | None = None,
 ) -> list[str]:
     cols = list(columns)
     widths = {}
@@ -1897,6 +1898,8 @@ def _plain_summary_lines(
         lines.append(
             "  ".join(f"{str(row.get(key, '')):<{widths[key]}}" for key, _label in cols)
         )
+    if footer:
+        lines.extend(footer)
     return lines
 
 
@@ -1950,9 +1953,7 @@ def render_summary(
     verdict_key = _verdict_column(cols, rows)
     counts = _verdict_counts(rows, verdict_key) if verdict_key else {}
 
-    footer = list(metadata or [])
-    if counts:
-        footer.append(_tally_line(counts))
+    footer = [_tally_line(counts)] if counts else []
 
     if verdict_key is not None and print_failures_only():
         console_rows = [
@@ -1974,17 +1975,25 @@ def render_summary(
             counts=counts or None,
         )
         emit_console_text(
-            "\n".join(_plain_summary_lines(title, cols, console_rows, metadata=footer))
+            "\n".join(
+                _plain_summary_lines(
+                    title, cols, console_rows, metadata=metadata, footer=footer
+                )
+            )
         )
         return
 
     logger.result(
-        "\n" + "\n".join(_plain_summary_lines(title, cols, rows, metadata=footer))
+        "\n"
+        + "\n".join(
+            _plain_summary_lines(title, cols, rows, metadata=metadata, footer=footer)
+        )
     )
 
+    caption = list(metadata or []) + footer
     table = Table(title=title)
-    if footer:
-        table.caption = "\n".join(footer)
+    if caption:
+        table.caption = "\n".join(caption)
 
     for key, label in cols:
         justify = "right" if key in {"run_id"} else "left"
