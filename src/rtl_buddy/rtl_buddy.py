@@ -197,6 +197,11 @@ def _dispatch_suite_identity(config_path: str | Path) -> str:
     return f"{stem}-{digest}"
 
 
+def _raise_first(findings: list) -> list:
+    """Stable sort with every ``raise`` finding ahead of every ``reduce``."""
+    return sorted(findings, key=lambda f: f.direction != "raise")
+
+
 def _replace_environ(snapshot: dict) -> None:
     """Make ``os.environ`` equal to ``snapshot`` (keys removed and restored)."""
     for key in list(os.environ):
@@ -4838,6 +4843,7 @@ class RtlBuddy:
                     sbatch_args_config_path=sbatch_args_config_path,
                 )
             )
+        findings = _raise_first(findings)
         for finding in findings:
             fields = {k: v for k, v in finding.as_event().items() if k != "event"}
             log_event(logger, logging.INFO, "rightsize.advice", **fields)
@@ -5283,6 +5289,7 @@ class RtlBuddy:
                     }
                 )
                 exit_code |= self._exit_code_from_results(suite_results)
+            reservation_findings = _raise_first(reservation_findings)
         else:
             for suite_cfg in self.reg_cfg.get_suite_configs():
                 suite_cfg_dir = os.path.dirname(suite_cfg.get_path())

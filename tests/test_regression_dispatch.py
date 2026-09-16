@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -2180,6 +2181,72 @@ def test_regression_machine_payload_carries_reservation_advice(
     assert mem["suggested"] == "1536M"
     assert mem["edit_hint"]["path"] == "tests[name=basic].resources.mem"
     assert mem["runs"] == 1
+
+
+def _raise_and_reduce_backend(minimal_project, monkeypatch):
+    """`basic` over-reserved on time and killed on memory; `extra` fits both.
+
+    The analyzer emits time before mem per test, so the one `raise` is
+    second of four and every other finding is a `reduce`.
+    """
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "OUT_OF_MEMORY",
+                "elapsed_s": 10,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 8 * 2**30,
+            },
+            "fake-2": {
+                "state": "COMPLETED",
+                "elapsed_s": 10,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 2**30,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    return ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+
+
+def test_reservation_advice_payload_lists_raise_findings_first(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The one reservation that failed leads the list; reduces keep their order."""
+    argv = _raise_and_reduce_backend(minimal_project, monkeypatch)
+    result, _ = _invoke(["--machine", *argv])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [(a["test"], a["resource"], a["direction"]) for a in advice] == [
+        ("basic", "mem", "raise"),
+        ("basic", "time", "reduce"),
+        ("extra", "time", "reduce"),
+        ("extra", "mem", "reduce"),
+    ]
+
+
+def test_reservation_advice_table_lists_raise_findings_first(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The human table is rendered from the same ordered list."""
+    argv = _raise_and_reduce_backend(minimal_project, monkeypatch)
+    result, _ = _invoke(argv)
+    assert result.exit_code == 0, result.output
+    advice_table = result.output[result.output.index("Reservation Advice") :]
+    directions = re.findall(r"\b(raise|reduce) ", advice_table)
+    assert directions == ["raise", "reduce", "reduce", "reduce"]
 
 
 def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
