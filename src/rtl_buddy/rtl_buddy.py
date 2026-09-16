@@ -5405,7 +5405,17 @@ class RtlBuddy:
                 planned_names = {
                     handle.spec.test_name for _, handle in state.get("pending") or ()
                 }
-                if (build_tele or {}).get("state") == "COMPLETED":
+                # The scheduler's word where there is one, and the
+                # backend's own otherwise: `local-parallel` has no
+                # accounting at all (`collect_telemetry` returns {} by
+                # design), so without asking it directly a partial envelope
+                # there could never be recognised as a finished build and
+                # every unnamed gate would stay shut on a run that was
+                # fine (#548 review).
+                outcome = (build_tele or {}).get("state") or backend.build_outcome(
+                    build_handle
+                )
+                if outcome == "COMPLETED":
                     build_finished_partial.append(True)
                     log_event(
                         logger,
@@ -5425,7 +5435,7 @@ class RtlBuddy:
                         job_id=build_handle.job_id,
                         decided=len(build_decided),
                         planned=len(planned_names) or None,
-                        scheduler_state=(build_tele or {}).get("state"),
+                        scheduler_state=outcome,
                     )
         for idx, handle in pending:
             # Keyed by handle, not by job id: two jobs on different clusters

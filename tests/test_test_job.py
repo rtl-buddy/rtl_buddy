@@ -3495,4 +3495,10 @@ def test_the_release_skipped_event_has_a_dedicated_human_message():
     )
     assert "obj_dir_ab" in message and "No space left" in message
     assert "2 simulation job(s)" in message
+    # The jobs were NOT released: they keep the gate and start when the
+    # build job ends, which is also why nothing can recompile under a
+    # simulation reservation here (#548 review).
+    assert "NOT released" in message
+    assert "start when it ends" in message
+    assert "would recompile" not in message
     assert "dispatch release_skipped" not in message

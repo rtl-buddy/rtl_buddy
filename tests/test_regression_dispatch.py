@@ -6096,16 +6096,25 @@ def test_sbatch_args_wins_over_an_export_when_both_are_set(
 class _PartialEnvelopeBackend(_RecordingBackend):
     """A build job that leaves a partial envelope naming only `basic`.
 
-    ``build_state`` is what sacct reports for it, which is the only thing
-    that distinguishes a job that DIED mid-compile from one that finished
-    and lost the write completing its result (#548 review).
+    ``build_state`` is what the backend reports for it, which is the only
+    thing that distinguishes a job that DIED mid-compile from one that
+    finished and lost the write completing its result (#548 review).
+    ``via`` chooses which half of the backend answers: ``"telemetry"`` is
+    the Slurm shape (an sacct row the head already fetched),
+    ``"outcome"`` the local-parallel one (no accounting at all, so the
+    head has to ask `build_outcome` directly).
     """
 
-    build_state = None
-
-    def __init__(self, build_state):
+    def __init__(self, build_state, via="telemetry"):
         super().__init__(write_results=False)  # no sim envelope appears
-        self.telemetry = {"fake-build": {"state": build_state, "elapsed_s": 5}}
+        self._build_state = build_state
+        if via == "telemetry":
+            self.telemetry = {"fake-build": {"state": build_state, "elapsed_s": 5}}
+        else:
+            self.telemetry = {}
+
+    def build_outcome(self, handle):
+        return self._build_state
 
     def submit_build(self, spec):
         handle = _FakeBackend.submit_build(self, spec)
@@ -6119,13 +6128,15 @@ class _PartialEnvelopeBackend(_RecordingBackend):
         return handle
 
 
-def _run_partial_envelope(minimal_project, monkeypatch, build_state, *, retry=False):
+def _run_partial_envelope(
+    minimal_project, monkeypatch, build_state, *, retry=False, via="telemetry"
+):
     _mark_stub_builder_verilator(minimal_project)
     if retry:
         # The gate only shows through the retry classifier, which is the
         # one consumer of `build_succeeded`.
         _enable_retry(minimal_project)
-    backend = _PartialEnvelopeBackend(build_state)
+    backend = _PartialEnvelopeBackend(build_state, via=via)
     monkeypatch.setattr(
         rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
     )
@@ -6256,3 +6267,63 @@ def test_the_final_write_lost_event_has_a_dedicated_human_message():
     assert "SBATCH_DEPENDENCY" in overridden and "afterok:9" in overridden
     assert "sbatch-args" in overridden
     assert "dispatch env_dependency_overridden" not in overridden
+
+
+def test_a_backend_without_accounting_still_tells_the_two_readings_apart(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`local-parallel` has no telemetry, and must not lose the distinction.
+
+    `LocalProcessBackend.collect_telemetry()` returns `{}` by design — a
+    bare host reserves nothing, so there is nothing to compare against —
+    so a reading taken from the sacct state alone would call every partial
+    envelope a dead build job there, shut the gates of every config the
+    last snapshot missed, and refuse valid missing-result retries on a run
+    that was fine. The pool knows the build process's exit status; the
+    head asks for it through `build_outcome` (#548 review).
+    """
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "COMPLETED", retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+
+    lost = [
+        r for r in records if r.get("event") == "dispatch.build_result_final_write_lost"
+    ]
+    assert len(lost) == 1, lost
+    assert gates == {"basic": True, "extra": True}, gates
+    assert states[0]["build_compile_work"] is None
+
+
+def test_a_backend_without_accounting_keeps_the_conservative_reading_on_failure(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A build process that exited nonzero never reached the rest."""
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "FAILED", retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+
+    partial = [r for r in records if r.get("event") == "dispatch.build_result_partial"]
+    assert len(partial) == 1, partial
+    assert partial[0]["scheduler_state"] == "FAILED"
+    assert gates == {"basic": True, "extra": False}, gates
+
+
+def test_a_backend_that_cannot_say_keeps_the_conservative_reading(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`None` from both halves is "unknown", and unknown stays cautious."""
+    result, _states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, None, retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+    assert [
+        r["event"]
+        for r in records
+        if r.get("event", "").startswith("dispatch.build_result")
+    ] == ["dispatch.build_result_partial"]
+    assert gates == {"basic": True, "extra": False}, gates

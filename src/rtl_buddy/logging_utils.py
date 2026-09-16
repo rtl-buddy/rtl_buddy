@@ -1214,11 +1214,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"dispatch: compile key {fields.get('group')} is built, but "
                 "its build record could not be written "
-                f"({fields.get('error')}) — so its "
-                f"{len(tests)} simulation job(s) are not released early. "
-                "A released job that cannot read that record would recompile "
-                "the build instead of reusing it; these wait for the build "
-                "job, as they did before."
+                f"({fields.get('error')}), so its {len(tests)} simulation "
+                "job(s) were NOT released: they keep the dependency on this "
+                "build job and start when it ends, as they did before early "
+                "release existed. Nothing recompiles under a simulation "
+                "reservation — holding the gate is what prevents it, and it "
+                "held."
             )
         case "dispatch.gates_skipped":
             return (

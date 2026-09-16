@@ -813,3 +813,42 @@ def test_the_wait_deadline_allows_for_a_backoff_it_was_told_about(
     retried = forgiving.submit(_sim_spec(tmp_path, "announced"), delay_sec=0.5)
     forgiving.wait_all([retried], extra_wait=0.5)
     assert forgiving._jobs[retried.job_id].returncode == 0
+
+
+# ------------------------------------------- build outcome seam (#548)
+
+
+def test_build_outcome_reports_the_build_process_exit_status(monkeypatch, tmp_path):
+    """The pool launched it and reaped it, so it knows how it ended.
+
+    There is no accounting here and `collect_telemetry` returns nothing by
+    design, so this is the head's only way to tell a build job that DIED
+    from one that finished and lost the write completing its result — the
+    two readings of a partial build-result envelope (#548).
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"), build=_python("pass"))
+    backend = _backend(jobs=2)
+
+    build = backend.submit_build(_build_spec(tmp_path))
+    backend.wait_all([build])
+    assert backend.build_outcome(build) == "COMPLETED"
+    # And its gate opens on exactly that, which is why the two agree.
+    assert backend.collect_telemetry([build]) == {}
+
+
+def test_build_outcome_reports_a_failed_build(monkeypatch, tmp_path):
+    _stub_argv(monkeypatch, sim=_python("pass"), build=_python("raise SystemExit(3)"))
+    backend = _backend(jobs=2)
+
+    build = backend.submit_build(_build_spec(tmp_path))
+    backend.wait_all([build])
+    assert backend.build_outcome(build) == "FAILED"
+
+
+def test_build_outcome_is_none_for_a_job_this_pool_never_ran(monkeypatch, tmp_path):
+    """``None`` keeps the caller's conservative reading."""
+    from rtl_buddy.dispatch.base import JobHandle
+
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=1)
+    assert backend.build_outcome(JobHandle(job_id="not-ours", spec=None)) is None

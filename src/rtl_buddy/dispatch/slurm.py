@@ -2161,6 +2161,22 @@ class SlurmDispatchBackend(DispatchBackend):
             job_ids=group_job_ids(h.job_id for h in handles if h is not None),
         )
 
+    def build_outcome(self, handle: JobHandle) -> str | None:
+        """The build job's scheduler state, from one ``sacct`` row (#548).
+
+        The state out of :meth:`collect_telemetry`, which is where every
+        other consumer reads it. The head prefers the row it already
+        fetched for this handle and only calls this when that row is
+        missing — a site with no slurmdbd — so the query below is a last
+        resort rather than a second identical sacct per suite (#495).
+        Returns the state verbatim (``COMPLETED``, ``TIMEOUT``,
+        ``CANCELLED``…), or ``None`` where there is no accounting to ask,
+        which keeps the caller's conservative reading.
+        """
+        return (self.collect_telemetry([handle]).get(telemetry_key(handle)) or {}).get(
+            "state"
+        )
+
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
         """Reserved-vs-used per job from ``sacct``, keyed by :func:`telemetry_key`.
 

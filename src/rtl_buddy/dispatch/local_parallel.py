@@ -615,6 +615,24 @@ class LocalProcessBackend(DispatchBackend):
             job_ids=group_job_ids(victims.keys()),
         )
 
+    def build_outcome(self, handle: JobHandle) -> str | None:
+        """The build process's own exit status (#548).
+
+        There is no accounting here and never will be — `collect_telemetry`
+        below says why — but this pool does not need any: it launched the
+        process, it reaped it, and its gate opens on exit 0 and nothing
+        else. So the one question the head asks about a build job is the
+        one thing this backend already knows for certain.
+
+        ``None`` for a job that is not this pool's, or one still running
+        (the head only asks after `wait_all`, so in practice it is
+        finished); a skipped job has no returncode and is not COMPLETED.
+        """
+        job = self._jobs.get(getattr(handle, "job_id", None))
+        if job is None or job.returncode is None:
+            return None
+        return "COMPLETED" if job.returncode == 0 else "FAILED"
+
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
         """No accounting source on a bare host, so no reserved-vs-used data.
 
