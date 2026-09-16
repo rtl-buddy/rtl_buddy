@@ -282,6 +282,29 @@ def test_status_column_without_verdict_values_has_no_tally(tmp_path, capsys):
     assert "Results:" not in stderr
 
 
+def test_verdict_column_is_filtered_and_tallied(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Mutation Testing Results",
+        columns=[("mutant", "Mutant"), ("outcome", "Outcome"), ("verdict", "Verdict")],
+        rows=[
+            {"mutant": "m1", "outcome": "KILLED", "verdict": "PASS"},
+            {"mutant": "m2", "outcome": "SURVIVED", "verdict": "FAIL"},
+        ],
+        logger=logging.getLogger("rtl_buddy.tests"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "m2" in stderr
+    assert "m1" not in stderr
+    assert "Results:" in stderr
+    log_text = (tmp_path / "rtl_buddy.log").read_text()
+    assert "Results: 1 PASS, 1 FAIL (2 total)" in log_text
+    assert "m1" in log_text
+
+
 def test_root_callback_accepts_print_failures_only(minimal_project):
     from typer.testing import CliRunner
 
