@@ -678,6 +678,39 @@ def test_phys_instance_renders_the_rollup(phys_project):
     assert "subtree area" not in _flat(result.output)
 
 
+#: `u_blk` is a measured leaf and a prefix of two more rows: the shape
+#: `instance_payload`'s docstring allows and the console has to be honest
+#: about.
+_LEAF_WITH_DESCENDANTS = [
+    {"instance_path": "u_blk", "module": "DFF_X1", "total_uw": 4.0},
+    {"instance_path": "u_blk/_1_", "module": "INV_X1", "total_uw": 1.0},
+    {"instance_path": "u_blk/u_deep/_2_", "module": "INV_X1", "total_uw": 2.0},
+]
+
+
+def test_phys_instance_console_does_not_describe_a_subtree_it_did_not_sum(
+    phys_project,
+):
+    """The finding (#561 round-16, Codex P2). The header reads the match kind
+    and the rollup count off the same payload, so an exact match that summed
+    its descendants printed "exact match" over a subtree total. It now sums
+    the named row, and says why the rows below it are on the table."""
+    phys_dir = _write_run(
+        phys_project, "both_shapes", instances=_LEAF_WITH_DESCENDANTS, mtime=3_200_000
+    )
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app, ["phys", "instance", "u_blk", "--phys-dir", str(phys_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    assert "exact match, 1 leaf instance(s)" in flat
+    assert "rollup (1)" in flat
+    assert "2 row(s) below this path are listed for navigation" in flat
+
+
 def test_phys_instance_unknown_path_exits_two_with_candidates(phys_project):
     runner, rb = _runner()
 
