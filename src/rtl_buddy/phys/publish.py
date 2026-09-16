@@ -276,6 +276,42 @@ def invalidate_half(artefact_dir, own_half: str) -> dict:
     return {"model": model_path, "manifest": manifest_path, "error": None}
 
 
+def confirm_digest(path, captured: str | None) -> tuple[str | None, bool]:
+    """Does ``path`` still hash to ``captured``? (#570)
+
+    The other end of a hash taken before a tool ran. A digest computed
+    *after* a run that takes minutes identifies whatever is at the path
+    now — a routed SDC replaced by a concurrent `rb pnr`, a constraints
+    file edited while the synthesis worked, a `dump.saif` rewritten by
+    the next run of the test behind it — and records it as the bytes the
+    tool consumed, which is the exact failure the hash exists to catch.
+    So the producers hash at launch and call this when the tool returns.
+
+    Equal, and the recorded digest identifies bytes that were on disk for
+    the whole of the run. Unequal, and the honest record is that the
+    identity is *unknown*: neither hash is the answer, because the first
+    names bytes the tool may not have finished reading and the second
+    names bytes it certainly did not start with, and a digest nothing can
+    vouch for is worse than none — the provenance gate reads a recorded
+    hash as evidence. ``None`` is the model's own word for unknown, so no
+    new vocabulary is needed; the caller warns, because a null otherwise
+    reads as "this run measured no constraints", which is the opposite of
+    what happened.
+
+    Nothing captured stays nothing, and is not a mismatch: a run that
+    read no such file, or could not read it, recorded ``None`` going in
+    and records ``None`` coming out.
+
+    :returns: ``(digest, changed)`` — the digest to record, and whether
+        the file moved under the run (which is the caller's cue to warn).
+    """
+    if captured is None:
+        return None, False
+    if sha256_of(path) == captured:
+        return captured, False
+    return None, True
+
+
 def withdrawal_failure_desc(error: str) -> str:
     """Why a run whose own half could not be withdrawn stops (#560).
 
@@ -319,6 +355,7 @@ def publish_synth(
     platform: str | None = None,
     effort: str | None = None,
     constraints=None,
+    constraints_sha256: str | None = None,
     options=None,
 ) -> dict:
     """Write the synthesis half of the model + manifest.
@@ -342,6 +379,14 @@ def publish_synth(
         All four are optional: a backend that records none produces a
         config block of nulls, which reads as "this run said nothing
         about its configuration" and never as "it had none".
+    :param constraints_sha256: that SDC's identity, taken by the caller
+        *before* the tool ran and confirmed when it returned
+        (:func:`confirm_digest`). Not computed here, for the reason
+        :func:`publish_power` does not take a netlist path: this runs
+        minutes after the tool did, and an SDC edited or replaced in
+        between would be hashed as the bytes the run consumed. ``None``
+        for a run that read no SDC, could not read it, or found it
+        changed underneath the analysis.
     :returns: ``{"model", "manifest", "rows", "error"}``; the paths are
         ``None`` when ``error`` is set, and ``rows`` is ``None`` when the
         breakdown could not be read — which is the caller's cue to warn.
@@ -373,7 +418,7 @@ def publish_synth(
                 platform=platform,
                 effort=effort,
                 constraints=constraints,
-                constraints_sha256=sha256_of(constraints),
+                constraints_sha256=constraints_sha256,
                 options=options,
                 producer=f"synth/{run}",
             )
@@ -412,6 +457,7 @@ def publish_power(
     activity: dict | None = None,
     platform: str | None = None,
     constraints=None,
+    constraints_sha256: str | None = None,
     options=None,
 ) -> dict:
     """Write the power half of the model + manifest.
@@ -447,9 +493,12 @@ def publish_power(
         them a µW figure in a pane or a run list is a quantity with no
         statement of what it measures, and two runs differing only in
         activity are indistinguishable (#568).
-    :param platform: as :func:`publish_synth`'s, with ``constraints``
-        and ``options`` likewise — the identity of the analysis rather
-        than of the synthesis it read.
+    :param platform: as :func:`publish_synth`'s, with ``constraints``,
+        ``constraints_sha256`` and ``options`` likewise — the identity of
+        the analysis rather than of the synthesis it read. The SDC digest
+        matters more here than anywhere: a `netlist-source: pnr` run
+        reads `<top>.routed.sdc` out of another command's artefact
+        directory, which a concurrent `rb pnr` rewrites in place.
     :returns: the same ``{"model", "manifest", "rows", "error"}`` shape
         :func:`publish_synth` returns.
     """
@@ -488,7 +537,7 @@ def publish_power(
             "config": provenance_mod.config_block(
                 platform=platform,
                 constraints=constraints,
-                constraints_sha256=sha256_of(constraints),
+                constraints_sha256=constraints_sha256,
                 options=options,
                 producer=f"power/{run}",
             ),

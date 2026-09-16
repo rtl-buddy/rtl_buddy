@@ -2194,6 +2194,9 @@ def test_a_synth_publish_records_the_configuration_that_shaped_it(tmp_path):
         platform="nangate45",
         effort="timing-opt",
         constraints=sdc,
+        # Taken by the caller before its tool ran, not computed here: this
+        # function runs minutes after the tool did (#570 round-17).
+        constraints_sha256=hashlib.sha256(sdc.read_bytes()).hexdigest(),
         options={"strategy": "TIMING"},
     )
 
@@ -2399,10 +2402,68 @@ def test_a_record_that_cannot_be_read_costs_the_label_and_nothing_else(tmp_path)
 
 def test_the_ledgers_reserved_directories_are_not_experiments(tmp_path):
     """`artefacts/xplr/worktrees/` is the default worktree root, not an
-    experiment called `worktrees`."""
+    experiment called `worktrees` — and a directory under it that the ledger
+    has no entry for is not one either."""
     worktree = tmp_path / "artefacts" / "xplr" / "worktrees" / "wt"
     worktree.mkdir(parents=True)
     assert experiment_for(worktree / MANIFEST_FILENAME) is None
+    assert experiment_for(worktree / "verif" / "d" / MANIFEST_FILENAME) is None
+    nested = tmp_path / "artefacts" / "xplr" / "worktrees" / "worktrees" / "s"
+    nested.mkdir(parents=True)
+    assert experiment_for(nested / MANIFEST_FILENAME) is None
+
+
+def test_a_run_inside_a_materialized_worktree_keeps_its_experiment(tmp_path):
+    """The finding (#570 round-17, Codex P2). `rb xplr materialize` checks an
+    experiment out at `artefacts/xplr/worktrees/<exp-id>/` by default, and a
+    flow run inside that checkout writes its manifest below it — so refusing
+    everything under the reserved root lost the id and the hypothesis on
+    exactly the reproducible runs, the ones pinned to a sha."""
+    ledger = tmp_path / "artefacts" / "xplr"
+    (ledger / "exp-0011").mkdir(parents=True)
+    (ledger / "exp-0011" / "record.json").write_text(
+        json.dumps({"id": "exp-0011", "hypothesis": "a tighter clock buys area"})
+    )
+    checkout = ledger / "worktrees" / "exp-0011"
+    manifest_dir = checkout / "verif" / "demo" / "artefacts" / "demo_synth"
+    manifest_dir.mkdir(parents=True)
+
+    found = experiment_for(manifest_dir / MANIFEST_FILENAME)
+
+    assert found == {"id": "exp-0011", "label": "a tighter clock buys area"}
+
+
+def test_a_worktree_sidecar_naming_somewhere_else_refutes_the_checkout(tmp_path):
+    """`worktree.json` records where the checkout was made. One pointing at
+    another path says this directory is not that experiment's worktree — the
+    one thing the layout alone cannot tell."""
+    ledger = tmp_path / "artefacts" / "xplr"
+    (ledger / "exp-0012").mkdir(parents=True)
+    checkout = ledger / "worktrees" / "exp-0012"
+    manifest_dir = checkout / "verif" / "demo" / "artefacts" / "demo_synth"
+    manifest_dir.mkdir(parents=True)
+
+    # Agreeing: the experiment is reported, record or no record.
+    (ledger / "exp-0012" / "worktree.json").write_text(
+        json.dumps({"id": "exp-0012", "path": str(checkout)})
+    )
+    assert experiment_for(manifest_dir / MANIFEST_FILENAME) == {
+        "id": "exp-0012",
+        "label": None,
+    }
+
+    # Naming somewhere else: this checkout is not that experiment's.
+    (ledger / "exp-0012" / "worktree.json").write_text(
+        json.dumps({"id": "exp-0012", "path": str(tmp_path / "elsewhere")})
+    )
+    assert experiment_for(manifest_dir / MANIFEST_FILENAME) is None
+
+    # Malformed, or deleted by `rb xplr release`: refutes nothing, because a
+    # listing may not drop a row over a missing bookkeeping file.
+    (ledger / "exp-0012" / "worktree.json").write_text("{not json")
+    assert experiment_for(manifest_dir / MANIFEST_FILENAME) is not None
+    (ledger / "exp-0012" / "worktree.json").unlink()
+    assert experiment_for(manifest_dir / MANIFEST_FILENAME) is not None
 
 
 def test_a_manifest_outside_a_ledger_has_no_experiment(tmp_path):

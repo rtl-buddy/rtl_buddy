@@ -1295,6 +1295,37 @@ def test_a_manifest_under_the_xplr_ledger_names_its_experiment(tmp_path):
     assert summary_payload(ctx)["xplr"] == {"id": "exp-0003", "label": None}
 
 
+def test_a_run_inside_a_materialized_worktree_still_names_its_experiment(tmp_path):
+    """The finding (#570 round-17, Codex P2). The DEFAULT `rb xplr
+    materialize` checkout lands at `artefacts/xplr/worktrees/<exp-id>/`, so a
+    flow run inside it writes its manifest under the ledger's reserved
+    worktree root — and refusing everything under that root lost the id and
+    the hypothesis on exactly the reproducible runs, the ones pinned to a
+    sha."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    ledger = root / "artefacts" / "xplr"
+    (ledger / "exp-0021").mkdir(parents=True)
+    (ledger / "exp-0021" / "record.json").write_text(
+        json.dumps({"id": "exp-0021", "hypothesis": "abc9 buys 5% area"})
+    )
+    checkout = ledger / "worktrees" / "exp-0021"
+    _write_run(
+        root,
+        "sweep",
+        modules=MODULE_ROWS,
+        phys_dir=checkout / "verif" / "blk" / "artefacts" / "sweep",
+    )
+
+    entry = runs_payload(root)["runs"][0]
+
+    assert entry["run"] == "sweep"
+    assert entry["xplr"] == {"id": "exp-0021", "label": "abc9 buys 5% area"}
+    # And the same answer through the run the other verbs read.
+    ctx = load_context(root, phys_dir=root / entry["phys_dir"])
+    assert summary_payload(ctx)["xplr"] == entry["xplr"]
+
+
 # --- rb phys runs -----------------------------------------------------------
 
 

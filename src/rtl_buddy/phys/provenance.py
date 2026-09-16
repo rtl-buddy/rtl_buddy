@@ -68,12 +68,19 @@ determined by ``platform`` alone: a config's own ``lib-paths`` /
 are the whole of it.
 
 *Power analysis.* Tool name, netlist source, the identity of the
-upstream run it read, mode, activity source and register level. The
-upstream identity is the netlist sha256 for a ``netlist-source: synth``
-run and the resolved ODB's project-relative path for a
-``netlist-source: pnr`` one, because ``netlist_source`` names the kind
-of upstream and not which one
+upstream run it read, the resolved technology the script reads, mode,
+activity source and register level. The upstream identity is the netlist
+sha256 for a ``netlist-source: synth`` run and the resolved ODB's
+project-relative path for a ``netlist-source: pnr`` one, because
+``netlist_source`` names the kind of upstream and not which one
 (:meth:`~rtl_buddy.tools.power_openroad.OpenRoadPower._upstream_identity`).
+The technology is the Liberty and the one or two LEFs the generated Tcl
+names, in script order and through the same
+:func:`~rtl_buddy.tools.synth_yosys.library_fingerprint` the synthesis
+backends use: ``platform`` is a *name*, and an entry repointed at
+another corner is the same name, so two analyses of two technologies
+fingerprinted identically
+(:meth:`~rtl_buddy.tools.power_openroad.OpenRoadPower._phys_technology`).
 
 The digest is over the *effective* values, not the files they came
 from: two configs that spell one setting differently and resolve to the
@@ -81,6 +88,19 @@ same options are one experiment, which is the comparison a reader
 wants. The pre-STA Tcl is hashed rather than embedded for the same
 reason a constraints file is (:func:`text_sha256`) — it is content, it
 has no path, and it is pages long.
+
+**When the hashes are taken.** Not at publication. The constraints
+digest in the config block, and the trace digest in the activity block,
+are captured by the producer *before* it launches its tool and confirmed
+by :func:`~rtl_buddy.phys.publish.confirm_digest` when the tool returns.
+A digest computed at publication identifies whatever is at the path
+minutes later — a routed SDC replaced by a concurrent ``rb pnr``, a
+source SDC edited while the synthesis ran, a ``dump.saif`` rewritten by
+the next run of the test behind it — and records the replacement as the
+bytes the run consumed, which is the one substitution the digest exists
+to catch. A file that moved underneath the run records ``null`` and
+earns a warning: neither hash is the answer, and a digest nothing can
+vouch for is worse than none.
 
 That cuts both ways, and it is why the power flow's ``tool_overrides``
 is *not* in there: no power backend reads the field, so two analyses
@@ -115,7 +135,7 @@ import os
 from pathlib import Path
 
 from ..logging_utils import log_event
-from ..tools.artifact_paths import ARTIFACT_DIRNAME
+from ..tools.artifact_paths import ARTIFACT_DIRNAME, XPLR_WORKTREE_SIDECAR_NAME
 from ..xplr.ledger import (
     LEDGER_DIRNAME as XPLR_DIRNAME,
     RECORD_FILENAME as XPLR_RECORD_FILENAME,
@@ -467,9 +487,14 @@ def experiment_for(manifest_path) -> dict | None:
     to report. A record that is missing, unreadable or has no hypothesis
     costs the label and nothing else — the id still identifies the run.
 
-    The ledger's own reserved directory names are refused, so
-    ``artefacts/xplr/worktrees/...`` — the default worktree root, not an
-    experiment — is not reported as an experiment called ``worktrees``.
+    The ledger's own reserved directory names are not experiments —
+    ``artefacts/xplr/worktrees`` is the default worktree root — but what
+    sits under that root is: `rb xplr materialize` checks an experiment
+    out at ``artefacts/xplr/worktrees/<exp-id>/``, and a flow run inside
+    that checkout writes its manifest below it. Returning ``None`` there
+    lost the id on exactly the reproducible runs, the ones materialized
+    from a pinned sha. :func:`_experiment_in_worktree` reads the id from
+    the component the reserved name shadows.
     """
     parts = Path(os.path.abspath(str(manifest_path))).parts
     for index in range(len(parts) - 2):
@@ -477,10 +502,76 @@ def experiment_for(manifest_path) -> dict | None:
             continue
         exp_id = parts[index + 2]
         if exp_id in XPLR_RESERVED_DIRNAMES:
-            return None
+            return _experiment_in_worktree(parts, index)
         root = Path(*parts[: index + 3])
         return {"id": exp_id, "label": _hypothesis(root / XPLR_RECORD_FILENAME)}
     return None
+
+
+def _experiment_in_worktree(parts, index: int) -> dict | None:
+    """The experiment whose materialized checkout a manifest sits in.
+
+    ``rb xplr materialize`` puts the worktree at
+    ``<worktree-root>/<exp-id>``, and the default ``worktree-root`` is
+    ``artefacts/xplr/worktrees`` — inside the ledger directory, one level
+    below where an experiment's own artefacts go. So a run inside a
+    materialized checkout writes to
+    ``artefacts/xplr/worktrees/<exp-id>/<suite>/artefacts/<run>/``, and
+    the id is one component further along than :func:`experiment_for`'s
+    first reading of the path.
+
+    Derived from the layout, like the id above it, but checked against
+    the ledger rather than taken on the path's word alone. Above, the
+    path *is* the experiment's ledger directory; here it is a checkout
+    beside one, so the corresponding statement is that the ledger has an
+    entry of that name. A directory under the worktree root that names
+    no experiment is reported unlabelled rather than invented into one.
+
+    The worktree sidecar (``worktree.json``, written by ``rb xplr
+    materialize`` beside the experiment's ``record.json``) is consulted
+    only to *refute*: it records the path the checkout was made at, so
+    one naming somewhere else says this directory is not that
+    experiment's worktree. Its absence refutes nothing — ``rb xplr
+    release`` deletes it, and the ledger entry still identifies the run.
+
+    A path that stops at the worktree root, or at a directory directly
+    under it, is not a run inside a checkout: a worktree holds a whole
+    project tree, so a manifest is always further down. Nor is one that
+    nests another reserved name under the root.
+    """
+    if len(parts) <= index + 4:
+        return None
+    exp_id = parts[index + 3]
+    if exp_id in XPLR_RESERVED_DIRNAMES:
+        return None
+    experiment_dir = Path(*parts[: index + 2]) / exp_id
+    if not experiment_dir.is_dir():
+        return None
+    if not _sidecar_names(experiment_dir, Path(*parts[: index + 4])):
+        return None
+    return {"id": exp_id, "label": _hypothesis(experiment_dir / XPLR_RECORD_FILENAME)}
+
+
+def _sidecar_names(experiment_dir: Path, worktree: Path) -> bool:
+    """Does this experiment's worktree sidecar agree with ``worktree``?
+
+    ``True`` when there is no sidecar to disagree with, for the reason
+    :func:`_experiment_in_worktree` gives: a listing may not refuse a row
+    because a bookkeeping file has been cleaned up. Read as plain JSON,
+    like :func:`_hypothesis` — a malformed sidecar is `rb xplr`'s to
+    report, not a reason to drop an id the path already gave.
+    """
+    try:
+        with open(experiment_dir / XPLR_WORKTREE_SIDECAR_NAME, encoding="utf-8") as fh:
+            sidecar = json.load(fh)
+    except (OSError, ValueError):
+        return True
+    if not isinstance(sidecar, dict):
+        return True
+    recorded = sidecar.get("path")
+    if not isinstance(recorded, str) or not recorded:
+        return True
+    return os.path.abspath(recorded) == os.path.abspath(str(worktree))
 
 
 def _hypothesis(record_path) -> str | None:

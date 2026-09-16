@@ -5028,16 +5028,28 @@ def test_openroad_stage1_script_emits_the_stat_json_dump(tmp_path):
 
 
 def _run_yosys_with(
-    tmp_path, monkeypatch, *, stats_text=None, log_text="", netlist_text=None
+    tmp_path,
+    monkeypatch,
+    *,
+    stats_text=None,
+    log_text="",
+    netlist_text=None,
+    constraints=None,
+    during_run=None,
 ):
-    """Run a YosysSynth whose fake Yosys writes `stats_text` and a log."""
+    """Run a YosysSynth whose fake Yosys writes `stats_text` and a log.
+
+    ``during_run`` is called while the fake Yosys is "running", which is
+    where a test puts whatever the world does to this run's inputs
+    underneath it.
+    """
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
         desc="",
         model=model,
         tool="yosys",
-        constraints=None,
+        constraints=constraints,
         params=None,
         defines=None,
         platform=None,
@@ -5049,6 +5061,8 @@ def _run_yosys_with(
     )
 
     def _run_managed_process(cmd, stdout, stderr, **kwargs):
+        if during_run is not None:
+            during_run()
         stdout.write(log_text)
         if stats_text is not None:
             Path(ys._stats_path()).write_text(stats_text)
@@ -5653,3 +5667,86 @@ def test_the_openroad_backend_stops_on_the_same_failed_withdrawal(
 
     assert isinstance(result, SynthFailResults)
     assert "could not be withdrawn" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# The constraints hash is of the bytes the tool read (#570 round-17)
+# ---------------------------------------------------------------------------
+
+
+def test_an_sdc_edited_during_a_synth_records_no_constraints_hash(
+    tmp_path, monkeypatch, caplog
+):
+    """The finding (#570 round-17, Codex P2). The digest used to be computed
+    inside the publish, minutes after the script had read the SDC for its ABC
+    delay target — so a file edited while Yosys worked was recorded as the
+    constraints this netlist was built under, the exact substitution the hash
+    exists to catch. Hashed at script generation and confirmed when the run
+    ends instead; a file that moved has no identity this run can vouch for."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    sdc = tmp_path / "demo.sdc"
+    sdc.write_text("create_clock -period 2.0 [get_ports clk]\n")
+
+    with caplog.at_level("WARNING"):
+        _ys, result = _run_yosys_with(
+            tmp_path,
+            monkeypatch,
+            stats_text=_STAT_JSON,
+            constraints=str(sdc),
+            during_run=lambda: sdc.write_text(
+                "create_clock -period 9.0 [get_ports clk]\n"
+            ),
+        )
+
+    config = load_model(result.results["phys_model"])["provenance"]["synth"]["config"]
+    # Neither hash: not the bytes at the start, not the ones on disk now.
+    assert config["constraints_sha256"] is None
+    assert sha256_of(sdc) is not None
+    # The path is still recorded — which file the run read is known.
+    assert config["constraints"].endswith("demo.sdc")
+    assert "constraints_changed_during_run" in caplog.text
+
+
+def test_an_untouched_sdc_is_recorded_by_the_hash_taken_at_generation(
+    tmp_path, monkeypatch
+):
+    """The success path is untouched: hash-before and confirm-after agree,
+    and what is recorded is the file the script read."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    sdc = tmp_path / "demo.sdc"
+    sdc.write_text("create_clock -period 2.0 [get_ports clk]\n")
+
+    _ys, result = _run_yosys_with(
+        tmp_path, monkeypatch, stats_text=_STAT_JSON, constraints=str(sdc)
+    )
+
+    config = load_model(result.results["phys_model"])["provenance"]["synth"]["config"]
+    assert config["constraints_sha256"] == sha256_of(sdc)
+
+
+def test_the_openroad_backend_hashes_its_sdc_at_script_generation(tmp_path):
+    """Both synthesis backends record the same field, so both take it on the
+    same schedule: stage 1's script generation, which is the earliest point in
+    a run that has one."""
+    from rtl_buddy.phys.publish import sha256_of
+
+    sdc = tmp_path / "demo.sdc"
+    sdc.write_text("create_clock -period 2.0 [get_ports clk]\n")
+    or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(constraints=str(sdc)))
+
+    assert or_synth._constraints_sha256 is None
+    or_synth._hash_constraints()
+    captured = or_synth._constraints_sha256
+    assert captured == sha256_of(sdc)
+
+    # Replaced after the capture, as a concurrent editor would: the
+    # confirmation withdraws the digest rather than recording the
+    # replacement as what this run read.
+    sdc.write_text("create_clock -period 9.0 [get_ports clk]\n")
+    or_synth._confirm_constraints_unchanged()
+
+    assert or_synth._constraints_sha256 is None

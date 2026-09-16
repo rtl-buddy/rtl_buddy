@@ -33,8 +33,10 @@ from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.provenance import text_sha256
 from ..phys.publish import (
+    confirm_digest,
     invalidate_half,
     publish_synth,
+    sha256_of,
     withdrawal_failure_desc,
 )
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
@@ -80,6 +82,10 @@ class OpenRoadSynth:
         # The `-D` table `_write_yosys_script` actually fed the frontend;
         # see the Yosys backend's field of the same name (#570).
         self._script_defines: dict[str, str | None] | None = None
+        # The SDC's identity, taken as stage 1's script is generated and
+        # confirmed when the run ends; see the Yosys backend's twin of
+        # `_hash_constraints`. `None` before the run and with no SDC.
+        self._constraints_sha256: str | None = None
         self.static_function_findings = 0
 
     # ------------------------------------------------------------------
@@ -223,6 +229,7 @@ class OpenRoadSynth:
         params = self.synth_cfg.get_params()
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
         self._script_defines = defines
+        self._hash_constraints()
         incdirs = incdirs_from_filelist(fl_path)
         opts = self._resolve_yosys_opts()
 
@@ -845,8 +852,11 @@ class OpenRoadSynth:
         netlist: the elaboration frontend and its gates on one side, the
         mapping strategy and the pre-STA Tcl on the other, and an
         experiment may vary either. See `_phys_options` for what each
-        stage contributes and why.
+        stage contributes and why. The SDC's hash is `_hash_constraints`',
+        taken as stage 1's script was written and confirmed here rather
+        than computed here (#570).
         """
+        self._confirm_constraints_unchanged()
         published = publish_synth(
             artefact_dir=self.artefact_dir,
             top=self.synth_cfg.get_top(),
@@ -860,6 +870,7 @@ class OpenRoadSynth:
             platform=self.synth_cfg.get_platform(),
             effort=self.effort_cfg.get_name(),
             constraints=self.synth_cfg.get_constraints(),
+            constraints_sha256=self._constraints_sha256,
             options=self._phys_options(),
         )
         if published["error"] is not None or published["rows"] is None:
@@ -876,6 +887,45 @@ class OpenRoadSynth:
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
+
+    def _hash_constraints(self) -> None:
+        """Identify the SDC by its bytes, as the script is written (#570).
+
+        See the Yosys backend's twin for why the publish is the wrong
+        place: it runs minutes after stage 2's `read_sdc`, so a file
+        edited or replaced in between would be hashed as the constraints
+        this netlist was timed against. Taken at stage 1's script
+        generation — the earliest point in a run that has one — and
+        confirmed by `_confirm_constraints_unchanged` when the run ends.
+        """
+        self._constraints_sha256 = sha256_of(self.synth_cfg.get_constraints())
+
+    def _confirm_constraints_unchanged(self) -> None:
+        """Withdraw the SDC hash if the file moved under the run (#570).
+
+        The other end of `_hash_constraints`. A digest computed here,
+        after a synthesis that runs for minutes, identifies whatever is
+        at the path now — an SDC a person edited while the run worked, or
+        one a `rb pnr` rewrote — and records it as the constraints this
+        netlist was built under, which is the substitution the digest
+        exists to catch.
+        :func:`~rtl_buddy.phys.publish.confirm_digest` says whether the
+        bytes hashed at script generation are still there; a mismatch
+        records ``null`` rather than a digest nothing can vouch for, and
+        the warning keeps that null from reading as "this run had no
+        constraints".
+        """
+        self._constraints_sha256, changed = confirm_digest(
+            self.synth_cfg.get_constraints(), self._constraints_sha256
+        )
+        if changed:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.constraints_changed_during_run",
+                synth=self.synth_cfg.get_name(),
+                constraints=self.synth_cfg.get_constraints(),
+            )
 
     def _clear_stale_netlists(self) -> str | None:
         """Remove the previous run's stage-1 netlists, before anything returns.

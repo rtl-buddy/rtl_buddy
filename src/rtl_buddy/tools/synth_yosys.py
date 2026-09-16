@@ -23,8 +23,10 @@ from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.manifest import project_relative
 from ..phys.publish import (
+    confirm_digest,
     invalidate_half,
     publish_synth,
+    sha256_of,
     withdrawal_failure_desc,
 )
 from ..process_utils import run_managed_process
@@ -609,6 +611,10 @@ class YosysSynth:
         # `_period_ps` is, so the digest is of what the script consumed
         # rather than of a re-derivation of it (#570).
         self._script_defines: dict[str, str | None] | None = None
+        # The SDC's identity, taken as the script is generated and
+        # confirmed when Yosys returns; see `_hash_constraints`. `None`
+        # before the run, and for a run configured with no SDC (#570).
+        self._constraints_sha256: str | None = None
         self._opts: SynthToolOpts | None = None
 
     def _filelist_path(self) -> str:
@@ -794,6 +800,7 @@ class YosysSynth:
 
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
         self._script_defines = defines
+        self._hash_constraints()
         incdirs = incdirs_from_filelist(fl_path)
 
         lines = []
@@ -881,6 +888,51 @@ class YosysSynth:
         with open(script_path, "w") as f:
             f.write(script)
         return script_path
+
+    def _hash_constraints(self) -> None:
+        """Identify the SDC by its bytes, as the script is written (#570).
+
+        The digest used to be computed inside the publish, minutes after
+        Yosys had finished — so an SDC edited while the run worked, or
+        replaced by a `rb pnr` writing over the same path, was hashed as
+        the constraints this netlist was built under. That is the exact
+        substitution the digest exists to catch, recorded as a match.
+
+        Taken here instead, where the script is generated and where the
+        ABC delay target beside it is parsed out of the same file, so the
+        recorded identity is of the bytes the run actually read.
+        `_confirm_constraints_unchanged` closes the other end: an SDC is
+        a page of text, so reading it twice costs nothing and the window
+        shuts from both sides.
+        """
+        self._constraints_sha256 = sha256_of(self.synth_cfg.get_constraints())
+
+    def _confirm_constraints_unchanged(self) -> None:
+        """Withdraw the SDC hash if the file moved under the run (#570).
+
+        The other end of `_hash_constraints`. A digest computed here,
+        after a synthesis that runs for minutes, identifies whatever is
+        at the path now — an SDC a person edited while the run worked, or
+        one a `rb pnr` rewrote — and records it as the constraints this
+        netlist was built under, which is the substitution the digest
+        exists to catch.
+        :func:`~rtl_buddy.phys.publish.confirm_digest` says whether the
+        bytes hashed at script generation are still there; a mismatch
+        records ``null`` rather than a digest nothing can vouch for, and
+        the warning keeps that null from reading as "this run had no
+        constraints".
+        """
+        self._constraints_sha256, changed = confirm_digest(
+            self.synth_cfg.get_constraints(), self._constraints_sha256
+        )
+        if changed:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.constraints_changed_during_run",
+                synth=self.synth_cfg.get_name(),
+                constraints=self.synth_cfg.get_constraints(),
+            )
 
     def _clear_stale_netlists(self) -> str | None:
         """Remove the previous run's netlists, before anything can return.
@@ -1284,7 +1336,13 @@ class YosysSynth:
         in. See `_phys_options` for the branch-by-branch mapping.
         `_resolve_opts` is memoised, so asking it here costs nothing and
         cannot re-emit the override warnings it logs on first use.
+
+        The SDC's hash is `_hash_constraints`', taken as the script was
+        written and confirmed here, not computed here: a file edited or
+        replaced while Yosys ran would otherwise be recorded as what this
+        netlist was built under (#570).
         """
+        self._confirm_constraints_unchanged()
         published = publish_synth(
             artefact_dir=self.artefact_dir,
             top=self.synth_cfg.get_top(),
@@ -1298,6 +1356,7 @@ class YosysSynth:
             platform=self.synth_cfg.get_platform(),
             effort=self.effort_cfg.get_name(),
             constraints=self.synth_cfg.get_constraints(),
+            constraints_sha256=self._constraints_sha256,
             options=self._phys_options(mapped=mapped),
         )
         if published["error"] is not None or published["rows"] is None:
