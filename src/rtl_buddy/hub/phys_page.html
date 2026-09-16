@@ -510,10 +510,25 @@
   // rtl_buddy/phys/query.py's `_sort_key_desc` applies server-side, so
   // the pane's default order is the CLI's order.
   //
-  // Ties break on the row's name, and only then on its original index,
-  // so a re-sort of equal rows cannot jitter between renders.
+  // Some columns carry a second metric before the name does, because
+  // the CLI's own ranking for them does. `heaviest_modules()` in
+  // rtl_buddy/phys/query.py keys on (cell_count, area_um2, module): a
+  // generic tie-break straight to the name would put two equal-cell
+  // modules in a different order here than in `rb phys summary`, for
+  // the same model, which is the one thing this pane must never do
+  // (#562 round-16).
+  //
+  // Built on a null prototype so a column named after something on
+  // Object.prototype cannot come back as an inherited truthy value.
+  var RANK_TIE_BREAK = Object.create(null);
+  RANK_TIE_BREAK.cell_count = 'area_um2';
+
+  // Ties break on the tie-break column if the column has one, then on
+  // the row's name, and only then on its original index, so a re-sort of
+  // equal rows cannot jitter between renders.
   function rankRows(rows, column, dir, nameOf) {
     var sign = dir === 'asc' ? 1 : -1;
+    var tie = RANK_TIE_BREAK[column] || null;
     return (rows || []).map(function (row, index) {
       return { row: row, index: index, name: String(nameOf(row) || '') };
     }).sort(function (a, b) {
@@ -524,8 +539,16 @@
         return (as < bs ? -1 : as > bs ? 1 : 0) * sign || (a.index - b.index);
       }
       if (aNull !== bNull) { return aNull ? 1 : -1; }
-      if (aNull && bNull) { return (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.index - b.index); }
-      if (av !== bv) { return (av - bv) * sign; }
+      if (!aNull && av !== bv) { return (av - bv) * sign; }
+      if (tie) {
+        // The same two rules the primary column follows: nulls sink in
+        // both directions, and the direction is the one the user asked
+        // for, so a descending rank is the CLI's order exactly.
+        var at = cellValue(a.row, tie), bt = cellValue(b.row, tie);
+        var atNull = typeof at !== 'number', btNull = typeof bt !== 'number';
+        if (atNull !== btNull) { return atNull ? 1 : -1; }
+        if (!atNull && at !== bt) { return (at - bt) * sign; }
+      }
       return (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.index - b.index);
     }).map(function (entry) { return entry.row; });
   }
