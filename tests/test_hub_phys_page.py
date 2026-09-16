@@ -599,6 +599,61 @@ def test_unmeasured_rows_sink_in_both_directions():
     assert json.loads(asc) == ["sub", "blk", "tiny"]
 
 
+def test_equal_cell_counts_break_on_area_as_the_cli_does():
+    """The finding (#562 round-16, Codex P2). ``heaviest_modules()`` keys on
+    (cell_count, area_um2, module); the pane's generic tie-break went straight
+    to the name, so two modules with the same cell count could come out in one
+    order in ``rb phys summary`` and another in the pane, off one model."""
+
+    out = _node(
+        _marked_js("derived-metrics")
+        + _marked_js("row-ordering")
+        + """
+        var rows = [
+          { module: 'alpha', cell_count: 4, area_um2: 10 },
+          { module: 'beta',  cell_count: 4, area_um2: 90 },
+          { module: 'gamma', cell_count: 4, area_um2: null }
+        ];
+        function names(list) { return list.map(function (r) { return r.module; }); }
+        console.log(JSON.stringify(names(rankRows(rows, 'cell_count', 'desc',
+          function (r) { return r.module; }))));
+        console.log(JSON.stringify(names(rankRows(rows, 'cell_count', 'asc',
+          function (r) { return r.module; }))));
+        """
+    )
+    desc, asc = out.strip().splitlines()
+    # Descending is the CLI's own order: the bigger area leads, and the
+    # module nobody measured an area for sinks under both.
+    assert json.loads(desc) == ["beta", "alpha", "gamma"]
+    assert json.loads(asc) == ["alpha", "beta", "gamma"]
+
+
+def test_the_cli_and_the_pane_rank_equal_cell_counts_alike(tmp_path: Path):
+    """The pinning half of the same finding: the two orders are compared
+    against each other rather than each against a literal, so the pane cannot
+    drift from ``heaviest_modules`` without this failing."""
+    from rtl_buddy.phys.query import heaviest_modules
+
+    rows = [
+        {"module": "alpha", "cell_count": 4, "area_um2": 10},
+        {"module": "beta", "cell_count": 4, "area_um2": 90},
+        {"module": "gamma", "cell_count": 4, "area_um2": None},
+    ]
+    cli = [row["module"] for row in heaviest_modules({"modules": rows})]
+
+    out = _node(
+        _marked_js("derived-metrics")
+        + _marked_js("row-ordering")
+        + f"""
+        var rows = {json.dumps(rows)};
+        console.log(JSON.stringify(rankRows(rows, 'cell_count', 'desc',
+          function (r) {{ return r.module; }}).map(function (r) {{ return r.module; }})));
+        """
+    )
+
+    assert json.loads(out) == cli
+
+
 def test_equal_rows_keep_a_stable_order():
     """A re-sort of equal rows must not jitter between renders, so ties
     break on the name and only then on the payload's own order."""

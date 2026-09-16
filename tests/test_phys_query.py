@@ -899,6 +899,59 @@ def test_instance_payload_rolls_up_a_subtree_prefix(project):
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
 
 
+#: A path that is both a row and a prefix of other rows: `u_blk` is a
+#: measured leaf and two more rows hang off it. The model's docstring
+#: allows the shape, so the payload has to have an answer for it.
+_LEAF_WITH_DESCENDANTS = [
+    {"instance_path": "u_blk", "module": "DFF_X1", "total_uw": 4.0},
+    {"instance_path": "u_blk/_1_", "module": "INV_X1", "total_uw": 1.0},
+    {"instance_path": "u_blk/u_deep/_2_", "module": "INV_X1", "total_uw": 2.0},
+]
+
+
+def _leaf_with_descendants_context(project):
+    return load_context(
+        project,
+        phys_dir=_write_run(
+            project, "both_shapes", instances=_LEAF_WITH_DESCENDANTS, mtime=3_200_000
+        ),
+    )
+
+
+def test_an_exact_match_rolls_up_the_named_row_alone(project):
+    """The finding (#561 round-16, Codex P2). The exact branch took the row
+    *and* every descendant, so the payload said `match: "exact"` with an
+    `instance` that was one leaf while the rollup beside it described the
+    whole subtree — three parts of one document answering two questions."""
+    payload = instance_payload(_leaf_with_descendants_context(project), "u_blk")
+
+    assert payload["match"] == "exact"
+    assert payload["instance"]["instance_path"] == "u_blk"
+    assert payload["rollup"]["instances"] == 1
+    assert payload["rollup"]["total_uw"] == pytest.approx(4.0)
+    # The descendants are still on the table — they exist, and the caller
+    # asked about the path they hang off — just not in the total.
+    assert [row["instance_path"] for row in payload["children"]] == [
+        "u_blk/u_deep/_2_",
+        "u_blk/_1_",
+    ]
+    assert payload["child_count"] == 2
+
+
+def test_a_prefix_match_still_rolls_up_the_whole_subtree(project):
+    """The other half of the branch: descendants are summands exactly when
+    the path resolved to no row of its own."""
+    ctx = _leaf_with_descendants_context(project)
+    ctx.model["instances"] = _LEAF_WITH_DESCENDANTS[1:]
+
+    payload = instance_payload(ctx, "u_blk")
+
+    assert payload["match"] == "prefix"
+    assert payload["instance"] is None
+    assert payload["rollup"]["instances"] == 2
+    assert payload["rollup"]["total_uw"] == pytest.approx(3.0)
+
+
 def test_instance_payload_lists_every_child_by_default(project):
     """The finding (#561 review, Codex P2), the subtree half of it."""
     payload = instance_payload(load_context(project), "u_sub")

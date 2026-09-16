@@ -8,6 +8,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: How many times `_snapshot_netlist` re-copies a netlist that changed
+#: underneath it before giving up. Three is enough to ride out a single
+#: upstream rewrite landing at an unlucky moment and short enough that a
+#: writer rewriting the file in a loop fails the run rather than pinning
+#: it (#560).
+_SNAPSHOT_ATTEMPTS = 3
+
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
 from ..phys.publish import invalidate_half, publish_power, sha256_of
@@ -107,6 +114,20 @@ class OpenRoadPower(BasePower):
         """
         return os.path.join(self.artefact_dir, "power_netlist.v")
 
+    def _source_identity(self, source: str) -> tuple[int, int]:
+        """`(size, mtime_ns)` of the upstream netlist, as a change witness.
+
+        The pair a writer cannot plausibly leave untouched: truncating and
+        rewriting a netlist changes its length, and `write`/`rename` both
+        stamp the mtime. It is a witness, not a lock — two writes inside one
+        mtime tick that land on the same length would present the same pair,
+        which POSIX gives no way to rule out short of holding the file open
+        against a writer that does not want it held. See `_snapshot_netlist`
+        for what that residue costs.
+        """
+        st = os.stat(source)
+        return (st.st_size, st.st_mtime_ns)
+
     def _snapshot_netlist(self) -> str | None:
         """Copy the upstream netlist in, hash the copy, or say why not.
 
@@ -115,6 +136,21 @@ class OpenRoadPower(BasePower):
         and read once, by this run. Copy-then-rename via a `.tmp`
         sibling: a crash mid-copy leaves the staging file, never a short
         `power_netlist.v` that the next reader would take for a netlist.
+
+        The copy is private and therefore immutable, but that alone does
+        not make it *coherent*. When `power.yaml` reads a synthesis in
+        another suite the two commands hold different artefact-tree
+        locks, so a concurrent `rb synth` can truncate and rewrite
+        `synth_netlist.v` under `copyfile`'s read — and the snapshot
+        would then be a torn prefix of two netlists that the recorded
+        sha256 authenticates perfectly. So the source is stat'd either
+        side of each copy and the copy is retried while those stats
+        differ: bounded at `_SNAPSHOT_ATTEMPTS`, because a writer looping
+        over the netlist would otherwise loop this with it.
+
+        Exhausting the attempts fails the run. A power figure over bytes
+        that were never one netlist is worse than a refusal — the refusal
+        is re-runnable, the figure is not detectably wrong.
 
         A `netlist-source: pnr` run resolves no netlist at all — it reads
         a routed database — so there is nothing to snapshot and nothing
@@ -134,16 +170,33 @@ class OpenRoadPower(BasePower):
         snapshot = Path(self._netlist_snapshot_path())
         staging = snapshot.with_name(snapshot.name + ".tmp")
         try:
-            shutil.copyfile(source, staging)
-            os.replace(staging, snapshot)
+            for _attempt in range(_SNAPSHOT_ATTEMPTS):
+                before = self._source_identity(source)
+                shutil.copyfile(source, staging)
+                if self._source_identity(source) != before:
+                    # Somebody rewrote the netlist mid-copy; whatever is in
+                    # the staging file spans the two versions. Drop it and
+                    # read the source again from the top.
+                    continue
+                os.replace(staging, snapshot)
+                # Of the copy, not of the source: these are the bytes
+                # OpenROAD is about to read, and nothing else writes this
+                # path.
+                self._netlist_sha256 = sha256_of(snapshot)
+                return None
         except OSError as e:
             with contextlib.suppress(OSError):
                 staging.unlink()
             return f"could not copy {source} to {snapshot}: {e}"
-        # Of the copy, not of the source: these are the bytes OpenROAD
-        # is about to read, and nothing else writes this path.
-        self._netlist_sha256 = sha256_of(snapshot)
-        return None
+        with contextlib.suppress(OSError):
+            staging.unlink()
+        return (
+            f"{source} changed underneath every one of {_SNAPSHOT_ATTEMPTS} "
+            "copies, so no snapshot of it is known to be a single netlist "
+            "— something is writing it concurrently (a `rb synth` of the "
+            "upstream entry); re-run this power analysis once that has "
+            "finished"
+        )
 
     # ------------------------------------------------------------------
     # Inputs resolution
@@ -682,6 +735,10 @@ class OpenRoadPower(BasePower):
         `netlist-source: pnr` run resolves no netlist at all -- it reads the
         routed ODB -- so it records none, and nothing is inherited in either
         direction.
+
+        The manifest records where that copy is as well as what it hashed
+        to, so a result read back from an archive can reach the netlist
+        and re-check the hash rather than take it on faith (#560).
         """
         try:
             inputs = self._resolve_inputs()
@@ -694,6 +751,15 @@ class OpenRoadPower(BasePower):
             run=self.power_cfg.get_name(),
             netlist_source=self.power_cfg.get_netlist_source(),
             netlist_sha256=self._netlist_sha256,
+            # The snapshot, not the upstream path: the manifest names the
+            # bytes the hash beside it identifies, and only the copy is
+            # still guaranteed to be those bytes. Null exactly when the
+            # hash is -- a `netlist-source: pnr` run snapshots nothing.
+            netlist_path=(
+                self._netlist_snapshot_path()
+                if self._netlist_sha256 is not None
+                else None
+            ),
             report_path=self._report_path(),
             instances_path=self._instances_report_path(),
             cells_path=self._instances_cells_path(),
