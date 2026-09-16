@@ -1,0 +1,24 @@
+## Browse the model in the hub
+
+The hub serves the same model as a page. Start the browser layer and open `/phy`:
+
+```bash
+rb hub start --serve-viewer
+```
+
+`GET /phy.json` is the `rb phys summary` payload with no row limit, so the pane and the CLI cannot disagree about a number. It also carries the `rb phys runs` listing, which the pane renders as a run dropdown in its header: entries read `run · top · backends · mode (activity) · experiment`, mark the run being shown and the newest, and carry the artefact directory and the config fingerprint on the hover. Choosing one re-fetches `GET /phy.json?dir=<phys dir>`; the newest stays the default for a pane nobody has touched, and choosing the newest entry is how you go back to following it rather than pinning the run that happens to be newest today. An inbound `phys-focus` applies to the run the pane is showing — the message names a target and a metric, never a run, so switching runs is a gesture in the pane rather than something another app can do to it. The pane ranks modules by cells or area and instances by leakage, dynamic or total power, tints each ranked column, and filters the instance table to one module when you click it.
+
+The pane holds every row, but renders the instance table 500 at a time with a `show more` / `show all` control under it — a mapped design's power half runs to six figures of leaf instances, and a table that rebuilt all of them on every sort click would freeze the tab. Selecting a row that ranks below the window moves the window to it, keeping the row and its neighbours in the ranking on screen without lifting the bound; the control then says how many rows sit above and below the slice. Sorting, filtering, the tints and the totals are computed over the whole set regardless of what is on screen.
+
+`dynamic` is internal plus switching, summed in the browser rather than stored: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows, and says when they disagree.
+
+Point the pane at a target from anywhere:
+
+```bash
+rb hub send phys-focus module:sub --metric area
+rb hub send phys-focus instance:u_sub/_64_
+```
+
+An inbound focus is always visible: when the search box would hide the row it selects, the pane takes the search off and says so in its status line, and leaves it alone when the target already matches it. An unprefixed target is read as an instance path. The pane resolves exact leaf rows, so an instance target has to name a row: a subtree path — the one `rb phys instance` answers with `match: prefix` — selects nothing, and one of its children is what to send instead. The hub replays the latest focus to the pane when it registers, so sending one before the tab is open works — as does a selection the schematic broadcast before the pane's model had loaded. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. The pane roots the path it sends at the design top, since that is the schematic's coordinate and a model row is always relative to the top; on the way back in it resolves a path against the rows themselves, reading it both as sent and with a leading top level removed, so a design whose top name is also an instance name still selects the right row. The tables keep whatever spelling the model recorded. That top is the physical model's own, and the pane cannot know which view the schematic is displaying: a `/sch` showing a testbench around the DUT, or another design entirely, is sent a path that names no instance there and selects nothing. An instance path only means something inside the hierarchy the model recorded it in, so pair the pane with a schematic of the same design; see [Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#phys-pane-and-schematic-selections-cross-only-within-one-hierarchy). See [Hub](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/#synthpower-pane) for the routes and the peer contract.
+
+Clicking a module filters the instance table to it. When the name is an RTL module and every leaf carries a Liberty cell name, nothing matches, and the pane says so rather than showing an empty table. When the name is in both namespaces the lens looks complete instead — a cell type's leaves listed under a module's cells and area — so the pane prints the collision note there too, saying which measurement is whose. Both are the calls `rb phys module` makes on its own payload; see [What the module join can answer](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/phys/#what-the-module-join-can-answer).

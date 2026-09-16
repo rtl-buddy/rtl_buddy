@@ -62,8 +62,10 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
 │                    subtree, instances-of, port-connections, source-snippet); JSON on │
 │                    stdout                                                            │
-│ mcp                serve the design knowledge graph and hierarchy queries over the   │
-│                    Model Context Protocol (stdio); needs the 'mcp' extra             │
+│ mcp                serve the design knowledge graph, test status, coverage, physical │
+│                    metrics, hierarchy queries and — with a hub running — the live    │
+│                    session over the Model Context Protocol (stdio); needs the 'mcp'  │
+│                    extra                                                             │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
@@ -84,6 +86,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ tool-check         check installed tool dependencies and subcommand readiness        │
 │ graph              build the design knowledge graph                                  │
 │ cov                query coverage artefacts already on disk                          │
+│ phys               query physical artefacts already on disk                          │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
 │ mut                mutation testing                                                  │
@@ -380,7 +383,8 @@ Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG
 ```text
 Usage: rtl-buddy mcp [OPTIONS]
 
- serve the design knowledge graph and hierarchy queries over the Model Context Protocol
+ serve the design knowledge graph, test status, coverage, physical metrics, hierarchy
+ queries and — with a hub running — the live session over the Model Context Protocol
  (stdio); needs the 'mcp' extra
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
@@ -971,6 +975,106 @@ Usage: rtl-buddy cov module [OPTIONS] MODULE
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## phys
+
+```text
+Usage: rtl-buddy phys [OPTIONS] COMMAND [ARGS]...
+
+ query physical artefacts already on disk
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ runs      every run with physical artefacts under the project, newest first          │
+│ summary   the run's totals, its heaviest modules and its hottest instances           │
+│ module    one module's cells and area, and the instances of it with power            │
+│ instance  one instance's power, or the rolled-up subtree under its path              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys runs
+
+```text
+Usage: rtl-buddy phys runs [OPTIONS]
+
+ every run with physical artefacts under the project, newest first
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER RANGE [x>=0]  runs to list, newest first (0 for all);         │
+│                                      truncates the --machine payload too             │
+│                                      [default: 20]                                   │
+│ --help                               Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys summary
+
+```text
+Usage: rtl-buddy phys summary [OPTIONS]
+
+ the run's totals, its heaviest modules and its hottest instances
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest first (0  │
+│                                         for all); truncates the --machine payload    │
+│                                         too                                          │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys module
+
+```text
+Usage: rtl-buddy phys module [OPTIONS] MODULE
+
+ one module's cells and area, and the instances of it with power
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    module      TEXT  module or liberty cell as the model records it [required]     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  instances to list, hottest first (0 for      │
+│                                         all); truncates the --machine payload too    │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys instance
+
+```text
+Usage: rtl-buddy phys instance [OPTIONS] PATH
+
+ one instance's power, or the rolled-up subtree under its path
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  instance path, exact or the root of a subtree [required]        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  hottest children to list (0 for all);        │
+│                                         truncates the --machine payload too          │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## axi-profile
 
 ```text
@@ -1533,6 +1637,13 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                branch/toggle/expression bin or an SVA cover point. The hub caches    │
 │                the focus and replays it to the pane on connect, so sending this      │
 │                before the browser tab is open works.                                 │
+│ phys-focus     Broadcast phys_focus{target} — point the hub's synth+power pane       │
+│                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
+│                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
+│                'module:alu'; an unprefixed string is read as an instance path.       │
+│                --metric foregrounds one physical metric. The hub caches the focus    │
+│                and replays it to the pane on connect, so sending this before the     │
+│                browser tab is open works.                                            │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
 │                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
 │                (clears any cached diagnostics from SOURCE). Use --instance to attach │
@@ -1696,6 +1807,27 @@ Usage: rtl-buddy hub send cov-focus [OPTIONS] TARGET
 │                                       branch/toggle/expression bin name as /cov.json │
 │                                       spells it, or an SVA cover point name.         │
 │ --help                                Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send phys-focus
+
+```text
+Usage: rtl-buddy hub send phys-focus [OPTIONS] TARGET
+
+ Broadcast phys_focus{target} — point the hub's synth+power pane
+ (http://127.0.0.1:<http_port>/phy) at one target of the run's physical model. TARGET
+ is prefixed: 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is read as
+ an instance path. --metric foregrounds one physical metric. The hub caches the focus
+ and replays it to the pane on connect, so sending this before the browser tab is open
+ works.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  physical target, e.g. module:alu or u_cpu/u_alu [required]    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --metric        TEXT  cells|area|leakage|dynamic|total — which metric to foreground. │
+│ --help                Show this message and exit.                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

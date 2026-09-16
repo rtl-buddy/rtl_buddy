@@ -1,0 +1,5 @@
+## Read a model with only one half
+
+A synthesis fills the model's `modules` half and a power run fills its `instances` half. A run of both into the same artefact directory, for the same top, produces a complete model in either order; see [Synthesis](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#inspect-artefacts) and [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#inspect-artefacts).
+
+With one half absent, every verb still answers from the half that is present and says which command produces the other — unless that command could not merge with what is already here. The merge is gated on the netlist hash both producers record, so a power half taken from a routed database (`netlist-source: pnr`, which has no netlist to hash) cannot be paired with: a later `rb synth` into that directory would *replace* the model rather than complete it. The note says so, and names what does work — synthesise, then re-run `rb power` on the netlist the synthesis wrote, so both halves measure the same one. `rb phys instance` is the exception: instance rows exist only in the power half, so it exits 2 pointing at `rb power`.
