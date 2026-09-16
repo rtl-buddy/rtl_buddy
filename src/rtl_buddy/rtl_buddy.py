@@ -197,6 +197,17 @@ def _dispatch_suite_identity(config_path: str | Path) -> str:
     return f"{stem}-{digest}"
 
 
+def _raise_first(findings: list) -> list:
+    """Stable sort with every ``raise`` finding ahead of every ``reduce``."""
+    return sorted(findings, key=lambda f: f.direction != "raise")
+
+
+def _log_reservation_advice(findings: list) -> None:
+    for finding in findings:
+        fields = {k: v for k, v in finding.as_event().items() if k != "event"}
+        log_event(logger, logging.INFO, "rightsize.advice", **fields)
+
+
 def _replace_environ(snapshot: dict) -> None:
     """Make ``os.environ`` equal to ``snapshot`` (keys removed and restored)."""
     for key in list(os.environ):
@@ -1653,6 +1664,7 @@ class RtlBuddy:
                 backend=dispatch_backend,
                 state=state,
             )
+            _log_reservation_advice(reservation_findings)
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
@@ -1837,6 +1849,7 @@ class RtlBuddy:
                 backend=dispatch_backend,
                 state=state,
             )
+            _log_reservation_advice(reservation_findings)
             if not self.machine:
                 self._render_test_summary(
                     "RandTest Results Summary",
@@ -4823,10 +4836,7 @@ class RtlBuddy:
                     sbatch_args_config_path=sbatch_args_config_path,
                 )
             )
-        for finding in findings:
-            fields = {k: v for k, v in finding.as_event().items() if k != "event"}
-            log_event(logger, logging.INFO, "rightsize.advice", **fields)
-        return findings
+        return _raise_first(findings)
 
     def _render_reservation_advice(self, findings):
         rows = [
@@ -5268,6 +5278,7 @@ class RtlBuddy:
                     }
                 )
                 exit_code |= self._exit_code_from_results(suite_results)
+            reservation_findings = _raise_first(reservation_findings)
         else:
             for suite_cfg in self.reg_cfg.get_suite_configs():
                 suite_cfg_dir = os.path.dirname(suite_cfg.get_path())
@@ -5311,6 +5322,7 @@ class RtlBuddy:
         # next to regression.yaml.
         self._enter_command_context(command_root=orchestration_ctx.command_root)
         ctx = orchestration_ctx
+        _log_reservation_advice(reservation_findings)
 
         all_suite_results = []
         for reg_result in reg_results:
