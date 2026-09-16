@@ -448,6 +448,26 @@ _NESTED_FILELIST_OPTION_RE = re.compile(
 # about (an absolute `builder-simv:`, say).
 _CMD_OUTPUT_OPTIONS = frozenset({"-o", "--Mdir", "-Mdir", "--exe-name"})
 
+# Path-valued options that can appear INSIDE a larger compile-line token —
+# `-CFLAGS=-I../../inc`, a pass-through a subclass builds — where nothing
+# above recognises the token as a path but it names one all the same (#542
+# review). Anchored to a boundary so `--Include` and `-Wno-INCDIR` do not
+# read as an `-I`, and the payload stops at the separators an option uses to
+# pack several values into one token.
+#
+# `+libext+` is deliberately absent: its argument is a list of suffixes, not
+# a path. So are the output options, which `_CMD_OUTPUT_OPTIONS` has already
+# taken out of the caller's hands — a key that read a build's own output
+# would move on every build.
+_EMBEDDED_PATH_OPTION_RE = re.compile(
+    r"""(?:^|[\s=,:'"])          # a boundary, so `--Include` is not an `-I`
+        (\+incdir\+|-I|-y)        # the option
+        \s*                       # `-I../inc` and `-I ../inc` alike
+        ([^\s:;,'"=]+)            # its payload
+    """,
+    re.VERBOSE,
+)
+
 #: Prefixes whose argument is a VALUE compiled into the model rather than a
 #: path rtl_buddy may relocate. Shared by the compile line and the generated
 #: ``run.f`` so the two cannot disagree (#542 review rounds 2 and 3).
@@ -2517,25 +2537,65 @@ class VlogSim:
         return resolved
 
     def _embedded_in_root_paths(self, token):
-        """Absolute in-root paths written INSIDE a larger option token.
+        """Paths written INSIDE a larger option token, absolute or relative.
 
-        ``-CFLAGS=-I/checkout/inc``, ``-LDFLAGS=-L/checkout/lib``, a
-        pass-through a subclass builds — the token as a whole is not a path,
-        so nothing above recognises it, yet it names one and the build reads
-        it (#542 review round 3). Two checkouts whose header under such an
-        ``-I`` differed took one persistent build directory.
+        ``-CFLAGS=-I/checkout/inc``, ``-LDFLAGS=-L/checkout/lib``,
+        ``-CFLAGS=-I../../inc``, a pass-through a subclass builds — the
+        token as a whole is not a path, so nothing above recognises it, yet
+        it names one and the build reads it (#542 review). Two checkouts
+        whose header under such an ``-I`` differed took one persistent build
+        directory, and for VCS and Icarus, which report no dependencies,
+        nothing downstream would have noticed.
 
-        Matched on exactly what :func:`_relativise_paths` rewrites — the
-        project root plus a separator — so the text that ends up in the key
-        and the content that ends up beside it are derived from one rule and
-        cannot drift. The match stops at whitespace and at the separators
-        compiler options use to pack several values into one token, which is
-        an under-approximation for a path containing one of those: it then
-        resolves to nothing and the token stays text, as it was before.
+        Two passes, because the two spellings are found by different means
+        and the relative one was the gap:
+
+        * **Absolute** — matched on exactly what :func:`_relativise_paths`
+          rewrites, the project root plus a separator, so the text that ends
+          up in the key and the content that ends up beside it come from one
+          rule and cannot drift. This finds an in-root path under ANY option,
+          recognised or not.
+        * **Relative** — matched by the option that introduces it
+          (:data:`_EMBEDDED_PATH_OPTION_RE`), because a relative path has no
+          prefix to recognise and the option is the only thing that says
+          "this is a path". The caller resolves it against the builder's
+          working directory, as it does every other relative compile-line
+          input, and a payload that resolves to nothing existing under the
+          project root contributes nothing — the token stays text, as it was.
+
+        Both stop at whitespace and at the separators compiler options use to
+        pack several values into one token, which under-approximates a path
+        containing one of those: it then resolves to nothing, which is the
+        safe direction. Each distinct spelling is yielded once, so an
+        absolute payload found by both passes is not keyed twice.
         """
         root_prefix = self._project_root + os.sep
+        emitted = set()
+
+        def _fresh(raw):
+            if not raw or raw in emitted:
+                return False
+            emitted.add(raw)
+            return True
+
         for match in re.finditer(re.escape(root_prefix) + r"[^\s:;,'\"]*", token):
-            yield match.group(0)
+            if _fresh(match.group(0)):
+                yield match.group(0)
+        if self._compile_cwd is None:
+            # Nothing to anchor a relative payload to; guessing would key a
+            # file the build never opens.
+            return
+        for match in _EMBEDDED_PATH_OPTION_RE.finditer(token):
+            option, payload = match.group(1), match.group(2)
+            # `+incdir+a+b` is two directories by filelist convention.
+            parts = payload.split("+") if option == _INCDIR_OPTION else [payload]
+            for part in parts:
+                if os.path.isabs(part):
+                    # An in-root one was already yielded above; one outside
+                    # the root stays text, as every out-of-root path does.
+                    continue
+                if _fresh(part):
+                    yield part
 
     def _cmd_token_roles(self, key_cmd):
         """Which compile-line tokens name a PATH, and what kind (#542 review).
@@ -2673,13 +2733,23 @@ class VlogSim:
         either way, which is what a generated list uses.
 
         Bounded by :data:`_NESTED_FILELIST_MAX_DEPTH` and cycle-safe on
-        ``realpath``, so a list that includes itself costs one visit. The
+        ``(realpath, base)``, so a list that includes itself costs one visit
+        while one genuinely read under two bases is read under each. The
         bound fails CLOSED: what it refuses to read goes into the key as
         :data:`_DEPTH_BOUND_MARKER` plus the list's absolute path, so the
         key stops being checkout-independent rather than silently promising
         something it never looked at.
         """
-        real = os.path.realpath(filelist_path)
+        # Identity is the file AND the base its entries resolve against
+        # (#542 review): one list reached through both `-f` and `-F` — or
+        # from two different `-F` parents — reads as two different sets of
+        # inputs, because every relative entry in it anchors somewhere else.
+        # A realpath-only check discarded the second reading and with it
+        # whatever sources or include directories only that base reaches.
+        # Cycle protection is unaffected: the same list under the SAME base
+        # is still entered once, and a file has at most two bases (the
+        # builder's cwd, or its own directory), so the walk still ends.
+        identity = (os.path.realpath(filelist_path), base)
         if depth > _NESTED_FILELIST_MAX_DEPTH:
             # Fail CLOSED (#542 review round 5). Returning quietly keyed the
             # lists that were visited and silently nothing below them, so
@@ -2703,9 +2773,9 @@ class VlogSim:
                 "opaque",
             )
             return
-        if real in seen:
+        if identity in seen:
             return
-        seen.add(real)
+        seen.add(identity)
         try:
             with open(filelist_path) as filelist_fp:
                 lines = [
@@ -2747,23 +2817,24 @@ class VlogSim:
                     continue
                 spelled = self._stamp_relpath(resolved)
                 if option in ("-f", "-F"):
-                    if os.path.realpath(resolved) in seen:
-                        # A list already visited on this chain contributes
-                        # once, under the spelling it was first reached by.
+                    # The nested option resets the rule for the file it
+                    # names: `-f` hands its contents the builder's cwd,
+                    # `-F` hands them their own directory.
+                    child_base = (
+                        self._compile_cwd
+                        if option == "-f"
+                        else os.path.dirname(resolved)
+                    )
+                    if (os.path.realpath(resolved), child_base) in seen:
+                        # Already read under this very base, so it would
+                        # contribute exactly what it contributed then.
                         continue
                     yield (f"{option} {spelled}", resolved, "file")
                     yield from self._nested_filelist_tokens(
                         resolved,
                         seen=seen,
                         depth=depth + 1,
-                        # The nested option resets the rule for the file it
-                        # names: `-f` hands its contents the builder's cwd,
-                        # `-F` hands them their own directory.
-                        base=(
-                            self._compile_cwd
-                            if option == "-f"
-                            else os.path.dirname(resolved)
-                        ),
+                        base=child_base,
                     )
                 elif option == _INCDIR_OPTION:
                     yield (f"{_INCDIR_OPTION}{spelled}", resolved, ("dir", True))
@@ -2801,6 +2872,7 @@ class VlogSim:
         under any other option is not an input search path, and walking it
         would be inventing one.
         """
+        embedded_seen: set[str] = set()
         for _, prefix, raw, kind in self._cmd_token_roles(key_cmd):
             if kind == "output":
                 continue
@@ -2830,6 +2902,13 @@ class VlogSim:
             # directories would let the `covered` check drop a real input.
             spelling = f"{prefix}{self._stamp_relpath(resolved)}"
             if kind == "embedded":
+                # One directory named twice inside the command line — an
+                # absolute `-I` and a relative one that resolve to the same
+                # place, say — is one input, and keying it twice would only
+                # put the same digest in the key twice (#542 review).
+                if resolved in embedded_seen:
+                    continue
+                embedded_seen.add(resolved)
                 # Classified by what it IS, since the option that named it
                 # said nothing: a directory is keyed by its listing under
                 # the `+incdir+` spelling (which also dedupes it against a

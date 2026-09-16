@@ -7271,3 +7271,192 @@ def test_a_job_given_an_empty_shared_build_root_keeps_the_cache_off(monkeypatch)
     monkeypatch.setenv("RTL_BUDDY_SHARED_BUILD_ROOT", "/from/env")
     job._shared_build_root_flag = ""
     assert job.shared_build_root is None
+
+
+def test_a_relative_include_inside_a_compiler_flag_is_content_keyed(
+    tmp_path, monkeypatch
+):
+    """`-CFLAGS=-I../../inc` is identical TEXT in every checkout, so before
+    this it took the same persistent build directory whatever was in that
+    directory (#542 review).
+
+    The absolute spelling was already keyed; the relative one — the common
+    `builder-opts.compile-time` spelling — had no project-root prefix to be
+    recognised by, so only the option that introduces it can say it is a
+    path at all.
+    """
+    cache = tmp_path / "cache"
+    # From `<checkout>/verif/blk/artefacts/<test>` up four to the checkout.
+    rel = os.path.join("..", "..", "..", "..", "inc")
+    for name, content in (("wt-a", "#define W 8\n"), ("wt-b", "#define W 16\n")):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        (checkout / "inc").mkdir()
+        (checkout / "inc" / "dut.h").write_text(content)
+
+    def _sim(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"-CFLAGS=-I{rel}"],
+        )
+
+    sim_a = _sim("wt-a")
+    plan_a = sim_a._compile_plan()
+    keyed = [
+        entry[0]
+        for entry in sim_a._fingerprint_cmd_inputs(
+            plan_a.key_cmd, plan_a.fingerprint["sources"]
+        )
+    ]
+    assert keyed == ["+incdir+inc"], keyed
+    assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name, (
+        "a relative -I contributed no directory contents to the key"
+    )
+    # ...and identical contents still share, which is what the cache is for.
+    (tmp_path / "wt-b" / "inc" / "dut.h").write_text("#define W 8\n")
+    assert _sim("wt-a")._compile_plan().shared_dir.name == (
+        _sim("wt-b")._compile_plan().shared_dir.name
+    )
+
+
+def test_the_embedded_option_scan_reads_paths_and_ignores_the_rest(
+    tmp_path, monkeypatch
+):
+    """Which embedded shapes count as a path, and which deliberately do not."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    for name in ("inc", "lib", "other"):
+        (checkout / name).mkdir()
+        (checkout / name / "x.svh").write_text(f"`define {name.upper()} 1\n")
+    up = os.path.join("..", "..", "..", "..")
+
+    def _entries(opts):
+        _as_a_fresh_process()
+        sim = _cache_sim(
+            checkout, monkeypatch, cache_root=cache, test_name="t", compile_opts=opts
+        )
+        plan = sim._compile_plan()
+        return [
+            entry[0]
+            for entry in sim._fingerprint_cmd_inputs(
+                plan.key_cmd, plan.fingerprint["sources"]
+            )
+        ]
+
+    inc, lib = os.path.join(up, "inc"), os.path.join(up, "lib")
+    # Attached and separated spellings, and a `-y` inside a bigger token.
+    assert _entries([f"-CFLAGS=-I{inc}"]) == ["+incdir+inc"]
+    assert _entries([f"-CFLAGS=-I {inc}"]) == ["+incdir+inc"]
+    assert _entries([f"-XTRA=-y {lib}"]) == ["+incdir+lib"]
+    # Several in one token, and the absolute/relative pair de-duplicated
+    # rather than keyed twice.
+    assert _entries([f"-CFLAGS=-I{inc} -I{lib}"]) == ["+incdir+inc", "+incdir+lib"]
+    assert _entries([f"-CFLAGS=-I{checkout / 'inc'} -I{inc}"]) == ["+incdir+inc"]
+    # `+libext+` is a suffix list, an output option is an output, a define's
+    # value is a value, and `--Include`/`-Wno-INCDIR` are not `-I`.
+    assert _entries(["-CFLAGS=+libext+.svh"]) == []
+    assert _entries(["-o", os.path.join(up, "inc")]) == []
+    assert _entries([f"+define+DIR={inc}"]) == []
+    assert _entries([f"--Include={inc}"]) == []
+    assert _entries([f"-Wno-INCDIR{inc}"]) == []
+    # A relative payload that resolves to nothing stays text.
+    assert _entries([f"-CFLAGS=-I{os.path.join(up, 'nope')}"]) == []
+
+
+def test_one_filelist_read_under_two_bases_contributes_both_readings(
+    tmp_path, monkeypatch
+):
+    """A list reached through both `-f` and `-F` is two different sets of
+    inputs, because every relative entry in it anchors somewhere else (#542
+    review).
+
+    One walk, one `seen`: keyed on realpath alone the second reading was
+    discarded, and whatever only that base reaches left the key entirely —
+    so two checkouts differing there shared a build, silently on VCS and
+    Icarus.
+    """
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    lists = checkout / "lists"
+    lists.mkdir()
+    child = lists / "child.f"
+    # One child list named twice by one parent, by absolute path so both
+    # namings reach the SAME file — and differ only in the base its one
+    # relative entry then anchors to.
+    (lists / "outer.f").write_text(f"-F {child}\n-f {child}\n")
+    child.write_text("shared.sv\n")
+    (lists / "shared.sv").write_text("module beside_the_list; endmodule\n")
+
+    def _walk():
+        _as_a_fresh_process()
+        sim = _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["-F", str(lists / "outer.f")],
+        )
+        plan = sim._compile_plan()
+        return (
+            sim,
+            plan,
+            [
+                entry[0]
+                for entry in sim._fingerprint_cmd_inputs(
+                    plan.key_cmd, plan.fingerprint["sources"]
+                )
+            ],
+        )
+
+    sim, plan, _ = _walk()
+    compile_cwd = Path(plan.compile_work_dir)
+    compile_cwd.mkdir(parents=True, exist_ok=True)
+    (compile_cwd / "shared.sv").write_text("module under_the_cwd; endmodule\n")
+
+    _, _, keyed = _walk()
+    # The child list under each option, and BOTH files its one entry names.
+    assert "lists/shared.sv" in keyed, keyed
+    cwd_reading = [
+        spelling
+        for spelling in keyed
+        if spelling.endswith("shared.sv") and spelling != "lists/shared.sv"
+    ]
+    assert cwd_reading, keyed
+    # ...while the same list under the SAME base is still entered once, so
+    # the cycle guard has not been traded away for this.
+    assert keyed.count("lists/shared.sv") == 1, keyed
+
+
+def test_a_filelist_cycle_under_one_base_is_still_entered_once(tmp_path, monkeypatch):
+    """The other half of the visitation identity: widening it must not cost
+    the cycle protection (#542 review)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    lists = checkout / "lists"
+    lists.mkdir()
+    (lists / "loop.f").write_text("-F loop.f\nbeside.sv\n")
+    (lists / "beside.sv").write_text("module beside; endmodule\n")
+
+    _as_a_fresh_process()
+    sim = _cache_sim(
+        checkout,
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=["-F", str(lists / "loop.f")],
+    )
+    plan = sim._compile_plan()
+    keyed = [
+        entry[0]
+        for entry in sim._fingerprint_cmd_inputs(
+            plan.key_cmd, plan.fingerprint["sources"]
+        )
+    ]
+    assert keyed == ["-F lists/loop.f", "lists/beside.sv"], keyed
