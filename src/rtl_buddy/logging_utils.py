@@ -1904,7 +1904,7 @@ def _verdict_column(
     columns: list[tuple[str, str]], rows: list[Mapping[str, Any]]
 ) -> str | None:
     keys = {key for key, _label in columns}
-    for candidate in ("result", "status", "verdict"):
+    for candidate in ("result", "status"):
         if candidate in keys and any(
             _verdict_of(row, candidate).upper() in _KNOWN_VERDICTS for row in rows
         ):
