@@ -1172,14 +1172,26 @@ class RtlBuddy:
         suites span project roots rebuilds ``root_cfg`` per suite and a
         relative root anchors to whichever project owns the suite.
         """
+        return self._resolve_shared_build_root()[0]
+
+    def _resolve_shared_build_root(self) -> tuple[str | None, bool]:
+        """``(root or None, was it explicitly disabled)`` — see the property.
+
+        The second element is what a dispatched job cannot work out for
+        itself (#542 review round 5). ``None`` alone is ambiguous: it is
+        both "nobody asked for a cache" and "somebody asked for no cache",
+        and a job told only the former re-reads the environment and the
+        project config and turns the cache back on — so `--shared-build-root
+        ''` would disable the head and nothing else.
+        """
         if self.root_cfg is None:
-            return None
+            return None, False
         # `getattr`, because `root_cfg` is duck-typed on this path: a
         # command handler under test hands in a stand-in with only the
         # accessors it needs, and a cache root is never what may break one.
         project_root = getattr(self.root_cfg, "get_project_rootdir", None)
         if project_root is None:
-            return None
+            return None, False
         raw, source = self._shared_build_root_flag, "cli"
         if raw is None:
             raw, source = os.environ.get(SHARED_BUILD_ROOT_ENV), "env"
@@ -1195,7 +1207,24 @@ class RtlBuddy:
                 root=root,
                 source=source,
             )
-        return root
+        # A value was GIVEN and resolved to nothing: that is a disable, not
+        # an absence.
+        return root, root is None and raw is not None
+
+    @property
+    def shared_build_root_for_jobs(self) -> str | None:
+        """What to forward to a dispatched job, as the tri-state argv wants.
+
+        A path enables the cache there; ``""`` disables it (the job parses
+        an empty ``--shared-build-root`` exactly as the head parsed an empty
+        flag); ``None`` says nothing and lets the job resolve its own, which
+        is what every project without a cache root gets and what keeps their
+        job scripts byte-identical.
+        """
+        root, disabled = self._resolve_shared_build_root()
+        if root is not None:
+            return root
+        return "" if disabled else None
 
     def _exit_code_from_results(self, suite_results):
         # The exit code reflects whether rtl_buddy and the tools ran, not the
@@ -4504,8 +4533,10 @@ class RtlBuddy:
                     rebuild=self.rebuild and build_handle is None,
                     # Resolved once, by the head, and handed to the build job
                     # and every sim job alike: both derive the shared build
-                    # directory from it and must agree (#542).
-                    shared_build_root=self.shared_build_root,
+                    # directory from it and must agree (#542). An explicit
+                    # disable travels as `""`, since `None` would let the job
+                    # turn the cache back on from its own environment.
+                    shared_build_root=self.shared_build_root_for_jobs,
                     # ...and told where that build job records its verdict,
                     # so "the stamp did not validate" can be split into "the
                     # compile FAILED, deterministically" (report it, do not
@@ -4863,7 +4894,7 @@ class RtlBuddy:
             # forced recompile costs one compile instead of one per element
             # (#494).
             rebuild=self.rebuild,
-            shared_build_root=self.shared_build_root,
+            shared_build_root=self.shared_build_root_for_jobs,
             reg_level=reg_level,
             start_level=start_level,
             builder_mode=self.rtl_builder_mode,

@@ -6712,12 +6712,26 @@ def test_a_checkout_under_a_dot_directory_is_still_content_keyed(tmp_path, monke
         plan_a.key_cmd, plan_a.fingerprint["sources"]
     ), "a dot component in the checkout path disabled the content keying"
     assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name
-    # ...while a real managed-output directory below the root is still
-    # refused, whatever the checkout is called.
-    produced = dotted / "wt-a" / "verif" / "blk" / "artefacts" / "gen.svh"
-    produced.parent.mkdir(parents=True, exist_ok=True)
-    produced.write_text("`define G 1\n")
-    assert sim_a._key_input_path(str(produced)) is None
+    # ...while a real builder tree below the root is still refused,
+    # whatever the checkout is called — and so is an rtl_buddy output named
+    # directly, judged by its NAME rather than by the tree it sits in
+    # (#542 review round 5).
+    artefacts = dotted / "wt-a" / "verif" / "blk" / "artefacts"
+    artefacts.mkdir(parents=True, exist_ok=True)
+    for refused in (
+        artefacts / ".shared-builds" / "obj_dir_abc" / "simv",
+        artefacts / "obj_dir_t" / "Vtop.cpp",
+        artefacts / "t" / "run.f",
+        artefacts / "t" / "compile.log",
+    ):
+        refused.parent.mkdir(parents=True, exist_ok=True)
+        refused.write_text("x\n")
+        assert sim_a._key_input_path(str(refused)) is None, refused
+    # A generated header beside them is an input, and is keyed.
+    generated = artefacts / "t" / "gen" / "gen.svh"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("`define G 1\n")
+    assert sim_a._key_input_path(str(generated)) == str(generated)
 
 
 def test_a_path_valued_plusdefine_in_run_f_is_never_relativised(tmp_path, monkeypatch):
@@ -7016,3 +7030,244 @@ def test_a_relative_dash_f_entry_is_text_only_with_no_compile_cwd(
             str(lists / "abs.f"), seen=set(), depth=1, base=None
         )
     ] == ["lists/somewhere.sv"]
+
+
+def test_a_relative_compile_line_incdir_is_content_keyed(tmp_path, monkeypatch):
+    """The ordinary spelling, and it used to take no content into the key
+    at all (#542 review round 5).
+
+    `+incdir+inc` is resolved by the builder against its working directory,
+    which rtl_buddy now knows, so it reads the same directory the compile
+    will — and two checkouts whose header there differs stop sharing a
+    build.
+    """
+    cache = tmp_path / "cache"
+    for name, content in (("wt-a", "`define W 8\n"), ("wt-b", "`define W 16\n")):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        # Relative to the compile dir (`<suite>/artefacts/<test>`), climbing
+        # out to a directory a testbench really shares.
+        header_dir = checkout / "inc"
+        header_dir.mkdir()
+        (header_dir / "w.svh").write_text(content)
+
+    rel = os.path.join("..", "..", "..", "..", "inc")
+
+    def _plan(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"+incdir+{rel}"],
+        )._compile_plan()
+
+    plan_a = _plan("wt-a")
+    assert plan_a.shared_dir.name != _plan("wt-b").shared_dir.name, (
+        "a relative +incdir+ contributed no content to the key"
+    )
+    # Recorded under what it RESOLVES to, so it cannot be confused with a
+    # run.f entry that happens to share the raw spelling.
+    sim = _cache_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=[f"+incdir+{rel}"],
+    )
+    plan = sim._compile_plan()
+    assert [
+        entry[0]
+        for entry in sim._fingerprint_cmd_inputs(
+            plan.key_cmd, plan.fingerprint["sources"]
+        )
+    ] == ["+incdir+inc"]
+
+
+def test_relative_compile_line_inputs_of_every_shape_are_keyed(tmp_path, monkeypatch):
+    """`-y`, `-v` and a bare relative source, not just `+incdir+`."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    (checkout / "lib").mkdir()
+    (checkout / "lib" / "cell.sv").write_text("module cell; endmodule\n")
+    (checkout / "rtl" / "extra.sv").write_text("module extra; endmodule\n")
+    (checkout / "rtl" / "bare.sv").write_text("module bare; endmodule\n")
+    up = os.path.join("..", "..", "..", "..")
+
+    _as_a_fresh_process()
+    sim = _cache_sim(
+        checkout,
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=[
+            "-y",
+            os.path.join(up, "lib"),
+            "-v",
+            os.path.join(up, "rtl", "extra.sv"),
+            os.path.join(up, "rtl", "bare.sv"),
+            # ...and one the filelist already names, which the `covered`
+            # check must drop rather than key twice.
+            os.path.join(up, "rtl", "a.sv"),
+        ],
+    )
+    plan = sim._compile_plan()
+    assert [
+        entry[0]
+        for entry in sim._fingerprint_cmd_inputs(
+            plan.key_cmd, plan.fingerprint["sources"]
+        )
+    ] == ["-y lib", "-v rtl/extra.sv", "rtl/bare.sv"]
+
+
+def test_a_generated_header_under_an_artefact_incdir_is_keyed(tmp_path, monkeypatch):
+    """A `preproc` hook is documented to generate headers into its
+    `artifact_dir`, and `run.f` incdirs pointing there are tracked — so a
+    compile-line `+incdir+` pointing there must be too (#542 review round
+    5).
+
+    Refusing the whole directory because `artefacts` appears in its path
+    threw every generated header away with it.
+    """
+    cache = tmp_path / "cache"
+    for name, content in (("wt-a", "`define G 1\n"), ("wt-b", "`define G 2\n")):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        generated = checkout / "verif" / "blk" / "artefacts" / "t" / "gen"
+        generated.mkdir(parents=True)
+        (generated / "gen.svh").write_text(content)
+        # rtl_buddy's own outputs sit beside it and must NOT be keyed.
+        (generated / "compile.log").write_text("noise\n")
+        (generated / "simv").write_text("a binary\n")
+
+    def _sim(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[
+                f"+incdir+{tmp_path / name / 'verif' / 'blk' / 'artefacts' / 't' / 'gen'}"
+            ],
+        )
+
+    sim_a = _sim("wt-a")
+    plan_a = sim_a._compile_plan()
+    entries = sim_a._fingerprint_cmd_inputs(
+        plan_a.key_cmd, plan_a.fingerprint["sources"]
+    )
+    assert [entry[0] for entry in entries] == ["+incdir+verif/blk/artefacts/t/gen"]
+    listed = [inner[0] for inner in entries[0][1]]
+    assert listed == ["gen.svh"], listed
+    assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name
+
+
+def test_a_filelist_chain_past_the_depth_bound_fails_closed(tmp_path, monkeypatch):
+    """What the key could not read must make it checkout-specific, not
+    silently absent (#542 review round 5).
+
+    Ten levels of `-F`, of which the last two are never visited: keyed as
+    they were, two checkouts differing only down there shared a build whose
+    deepest inputs nobody had looked at.
+    """
+    cache = tmp_path / "cache"
+    for name, deep in (
+        ("wt-a", "module deep; endmodule\n"),
+        ("wt-b", "module deep; /* patched */ endmodule\n"),
+    ):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        lists = checkout / "lists"
+        lists.mkdir()
+        for level in range(10):
+            (lists / f"l{level}.f").write_text(f"-F l{level + 1}.f\n")
+        (lists / "l10.f").write_text("../rtl/deep.sv\n")
+        (checkout / "rtl" / "deep.sv").write_text(deep)
+
+    def _sim(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["-F", str(tmp_path / name / "lists" / "l0.f")],
+        )
+
+    sim_a = _sim("wt-a")
+    plan_a = sim_a._compile_plan()
+    keyed = [
+        entry[0]
+        for entry in sim_a._fingerprint_cmd_inputs(
+            plan_a.key_cmd, plan_a.fingerprint["sources"]
+        )
+    ]
+    marker = [k for k in keyed if k.startswith(vlog_sim_module._DEPTH_BOUND_MARKER)]
+    assert marker, keyed
+    # The marker carries the ABSOLUTE path, which is what stops the key
+    # being shared with a checkout whose unread tail differs.
+    assert str(tmp_path / "wt-a") in marker[0]
+    assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name
+    # ...and it is said once, not once per level.
+    assert sim_a._depth_bound_logged is True
+
+
+def test_an_explicit_disable_reaches_the_dispatched_jobs(monkeypatch):
+    """`--shared-build-root ''` must disable the cache for the whole run,
+    not just for the head (#542 review round 5)."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    class _Root:
+        def get_project_rootdir(self):
+            return "/proj"
+
+        def get_shared_build_root(self):
+            return "/from/config"
+
+    app = RtlBuddy(name="test_shared_build_disable")
+    app.root_cfg = _Root()
+    monkeypatch.delenv("RTL_BUDDY_SHARED_BUILD_ROOT", raising=False)
+    # Configured and not overridden: forwarded as the resolved path.
+    assert app.shared_build_root == "/from/config"
+    assert app.shared_build_root_for_jobs == "/from/config"
+    # Explicitly disabled: the head resolves None, and the jobs are TOLD so
+    # rather than left to re-resolve the config for themselves.
+    app._shared_build_root_flag = ""
+    assert app.shared_build_root is None
+    assert app.shared_build_root_for_jobs == ""
+    # Disabled through the environment counts the same.
+    app._shared_build_root_flag = None
+    monkeypatch.setenv("RTL_BUDDY_SHARED_BUILD_ROOT", "")
+    assert app.shared_build_root_for_jobs == ""
+    # Nothing configured anywhere: nothing to forward, so an unconfigured
+    # project's job argv is unchanged.
+    monkeypatch.delenv("RTL_BUDDY_SHARED_BUILD_ROOT", raising=False)
+
+    class _Bare(_Root):
+        def get_shared_build_root(self):
+            return None
+
+    app.root_cfg = _Bare()
+    assert app.shared_build_root_for_jobs is None
+
+
+def test_a_job_given_an_empty_shared_build_root_keeps_the_cache_off(monkeypatch):
+    """The child side of the same contract: an empty `--shared-build-root`
+    overrides the environment and the config the job re-reads."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    class _Root:
+        def get_project_rootdir(self):
+            return "/proj"
+
+        def get_shared_build_root(self):
+            return "/from/config"
+
+    job = RtlBuddy(name="test_shared_build_job")
+    job.root_cfg = _Root()
+    monkeypatch.setenv("RTL_BUDDY_SHARED_BUILD_ROOT", "/from/env")
+    job._shared_build_root_flag = ""
+    assert job.shared_build_root is None

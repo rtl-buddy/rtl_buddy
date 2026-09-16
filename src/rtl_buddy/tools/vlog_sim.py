@@ -429,6 +429,13 @@ _CMD_PATH_OPTIONS = {
 # hand-written list the compile line points at may. Keeping the two separate
 # means adding it cannot change how a single generated `run.f` is stamped.
 _NESTED_FILELIST_MAX_DEPTH = 8
+
+#: What a key records in place of a filelist chain it refused to follow any
+#: further (#542 review round 5). It carries the list's ABSOLUTE path, which
+#: makes the key checkout-specific: the cache then serves that checkout
+#: alone rather than handing another one a build whose deepest inputs were
+#: never looked at.
+_DEPTH_BOUND_MARKER = "<unread-filelist> "
 _NESTED_FILELIST_OPTION_RE = re.compile(
     r"^(\+(?:incdir|libext|define)\+|-[vyfF]\s+)?(.*)$"
 )
@@ -436,7 +443,7 @@ _NESTED_FILELIST_OPTION_RE = re.compile(
 # Compile-line options whose argument is an OUTPUT location. Their value must
 # never be read as an input: a key that hashed the binary a build produces
 # would move on every build and strand one cache directory per run. The
-# general guard is :func:`_is_managed_output_name` — this is the cheap,
+# general guard is :func:`_is_build_tree_name` — this is the cheap,
 # certain half of it, for an output written somewhere the path says nothing
 # about (an absolute `builder-simv:`, say).
 _CMD_OUTPUT_OPTIONS = frozenset({"-o", "--Mdir", "-Mdir", "--exe-name"})
@@ -991,9 +998,13 @@ def _is_pruned_walk_dir(name: str) -> bool:
     )
 
 
-def _is_managed_output_name(name: str) -> bool:
-    """Is ``name`` a directory rtl_buddy WRITES: ``artefacts``,
-    ``.shared-builds``, an ``obj_dir*``?
+def _is_build_tree_name(name: str) -> bool:
+    """Is ``name`` a directory a BUILDER writes into — ``.shared-builds``
+    or an ``obj_dir*``?
+
+    Nothing in there is an input: it is object files, a simv and a stamp,
+    all written after any fingerprint that could list them, so keying on one
+    would move the key on every build.
 
     Narrower than :func:`_is_pruned_walk_dir`, and deliberately so (#542
     review round 3). That predicate also prunes every dot-directory and
@@ -1002,12 +1013,18 @@ def _is_managed_output_name(name: str) -> bool:
     workspace at ``/home/ci/.worktrees/pr`` has a dot component in its
     ABSOLUTE path, so every input under it would be read as an output and
     the content keying would silently switch itself off for the whole
-    checkout. Managed-output names only, and only ever asked of components
-    BELOW the project root (see :meth:`VlogSim._key_input_path`).
+    checkout. Asked only of components BELOW the project root (see
+    :meth:`VlogSim._key_input_path`).
+
+    ``artefacts`` is deliberately NOT here (#542 review round 5): a
+    ``preproc`` hook is documented to generate headers into its
+    ``artifact_dir``, and ``run.f`` incdirs pointing there are tracked. The
+    outputs beside those headers are excluded by NAME instead —
+    :func:`_is_non_input_file` — which is the same rule
+    :meth:`VlogSim._directory_listing` applies, so a search path is judged
+    file by file rather than thrown away whole.
     """
-    return name in (ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME) or name.startswith(
-        BUILD_DIR_PREFIX
-    )
+    return name == SHARED_BUILDS_DIRNAME or name.startswith(BUILD_DIR_PREFIX)
 
 
 def _key_spelling_is_relocated(spelling: str) -> bool:
@@ -1540,6 +1557,9 @@ class VlogSim:
         # without it. None until a plan exists, which makes a relative `-f`
         # entry text-only rather than a guess.
         self._compile_cwd = None
+        # Said once per instance: a chain that runs past the bound would
+        # otherwise log at every level of every config (#542 review round 5).
+        self._depth_bound_logged = False
         # Filled by _compile_plan() and consumed (and cleared) by compile(),
         # so a probe and the compile that follows it share one derivation
         # while a *second* compile() on this instance still re-stats its
@@ -2451,12 +2471,22 @@ class VlogSim:
                 stamps.append([stamp_line, None, None, None])
         return stamps
 
-    def _key_input_path(self, resolved):
+    def _key_input_path(self, resolved, *, directory: bool = False):
         """``resolved`` if it is an in-root input worth reading, else None.
 
         One gate for both ways a path reaches the key — a compile-line token
         and a nested filelist's entry — so the two cannot disagree about
         what counts as an input.
+
+        ``directory`` says this is an ``+incdir+``/``-y`` SEARCH PATH rather
+        than a file. The distinction decides how an artefact tree is
+        treated (#542 review round 5): a search path there is listed, with
+        :meth:`_directory_listing`'s own name exclusions removing rtl_buddy's
+        outputs file by file — the same rule a ``run.f`` incdir gets, and the
+        reason a ``preproc`` hook may generate headers into its
+        ``artifact_dir`` at all — while a file named directly is refused when
+        its NAME is one of those outputs. Refusing the whole directory
+        instead dropped every generated header with it.
         """
         root = self._project_root
         if not (resolved == root or resolved.startswith(root + os.sep)):
@@ -2474,11 +2504,15 @@ class VlogSim:
         # only those are rtl_buddy's to name: the checkout itself may sit
         # anywhere, `.worktrees/` and all (#542 review round 3).
         if any(
-            _is_managed_output_name(part)
+            _is_build_tree_name(part)
             for part in Path(os.path.relpath(resolved, root)).parts
         ):
-            # Anything under an artefact tree, a `.shared-builds/` or an
-            # `obj_dir*` is written by a build, not read by one.
+            # A `.shared-builds/` or an `obj_dir*` holds a builder's output,
+            # whichever kind of thing is being named inside it.
+            return None
+        if not directory and _is_non_input_file(os.path.basename(resolved)):
+            # `run.f`, `compile.log`, `simv`, the stamp: rtl_buddy's own
+            # outputs, each written after the fingerprint that would key it.
             return None
         return resolved
 
@@ -2639,10 +2673,37 @@ class VlogSim:
         either way, which is what a generated list uses.
 
         Bounded by :data:`_NESTED_FILELIST_MAX_DEPTH` and cycle-safe on
-        ``realpath``, so a list that includes itself costs one visit.
+        ``realpath``, so a list that includes itself costs one visit. The
+        bound fails CLOSED: what it refuses to read goes into the key as
+        :data:`_DEPTH_BOUND_MARKER` plus the list's absolute path, so the
+        key stops being checkout-independent rather than silently promising
+        something it never looked at.
         """
         real = os.path.realpath(filelist_path)
-        if depth > _NESTED_FILELIST_MAX_DEPTH or real in seen:
+        if depth > _NESTED_FILELIST_MAX_DEPTH:
+            # Fail CLOSED (#542 review round 5). Returning quietly keyed the
+            # lists that were visited and silently nothing below them, so
+            # two checkouts differing only down there shared a build. The
+            # absolute path in the marker makes the key checkout-specific
+            # instead: no cross-checkout sharing for this suite, and no
+            # wrong reuse either.
+            if not self._depth_bound_logged:
+                self._depth_bound_logged = True
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.cache_key_depth_bound",
+                    test=self.test_name,
+                    filelist=str(filelist_path),
+                    depth=_NESTED_FILELIST_MAX_DEPTH,
+                )
+            yield (
+                f"{_DEPTH_BOUND_MARKER}{os.path.abspath(filelist_path)}",
+                filelist_path,
+                "opaque",
+            )
+            return
+        if real in seen:
             return
         seen.add(real)
         try:
@@ -2723,27 +2784,51 @@ class VlogSim:
         ``rel``), the absolute path it resolves to, and what to read out of
         it.
 
-        Recognition is the same rule :func:`_relativise_paths` uses — an
-        ABSOLUTE path under the project root — because that is the only
-        spelling whose meaning this class can settle. A *relative*
-        compile-line path is resolved by the builder against its own working
-        directory, not by rtl_buddy, so guessing at it here would be a
-        different guess from the one the build makes. (Inside a nested
-        filelist a relative entry IS unambiguous — it anchors to the list —
-        and :meth:`_nested_filelist_tokens` resolves it.)
+        An absolute path is taken as written; a RELATIVE one is resolved
+        against :attr:`_compile_cwd`, the directory the builder will run in,
+        so rtl_buddy reads the file the build will open (#542 review round
+        5). With no plan settled there is no such directory, and a relative
+        token is then left as text rather than guessed at — a guess here
+        keys a file the build never opens, which is the failure this is
+        avoiding rather than a lesser version of it.
+
+        Whatever it came from, an input is recorded under the spelling of
+        what it RESOLVES to, relative to the project root. The raw text will
+        not do: `+incdir+inc` on the compile line and the same line in
+        `run.f` name different directories.
 
         Only ``+incdir+`` and ``-y`` are listed as directories: a directory
         under any other option is not an input search path, and walking it
         would be inventing one.
         """
-        root_prefix = self._project_root + os.sep
         for _, prefix, raw, kind in self._cmd_token_roles(key_cmd):
-            if kind == "output" or not raw.startswith(root_prefix):
+            if kind == "output":
                 continue
-            resolved = self._key_input_path(os.path.normpath(raw))
+            if os.path.isabs(raw):
+                candidate = os.path.normpath(raw)
+            elif self._compile_cwd is not None:
+                # The builder resolves a relative compile-line path against
+                # its own working directory, and that directory is now
+                # known, so rtl_buddy can read the same file it will
+                # (#542 review round 5). Before this they were dropped, and
+                # `+incdir+inc` — the ordinary spelling — took no content
+                # with it into the key at all.
+                candidate = os.path.normpath(os.path.join(self._compile_cwd, raw))
+            else:
+                # No plan yet, so nothing to anchor it to. Guessing would
+                # key a file the build will not open.
+                continue
+            directory = kind == "embedded" or (
+                isinstance(kind, tuple) and kind[0] == "dir"
+            )
+            resolved = self._key_input_path(candidate, directory=directory)
             if resolved is None:
                 continue
-            spelling = f"{prefix}{self._stamp_relpath(raw)}"
+            # Spelled by what it RESOLVES to, not by the text that named it:
+            # `+incdir+inc` on the compile line and `+incdir+inc` in `run.f`
+            # anchor to different directories, and one spelling for two
+            # directories would let the `covered` check drop a real input.
+            spelling = f"{prefix}{self._stamp_relpath(resolved)}"
             if kind == "embedded":
                 # Classified by what it IS, since the option that named it
                 # said nothing: a directory is keyed by its listing under
@@ -2751,11 +2836,11 @@ class VlogSim:
                 # `run.f` entry for the same directory), a file by its sha.
                 if os.path.isdir(resolved):
                     yield (
-                        f"{_INCDIR_OPTION}{self._stamp_relpath(raw)}",
+                        f"{_INCDIR_OPTION}{self._stamp_relpath(resolved)}",
                         resolved,
                         ("dir", True),
                     )
-                else:
+                elif self._key_input_path(resolved) is not None:
                     yield (spelling, resolved, "file")
                 continue
             if kind in ("filelist-cwd", "filelist-rel"):
@@ -2809,6 +2894,12 @@ class VlogSim:
         entries = []
         for spelling, resolved, kind in self._cmd_path_tokens(key_cmd):
             if spelling in covered:
+                continue
+            if kind == "opaque":
+                # A filelist this refused to read. Its spelling already
+                # carries the absolute path that keeps the key
+                # checkout-specific; there is nothing to stat.
+                entries.append([spelling, None])
                 continue
             # Everything here is in-root by construction, so an input that
             # cannot be hashed falls back to its stats rather than to

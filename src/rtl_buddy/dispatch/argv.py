@@ -84,7 +84,9 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
     # Beside --share-build because it qualifies it: the flag says "share a
     # build", this says where that build lives (#542). Omitted entirely when
     # no cache root is configured, so every existing project's argv — and
-    # every job script diff — is unchanged.
+    # every job script diff — is unchanged. An EMPTY value is not an absence:
+    # it is the head saying it was told not to cache, and the job parses it
+    # exactly as the head parsed the empty flag it came from.
     if spec.shared_build_root is not None:
         argv += ["--shared-build-root", str(spec.shared_build_root)]
     if spec.parallel > 1:

@@ -283,3 +283,20 @@ def test_no_shared_build_root_leaves_both_argvs_untouched():
     assert "--shared-build-root" not in build_job_argv(_build_spec())
     assert "--shared-build-root" not in sim_job_argv(_test_spec())
     assert "--shared-build-root" not in sim_job_argv(_test_spec(share_build=False))
+
+
+def test_an_explicit_disable_is_forwarded_as_an_empty_argument():
+    """`None` and `""` mean different things to a job (#542 review round 5).
+
+    A job told nothing re-resolves the root from its own environment and
+    the project config — so a head that had been told `--shared-build-root
+    ''` and forwarded `None` would disable itself and nothing else, and the
+    build and simulation jobs would go on caching.
+    """
+    build = build_job_argv(_build_spec(shared_build_root=""))
+    sim = sim_job_argv(_test_spec(shared_build_root=""))
+    assert build[build.index("--shared-build-root") + 1] == ""
+    assert sim[sim.index("--shared-build-root") + 1] == ""
+    # ...and that is distinguishable from saying nothing at all.
+    assert "--shared-build-root" not in build_job_argv(_build_spec())
+    assert "--shared-build-root" not in sim_job_argv(_test_spec())
