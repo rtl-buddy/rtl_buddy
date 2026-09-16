@@ -29,6 +29,7 @@ RTL Buddy's wheel provides required Python dependencies. Integrated tools are fi
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
 | `synth`, `synth-regression` | [rtl-buddy Yosys fork](https://github.com/rtl-buddy/yosys); OpenROAD for `tool: openroad` | See [Synthesis](concepts/synthesis.md#install-the-tools). |
 | `pnr`, `power` | OpenROAD 25Q1 or newer | KLayout is optional for P&R GDS and PNG output. |
+| `phys` | None | Reads the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; runs no external tool. See [Physical Metrics](concepts/phys.md). |
 | `fpv`, `fpv-regression` | SymbiYosys 0.40 or newer and at least one SMT solver | Yosys is used for COI analysis; yosys-slang is optional. |
 | `wave` | Surfer from the [rtl-buddy fork and branch](https://github.com/rtl-buddy/surfer/tree/rtl-buddy) | Mainline Surfer opens traces but lacks live editor annotation. `rb nvim-install` additionally needs Git and network access. |
 | `hier`, `hier-query` | `uv tool install rtl-buddy-sch` | Graphviz is optional for DOT rendering; pyslang is optional for the slang frontend. |
