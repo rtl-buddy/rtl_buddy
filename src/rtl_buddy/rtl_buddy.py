@@ -49,6 +49,7 @@ from .graph import extract as extract_mod
 from .graph import query as graph_query_mod
 from .graph import results as graph_results_mod
 from .mcp import server as mcp_server_mod
+from .phys import query as phys_query_mod
 from .mcp import toolset as mcp_toolset_mod
 from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
@@ -545,6 +546,31 @@ class RtlBuddy:
             name="cov",
             help="query coverage artefacts already on disk",
         )
+        self.phys_app = typer.Typer(
+            help=(
+                "read the physical metrics a run already produced: per-module "
+                "cells and area, per-instance power, from the artefact "
+                "directory's phys-manifest.json — no tools are run"
+            ),
+            no_args_is_help=True,
+        )
+        self.phys_app.command(
+            "summary",
+            help="the run's totals, its heaviest modules and its hottest instances",
+        )(self.do_phys_summary)
+        self.phys_app.command(
+            "module",
+            help="one module's cells and area, and the instances of it with power",
+        )(self.do_phys_module)
+        self.phys_app.command(
+            "instance",
+            help="one instance's power, or the rolled-up subtree under its path",
+        )(self.do_phys_instance)
+        self.app.add_typer(
+            self.phys_app,
+            name="phys",
+            help="query physical artefacts already on disk",
+        )
         self.axi_profile_app.command(
             "run",
             help="ingest a test's FST and emit per-test axi-perf.json",
@@ -992,6 +1018,24 @@ class RtlBuddy:
         only need to read the suite config; skipping the root-config
         load keeps them usable when the surrounding project config is
         invalid or unrelated to the listed suite.
+
+        **It also leaves the project's log file alone** (#561). A file
+        log is opened for *writing*, and a process's first open of a
+        path truncates it
+        (:func:`~rtl_buddy.logging_utils.attach_file_log`) — which is
+        right for a flow, whose ``rtl_buddy.log`` is that run's log, and
+        wrong for every read. The paths that pass ``list_only`` write
+        nothing else: `rb phys`, `rb cov` and the `rb graph` read verbs
+        answer from artefacts already on disk, `rb xplr` writes only its
+        own ledger, and `--list` prints a config. Opening the log would
+        therefore be the only thing they wrote, and it costs twice — it
+        fails outright in a read-only checkout, and after a flow it
+        destroys the log of the very run being asked about. Append mode
+        fixes neither (an unwritable file is unwritable either way, and
+        a read verb's events are not part of the run's record), so these
+        paths keep the console handler and nothing else. An explicit
+        ``log_path`` still attaches: that is a caller stating where this
+        process's log goes, which is a different question.
         """
         if (primary_config is None) == (command_root is None):
             raise FatalRtlBuddyError(
@@ -1011,12 +1055,12 @@ class RtlBuddy:
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
-        if log_path is None:
-            attach_file_log(ctx.log_path)
-        else:
+        if log_path is not None:
             log_path = Path(log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(log_path)
+        elif not list_only:
+            attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
 
         if list_only:
@@ -6730,10 +6774,15 @@ class RtlBuddy:
                 manifest=str(ctx.resolve_input(manifest)) if manifest else None,
             )
         except cov_query_mod.CovQueryError as exc:
-            self._cov_query_failed(verb, exc)
+            self._read_query_failed(verb, exc)
 
-    def _cov_query_failed(self, command: str, exc):
-        """Report a coverage question that cannot be answered, then exit 2."""
+    def _read_query_failed(self, command: str, exc):
+        """Report a read verb's unanswerable question, then exit 2.
+
+        Shared by `rb cov` and `rb phys`: both raise an error carrying
+        ``candidates``, and a near-miss list rendered two different ways
+        would be two different contracts for the same failure.
+        """
         if self.machine:
             self._emit_machine_result(
                 command, 2, error=str(exc), candidates=exc.candidates
@@ -6876,7 +6925,7 @@ class RtlBuddy:
         try:
             payload = cov_query_mod.module_payload(ctx, module)
         except cov_query_mod.CovQueryError as exc:
-            self._cov_query_failed("cov module", exc)
+            self._read_query_failed("cov module", exc)
 
         if self.machine:
             self._emit_machine_result("cov module", 0, **payload)
@@ -6919,6 +6968,433 @@ class RtlBuddy:
                         stream="stdout",
                         markup=False,
                     )
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb phys — read verbs over physical artefacts already on disk (#558)
+    # ------------------------------------------------------------------
+
+    def _phys_context(self, verb, *, phys_dir=None, manifest=None):
+        """Load the physical manifest and model for a `rb phys` verb.
+
+        Lock-free like the `rb cov` and `rb graph` read verbs: nothing is
+        written, and taking the exclusive artefact lock would make `rb
+        phys summary` fail while a synthesis is running in the same tree
+        — which is exactly when someone asks what the last one measured.
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            f"command.{verb.replace(' ', '_')}",
+            command=verb,
+        )
+        try:
+            return phys_query_mod.load_context(
+                root,
+                phys_dir=str(ctx.resolve_input(phys_dir)) if phys_dir else None,
+                manifest=str(ctx.resolve_input(manifest)) if manifest else None,
+            )
+        except phys_query_mod.PhysQueryError as exc:
+            self._read_query_failed(verb, exc)
+
+    @staticmethod
+    def _phys_num(value, digits: int = 3):
+        """Format one model number, or `-` for a value nobody measured.
+
+        `null` prints as `-` rather than `0`, because every column here
+        has a run that legitimately leaves it unmeasured — area without a
+        Liberty, power without a `rb power` — and a zero would read as a
+        measurement.
+        """
+        if value is None:
+            return "-"
+        if isinstance(value, int) and not isinstance(value, bool):
+            return f"{value:,}"
+        try:
+            return f"{float(value):,.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _phys_missing_half_notes(payload) -> None:
+        """Say which half is absent and what would actually produce it.
+
+        The obvious advice — run the other command into this directory —
+        is only true when the two halves can pair. The merge is gated on
+        the netlist hash both producers record, so a half whose producer
+        recorded none (a `netlist-source: pnr` power run reads a routed
+        database and has no netlist to hash) cannot be merged onto: the
+        run that would complete the model *replaces* it instead, and the
+        note would be sending the user to destroy the very rows they
+        still have. The payload's `halves` block echoes that per half
+        (`netlist_hash`), so the note names what does work — synthesise,
+        then measure the netlist it wrote, so the pair shares one.
+        """
+        halves = payload.get("halves") or {}
+        for half in payload.get("missing_halves") or []:
+            entry = halves.get(half) or {}
+            produced_by = entry.get("produced_by")
+            noun = "module" if half == "modules" else "instance"
+            other = "instances" if half == "modules" else "modules"
+            present = halves.get(other) or {}
+            if present.get("present") and not present.get("netlist_hash"):
+                note = (
+                    f"no per-{noun} rows in this model - `{produced_by}` here "
+                    f"would replace it rather than complete it: the "
+                    f"{'power' if other == 'instances' else 'synthesis'} half "
+                    f"records no netlist hash to pair on. Run `rb synth`, then "
+                    f"re-run `rb power` on the netlist it writes, so both "
+                    f"halves measure the same one"
+                )
+            else:
+                note = (
+                    f"no per-{noun} rows in this model - run `{produced_by}` "
+                    f"into the same artefact directory to add them"
+                )
+            emit_console_text(
+                note,
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+
+    @staticmethod
+    def _phys_instance_join_note(payload) -> None:
+        """Say when an empty instance list is a namespace miss, not a fact.
+
+        The model's two halves spell `module` differently — RTL module
+        names on the synthesis rows, Liberty cell names on the leaves —
+        so an RTL module on a mapped hierarchical design matches nothing,
+        and a bare empty table would read as "this block burns no power".
+        The payload carries the sentence; printing it here keeps every
+        surface saying the same thing.
+        """
+        note = payload.get("instance_join")
+        if note:
+            emit_console_text(
+                f"\n{note}",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+
+    def _phys_instance_rows(self, rows):
+        """Instance rows as summary-table rows, powers already formatted."""
+        return [
+            {
+                "instance": row.get("instance_path"),
+                "module": row.get("module") or "-",
+                **{
+                    column: self._phys_num(row.get(column))
+                    for column in phys_query_mod.POWER_COLUMNS
+                },
+            }
+            for row in rows
+        ]
+
+    #: Columns of every per-instance table the phys verbs render.
+    _PHYS_INSTANCE_COLUMNS = [
+        ("instance", "Instance"),
+        ("module", "Module"),
+        ("total_uw", "Total uW"),
+        ("internal_uw", "Internal uW"),
+        ("switching_uw", "Switching uW"),
+        ("leakage_uw", "Leakage uW"),
+    ]
+
+    def _phys_artefact_lines(self, artefacts) -> None:
+        """Print the artefact paths, skipping the ones this run lacks."""
+        emit_console_text(f"\nmanifest: {artefacts['manifest']}", stream="stdout")
+        emit_console_text(f"model:    {artefacts['model']}", stream="stdout")
+        for label, key in (
+            ("netlist: ", "synth_netlist"),
+            ("stats:   ", "synth_stats"),
+            ("power:   ", "power_report"),
+            ("insts:   ", "power_instances"),
+        ):
+            if artefacts.get(key):
+                emit_console_text(f"{label} {artefacts[key]}", stream="stdout")
+
+    def do_phys_summary(
+        self,
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "rows per ranking, heaviest/hottest first "
+                    "(0 for all); truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RANK_LIMIT,
+        phys_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--phys-dir",
+                help="artefact directory holding phys-manifest.json",
+                show_default="newest phys-manifest.json under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="phys-manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report a run's physical metrics from its artefacts: the design totals,
+        the heaviest modules, the hottest instances, and where everything landed
+        """
+        ctx = self._phys_context("phys summary", phys_dir=phys_dir, manifest=manifest)
+        payload = phys_query_mod.summary_payload(ctx, limit=limit)
+
+        if self.machine:
+            self._emit_machine_result("phys summary", 0, **payload)
+            raise typer.Exit(0)
+
+        backends = payload["backends"]
+        emit_console_text(
+            f"{payload['run_command']} {payload.get('run') or ''} - "
+            f"top {payload.get('top') or 'unknown'}, "
+            f"synth {backends.get('synth') or 'none'}, "
+            f"power {backends.get('power') or 'none'}, "
+            f"generated {payload.get('generated_at') or 'unknown'}",
+            style="bold",
+            stream="stdout",
+            markup=False,
+        )
+        render_summary(
+            title="Physical - Totals",
+            columns=[("metric", "Metric"), ("value", "Value")],
+            rows=[
+                {"metric": key, "value": self._phys_num(value)}
+                for key, value in (payload["totals"] or {}).items()
+            ],
+            logger=logger,
+        )
+        self._phys_missing_half_notes(payload)
+        if payload["modules"]:
+            render_summary(
+                title="Physical - Heaviest Modules",
+                columns=[
+                    ("module", "Module"),
+                    ("cell_count", "Cells"),
+                    ("area_um2", "Area um2"),
+                ],
+                rows=[
+                    {
+                        "module": row.get("module"),
+                        "cell_count": self._phys_num(row.get("cell_count")),
+                        "area_um2": self._phys_num(row.get("area_um2")),
+                    }
+                    for row in payload["modules"]
+                ],
+                logger=logger,
+            )
+        if payload["instances"]:
+            render_summary(
+                title="Physical - Hottest Instances",
+                columns=self._PHYS_INSTANCE_COLUMNS,
+                rows=self._phys_instance_rows(payload["instances"]),
+                logger=logger,
+            )
+        self._phys_artefact_lines(payload["artefacts"])
+        raise typer.Exit(0)
+
+    def do_phys_module(
+        self,
+        module: Annotated[
+            str,
+            typer.Argument(help="module or liberty cell as the model records it"),
+        ],
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "instances to list, hottest first "
+                    "(0 for all); truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RANK_LIMIT,
+        phys_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--phys-dir",
+                help="artefact directory holding phys-manifest.json",
+                show_default="newest phys-manifest.json under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="phys-manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report one module's cells and area, and the instances of it with the
+        power each one burns
+        """
+        ctx = self._phys_context("phys module", phys_dir=phys_dir, manifest=manifest)
+        try:
+            payload = phys_query_mod.module_payload(ctx, module, limit=limit)
+        except phys_query_mod.PhysQueryError as exc:
+            self._read_query_failed("phys module", exc)
+
+        if self.machine:
+            self._emit_machine_result("phys module", 0, **payload)
+            raise typer.Exit(0)
+
+        row = payload["row"] or {}
+        render_summary(
+            title=f"Physical - {payload['module']}",
+            columns=[
+                ("module", "Module"),
+                ("cell_count", "Cells"),
+                ("area_um2", "Area um2"),
+                ("instances", "Instances"),
+            ],
+            rows=[
+                {
+                    "module": payload["module"],
+                    "cell_count": self._phys_num(row.get("cell_count")),
+                    "area_um2": self._phys_num(row.get("area_um2")),
+                    "instances": self._phys_num(payload["instance_count"]),
+                }
+            ],
+            logger=logger,
+        )
+        self._phys_missing_half_notes(payload)
+        self._phys_instance_join_note(payload)
+        # The payload is already headed to `--limit`, so the table renders
+        # what it holds rather than truncating a second time: one flag,
+        # one truncation, and the console and the machine payload cannot
+        # disagree about how many rows the user asked for.
+        shown = payload["instances"] or []
+        if shown:
+            emit_console_text(
+                f"\ninstances of {payload['module']}: "
+                f"{len(shown)}/{payload['instance_count']}",
+                style="bold",
+                stream="stdout",
+                markup=False,
+            )
+            render_summary(
+                title=f"Physical - Instances of {payload['module']}",
+                columns=self._PHYS_INSTANCE_COLUMNS,
+                rows=self._phys_instance_rows(shown)
+                + [
+                    {
+                        "instance": "total",
+                        "module": payload["module"],
+                        **{
+                            column: self._phys_num(payload["power"][column])
+                            for column in phys_query_mod.POWER_COLUMNS
+                        },
+                    }
+                ],
+                logger=logger,
+            )
+        self._phys_artefact_lines(payload["artefacts"])
+        raise typer.Exit(0)
+
+    def do_phys_instance(
+        self,
+        path: Annotated[
+            str,
+            typer.Argument(help="instance path, exact or the root of a subtree"),
+        ],
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "hottest children to list (0 for all); "
+                    "truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RANK_LIMIT,
+        phys_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--phys-dir",
+                help="artefact directory holding phys-manifest.json",
+                show_default="newest phys-manifest.json under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="phys-manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report one instance's power, or - when the path names a subtree rather
+        than a leaf - the leaves under it and their rolled-up total
+        """
+        ctx = self._phys_context("phys instance", phys_dir=phys_dir, manifest=manifest)
+        try:
+            payload = phys_query_mod.instance_payload(ctx, path, limit=limit)
+        except phys_query_mod.PhysQueryError as exc:
+            self._read_query_failed("phys instance", exc)
+
+        if self.machine:
+            self._emit_machine_result("phys instance", 0, **payload)
+            raise typer.Exit(0)
+
+        rollup = payload["rollup"]
+        emit_console_text(
+            f"{payload['instance_path']} - {payload['match']} match, "
+            f"{rollup['instances']} leaf instance(s)",
+            style="bold",
+            stream="stdout",
+            markup=False,
+        )
+        rows = []
+        if payload["instance"] is not None:
+            rows += self._phys_instance_rows([payload["instance"]])
+        # Headed by the builder, as `phys module`'s list is.
+        children = payload["children"]
+        if children:
+            rows += self._phys_instance_rows(children)
+        rows.append(
+            {
+                "instance": f"rollup ({rollup['instances']})",
+                "module": "-",
+                **{
+                    column: self._phys_num(rollup[column])
+                    for column in phys_query_mod.POWER_COLUMNS
+                },
+            }
+        )
+        render_summary(
+            title=f"Physical - {payload['instance_path']}",
+            columns=self._PHYS_INSTANCE_COLUMNS,
+            rows=rows,
+            logger=logger,
+        )
+        if children and len(children) < payload["child_count"]:
+            emit_console_text(
+                f"{len(children)}/{payload['child_count']} children shown; "
+                "--limit 0 for all",
+                stream="stdout",
+                markup=False,
+            )
+        if payload["match"] == "exact" and payload["child_count"]:
+            # The path is both a leaf and a prefix. The rollup answers the
+            # question `match` names — the named row — so the rows below it
+            # are on the table without being in the total, and that has to
+            # be said or the two readings of the same table disagree.
+            emit_console_text(
+                f"{payload['child_count']} row(s) below this path are listed "
+                "for navigation; the rollup is the named row alone",
+                stream="stdout",
+                markup=False,
+            )
+        self._phys_missing_half_notes(payload)
+        self._phys_artefact_lines(payload["artefacts"])
         raise typer.Exit(0)
 
     def do_cmd_mcp(

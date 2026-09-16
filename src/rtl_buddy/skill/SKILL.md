@@ -115,12 +115,15 @@ rb --machine synth --list
 rb --machine pnr --list
 rb --machine power --list
 rb --machine fpga --list
+rb --machine phys summary
 ```
 
 A completed tool run is not the same as meeting timing, area, power, or routing
 targets. Use the `rtl-buddy-implementation` skill for result interpretation,
-timing closure, and XPLR loops. Docs: `concepts/synthesis`, `concepts/pnr`,
-`concepts/power`, and `concepts/fpga`.
+timing closure, and XPLR loops. `phys` reads the per-module and per-instance
+model a completed `synth` or `power` run wrote; it starts no tool. Docs:
+`concepts/synthesis`, `concepts/pnr`, `concepts/power`, `concepts/fpga`, and
+`concepts/phys`.
 
 ## Coverage, waveforms, and AXI profiling
 

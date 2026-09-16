@@ -220,11 +220,23 @@ def test_test_list_from_unrelated_cwd_does_not_pollute_invocation_dir(
     )
 
 
-def test_test_list_writes_log_under_command_root(minimal_project: Path, monkeypatch):
-    """The orchestration log lands next to tests.yaml, not in the cwd."""
+def test_test_list_opens_no_log_anywhere(minimal_project: Path, monkeypatch):
+    """A `--list` is a read, and a read does not open the project's log.
+
+    It used to write one under the command root — which is where a log
+    belongs (#216), but not something a metadata-only listing should be
+    creating at all: the handler opens for writing and a process's first
+    open of a path truncates it, so listing a suite in a read-only
+    checkout failed, and listing one after a run emptied that run's log
+    (#561). The anchoring rule the old assertion stood for is pinned by
+    `test_filelist_explicit_output_anchors_to_invocation_dir`, whose
+    command does write a log.
+    """
     unrelated = minimal_project.parent / "unrelated"
     unrelated.mkdir()
     monkeypatch.chdir(unrelated)
+    kept = minimal_project / "rtl_buddy.log"
+    kept.write_text("what the run before the listing said\n")
 
     runner, rb = _runner()
     result = runner.invoke(
@@ -233,8 +245,7 @@ def test_test_list_writes_log_under_command_root(minimal_project: Path, monkeypa
     )
     assert result.exit_code == 0, result.output
 
-    # Log is under dirname(tests.yaml).
-    assert (minimal_project / "rtl_buddy.log").exists()
+    assert kept.read_text() == "what the run before the listing said\n"
     assert not (unrelated / "rtl_buddy.log").exists()
 
 
