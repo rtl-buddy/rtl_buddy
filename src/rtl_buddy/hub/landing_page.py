@@ -48,8 +48,8 @@ LANDING_PAGE_ROUTE = "/"
 STATE_JSON_ROUTE = "/hub/state.json"
 
 #: Route serving the schematic SPA (``/`` before #398, ``/view`` before
-#: #423). The page route is the app's **short** name, so the three apps
-#: read as one set — ``/sch``, ``/gph``, ``/cov`` — and the URL matches
+#: #423). The page route is the app's **short** name, so the apps read as
+#: one set — ``/sch``, ``/gph``, ``/cov``, ``/phy`` — and the URL matches
 #: the chip every app switcher shows.
 #:
 #: This is a PAGE route only. The hub-protocol origin stays ``view``, as
@@ -137,6 +137,18 @@ APPS: tuple[AppCard, ...] = (
         route="/cov",
         origin="cov",
     ),
+    AppCard(
+        id="phys",
+        name="rtl-buddy-phys",
+        short="phy",
+        task="Weigh area and power",
+        why=(
+            "Cells and area per module, leakage and dynamic power per "
+            "instance — the synthesis and power runs' own numbers, ranked."
+        ),
+        route="/phy",
+        origin="phys",
+    ),
 )
 
 
@@ -158,6 +170,7 @@ def build_state_payload(
     graph_path: str | None = None,
     graph_mtime: float | None = None,
     cov_available: bool = False,
+    phys_available: bool = False,
     now: float | None = None,
 ) -> dict:
     """Body for ``GET /hub/state.json``.
@@ -177,7 +190,8 @@ def build_state_payload(
     routability on ``status``, so the two fields must not contradict.
     No shipped card is planned any more: the cov card went live with the
     pane (rtl-buddy/rtl_buddy#400), with ``cov_available`` as its
-    data-presence half, the same shape as ``graph_present``.
+    data-presence half, the same shape as ``graph_present``, and the
+    phys card with its own (rtl-buddy/rtl_buddy#558).
     """
 
     now = time.time() if now is None else now
@@ -201,6 +215,12 @@ def build_state_payload(
         elif card.id == "graph":
             available = graph_present
             note = None if graph_present else "run `rb graph build` first"
+        elif card.id == "phys":
+            available = phys_available
+            # Either command alone fills a half of the model and gives
+            # the pane something to render, so the note names both
+            # rather than picking one.
+            note = None if phys_available else "run `rb synth` or `rb power` first"
         else:  # pragma: no cover - defensive; every card is handled above
             available = True
         apps.append(
@@ -218,6 +238,14 @@ def build_state_payload(
                 "open": card.origin in connected,
             }
         )
+
+    # The empty-state predicate reads this, so physical artefacts count
+    # as something built: a project that has run `rb synth` but neither
+    # picked a model nor built a graph showed a live phys card above the
+    # words "Nothing built for this project yet"
+    # (rtl-buddy/rtl_buddy#558). A block rather than a bare flag, to
+    # match `graph` — the other data-presence half the page reads.
+    phys: dict = {"present": bool(phys_available)}
 
     graph: dict = {"present": bool(graph_present), "path": graph_path}
     if graph_present and graph_mtime is not None:
@@ -238,6 +266,7 @@ def build_state_payload(
         "peers": sorted(connected),
         "apps": apps,
         "graph": graph,
+        "phys": phys,
     }
 
 

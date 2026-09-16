@@ -1279,7 +1279,7 @@ def test_the_file_header_offers_a_send_for_every_sibling_app():
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
     assert "{ origin: 'graph', prose: 'the graph pane' }," in apps
     assert "{ origin: 'view', prose: 'the schematic' }" in apps
-    for route in ("/gph", "/sch"):
+    for route in ("/gph", "/sch", "/phy"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert "'send → ' + originLabel(app.origin)," in row
@@ -1361,7 +1361,7 @@ def test_the_action_row_has_no_open_buttons():
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert "window.open(" not in row
     assert "'open '" not in row
-    for route in ("/gph", "/sch"):
+    for route in ("/gph", "/sch", "/phy"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
@@ -2112,7 +2112,7 @@ def test_the_origin_label_map_renames_only_the_display():
     out = _node(
         _marked_js("origin-labels")
         + """
-        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+        var origins = ['view', 'graph', 'cov', 'phys', 'wave', 'src', 'cli',
                        'notebook', 'quantum'];
         console.log(JSON.stringify(origins.map(originLabel)));
         console.log(JSON.stringify([originLabel(null), originLabel(undefined),
@@ -2125,6 +2125,7 @@ def test_the_origin_label_map_renames_only_the_display():
         "sch",
         "gph",
         "cov",
+        "phy",
         "wave",
         "src",
         "cli",
@@ -2138,10 +2139,24 @@ def test_the_origin_label_map_renames_only_the_display():
 def test_every_rendered_origin_goes_through_the_map():
     js = _page_js()
     # The same map, word for word, as the graph pane's and the landing's.
-    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };" in js
     assert "list.map(originLabel).join(', ')" in js
     assert "originLabel(links[i].getAttribute('data-origin'))" in js
     assert "'send → ' + originLabel(app.origin)," in js
+
+
+def test_the_header_switcher_links_every_sibling_pane():
+    """Same rule as the graph pane's header: a sibling app that is not in
+    the switcher is one a user never reaches from here. `/phy` shipped with
+    the physical model (rtl-buddy/rtl_buddy#558)."""
+
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    switcher = body.split('<nav class="switcher"')[1].split("</nav>")[0]
+    for route, origin in (("/sch", "view"), ("/gph", "graph"), ("/phy", "phys")):
+        assert (
+            f'<a href="{route}" target="_blank" rel="noopener" data-origin="{origin}"'
+            in switcher
+        )
 
 
 def test_the_rename_did_not_leak_into_the_wire():
@@ -2152,3 +2167,4 @@ def test_the_rename_did_not_leak_into_the_wire():
     assert "origin: 'view'," in js
     assert 'href="/sch"' in body
     assert 'href="/gph"' in body
+    assert 'href="/phy"' in body

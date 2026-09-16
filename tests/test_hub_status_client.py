@@ -133,6 +133,14 @@ def test_display_origins_includes_the_cov_pane():
     assert "cov" in DISPLAY_ORIGINS
 
 
+def test_display_origins_includes_the_phys_pane():
+    """And one pane later again: `/phy` is an app a user opens and keeps
+    open, so `rb hub status` has to be able to say whether it is attached
+    (rtl-buddy/rtl_buddy#558)."""
+
+    assert "phys" in DISPLAY_ORIGINS
+
+
 def test_display_origins_are_real_protocol_origins():
     """A typo here would print a peer that can never connect."""
     from rtl_buddy.hub.protocol import Origin
