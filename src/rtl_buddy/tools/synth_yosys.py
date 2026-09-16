@@ -21,6 +21,7 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.manifest import project_relative
 from ..phys.publish import invalidate_half, publish_synth
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
@@ -468,6 +469,110 @@ def emit_frontend_read_cmds(
     raise AssertionError("unreachable: validate_frontend rejects other frontends")
 
 
+def library_fingerprint(paths, root_cfg) -> list[str]:
+    """The technology libraries a generated script reads, as identity (#570).
+
+    Both backends resolve Liberty (and, for OpenROAD, LEF) from the
+    platform's PDK corner with the config's own ``lib-paths`` /
+    ``lef-paths`` appended, and both then name the resolved files in the
+    script. The config fingerprint recorded only *that* the run was
+    mapped, so the classic experiment — one design, one effort, two
+    corners named explicitly rather than through a platform — produced
+    two netlists with two areas under one ``options_sha256``, and a
+    reader comparing runs was told they were the same experiment.
+
+    **Paths, not contents.** A Liberty file is tens of megabytes and the
+    fingerprint is taken once per run; hashing the library set would put
+    a pass over the PDK into every synthesis to tell apart experiments
+    that the *names* already tell apart. A corner that is edited in place
+    under one path is the case a path cannot catch, and it is not the
+    case the reviewer describes or that a synthesis flow creates.
+
+    **In script order, not sorted.** ``read_liberty`` is order-sensitive
+    — a cell defined twice resolves to the file that supplied it last —
+    so two runs naming one set of libraries in two orders are two
+    experiments, and a sort would digest them as one.
+
+    Spelled project-relative where they sit inside the project, as every
+    other path in these documents is
+    (:func:`rtl_buddy.phys.manifest.project_relative`), so a checkout
+    moved between machines is not read as a different library set. A PDK
+    outside the project keeps its absolute path, which is the only
+    identity it has.
+
+    A ``root_cfg`` that cannot name a project root — absent, or a stand-in
+    that answers only the queries its caller needs — falls back to the
+    paths as resolved. This feeds `_publish_phys_model`, which never fails
+    a synthesis whose netlist is already on disk and already judged, and a
+    fingerprint helper is the last place worth raising from.
+    """
+    get_root = getattr(root_cfg, "get_project_rootdir", None)
+    root = get_root() if get_root is not None else None
+    if not root:
+        return [str(path) for path in paths]
+    return [project_relative(path, root) for path in paths]
+
+
+def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
+    """The elaboration settings a generated Yosys script actually reads.
+
+    Both synthesis backends elaborate through :func:`emit_frontend_read_cmds`
+    and gate the run with the same two mode resolvers, so both fingerprint
+    the same subset of :class:`~rtl_buddy.config.synth.SynthToolOpts` — and
+    fingerprinting it in one place is what keeps the two from drifting apart
+    about what an experiment varied (#568).
+
+    A *subset*, because a digest of the whole dataclass reports differences
+    the netlist cannot have. ``synth_args`` and ``abc_args`` are left to the
+    caller: which of them a script reads, and whether it reads the tool
+    option or the effort's, differs per backend and per path. ``strategy``
+    never appears here at all — it is a stage-2 OpenROAD knob and no Yosys
+    script line consumes it.
+
+    ``plugin_path`` and ``single_unit`` are recorded only under
+    ``frontend: slang``. The verilog branch of the read emitter loads no
+    plugin and warns that it cannot honour one compilation unit, so two
+    verilog runs differing in either produce the same script and are the
+    same experiment.
+
+    The plugin is fingerprinted **resolved**, as
+    :func:`resolve_plugin_path` returns it and the script's ``plugin -i``
+    line spells it (#570). The raw field was wrong in both directions: a
+    plugin selected through the ``RTL_BUDDY_SLANG_PLUGIN`` fallback
+    leaves it empty, so two runs against two different yosys-slang builds
+    digested identically, while a relative path and the absolute path it
+    resolves to are one plugin digesting as two. A path and not its
+    contents, consistently with :func:`library_fingerprint`: a rebuilt
+    ``slang.so`` at one path is the case a path cannot catch, and hashing
+    a shared object on every synthesis is not the price for it.
+
+    ``root_cfg`` is what a relative path resolves against. Resolution is
+    allowed to fail back to the raw spelling: it raises only for a
+    non-absolute environment variable, which :func:`validate_frontend`
+    has already refused by the time any run publishes, and a fingerprint
+    is the last place worth raising from.
+
+    The two gates are recorded *resolved* rather than as configured: the
+    default of ``static_functions`` depends on the frontend
+    (:func:`resolve_static_functions_mode`), so an empty setting under
+    slang and an explicit ``error`` are one behaviour and must digest as
+    one.
+    """
+    fed = {
+        "frontend": opts.frontend,
+        "static_functions": resolve_static_functions_mode(opts),
+        "conflicting_drivers": resolve_conflicting_drivers_mode(opts),
+    }
+    if opts.frontend == "slang":
+        try:
+            plugin = resolve_plugin_path(opts.plugin_path, root_cfg)
+        except FatalRtlBuddyError:
+            plugin = opts.plugin_path
+        fed["plugin_path"] = plugin
+        fed["single_unit"] = opts.single_unit
+    return fed
+
+
 def slang_handles_params(opts: SynthToolOpts) -> bool:
     """Slang elaborates eagerly so top-level params are folded into
     read_slang; a subsequent chparam would be too late."""
@@ -494,6 +599,12 @@ class YosysSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._period_ps: int | None = None
+        # The `-D` table `_write_script` actually fed the frontend:
+        # filelist `+define+` entries with the run's `defines:` on top.
+        # Recorded by the writer and read by `_phys_options`, the way
+        # `_period_ps` is, so the digest is of what the script consumed
+        # rather than of a re-derivation of it (#570).
+        self._script_defines: dict[str, str | None] | None = None
         self._opts: SynthToolOpts | None = None
 
     def _filelist_path(self) -> str:
@@ -678,6 +789,7 @@ class YosysSynth:
         mapped = bool(lib_paths)
 
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
+        self._script_defines = defines
         incdirs = incdirs_from_filelist(fl_path)
 
         lines = []
@@ -1030,6 +1142,86 @@ class YosysSynth:
             phys_model=phys_model,
         )
 
+    def _phys_options(self, *, mapped: bool) -> dict:
+        """The effective options the config fingerprint is digested over.
+
+        What `_write_script` actually reads, not the whole resolved
+        `SynthToolOpts`. A digest over the dataclass tells two runs apart
+        by a field the generated script never looks at, which reports a
+        difference the netlist cannot have -- the same rule that keeps the
+        power flow's `tool_overrides` out of its own mapping (#568).
+
+        Read off this backend's script writer, line by line:
+
+        - `elaborate`: the frontend subset both backends share
+          (:func:`elaboration_fingerprint`).
+        - `synth_args`: the resolved value, which is the effort's
+          `yosys.synth-args` unless a `tool_overrides.<tool>.synth_args`
+          outranks it -- `_resolve_opts` has already folded that in.
+        - `params` and `defines`: the elaboration values, which shape the
+          netlist exactly as an ABC script does and are the knob a
+          parameter sweep turns. `defines` is the **merged** table
+          `_write_script` hands the frontend -- the filelist's `+define+`
+          entries with the run's `defines:` layered on top
+          (:func:`elaboration_defines`) -- and not `synth.yaml`'s field
+          alone. The field alone digested a `+define+WIDTH=8` change in
+          the generated filelist as no change at all, which is a
+          different design under one fingerprint (#570); it also read two
+          runs apart when one spelt a value the filelist already gave it.
+        - `mapped`: which branch the script took, since the two consume
+          different things below.
+
+        The two branches differ in what they consume below. **Unmapped**
+        emits `abc {opts.abc_args}`, so `abc_args` is fed. **Mapped**
+        does not: it hard-codes `_ABC_SCRIPT_NO_TIMING` /
+        `_ABC_SCRIPT_WITH_TIMING` and passes ABC the delay target parsed
+        out of the SDC, so `abc_args` is dropped -- a mapped run that
+        sets it runs identically to one that does not -- and the target
+        (`_period_ps`, `null` when the SDC named no clock, which also
+        selects the untimed script) is fed in its place. Mapped also feeds
+        `libs`, the resolved Liberty set the script reads
+        (:func:`library_fingerprint`): `mapped: true` alone said the run
+        was mapped without saying what against, so two corners named
+        through `lib-paths` digested identically (#570). The unmapped
+        branch has none by definition -- that is what makes it unmapped.
+
+        `strategy` is in neither: this backend has no OpenROAD stage and
+        no script line reads it.
+
+        Values only: the digest is of what the run resolved to, not of
+        the files it resolved from, so two configs that spell one setting
+        differently and come out the same are one experiment.
+        """
+        opts = self._resolve_opts()
+        fed = {
+            "tool": self.tool_cfg.get_name(),
+            "mapped": mapped,
+            "elaborate": elaboration_fingerprint(opts, self.root_cfg),
+            "synth_args": opts.synth_args,
+            "params": self.synth_cfg.get_params(),
+            "defines": self._digested_defines(),
+        }
+        if mapped:
+            fed["abc_period_ps"] = self._period_ps
+            fed["libs"] = library_fingerprint(self._resolve_lib_paths(), self.root_cfg)
+        else:
+            fed["abc_args"] = opts.abc_args
+        return fed
+
+    def _digested_defines(self) -> dict:
+        """The macro table the generated script fed the frontend (#570).
+
+        Recorded by `_write_script`, not re-derived here: it is the table
+        that was passed, and re-reading `synth.f` to rebuild it would
+        digest a filelist that may since have been rewritten. The
+        fallback is `synth.yaml`'s own field, for a caller that reaches
+        this without a script having been written -- there is no
+        published run in that state, so it is a floor and not a path.
+        """
+        if self._script_defines is not None:
+            return dict(self._script_defines)
+        return self.synth_cfg.get_defines()
+
     def _publish_phys_model(
         self, *, area_um2: float | None, gate_count: int | None, mapped: bool
     ) -> str | None:
@@ -1041,6 +1233,15 @@ class YosysSynth:
         something this cannot read, costs the model its `modules` rows and
         earns a warning; the totals scraped from the log are written either
         way, so the document still says what the design came to.
+
+        The identity fields (#568) are the ones that shaped THIS netlist:
+        the platform whose Liberty it mapped against, the effort actually
+        applied, the SDC read for the ABC delay target, and the options
+        the generated script actually consumed on the branch it took --
+        everything a second experiment of the same design would differ
+        in. See `_phys_options` for the branch-by-branch mapping.
+        `_resolve_opts` is memoised, so asking it here costs nothing and
+        cannot re-emit the override warnings it logs on first use.
         """
         published = publish_synth(
             artefact_dir=self.artefact_dir,
@@ -1052,6 +1253,10 @@ class YosysSynth:
             log_path=self._log_path(),
             area_um2=area_um2,
             gate_count=gate_count,
+            platform=self.synth_cfg.get_platform(),
+            effort=self.effort_cfg.get_name(),
+            constraints=self.synth_cfg.get_constraints(),
+            options=self._phys_options(mapped=mapped),
         )
         if published["error"] is not None or published["rows"] is None:
             log_event(

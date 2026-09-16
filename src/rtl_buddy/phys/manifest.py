@@ -60,10 +60,27 @@ Schema (``schema_version`` 1)::
       "totals": {"area_um2": .., "cell_count": .., "internal_uw": ..,
                  "switching_uw": .., "leakage_uw": .., "total_uw": ..},
       "synth": {"backend": "yosys"|"openroad"|null, "run": .., "stats": ..,
-                "netlist": .., "log": ..},
+                "netlist": .., "log": .., "config": {..}|null},
       "power": {"backend": "openroad"|null, "run": .., "netlist_source": ..,
-                "report": .., "instances": .., "cells": .., "log": ..}
+                "report": .., "instances": .., "cells": .., "log": ..,
+                "mode": "static"|"dynamic"|null, "activity": {..}|null,
+                "config": {..}|null}
     }
+
+The ``config``, ``mode`` and ``activity`` entries are the run's
+*identity* (#568), written here as well as into the model's provenance
+so a listing of every run in a project — `rb phys runs`, the pane's run
+selector — can tell partitions, power modes and optimisation
+experiments apart from the manifests alone, without opening a model
+per run. Their shapes are :mod:`rtl_buddy.phys.provenance`'s.
+Documents written before them carry neither key; every reader here
+normalises an absent block to ``null``, which is what the stable-keys
+rule promises anyway. The paths *inside* those two blocks — a
+constraints file, an activity trace — are project-relative like every
+other path in the document, but they are made so one step earlier, by
+:func:`rtl_buddy.phys.publish._publish`: the same blocks go into the
+model, and relativising each document separately is how the two would
+come to spell one path two ways.
 """
 
 from __future__ import annotations
@@ -92,10 +109,21 @@ from ..tools.artifact_paths import (  # noqa: E402
 from .model import _POWER_TOTALS, _SYNTH_TOTALS  # noqa: E402
 
 #: Keys of the ``synth`` block, so a power-only run still writes them all.
-SYNTH_KEYS = ("backend", "run", "stats", "netlist", "log")
+SYNTH_KEYS = ("backend", "run", "stats", "netlist", "log", "config")
 
 #: Keys of the ``power`` block, likewise.
-POWER_KEYS = ("backend", "run", "netlist_source", "report", "instances", "cells", "log")
+POWER_KEYS = (
+    "backend",
+    "run",
+    "netlist_source",
+    "report",
+    "instances",
+    "cells",
+    "log",
+    "mode",
+    "activity",
+    "config",
+)
 
 #: Which block keys hold a path and so need making project-relative. The
 #: rest are plain strings a `rel()` would mangle into a filename.
@@ -432,7 +460,7 @@ def project_root_for(manifest_path) -> str | None:
     return str(counted)
 
 
-def _may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:
+def may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:
     """Whether a symlinked directory is part of the artefact layout.
 
     The boundary :func:`discover_manifests` documents, factored out
@@ -441,6 +469,13 @@ def _may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> b
     ``link`` is the link itself, ``rel_parts`` the components of its path
     below the project root (its own basename last), ``root_real`` the
     resolved project root.
+
+    Public because the hub's ``?dir=`` route decides the same question
+    about the same tree (:func:`rtl_buddy.hub.phys_page
+    .contained_phys_dir`). A run the walk refused to enter is a run the
+    route must refuse to read: two spellings of one boundary would
+    eventually disagree, and the disagreement anyone finds first is the
+    one where the route is the looser of the two.
     """
     if ARTIFACT_DIRNAME not in rel_parts:
         return False
@@ -496,7 +531,7 @@ def discover_manifests(project_root) -> list[str]:
             if d in skip or d.startswith("obj_dir"):
                 continue
             child = os.path.join(dirpath, d)
-            if os.path.islink(child) and not _may_follow_link(
+            if os.path.islink(child) and not may_follow_link(
                 child, Path(os.path.relpath(child, root)).parts, root_real
             ):
                 continue

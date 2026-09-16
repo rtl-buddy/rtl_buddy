@@ -11,6 +11,8 @@ from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
     elaboration_defines,
+    library_fingerprint,
+    elaboration_fingerprint,
     emit_frontend_read_cmds,
     find_conflicting_driver_warnings,
     lifetime_scan_inputs,
@@ -29,6 +31,7 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.provenance import text_sha256
 from ..phys.publish import invalidate_half, publish_synth
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
@@ -69,6 +72,10 @@ class OpenRoadSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._yosys_opts: SynthToolOpts | None = None
+        self._or_opts: SynthToolOpts | None = None
+        # The `-D` table `_write_yosys_script` actually fed the frontend;
+        # see the Yosys backend's field of the same name (#570).
+        self._script_defines: dict[str, str | None] | None = None
         self.static_function_findings = 0
 
     # ------------------------------------------------------------------
@@ -211,6 +218,7 @@ class OpenRoadSynth:
         lib_paths = self._resolve_lib_paths()
         params = self.synth_cfg.get_params()
         defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
+        self._script_defines = defines
         incdirs = incdirs_from_filelist(fl_path)
         opts = self._resolve_yosys_opts()
 
@@ -535,12 +543,45 @@ class OpenRoadSynth:
             )
         return result
 
+    def _resolve_or_opts(self) -> SynthToolOpts:
+        """Options for the mapping stage -- this backend's own tool config.
+
+        Separate from `_resolve_yosys_opts`, which answers for the
+        elaboration stage: `strategy` (AREA, TIMING, TIMING_GENETIC ...)
+        is read here and is the knob an optimisation experiment turns.
+        Memoised for the reason its sibling is -- resolving the overrides
+        emits validation warnings, and the script writer and the phys
+        model's config fingerprint (#568) must not each pay for a second
+        copy of them.
+        """
+        if self._or_opts is None:
+            self._or_opts = self.tool_cfg.get_opts(
+                self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+            )
+        return self._or_opts
+
+    def _resynth_cmd(self) -> str | None:
+        """The stage-2 command `strategy` selects, or None for no resynthesis.
+
+        The *mapping*, named once, because two callers need the same answer:
+        `_write_or_script`, which emits the line, and the phys model's config
+        fingerprint (#568), which records what the script consumed. Strategy
+        reaches the script only through this table -- three spellings collapse
+        to two commands and everything else to nothing at all -- so the
+        fingerprint records the command and not the string. `TIMING` and
+        `TIMING_ANNEAL` are one run and digest as one; `AREA` and a typo are
+        both "no resynthesis", which is what the netlist will show.
+        """
+        strategy = self._resolve_or_opts().strategy.upper()
+        if strategy in ("TIMING", "TIMING_ANNEAL"):
+            return "resynth_annealing"
+        if strategy == "TIMING_GENETIC":
+            return "resynth_genetic"
+        return None
+
     def _write_or_script(self, lef_paths: list[str], lib_paths: list[str]) -> str:
         top = self.synth_cfg.get_top()
         constraints = self.synth_cfg.get_constraints()
-        opts = self.tool_cfg.get_opts(
-            self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
-        )
 
         lines = []
         for lef in lef_paths:
@@ -563,10 +604,9 @@ class OpenRoadSynth:
         if pre_sta_tcl:
             lines.append(pre_sta_tcl.rstrip())
 
-        if opts.strategy.upper() in ("TIMING", "TIMING_ANNEAL"):
-            lines.append("resynth_annealing")
-        elif opts.strategy.upper() == "TIMING_GENETIC":
-            lines.append("resynth_genetic")
+        resynth = self._resynth_cmd()
+        if resynth:
+            lines.append(resynth)
 
         lines.append("report_design_area")
         if constraints:
@@ -700,6 +740,90 @@ class OpenRoadSynth:
             phys_model=phys_model,
         )
 
+    def _phys_options(self) -> dict:
+        """The effective options the config fingerprint is digested over.
+
+        What the two generated scripts actually consume, not the two
+        resolved `SynthToolOpts` dataclasses. A digest over those told two
+        runs apart by fields no script line reads, which reports a
+        difference the netlist cannot have, and at the same time missed
+        the two inputs that do shape this backend's netlist and live
+        nowhere in them (#568).
+
+        Stage by stage, read off the script writers:
+
+        - `elaborate`: the shared frontend subset
+          (:func:`elaboration_fingerprint`), plus `synth_args` taken from
+          `effort_cfg.get_yosys_synth_args()` -- **not** from the resolved
+          opts. `_write_yosys_script` appends the effort's value to
+          `synth -top` and never looks at `opts.synth_args`, so a
+          `tool_overrides.<tool>.synth_args` on an openroad run changes
+          nothing and must not change the digest. `abc_args` is fed by
+          neither source: the ABC line is `_ABC_SCRIPT_AREA`, hard-coded,
+          and the effort's `yosys.abc-args` is ignored on this backend too.
+        - `map`: `resynth`, the command `strategy` maps to
+          (`_resynth_cmd`), the sha256 of the pre-STA Tcl the effort
+          supplies, and `lefs`, the resolved LEF set `_write_or_script`
+          reads. The rest of the stage-2 opts is inert on this path, so
+          the dataclass is not digested.
+        - `params` and `defines`: the elaboration values, which shape the
+          netlist as surely as an ABC script does. `defines` is the
+          **merged** table `_write_yosys_script` hands the frontend --
+          the filelist's `+define+` entries with the run's `defines:` on
+          top (:func:`elaboration_defines`) -- and not `synth.yaml`'s
+          field alone, which digested a `+define+WIDTH=8` change in the
+          generated filelist as no change at all (#570).
+        - `libs`: the resolved Liberty set (:func:`library_fingerprint`),
+          at the top because both stages read it -- stage 1 for
+          `read_liberty`, `abc -liberty` and `stat -liberty`, stage 2 for
+          the timing it maps and reports against.
+
+        The libraries are not determined by `platform` alone, so recording
+        the platform name is not enough (#570): `_resolve_lib_paths` and
+        `_resolve_lef_paths` append the config's own `lib-paths` /
+        `lef-paths` to the platform's, and with no platform at all those
+        lists are the whole of it. Two corners named that way digested
+        identically while producing two netlists with two areas.
+
+        The Tcl is hashed rather than embedded because it is content and
+        not a path: an effort carries the snippet inline, so there is no
+        file to record, and a floorplan sequence is pages long. It is
+        `rstrip`ped exactly as the script writer strips it, so trailing
+        whitespace that never reaches OpenROAD does not read as a
+        different experiment.
+
+        Both opts accessors are memoised, so asking them here costs
+        nothing and re-emits no override warning.
+        """
+        return {
+            "tool": self.tool_cfg.get_name(),
+            "elaborate": dict(
+                elaboration_fingerprint(self._resolve_yosys_opts(), self.root_cfg),
+                synth_args=self.effort_cfg.get_yosys_synth_args(),
+            ),
+            "map": {
+                "resynth": self._resynth_cmd(),
+                "pre_sta_tcl_sha256": text_sha256(
+                    self.effort_cfg.get_openroad_pre_sta_tcl().rstrip()
+                ),
+                "lefs": library_fingerprint(self._resolve_lef_paths(), self.root_cfg),
+            },
+            "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
+            "params": self.synth_cfg.get_params(),
+            "defines": self._digested_defines(),
+        }
+
+    def _digested_defines(self) -> dict:
+        """The macro table the generated script fed the frontend (#570).
+
+        Recorded by `_write_yosys_script` rather than re-derived, for the
+        reason the Yosys backend's twin gives: it is the table that was
+        passed, and `synth.f` may have been rewritten since.
+        """
+        if self._script_defines is not None:
+            return dict(self._script_defines)
+        return self.synth_cfg.get_defines()
+
     def _publish_phys_model(
         self, *, area_um2: float | None, gate_count: int | None
     ) -> str | None:
@@ -710,6 +834,12 @@ class OpenRoadSynth:
         2's, which is the pairing this backend already reports. Never fails
         the synthesis: see the Yosys backend's copy for why a by-product does
         not get to veto a product.
+
+        The identity fields (#568) name BOTH stages, because both shape the
+        netlist: the elaboration frontend and its gates on one side, the
+        mapping strategy and the pre-STA Tcl on the other, and an
+        experiment may vary either. See `_phys_options` for what each
+        stage contributes and why.
         """
         published = publish_synth(
             artefact_dir=self.artefact_dir,
@@ -721,6 +851,10 @@ class OpenRoadSynth:
             log_path=self._or_log_path(),
             area_um2=area_um2,
             gate_count=gate_count,
+            platform=self.synth_cfg.get_platform(),
+            effort=self.effort_cfg.get_name(),
+            constraints=self.synth_cfg.get_constraints(),
+            options=self._phys_options(),
         )
         if published["error"] is not None or published["rows"] is None:
             log_event(

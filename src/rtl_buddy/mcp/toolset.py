@@ -58,6 +58,7 @@ STATELESS_TOOL_NAMES = (
     "test_status",
     "cov_summary",
     "cov_module",
+    "phys_runs",
     "phys_summary",
     "phys_module",
     "phys_instance",
@@ -469,6 +470,23 @@ class Toolset:
             manifest=self._rooted(self._phys_path_arg(args, "manifest")),
         )
 
+    def _h_phys_runs(self, args: dict) -> dict:
+        """Every run with physical artefacts under the project.
+
+        Takes no ``phys_dir``: its subject is the set of runs rather than
+        one of them, and it is what an agent calls to find the argument
+        the other three take.
+        """
+        return phys_query.runs_payload(
+            self.project_root,
+            # Validated by the same helper the detail tools use, with this
+            # tool's own default: a bare `int()` here would have let
+            # `limit: -1` through `truncate`'s "no head at all" reading and
+            # answered a listing request with every run in the project --
+            # the very failure the helper exists to refuse.
+            limit=self._phys_limit(args, phys_query.DEFAULT_RUNS_LIMIT),
+        )
+
     def _h_phys_summary(self, args: dict) -> dict:
         return phys_query.summary_payload(
             self._phys_context(args),
@@ -523,8 +541,15 @@ class Toolset:
         return value
 
     @staticmethod
-    def _phys_limit(args: dict) -> int:
+    def _phys_limit(args: dict, default: int = phys_query.DEFAULT_RANK_LIMIT) -> int:
         """The row cap a physical tool applies, defaulting like the CLI.
+
+        ``default`` is the caller's, because the tools do not share one:
+        a ranking of instances heads at
+        :data:`~rtl_buddy.phys.query.DEFAULT_RANK_LIMIT` and a listing of
+        runs at :data:`~rtl_buddy.phys.query.DEFAULT_RUNS_LIMIT`. Only the
+        default differs — every tool that takes a ``limit`` comes through
+        here, so the refusals below hold for all of them.
 
         A HEAD by default, not the complete list. These lists are as long
         as the design: every instance of a Liberty cell on a mapped run
@@ -560,7 +585,7 @@ class Toolset:
         means all of them, because that is what the input's description
         promises.
         """
-        raw = args.get("limit", phys_query.DEFAULT_RANK_LIMIT)
+        raw = args.get("limit", default)
         try:
             limit = int(raw)
         except (TypeError, ValueError):
@@ -1216,6 +1241,45 @@ def build_toolset(
                 ["module"],
             ),
             handler=ts._h_cov_module,
+        )
+    )
+    register(
+        ToolSpec(
+            name="phys_runs",
+            title="Physical runs in this project",
+            command="rb phys runs",
+            description=(
+                "Every run that left physical artefacts under this project, "
+                "newest first — the menu the other physical tools take their "
+                "'phys_dir' from. Each entry carries the artefact directory to "
+                "pass back, the run name and top, which backends produced it, "
+                "the power mode and what drove the switching (defaults, a "
+                "synthetic toggle/duty pair, or a SAIF/VCD trace and the test "
+                "behind it), a fingerprint of the configuration that shaped the "
+                "netlist (platform, effort, constraints, a digest of the "
+                "effective tool options), the rb xplr experiment id when the "
+                "run sits under one, and when it was generated. Reads only the "
+                "manifests, runs no EDA tool, and needs no hub. Call this when "
+                "a project has more than one synthesis or power run — two runs "
+                "of one design differ by their configuration and their power "
+                "mode, not by their top."
+            ),
+            input_schema=_obj(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Runs to list, newest first (default "
+                            f"{phys_query.DEFAULT_RUNS_LIMIT}; 0 for all). The "
+                            "payload carries the limit it applied beside the "
+                            "untruncated count, so a headed list says that it "
+                            "is one."
+                        ),
+                        "minimum": 0,
+                    },
+                }
+            ),
+            handler=ts._h_phys_runs,
         )
     )
     register(
