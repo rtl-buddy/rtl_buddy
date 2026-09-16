@@ -240,6 +240,10 @@ The scan is a tokenizer with a definedness-only preprocessor, and it is imperfec
 
 The two halves of the physical model spell `module` in two namespaces: the synthesis half holds RTL module names as Yosys' `stat` saw them, and the power half holds the Liberty cell each leaf instance is an instance of, because a mapped netlist's leaves are cells. `rb phys module u_cpu` therefore reports the RTL module's cell count and area with an empty instance list and no power, and flattening the design does not change it. The payload's `instance_join` states the reason and the console prints it. Ask what a block burns by its instance path instead: `rb phys instance u_cpu` sums the leaf rows under it. A name that exists in both namespaces reports both, marked by `namespaces` and a collision note, and the two are never added together. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).
 
+## Phys pane and schematic selections cross only within one hierarchy
+
+Clicking an instance in the `/phy` pane broadcasts the path rooted at the physical model's own top, and an inbound selection is resolved against the pane's own rows. Neither surface can see which design the other is displaying, so a `/sch` showing a testbench wrapped around the DUT — or a different design entirely — is handed a path that names no instance there and selects nothing; a selection broadcast from such a view lands in the pane the same way. Nothing reports it, because a path matching no row is indistinguishable from a click on a row the other surface does not hold. Open the schematic on the design the model was built from — the synthesis `top:`, not a testbench that wraps it — and the two follow each other. See [Physical Metrics](concepts/phys.md#browse-the-model-in-the-hub).
+
 ## FPV COI analysis is best-effort
 
 A cone-of-influence Yosys failure logs `fpv coi_yosys_failed`, omits COI data, and does not fail a successful proof. If COI numbers disappear, inspect `artefacts/<name>/coi.log` and verify `cfg-fpv-tools[].opts.plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`.
