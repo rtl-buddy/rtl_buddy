@@ -5337,6 +5337,7 @@ class RtlBuddy:
         # next to regression.yaml.
         self._enter_command_context(command_root=orchestration_ctx.command_root)
         ctx = orchestration_ctx
+        _log_reservation_advice(reservation_findings)
 
         all_suite_results = []
         for reg_result in reg_results:
@@ -5422,7 +5423,6 @@ class RtlBuddy:
         # Render in both modes: in machine mode this emits the "summary" log
         # event (and plain text to stderr), leaving stdout for the envelope.
         self._render_regression_summary(reg_results, metadata=metadata)
-        _log_reservation_advice(reservation_findings)
         if reservation_findings and not self.machine:
             self._render_reservation_advice(reservation_findings)
         if self.machine:
