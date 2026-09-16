@@ -61,6 +61,7 @@ from .logging_utils import (
     log_console_event,
     log_event,
     render_summary,
+    set_print_failures_only,
     setup_logging,
 )
 from .process_utils import cancellation_has_started, terminate_live_managed_processes
@@ -859,6 +860,13 @@ class RtlBuddy:
                 "--machine", help="Emit machine-oriented logs and plain console output"
             ),
         ] = False,
+        print_failures_only: Annotated[
+            bool,
+            typer.Option(
+                "--print-failures-only",
+                help="Hide PASS, SKIP, and XFAIL rows from console summaries",
+            ),
+        ] = False,
         color: Annotated[
             bool, typer.Option(help="Logs without ANSI color codes")
         ] = True,
@@ -911,6 +919,7 @@ class RtlBuddy:
             return
 
         self.machine = machine
+        set_print_failures_only(print_failures_only)
         self.invocation_cwd = Path.cwd().resolve()
 
         if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
