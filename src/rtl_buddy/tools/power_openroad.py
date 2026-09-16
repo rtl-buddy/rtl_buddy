@@ -17,6 +17,7 @@ _SNAPSHOT_ATTEMPTS = 3
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
+from ..phys.manifest import project_relative, project_root_for_dir
 from ..phys.provenance import TRACE_SOURCES, activity_block
 from ..phys.publish import invalidate_half, publish_power, sha256_of
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
@@ -323,6 +324,52 @@ class OpenRoadPower(BasePower):
             "odb": None,
             "sdc": self.power_cfg.get_constraints(),
             "top": top,
+        }
+
+    def _upstream_identity(self) -> dict:
+        """Which upstream run this analysis actually read, for the digest.
+
+        `netlist_source` names the *kind* of upstream — "synth" or "pnr" —
+        and nothing more. Two power entries pointing at two different
+        synth entries, or at two suites through `synth-path`, resolve
+        different netlists under one spelling of it; `_resolve_inputs`
+        hands OpenROAD that difference and the config fingerprint did not
+        record it, so two runs measuring two designs fingerprinted
+        identically and a run listing showed them as one experiment
+        (#570).
+
+        Digest what the run consumed. A `netlist-source: synth` run
+        already holds the strongest statement available — the sha256 of
+        the netlist copy it measured — and it is better than a path here:
+        two entries that resolve byte-identical netlists *are* one
+        experiment, which is the comparison this block exists to make. A
+        `netlist-source: pnr` run reads a routed database that nothing
+        hashes (an .odb is large, and is read once), so the ODB's path
+        stands in for its contents; it names the pnr run's own artefact
+        directory, which is exactly what two pnr entries differ in.
+
+        Project-relative, because a digest that moved with the checkout
+        would tell one run apart from itself. This is the one path the
+        publish cannot relativise on our behalf: `_publish` rewrites the
+        paths *inside* the config block, and by the time it runs the
+        options mapping has already been digested.
+
+        Unknown stays ``null`` rather than becoming a placeholder — the
+        strict-or-absent rule :func:`options_digest` keeps.
+        """
+        if self.power_cfg.get_netlist_source() != "pnr":
+            return {"netlist_sha256": self._netlist_sha256, "input_path": None}
+        try:
+            odb = self._resolve_inputs().get("odb")
+        except Exception:  # noqa: BLE001 - resolution already succeeded once
+            odb = None
+        return {
+            "netlist_sha256": None,
+            "input_path": (
+                project_relative(odb, project_root_for_dir(self.artefact_dir))
+                if odb
+                else None
+            ),
         }
 
     def _resolve_platform(self):
@@ -896,6 +943,9 @@ class OpenRoadPower(BasePower):
             options={
                 "tool": self.power_cfg.get_tool_name(),
                 "netlist_source": self.power_cfg.get_netlist_source(),
+                # Which upstream run, not merely which kind of one; see
+                # `_upstream_identity` (#570).
+                **self._upstream_identity(),
                 "mode": self.power_cfg.get_mode(),
                 "activity_source": source,
                 "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),

@@ -908,18 +908,23 @@ def _run_prepared_power(backend, monkeypatch, *, instances=None, cells=None):
     return backend.run()
 
 
-def _make_pnr_power_backend(tmp_path, routed_sdc_text):
+def _make_pnr_power_backend(tmp_path, routed_sdc_text, pnr_run="demo_pnr"):
     """A `netlist-source: pnr` backend with no explicit `constraints:`.
 
     Which is the ordinary spelling: the routed SDC is an artefact of the
     `rb pnr` run this reads, so nobody names it in `power.yaml`.
     `_resolve_inputs` is the thing that knows where it is, and it is
     stubbed here exactly as the synth fixture stubs it.
+
+    ``pnr_run`` names the upstream `rb pnr` entry, so a caller can build
+    two backends that differ in nothing but which routed database they
+    read.
     """
     backend = _make_power_backend(tmp_path)
     backend.power_cfg.netlist_source = "pnr"
     backend.power_cfg.constraints = None
-    pnr_artefact = tmp_path / "pnr_artefacts" / "demo_pnr"
+    backend.power_cfg.pnr_name = pnr_run
+    pnr_artefact = tmp_path / "pnr_artefacts" / pnr_run
     pnr_artefact.mkdir(parents=True, exist_ok=True)
     odb = pnr_artefact / "demo_top.routed.odb"
     odb.write_bytes(b"")
@@ -1191,6 +1196,97 @@ def test_the_power_options_digest_ignores_the_field_no_backend_reads(
 
     assert digests[0] is not None
     assert digests[0] == digests[1]
+
+
+def test_two_power_runs_over_two_netlists_do_not_share_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The finding (#570 round-16, Codex P2). `netlist_source` names the
+    *kind* of upstream, not which one, so two power entries differing only
+    in `synth:`/`synth-path:` fed OpenROAD two different netlists and came
+    out with one config fingerprint — and `rb phys runs` reads manifests
+    only, so a listing showed two designs as one experiment."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    for index, netlist_text in enumerate(
+        (
+            "module demo_top(); endmodule\n",
+            "module demo_top(); // a second synthesis\nendmodule\n",
+        )
+    ):
+        root = tmp_path / f"run{index}"
+        root.mkdir()
+        backend = _make_power_backend(root)
+        upstream = root / "upstream_netlist.v"
+        upstream.write_text(netlist_text)
+        backend.power_cfg.synth_name = f"synth{index}"
+        backend._resolve_inputs = lambda root=root, upstream=upstream: {
+            "netlist": str(upstream),
+            "odb": None,
+            "sdc": str(root / "constraints.sdc"),
+            "top": "demo_top",
+        }
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None
+    assert digests[0] != digests[1]
+
+
+def test_two_pnr_power_runs_over_two_databases_do_not_share_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The other half of the same finding. A `netlist-source: pnr` run
+    records no netlist hash at all, so without the resolved database's path
+    two analyses of two routed designs — same platform, same activity, same
+    routed SDC text — were one fingerprint."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    for index in range(2):
+        root = tmp_path / f"pnr{index}"
+        root.mkdir()
+        backend, _routed = _make_pnr_power_backend(
+            root,
+            "create_clock -period 3 [get_ports clk]\n",
+            pnr_run=f"pnr_run{index}",
+        )
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None
+    assert digests[0] != digests[1]
+
+
+def test_the_upstream_identity_in_the_digest_is_not_an_absolute_path(
+    tmp_path, monkeypatch
+):
+    """A digest that moved with the checkout would tell one run apart from
+    itself, and the publish path cannot relativise this one: it rewrites the
+    paths *inside* the config block, by which time the options mapping has
+    already been hashed."""
+    # The marker `project_root_for_dir` walks up for; without a project
+    # around it every path is outside the tree and kept verbatim, which is
+    # the documented fallback and not the case under test.
+    (tmp_path / "root_config.yaml").write_text("")
+    backend, _routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    _run_prepared_power(backend, monkeypatch)
+
+    identity = backend._upstream_identity()
+
+    assert identity["netlist_sha256"] is None
+    assert identity["input_path"] is not None
+    assert not Path(identity["input_path"]).is_absolute()
+    assert identity["input_path"].endswith("demo_top.routed.odb")
 
 
 def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
