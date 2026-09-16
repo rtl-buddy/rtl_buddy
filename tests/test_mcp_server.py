@@ -779,6 +779,47 @@ def test_a_negative_phys_limit_is_refused_rather_than_read_as_all(
     assert ts.call("phys_module", {"module": "sub", "limit": 0})["ok"] is True
 
 
+def test_a_phys_limit_that_is_not_an_integer_is_refused_before_it_is_coerced(
+    phys_project: Path,
+):
+    """The finding (#563 round-16, Codex P2). ``int()`` is a coercion, not a
+    validator. ``false`` is an ``int`` subclass and converts to ``0`` — this
+    input's spelling of *every row in the design*, the one answer the default
+    exists to prevent — and a fraction converts by truncating toward zero, so
+    ``-0.5`` reached the same place from a value that asked for a head."""
+    ts = _toolset(phys_project)
+
+    for bad, shown in (
+        (False, "False"),
+        (True, "True"),
+        (2.7, "2.7"),
+        (-0.5, "-0.5"),
+    ):
+        refused = ts.call("phys_module", {"module": "sub", "limit": bad})
+
+        assert refused["ok"] is False, bad
+        assert f"limit must be an integer, not {shown}" in refused["error"]
+        assert "0 lists every row" in refused["error"]
+        assert "payload" not in refused
+
+    # Integral floats still answer: JSON has one number type, so `2.0` is
+    # how some hosts spell `2`, and a decimal string converts as it always
+    # has.
+    for good, expected in ((2.0, 2), (0.0, 0), ("1", 1)):
+        answered = ts.call("phys_module", {"module": "sub", "limit": good})
+        assert answered["ok"] is True, good
+        assert answered["payload"]["limit"] == expected
+
+    # And the guarantee is the shared helper's, so it holds for every
+    # physical tool that takes a limit.
+    for tool, args in (
+        ("phys_summary", {}),
+        ("phys_module", {"module": "sub"}),
+        ("phys_instance", {"path": "u_sub"}),
+    ):
+        assert ts.call(tool, dict(args, limit=False))["ok"] is False, tool
+
+
 def test_a_phys_limit_that_is_not_a_number_is_refused_as_a_tool_error(
     phys_project: Path,
 ):
