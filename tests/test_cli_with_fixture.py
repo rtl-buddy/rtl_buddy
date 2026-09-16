@@ -9,11 +9,15 @@ non-docs command is invoked.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
 
 
@@ -193,8 +197,6 @@ def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
     git status inside every JSON envelope via meta.git. Suppress the
     stderr banner so machine output stays tight."""
     rb = RtlBuddy(name="test_cli_machine_no_banner")
-    import sys
-
     saved_argv = sys.argv[:]
     sys.argv = ["rb", "--machine", "test", "--list", "-c", "tests.yaml"]
     try:
@@ -207,6 +209,98 @@ def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
         "machine mode should not emit the human git banner to stderr; "
         f"got: {captured.err!r}"
     )
+
+
+def test_git_metadata_follows_the_project_not_the_cwd(
+    minimal_project: Path, tmp_path: Path, monkeypatch
+):
+    """#581: a job running outside the checkout still reports the project."""
+    for args in (
+        ["init", "-q", "-b", "trunk", "."],
+        ["add", "-A"],
+        ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init"],
+    ):
+        subprocess.run(
+            ["git", *args], cwd=minimal_project, check=True, capture_output=True
+        )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    rb = RtlBuddy(name="test_cli_git_root")
+    rb._pending_invoked_subcommand = "test"
+    rb._builder_override = None
+    rb._extra_sim_timeout_override = None
+    rb._enter_command_context(primary_config=minimal_project / "tests.yaml")
+    rb._artifact_locks.release_all()
+
+    monkeypatch.chdir(outside)
+    assert rb._project_root_for_git() == str(minimal_project)
+    assert rb._collect_git_status()["branch"] == "trunk"
+
+
+def test_git_metadata_anchors_list_only_commands(
+    minimal_project: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """#581: --list skips root_cfg but still anchors on the command root."""
+    for args in (
+        ["init", "-q", "-b", "projbranch", "."],
+        ["add", "-A"],
+        ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init"],
+    ):
+        subprocess.run(
+            ["git", *args], cwd=minimal_project, check=True, capture_output=True
+        )
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    for args in (
+        ["init", "-q", "-b", "ambient", "."],
+        ["commit", "-q", "--allow-empty", "-m", "other"],
+    ):
+        subprocess.run(
+            ["git", "-c", "user.email=t@e", "-c", "user.name=t", *args],
+            cwd=ambient,
+            check=True,
+            capture_output=True,
+        )
+
+    monkeypatch.chdir(ambient)
+    rb = RtlBuddy(name="test_cli_git_list_only")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rb",
+            "--machine",
+            "test",
+            "--list",
+            "-c",
+            str(minimal_project / "tests.yaml"),
+        ],
+    )
+    assert rb.run() == 0
+
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["meta"]["git"]["branch"] == "projbranch"
+
+
+def test_git_banner_emitted_once_per_invocation(
+    minimal_project: Path, tmp_path: Path, monkeypatch
+):
+    """A regression loop re-entering the command context must not repeat it."""
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    rb = RtlBuddy(name="test_cli_git_banner_once")
+    calls = []
+    monkeypatch.setattr(rb, "show_git_rev", lambda: calls.append(1))
+    rb._pending_invoked_subcommand = "test"
+    rb._builder_override = None
+    rb._extra_sim_timeout_override = None
+
+    rb._enter_command_context(primary_config=minimal_project / "tests.yaml")
+    rb._enter_command_context(primary_config=minimal_project / "tests.yaml")
+    rb._artifact_locks.release_all()
+
+    assert calls == [1]
 
 
 def test_synth_list_skips_root_config_load(tmp_path: Path, monkeypatch):

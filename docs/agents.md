@@ -129,6 +129,8 @@ Structured commands emit this top-level shape:
 }
 ```
 
+`meta.cwd` is the invocation directory; `meta.git` describes the project root, so the two differ when rb is invoked from outside the checkout.
+
 Parse the whole stdout value with `json.loads()`. The stable top-level fields are `command`, `exit_code`, `meta`, and command-specific `payload`. Optional fields may be added under `meta` or `payload`; incompatible changes require a major version change.
 
 Common payload conventions:
