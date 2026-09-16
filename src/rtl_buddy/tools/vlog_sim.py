@@ -404,11 +404,18 @@ _LIBRARY_DIR_OPTION = "-y"
 # respectively need. Only the options whose argument is an *input* are here:
 # an output location (`-o`, `--Mdir`) must never reach the compile key, or a
 # warm rebuild would hash the binary it just produced and move its own key.
+# `-f` and `-F` name a filelist, and differ in the one thing that decides
+# what its entries MEAN: a relative path inside a `-f` list is resolved by the
+# builder against its own working directory, while one inside a `-F` list is
+# resolved against the directory holding that list. Verilator, VCS and Icarus
+# agree on this (the same split `vlog_filelist` documents at its
+# `absolute_sources` pin), and the rule belongs to the FILE's contents — it is
+# set by the option that pulled the file in, and a nested list resets it.
 _CMD_PATH_OPTIONS = {
     _LIBRARY_DIR_OPTION: ("dir", False),
     "-v": "file",
-    "-f": "filelist",
-    "-F": "filelist",
+    "-f": "filelist-cwd",
+    "-F": "filelist-rel",
 }
 
 # How deep a nested `-f`/`-F` chain is followed when keying a persistent
@@ -1526,6 +1533,13 @@ class VlogSim:
         # :func:`_claim_rebuild`.
         self.rebuild = rebuild
         self._shared_build_dir = None
+        # The directory the builder will run in, once a plan has settled it
+        # (#542 review round 4). It is what a relative entry inside a `-f`
+        # filelist resolves against — `-f` is cwd-relative for verilator,
+        # VCS and Icarus alike — so the cache key cannot read such a list
+        # without it. None until a plan exists, which makes a relative `-f`
+        # entry text-only rather than a guess.
+        self._compile_cwd = None
         # Filled by _compile_plan() and consumed (and cleared) by compile(),
         # so a probe and the compile that follows it share one derivation
         # while a *second* compile() on this instance still re-stats its
@@ -2583,7 +2597,7 @@ class VlogSim:
             for index, token in enumerate(key_cmd)
         ]
 
-    def _nested_filelist_tokens(self, filelist_path, *, seen, depth):
+    def _nested_filelist_tokens(self, filelist_path, *, seen, depth, base):
         """Everything a nested ``-f``/``-F`` filelist names, recursively.
 
         A filelist the COMPILE LINE points at is an input whose bytes decide
@@ -2606,6 +2620,24 @@ class VlogSim:
         whose reader is a *validator* — it raises on a malformed line and
         refuses ``-f`` outright, neither of which may happen here.
 
+        ``base`` is the directory a RELATIVE entry in *this* list resolves
+        against, and it is not always this file's own directory (#542 review
+        round 4). The two options differ in exactly that: a relative path
+        inside a ``-f`` list is resolved by the builder against its working
+        directory, one inside a ``-F`` list against the directory holding
+        that list — see :data:`_CMD_PATH_OPTIONS`. The rule belongs to the
+        file's CONTENTS, so it is handed down from whichever option pulled
+        this file in, and a nested ``-f``/``-F`` resets it for the file it
+        names. Reading a relative entry against the wrong base hashes a
+        different file from the one the simulator opens, or none at all —
+        and with VCS or Icarus, whose stamps carry no dependency list,
+        nothing downstream would have caught it.
+
+        ``base`` of ``None`` means the builder's working directory is not
+        knowable here, which makes a relative entry unresolvable: it is left
+        as text rather than guessed at. Absolute entries are unaffected
+        either way, which is what a generated list uses.
+
         Bounded by :data:`_NESTED_FILELIST_MAX_DEPTH` and cycle-safe on
         ``realpath``, so a list that includes itself costs one visit.
         """
@@ -2622,7 +2654,6 @@ class VlogSim:
                 ]
         except OSError:
             return
-        base = os.path.dirname(os.path.abspath(filelist_path))
         for line in lines:
             match = _NESTED_FILELIST_OPTION_RE.match(line)
             option = (match.group(1) or "").strip() if match else ""
@@ -2642,9 +2673,15 @@ class VlogSim:
             for part in parts:
                 if not part:
                     continue
-                resolved = self._key_input_path(
-                    os.path.normpath(os.path.join(base, part))
-                )
+                if os.path.isabs(part):
+                    candidate = os.path.normpath(part)
+                elif base is None:
+                    # Relative, and nothing to anchor it to. Guessing would
+                    # key a file the build never opens.
+                    continue
+                else:
+                    candidate = os.path.normpath(os.path.join(base, part))
+                resolved = self._key_input_path(candidate)
                 if resolved is None:
                     continue
                 spelled = self._stamp_relpath(resolved)
@@ -2655,7 +2692,17 @@ class VlogSim:
                         continue
                     yield (f"{option} {spelled}", resolved, "file")
                     yield from self._nested_filelist_tokens(
-                        resolved, seen=seen, depth=depth + 1
+                        resolved,
+                        seen=seen,
+                        depth=depth + 1,
+                        # The nested option resets the rule for the file it
+                        # names: `-f` hands its contents the builder's cwd,
+                        # `-F` hands them their own directory.
+                        base=(
+                            self._compile_cwd
+                            if option == "-f"
+                            else os.path.dirname(resolved)
+                        ),
                     )
                 elif option == _INCDIR_OPTION:
                     yield (f"{_INCDIR_OPTION}{spelled}", resolved, ("dir", True))
@@ -2711,10 +2758,20 @@ class VlogSim:
                 else:
                     yield (spelling, resolved, "file")
                 continue
-            if kind == "filelist":
-                # The list's own bytes, and then everything it names.
+            if kind in ("filelist-cwd", "filelist-rel"):
+                # The list's own bytes, and then everything it names — read
+                # against the base the option that named it implies.
                 yield (spelling, resolved, "file")
-                yield from self._nested_filelist_tokens(resolved, seen=set(), depth=1)
+                yield from self._nested_filelist_tokens(
+                    resolved,
+                    seen=set(),
+                    depth=1,
+                    base=(
+                        self._compile_cwd
+                        if kind == "filelist-cwd"
+                        else os.path.dirname(resolved)
+                    ),
+                )
                 continue
             yield (spelling, resolved, kind)
 
@@ -3456,6 +3513,10 @@ class VlogSim:
         """
         rtl_builder_cfg = self.rtl_builder_cfg
         compile_work_dir = self._ensure_artifact_dir()
+        # What `run_managed_process(..., cwd=compile_work_dir)` will use, so
+        # a `-f` filelist's relative entries resolve as the builder resolves
+        # them (#542 review round 4).
+        self._compile_cwd = compile_work_dir
         # A probe is not a compile, but it is the point at which the builder
         # for this config is settled (a preproc hook can no longer move it).
         # Recording it here is what lets a config that never reaches a

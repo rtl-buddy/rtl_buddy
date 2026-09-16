@@ -6370,10 +6370,15 @@ def test_the_default_mode_key_ignores_compile_line_content(tmp_path, monkeypatch
 
 
 def _write_nested_filelists(checkout, *, source="module nested; endmodule\n"):
-    """A compile-line `-f` list that names a further list, which names RTL.
+    """A compile-line `-F` list that names a further list, which names RTL.
 
     Byte-identical in every checkout on purpose: the bytes of the lists are
     not what two branches differ in — the RTL they reach is.
+
+    `-F` throughout, so every relative entry anchors to the list that
+    declared it — the spelling a self-contained list tree uses. The `-f`
+    rule, where entries anchor to the builder's working directory instead,
+    has its own tests below.
     """
     (checkout / "rtl" / "nested.sv").write_text(source)
     lists = checkout / "lists"
@@ -6408,7 +6413,7 @@ def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monke
                 monkeypatch,
                 cache_root=cache,
                 test_name="t",
-                compile_opts=["-f", str(tmp_path / name / "lists" / "top.f")],
+                compile_opts=["-F", str(tmp_path / name / "lists" / "top.f")],
             )
             ._compile_plan()
             .shared_dir.name
@@ -6428,7 +6433,7 @@ def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monke
         monkeypatch,
         cache_root=cache,
         test_name="t",
-        compile_opts=["-f", str(top_a)],
+        compile_opts=["-F", str(top_a)],
     )
     plan = sim._compile_plan()
     spellings = [
@@ -6438,7 +6443,7 @@ def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monke
         )
     ]
     assert spellings == [
-        "-f lists/top.f",
+        "-F lists/top.f",
         "-F lists/inner.f",
         "rtl/nested.sv",
     ], spellings
@@ -6455,6 +6460,7 @@ def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeyp
     lists = checkout / "lists"
     lists.mkdir()
     (lists / "top.f").write_text("+incdir+../hdr\n-F top.f\n")
+    # `-F`, so `+incdir+../hdr` anchors to `lists/` as the builder anchors it.
 
     def _sim():
         _as_a_fresh_process()
@@ -6463,7 +6469,7 @@ def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeyp
             monkeypatch,
             cache_root=cache,
             test_name="t",
-            compile_opts=["-f", str(lists / "top.f")],
+            compile_opts=["-F", str(lists / "top.f")],
         )
 
     sim = _sim()
@@ -6471,7 +6477,7 @@ def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeyp
     entries = sim._fingerprint_cmd_inputs(plan.key_cmd, plan.fingerprint["sources"])
     # The self-include contributes once, under the spelling it was first
     # reached by, and is not followed a second time.
-    assert [entry[0] for entry in entries] == ["-f lists/top.f", "+incdir+hdr"]
+    assert [entry[0] for entry in entries] == ["-F lists/top.f", "+incdir+hdr"]
     # ...and the include directory is keyed by its listing, so a header
     # inside it moves the key.
     before = plan.shared_dir.name
@@ -6837,3 +6843,176 @@ def test_an_embedded_path_is_keyed_by_what_it_turns_out_to_be(tmp_path, monkeypa
     assert _entries(
         [f"-CFLAGS=-I{checkout / 'inc'} -include {checkout / 'cfg.vlt'}"]
     ) == ["+incdir+inc", "cfg.vlt"]
+
+
+def _compile_cwd_of(sim):
+    """Where the builder will run — what a `-f` list's entries anchor to."""
+    return Path(sim._compile_plan().compile_work_dir)
+
+
+def test_a_relative_entry_in_a_dash_f_list_resolves_against_the_compile_cwd(
+    tmp_path, monkeypatch
+):
+    """`-f` is cwd-relative for verilator, VCS and Icarus alike (#542 review
+    round 4).
+
+    Anchored to the list's own directory instead, the key hashed a file the
+    simulator never opens — or none at all — so two checkouts with identical
+    list text over different cwd-relative RTL shared one persistent build,
+    with no dependency list on the VCS/Icarus side to invalidate it.
+
+    The entry climbs out of `artefacts/<test>/` because that is what a real
+    one does; a path that stayed inside it would name rtl_buddy's own output
+    tree, which the key refuses for its own reasons.
+    """
+    cache = tmp_path / "cache"
+    # From `<checkout>/verif/blk/artefacts/<test>` up four to the checkout.
+    entry = "../../../../rtl/cwd_rtl.sv"
+    for name, body in (
+        ("wt-a", "module cwd_rtl; endmodule\n"),
+        ("wt-b", "module cwd_rtl; /* patched */ endmodule\n"),
+    ):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        (checkout / "rtl" / "cwd_rtl.sv").write_text(body)
+        lists = checkout / "lists"
+        lists.mkdir()
+        (lists / "cwd.f").write_text(f"{entry}\n")
+
+    def _sim(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["-f", str(tmp_path / name / "lists" / "cwd.f")],
+        )
+
+    sim_a = _sim("wt-a")
+    plan_a = sim_a._compile_plan()
+    keyed = [
+        entry_row[0]
+        for entry_row in sim_a._fingerprint_cmd_inputs(
+            plan_a.key_cmd, plan_a.fingerprint["sources"]
+        )
+    ]
+    assert keyed == ["-f lists/cwd.f", "rtl/cwd_rtl.sv"], keyed
+    assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name
+
+
+def test_the_same_list_reached_by_dash_F_resolves_against_the_list_dir(
+    tmp_path, monkeypatch
+):
+    """The mirror of the rule above: `-F` anchors to the list (#542 review
+    round 4). One list, two options, two different answers."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    lists = checkout / "lists"
+    lists.mkdir()
+    (lists / "both.f").write_text("beside.sv\n")
+    (lists / "beside.sv").write_text("module beside; endmodule\n")
+
+    def _entries(option):
+        _as_a_fresh_process()
+        sim = _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[option, str(lists / "both.f")],
+        )
+        plan = sim._compile_plan()
+        return [
+            row[0]
+            for row in sim._fingerprint_cmd_inputs(
+                plan.key_cmd, plan.fingerprint["sources"]
+            )
+        ]
+
+    assert _entries("-F") == ["-F lists/both.f", "lists/beside.sv"]
+    # Read as `-f`, the same text names `beside.sv` under the compile dir,
+    # which does not exist — so nothing is keyed beyond the list itself,
+    # rather than the file beside the list being keyed by mistake.
+    assert _entries("-f") == ["-f lists/both.f"]
+
+
+def test_a_nested_list_switches_the_base_its_entries_anchor_to(tmp_path, monkeypatch):
+    """The rule belongs to the file's CONTENTS, so a nested option resets it
+    (#542 review round 4): a `-f` inside a `-F` list hands its own entries
+    the builder's cwd, not the directory it happens to sit in."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    (checkout / "rtl" / "from_cwd.sv").write_text("module from_cwd; endmodule\n")
+    lists = checkout / "lists"
+    lists.mkdir()
+    # Outer list reached by -F: its own entries are list-relative, so the
+    # nested list is found beside it and so is `beside.sv`.
+    (lists / "outer.f").write_text("-f inner.f\nbeside.sv\n")
+    (lists / "beside.sv").write_text("module beside; endmodule\n")
+    # Inner list reached by -f: ITS entry is cwd-relative, climbing out of
+    # the artefact dir to the checkout's rtl/.
+    (lists / "inner.f").write_text("../../../../rtl/from_cwd.sv\n")
+    # A decoy at the spelling the *list-relative* reading would produce.
+    (lists / "from_cwd.sv").write_text("module decoy; endmodule\n")
+
+    _as_a_fresh_process()
+    sim = _cache_sim(
+        checkout,
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=["-F", str(lists / "outer.f")],
+    )
+    plan = sim._compile_plan()
+    keyed = [
+        row[0]
+        for row in sim._fingerprint_cmd_inputs(
+            plan.key_cmd, plan.fingerprint["sources"]
+        )
+    ]
+    assert keyed == [
+        "-F lists/outer.f",
+        "-f lists/inner.f",
+        # the inner list's entry took the compile cwd...
+        "rtl/from_cwd.sv",
+        # ...while the outer list's own entry stayed list-relative.
+        "lists/beside.sv",
+    ], keyed
+    assert "lists/from_cwd.sv" not in keyed
+
+
+def test_a_relative_dash_f_entry_is_text_only_with_no_compile_cwd(
+    tmp_path, monkeypatch
+):
+    """Never guess: with no plan yet there is no builder cwd, so a relative
+    `-f` entry is left as text rather than resolved against something the
+    build will not use (#542 review round 4)."""
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    lists = checkout / "lists"
+    lists.mkdir()
+    (lists / "cwd.f").write_text("somewhere.sv\n")
+    (lists / "somewhere.sv").write_text("module somewhere; endmodule\n")
+    sim = _cache_sim(
+        checkout, monkeypatch, cache_root=tmp_path / "cache", test_name="t"
+    )
+    assert sim._compile_cwd is None
+    assert (
+        list(
+            sim._nested_filelist_tokens(
+                str(lists / "cwd.f"), seen=set(), depth=1, base=None
+            )
+        )
+        == []
+    )
+    # An ABSOLUTE entry needs no base and is keyed either way.
+    (lists / "abs.f").write_text(f"{lists / 'somewhere.sv'}\n")
+    assert [
+        entry[0]
+        for entry in sim._nested_filelist_tokens(
+            str(lists / "abs.f"), seen=set(), depth=1, base=None
+        )
+    ] == ["lists/somewhere.sv"]
