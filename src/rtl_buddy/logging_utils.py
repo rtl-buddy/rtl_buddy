@@ -27,6 +27,13 @@ _FILE_LOG_MACHINE: bool = False
 # (e.g. during regression's suite-by-suite loop) doesn't lose content.
 _OPENED_LOG_PATHS: set[str] = set()
 
+# Verdicts a --print-failures-only console render drops, and the order a
+# summary tally lists verdicts in before falling back to alphabetical.
+_HIDDEN_VERDICTS = frozenset({"PASS", "SKIP", "XFAIL"})
+_VERDICT_ORDER = ("PASS", "FAIL", "XFAIL", "XPASS", "SKIP", "NA")
+_KNOWN_VERDICTS = frozenset(_VERDICT_ORDER)
+_PRINT_FAILURES_ONLY = False
+
 
 def _result(self, message, *args, **kwargs):
     if self.isEnabledFor(RESULT_LEVEL):
@@ -90,6 +97,15 @@ def register_logging_levels() -> None:
 
 def is_machine_mode() -> bool:
     return _STATE.machine if _STATE is not None else False
+
+
+def set_print_failures_only(enabled: bool) -> None:
+    global _PRINT_FAILURES_ONLY
+    _PRINT_FAILURES_ONLY = enabled
+
+
+def print_failures_only() -> bool:
+    return _PRINT_FAILURES_ONLY
 
 
 def _should_use_rich_console() -> bool:
@@ -1884,6 +1900,43 @@ def _plain_summary_lines(
     return lines
 
 
+def _verdict_column(
+    columns: list[tuple[str, str]], rows: list[Mapping[str, Any]]
+) -> str | None:
+    keys = {key for key, _label in columns}
+    for candidate in ("result", "status"):
+        if candidate in keys and any(
+            _verdict_of(row, candidate).upper() in _KNOWN_VERDICTS for row in rows
+        ):
+            return candidate
+    return None
+
+
+def _verdict_of(row: Mapping[str, Any], key: str) -> str:
+    return str(row.get(key, "")).strip()
+
+
+def _verdict_counts(rows: list[Mapping[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        verdict = _verdict_of(row, key) or "-"
+        counts[verdict] = counts.get(verdict, 0) + 1
+    return counts
+
+
+def _tally_line(counts: Mapping[str, int]) -> str:
+    def order(verdict: str) -> tuple[int, str]:
+        upper = verdict.upper()
+        if upper in _VERDICT_ORDER:
+            return (_VERDICT_ORDER.index(upper), "")
+        return (len(_VERDICT_ORDER), upper)
+
+    parts = ", ".join(
+        f"{counts[verdict]} {verdict}" for verdict in sorted(counts, key=order)
+    )
+    return f"Results: {parts} ({sum(counts.values())} total)"
+
+
 def render_summary(
     *,
     title: str,
@@ -1892,7 +1945,23 @@ def render_summary(
     logger: logging.Logger,
     metadata: list[str] | None = None,
 ) -> None:
-    plain_lines = _plain_summary_lines(title, columns, rows, metadata=metadata)
+    """Console render honours print_failures_only; log and event keep every row."""
+    cols = list(columns)
+    verdict_key = _verdict_column(cols, rows)
+    counts = _verdict_counts(rows, verdict_key) if verdict_key else {}
+
+    footer = list(metadata or [])
+    if counts:
+        footer.append(_tally_line(counts))
+
+    if verdict_key is not None and print_failures_only():
+        console_rows = [
+            row
+            for row in rows
+            if _verdict_of(row, verdict_key).upper() not in _HIDDEN_VERDICTS
+        ]
+    else:
+        console_rows = rows
 
     if is_machine_mode():
         log_event(
@@ -1902,22 +1971,27 @@ def render_summary(
             title=title,
             metadata=metadata or [],
             rows=rows,
+            counts=counts or None,
         )
-        emit_console_text("\n".join(plain_lines))
+        emit_console_text(
+            "\n".join(_plain_summary_lines(title, cols, console_rows, metadata=footer))
+        )
         return
 
-    logger.result("\n" + "\n".join(plain_lines))
+    logger.result(
+        "\n" + "\n".join(_plain_summary_lines(title, cols, rows, metadata=footer))
+    )
 
     table = Table(title=title)
-    if metadata:
-        table.caption = "\n".join(metadata)
+    if footer:
+        table.caption = "\n".join(footer)
 
-    for key, label in columns:
+    for key, label in cols:
         justify = "right" if key in {"run_id"} else "left"
         no_wrap = key in {"result", "run_id"}
         table.add_column(label, justify=justify, no_wrap=no_wrap)
 
-    for row in rows:
-        table.add_row(*(str(row.get(key, "")) for key, _label in columns))
+    for row in console_rows:
+        table.add_row(*(str(row.get(key, "")) for key, _label in cols))
 
     get_stderr_console().print(table)

@@ -80,6 +80,16 @@ def reset_tool_path_warning_dedupe():
     verible.reset_exe_fallback_warnings()
 
 
+@pytest.fixture(autouse=True)
+def reset_print_failures_only():
+    """Clear the process-global summary filter between tests."""
+    from rtl_buddy import logging_utils
+
+    logging_utils.set_print_failures_only(False)
+    yield
+    logging_utils.set_print_failures_only(False)
+
+
 @pytest.fixture
 def minimal_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy the minimal_project fixture to a tmp dir, chdir into it, and return its path.

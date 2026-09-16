@@ -13,7 +13,12 @@ import pytest
 
 from rtl_buddy.config.verible import VeribleConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError, FilelistError
-from rtl_buddy.logging_utils import log_event, render_summary, setup_logging
+from rtl_buddy.logging_utils import (
+    log_event,
+    render_summary,
+    set_print_failures_only,
+    setup_logging,
+)
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.verible import Verible
 from rtl_buddy.tools.vlog_filelist import VlogFilelist
@@ -167,6 +172,126 @@ def test_render_summary_logs_plain_text_once(tmp_path, capsys):
     assert "Test Results Summary" in file_text
     assert "Builder: vcs" in file_text
     assert "basic" in file_text
+
+
+_VERDICT_COLUMNS = [
+    ("test_name", "Test"),
+    ("result", "Result"),
+    ("desc", "Description"),
+]
+
+_VERDICT_ROWS = [
+    {"test_name": "row_pass", "result": "PASS", "desc": "ok"},
+    {"test_name": "row_skip", "result": "SKIP", "desc": "-"},
+    {"test_name": "row_xfail", "result": "XFAIL", "desc": "-"},
+    {"test_name": "row_fail", "result": "FAIL", "desc": "bad"},
+    {"test_name": "row_na", "result": "NA", "desc": "-"},
+    {"test_name": "row_xpass", "result": "XPASS", "desc": "-"},
+]
+
+_TALLY = "Results: 1 PASS, 1 FAIL, 1 XFAIL, 1 XPASS, 1 SKIP, 1 NA (6 total)"
+
+
+def _render_verdict_summary(logger, columns=None, rows=None):
+    render_summary(
+        title="Test Results Summary",
+        columns=_VERDICT_COLUMNS if columns is None else columns,
+        rows=_VERDICT_ROWS if rows is None else rows,
+        logger=logger,
+        metadata=["Builder: vcs"],
+    )
+
+
+def test_print_failures_only_hides_passing_rows_in_human_mode(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    set_print_failures_only(True)
+
+    _render_verdict_summary(logging.getLogger("rtl_buddy.tests"))
+
+    stderr = capsys.readouterr().err
+    for hidden in ("row_pass", "row_skip", "row_xfail"):
+        assert hidden not in stderr
+    for shown in ("row_fail", "row_na", "row_xpass"):
+        assert shown in stderr
+    assert "Results:" in stderr
+
+    file_text = log_path.read_text()
+    for name in (row["test_name"] for row in _VERDICT_ROWS):
+        assert name in file_text
+    assert _TALLY in file_text
+
+
+def test_summary_tally_is_rendered_without_the_filter(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+
+    _render_verdict_summary(logging.getLogger("rtl_buddy.tests"))
+
+    stderr = capsys.readouterr().err
+    for name in (row["test_name"] for row in _VERDICT_ROWS):
+        assert name in stderr
+    assert "Results:" in stderr
+    assert _TALLY in log_path.read_text()
+
+
+def test_print_failures_only_hiding_every_row_keeps_headers(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    _render_verdict_summary(
+        logging.getLogger("rtl_buddy.tests"),
+        rows=[{"test_name": "row_pass", "result": "PASS", "desc": "ok"}],
+    )
+
+    stderr = capsys.readouterr().err
+    assert "row_pass" not in stderr
+    assert "Description" in stderr
+    assert "Results:" in stderr
+
+
+def test_summary_without_verdict_column_is_not_filtered(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Filelist Summary",
+        columns=[("name", "Name"), ("files", "Files")],
+        rows=[{"name": "core", "files": "3"}],
+        logger=logging.getLogger("rtl_buddy.tests"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "core" in stderr
+    assert "Results:" not in stderr
+
+
+def test_status_column_without_verdict_values_has_no_tally(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Models",
+        columns=[("block", "Block"), ("status", "Has Model")],
+        rows=[{"block": "alu", "status": "yes"}, {"block": "fpu", "status": "no"}],
+        logger=logging.getLogger("rtl_buddy.tests"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "alu" in stderr and "fpu" in stderr
+    assert "Results:" not in stderr
+
+
+def test_root_callback_accepts_print_failures_only(minimal_project):
+    from typer.testing import CliRunner
+
+    from rtl_buddy import logging_utils
+
+    rb = RtlBuddy(name="test_cli")
+    result = CliRunner().invoke(rb.app, ["--print-failures-only", "test", "--list"])
+
+    assert result.exit_code == 0, result.output
+    assert logging_utils.print_failures_only()
 
 
 def test_display_path_prefers_relative_shorter_path():

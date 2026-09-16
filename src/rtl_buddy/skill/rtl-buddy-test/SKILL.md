@@ -20,6 +20,9 @@ syntax and schemas, use `rb test --help`, `rb randtest --help`, and
   anchors on `dirname(regression.yaml)`.
 - Test artefacts are under `artefacts/<test>/`; randtest iterations use
   `run-NNNN/`. Durable verdicts live in `result.json`; `rtl_buddy.log` is JSONL.
+- On a long regression use `rb --print-failures-only --machine regression ...`
+  to trim `PASS`/`SKIP`/`XFAIL` rows from the console summary; the `summary`
+  event and the log keep every row.
 
 ## Verdicts
 
