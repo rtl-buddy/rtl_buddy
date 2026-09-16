@@ -1228,6 +1228,62 @@ def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
     assert manifest["synth"]["backend"] is None
 
 
+def test_the_manifest_names_the_netlist_behind_the_provenance_hash(
+    tmp_path, monkeypatch
+):
+    """The finding (#560 round-16, Codex P2). `power_netlist.v` is kept
+    precisely so the analyzed bytes survive the run, but a provenance hash
+    with no path beside it in the manifest leaves an archived result nothing
+    to verify against: the reader knows the analysis was pinned to one
+    netlist and cannot find which."""
+    from rtl_buddy.phys.manifest import POWER_KEYS, load_manifest
+    from rtl_buddy.phys.model import load_model
+
+    backend, result = _run_power_with(
+        tmp_path, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    manifest = load_manifest(Path(backend.artefact_dir) / "phys-manifest.json")
+    assert "netlist_path" in POWER_KEYS
+    recorded = manifest["power"]["netlist_path"]
+    assert recorded.endswith("power_netlist.v")
+    # The named file is the snapshot, and hashing it reproduces the
+    # provenance hash — which is the whole point of naming it.
+    snapshot = Path(backend._netlist_snapshot_path())
+    assert snapshot.name == Path(recorded).name
+    assert (
+        load_model(result.results["phys_model"])["provenance"]["power"][
+            "netlist_sha256"
+        ]
+        == hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    )
+
+
+def test_a_post_pnr_run_names_no_netlist_in_the_manifest(tmp_path):
+    """Null, not absent: the key is always there, and a routed-database run
+    has no snapshot to name (#560)."""
+    from rtl_buddy.phys.manifest import POWER_KEYS, load_manifest
+    from rtl_buddy.phys.publish import publish_power
+
+    artefact_dir = tmp_path / "artefacts" / "demo_power"
+    artefact_dir.mkdir(parents=True)
+    published = publish_power(
+        artefact_dir=str(artefact_dir),
+        top="demo_top",
+        backend="openroad",
+        run="demo_power",
+        netlist_source="pnr",
+        netlist_sha256=None,
+        netlist_path=None,
+        total_w=1e-5,
+    )
+
+    manifest = load_manifest(Path(published["manifest"]))
+    assert set(manifest["power"]) == set(POWER_KEYS)
+    assert manifest["power"]["netlist_path"] is None
+    assert manifest["power"]["netlist_source"] == "pnr"
+
+
 RESYNTHESISED = "module demo_top(); // resynthesised\nendmodule\n"
 
 
@@ -1337,6 +1393,82 @@ def test_a_netlist_that_cannot_be_staged_fails_the_run(tmp_path, monkeypatch):
 
     assert isinstance(res, PowerFailResults)
     assert "could not stage the netlist" in res.results["desc"]
+    assert not Path(backend._netlist_snapshot_path()).exists()
+    assert not Path(backend._netlist_snapshot_path() + ".tmp").exists()
+
+
+def test_a_netlist_rewritten_mid_copy_is_copied_again(tmp_path, monkeypatch):
+    """The finding (#560 round-16, Codex P1). A private copy is immutable but
+    not automatically *coherent*: when the upstream synthesis lives in another
+    suite the two commands hold different artefact-tree locks, so a concurrent
+    `rb synth` can rewrite the netlist under `copyfile`'s read and leave a torn
+    prefix that the recorded sha256 would authenticate. The source is stat'd
+    either side of the copy, and a copy that straddled a rewrite is taken
+    again."""
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    # `_write_script` is what resolves the upstream netlist this run reads.
+    backend._write_script()
+    netlist = tmp_path / "synth_netlist.v"
+    resynthesised = "module demo_top(); // rewritten by a concurrent synth\nendmodule\n"
+    real_copyfile = power_openroad.shutil.copyfile
+    copies = []
+
+    def _copy_then_resynthesise(src, dst, **kwargs):
+        copies.append(str(src))
+        real_copyfile(src, dst)
+        if len(copies) == 1:
+            # Lands after the pre-copy stat and after the read: exactly the
+            # window that makes the staging file a prefix of two netlists.
+            netlist.write_text(resynthesised)
+
+    monkeypatch.setattr(power_openroad.shutil, "copyfile", _copy_then_resynthesise)
+
+    assert backend._snapshot_netlist() is None
+
+    snapshot = Path(backend._netlist_snapshot_path())
+    assert len(copies) == 2
+    assert snapshot.read_text() == resynthesised
+    assert backend._netlist_sha256 == hashlib.sha256(resynthesised.encode()).hexdigest()
+    assert not Path(str(snapshot) + ".tmp").exists()
+
+
+def test_a_netlist_that_never_holds_still_fails_the_run(tmp_path, monkeypatch):
+    """Retrying is bounded, so a writer rewriting the netlist in a loop fails
+    this run instead of pinning it. Refusing is the cheaper error: a rerun
+    recovers a refusal, while watts measured over bytes that were never one
+    netlist are not detectably wrong afterwards (#560)."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    netlist = tmp_path / "synth_netlist.v"
+    real_copyfile = power_openroad.shutil.copyfile
+    copies = []
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _never_settles(src, dst, **kwargs):
+        real_copyfile(src, dst)
+        copies.append(str(src))
+        # A different length every time, so no retry can stat its way to a
+        # matching pair.
+        netlist.write_text(f"module demo_top(); {'/' * len(copies)}\nendmodule\n")
+
+    monkeypatch.setattr(power_openroad.shutil, "copyfile", _never_settles)
+
+    def _unreachable(*_a, **_k):
+        raise AssertionError("OpenROAD must not run over an incoherent netlist")
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _unreachable)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert len(copies) == power_openroad._SNAPSHOT_ATTEMPTS
+    assert "changed underneath" in res.results["desc"]
+    assert backend._netlist_sha256 is None
     assert not Path(backend._netlist_snapshot_path()).exists()
     assert not Path(backend._netlist_snapshot_path() + ".tmp").exists()
 

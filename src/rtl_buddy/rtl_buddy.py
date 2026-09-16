@@ -7525,6 +7525,17 @@ class RtlBuddy:
                 stream="stdout",
                 markup=False,
             )
+        if payload["match"] == "exact" and payload["child_count"]:
+            # The path is both a leaf and a prefix. The rollup answers the
+            # question `match` names — the named row — so the rows below it
+            # are on the table without being in the total, and that has to
+            # be said or the two readings of the same table disagree.
+            emit_console_text(
+                f"{payload['child_count']} row(s) below this path are listed "
+                "for navigation; the rollup is the named row alone",
+                stream="stdout",
+                markup=False,
+            )
         self._phys_missing_half_notes(payload)
         self._phys_artefact_lines(payload["artefacts"])
         raise typer.Exit(0)

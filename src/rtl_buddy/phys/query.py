@@ -1085,6 +1085,20 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
     leaves under the path and rolls them up at query time; the model on
     disk stays leaf-only.
 
+    ``match`` says which question was answered, and ``rollup`` answers
+    that question and no other. An **exact** match rolls up the named row
+    alone: the path resolved to one row, so adding the rows beneath it
+    would report a subtree total under a payload that says ``exact`` and
+    beside an ``instance`` that is one leaf — three parts of one document
+    describing two different sets. A **prefix** match rolls up the whole
+    subtree, which is the only set it has.
+
+    Descendants of an exact match are still listed in ``children``, and
+    still counted by ``child_count``: they exist, the caller asked about
+    a path they hang off, and hiding them would be its own kind of lie.
+    They are navigation, not summands — the console says so when both are
+    present (#561 round-16).
+
     Both comparisons are made on levelled paths (:func:`level_path`), so
     a dotted query finds slash-stored rows and the reverse. The rows
     themselves are returned with the model's own spelling, and
@@ -1100,10 +1114,11 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
 
     ``limit`` heads the ``children`` list and defaults to the complete
     one, exactly as :func:`module_payload`'s does and for the same
-    reason. ``child_count`` is how many children there are and ``rollup``
-    sums every leaf under the path, listed or not — a subtree total that
-    counted only the rows that fitted on a terminal would be a different
-    number under ``--limit 5`` than under ``--limit 0``.
+    reason. ``child_count`` is how many children there are, and a prefix
+    match's ``rollup`` sums every leaf under the path, listed or not — a
+    subtree total that counted only the rows that fitted on a terminal
+    would be a different number under ``--limit 5`` than under
+    ``--limit 0``.
     """
     model = ctx.model
     if model.get("instances") is None:
@@ -1129,7 +1144,9 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
             or known[:10],
         )
 
-    covered = ([exact] if exact is not None else []) + children
+    # What `match` says was matched, and nothing else: the named row for
+    # an exact match, the subtree for a prefix one.
+    covered = [exact] if exact is not None else children
     payload = _run_block(ctx)
     payload.update(
         {

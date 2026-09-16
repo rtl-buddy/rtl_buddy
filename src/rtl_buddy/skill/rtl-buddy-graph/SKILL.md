@@ -62,7 +62,9 @@ stand; read `rb --machine docs show concepts/phys` first.
 `limit` defaults to the top rows and `limit: 0` asks for the complete one. The
 counts beside them (`instance_count`, `child_count`) and the sums (`power`,
 `rollup`) always cover every matching row, so a headed list is never a smaller
-total.
+total. What `phys_instance` rolls up is the question its `match` names: every
+leaf under the path on a `prefix` match, the named row alone on an `exact` one,
+whose `children` are there to navigate by rather than to add up.
 
 `phys_focus` is served only when a live hub was discovered at start-up — with
 no hub running it is absent, not failing, and the three read tools answer

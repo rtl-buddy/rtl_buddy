@@ -62,7 +62,8 @@ Schema (``schema_version`` 1)::
       "synth": {"backend": "yosys"|"openroad"|null, "run": .., "stats": ..,
                 "netlist": .., "log": .., "config": {..}|null},
       "power": {"backend": "openroad"|null, "run": .., "netlist_source": ..,
-                "report": .., "instances": .., "cells": .., "log": ..,
+                "netlist_path": .., "report": .., "instances": ..,
+                "cells": .., "log": ..,
                 "mode": "static"|"dynamic"|null, "activity": {..}|null,
                 "config": {..}|null}
     }
@@ -116,6 +117,14 @@ POWER_KEYS = (
     "backend",
     "run",
     "netlist_source",
+    # The netlist the analysis actually read: this run's own copy, the
+    # bytes `netlist_sha256` in the model's provenance identifies. Named
+    # here so an archived result can still reach them — a provenance hash
+    # with no path behind it says *that* the netlist was pinned but leaves
+    # a later reader nothing to verify it against. `null` for a
+    # `netlist-source: pnr` run, which reads a routed database and
+    # snapshots no netlist (#560).
+    "netlist_path",
     "report",
     "instances",
     "cells",
@@ -127,7 +136,9 @@ POWER_KEYS = (
 
 #: Which block keys hold a path and so need making project-relative. The
 #: rest are plain strings a `rel()` would mangle into a filename.
-PATH_KEYS = frozenset({"stats", "netlist", "log", "report", "instances", "cells"})
+PATH_KEYS = frozenset(
+    {"stats", "netlist", "log", "report", "instances", "cells", "netlist_path"}
+)
 
 #: Each producer block, its keys, and the totals it owns — the manifest
 #: side of the model's :data:`~rtl_buddy.phys.model._HALVES`. Named once

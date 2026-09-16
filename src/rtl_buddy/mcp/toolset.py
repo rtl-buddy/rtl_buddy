@@ -573,6 +573,20 @@ class Toolset:
         broke. A conversion failure is the same class of mistake as a
         negative limit and is reported the same way.
 
+        **A value that is not integral is refused before it is
+        converted**, because :func:`int` is not a validator: it is a
+        coercion that answers every one of these with a number the caller
+        did not ask for. ``false`` is an ``int`` subclass and comes back
+        as ``0`` -- this input's spelling of *every row in the design*,
+        which is the one answer the default exists to avoid. ``2.7``
+        comes back as ``2`` and ``-0.5`` as ``0``, the second of those
+        being the same accident again from a value that plainly asked for
+        a head. So a bool is refused outright, a float is refused unless
+        it is integral, and only then is the value converted. Integral
+        floats are accepted because JSON has one number type and ``2.0``
+        is how some hosts spell ``2``; a decimal string still converts,
+        as it always has.
+
         **A negative limit is refused, not obeyed.** The schema says
         ``minimum: 0`` and nothing enforces it: the server hands the
         arguments an MCP host sent straight to the handler, so a schema
@@ -586,13 +600,33 @@ class Toolset:
         promises.
         """
         raw = args.get("limit", default)
-        try:
-            limit = int(raw)
-        except (TypeError, ValueError):
-            raise ToolError(
+
+        def not_an_integer() -> ToolError:
+            return ToolError(
                 f"limit must be an integer, not {raw!r}; "
                 "0 lists every row and a positive number heads the list"
-            ) from None
+            )
+
+        # `bool` is a subclass of `int`, so `int(False)` is 0 -- which is
+        # precisely this input's spelling of "every row in the design".
+        # A host that sent `false` meant something by it, and that was
+        # not it.
+        if isinstance(raw, bool):
+            raise not_an_integer()
+        # JSON has one number type, so a whole count may legitimately
+        # arrive as `2.0`; `2.7` may not. `int()` would take both and
+        # truncate toward zero, which turns `-0.5` into 0 -- the "all of
+        # them" answer again, from a value that asked for a head.
+        # `is_integer()` is also what rejects nan and inf.
+        if isinstance(raw, float):
+            if not raw.is_integer():
+                raise not_an_integer()
+            limit = int(raw)
+        else:
+            try:
+                limit = int(raw)
+            except (TypeError, ValueError):
+                raise not_an_integer() from None
         if limit < 0:
             raise ToolError(
                 f"limit must be 0 or greater, not {limit}; "
@@ -1384,11 +1418,15 @@ def build_toolset(
                 "is ranked by total power, hottest first, and headed at "
                 "'limit' (default "
                 f"{phys_query.DEFAULT_RANK_LIMIT}, 0 for all) while "
-                "'child_count' and 'rollup' cover every leaf under the path, "
-                "listed or not. 'match' says how the path landed: 'exact' is a "
-                "leaf row of its own, 'prefix' is a subtree that has none — "
-                "only an exact row is a row, so pass phys_focus an 'exact' "
-                "path or one of the 'children', never a subtree prefix. "
+                "'child_count' covers every leaf under the path, listed or "
+                "not. 'match' says how the path landed, and 'rollup' answers "
+                "that question and no other: 'prefix' is a subtree with no row "
+                "of its own and rolls up every leaf under it, 'exact' is a leaf "
+                "row and rolls up that row alone — where a path is both, the "
+                "rows below it are listed for navigation and are not in the "
+                "total; only an exact row is a row, so pass phys_focus an "
+                "'exact' path or one of the 'children', never a subtree "
+                "prefix. "
                 "Instance rows "
                 "come from the power half alone: a synthesis-only model comes "
                 "back as ok: false naming `rb power`, and an unknown path "

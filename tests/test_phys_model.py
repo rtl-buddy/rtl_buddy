@@ -1462,16 +1462,51 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
         {
             "power": "demo_power",
             "instances": "artefacts/demo_power/power_instances.rpt",
-            "error": "disk full",
         },
     )
     assert "demo_power" in power
     assert "artefacts/demo_power/power_instances.rpt" in power
     assert "per-instance breakdown" in power
-    assert "disk full" in power
     assert "`rb phys instance`" in power
     assert "per-instance power rows" in power
     assert "per-module synthesis rows in the same model still answer" in power
+
+
+@pytest.mark.parametrize(
+    ("event", "run_key", "run"),
+    [
+        ("synth.phys_model_incomplete", "synth", "demo_synth"),
+        ("power.phys_model_incomplete", "power", "demo_power"),
+    ],
+)
+def test_a_publication_that_failed_is_not_reported_as_a_partial_model(
+    event, run_key, run
+):
+    """The finding (#560 round-16, Codex P2). One event carries two opposite
+    outcomes. With `error` set nothing was published at all — `_publish`
+    returns a null model path — so the message must not go on describing what
+    phys-model.json records: there is no phys-model.json from this run, and
+    the one that may be sitting in the directory is another run's."""
+    from rtl_buddy.logging_utils import _human_message
+
+    rendered = _human_message(
+        event,
+        {
+            run_key: run,
+            "stats": "artefacts/x/synth_stat.json",
+            "instances": "artefacts/x/power_instances.rpt",
+            "error": "timed out waiting for phys-publish.lock",
+        },
+    )
+
+    assert run in rendered
+    assert "timed out waiting for phys-publish.lock" in rendered
+    assert "was not written" in rendered
+    # The claims the published-but-incomplete wording makes, none of which
+    # hold when nothing was written.
+    assert "are still recorded" not in rendered
+    assert "half null" not in rendered
+    assert "breakdown" not in rendered
 
 
 # ---------------------------------------------------------------------------
