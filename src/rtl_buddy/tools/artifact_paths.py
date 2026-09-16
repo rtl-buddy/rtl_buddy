@@ -46,6 +46,24 @@ RESULTS_OVERLAY_NAME = "results-overlay.json"
 COV_MANIFEST_NAME = "manifest.json"
 COV_MODEL_NAME = "coverage-model.json"
 
+#: The physical-metrics model and its discovery contract (#558), written into
+#: the *producing run's* artefact directory — ``artefacts/<synth-run>/`` for
+#: `rb synth`, ``artefacts/<power-run>/`` for `rb power`. Unlike coverage there
+#: is no dedicated directory to find them in, so the manifest is prefixed
+#: rather than sharing the bare ``manifest.json`` above: discovery matches on
+#: the filename, and a coverage directory a user has pointed at a synth run's
+#: artefact dir must not be read as a physical one.
+PHYS_MANIFEST_NAME = "phys-manifest.json"
+PHYS_MODEL_NAME = "phys-model.json"
+
+#: The mutex a physical-metrics publisher holds while it reads, merges and
+#: rewrites that pair (#560). Co-named `rb synth` and `rb power` runs publish
+#: into one artefact directory and each writes *both* documents, so the
+#: read-merge-write has to be one writer at a time or two publishes can
+#: interleave into a pair that drops a half. Named here with the documents it
+#: guards, and protected below for the same reason they are.
+PHYS_PUBLISH_LOCK_NAME = "phys-publish.lock"
+
 #: `rb xplr`'s per-experiment ledger record and its git provenance sidecar,
 #: in ``artefacts/xplr/<exp-id>/``.
 XPLR_RECORD_NAME = "record.json"
@@ -101,12 +119,25 @@ SIBLING_OUTPUT_NAMES = (
     "cdc.rpt",
     # rb power (tools/power_openroad.py)
     "power.rpt",
+    # The run's private copy of the upstream netlist, hashed and handed to
+    # OpenROAD so the provenance the model records is of the bytes the
+    # analysis actually read (#560). A `.v` here shares a directory with a
+    # co-named run whose suffix clear would otherwise take it mid-analysis.
+    "power_netlist.v",
+    # The per-instance half of the same run (#558). The `.cells` sidecar is
+    # the instance -> liberty-cell map `report_power` does not print.
+    "power_instances.rpt",
+    "power_instances.cells",
     # rb pnr's design-independent reports (tools/pnr_openroad.py)
     "route.drc.rpt",
     "timing.rpt",
     # rb synth (tools/synth_yosys.py, tools/synth_openroad.py)
     "synth_netlist.v",
     "synth.rtlil",
+    # Yosys' machine-readable per-module `stat -json` dump, the source of the
+    # phys model's module rows (#558). A co-named FPGA run's `.json` clear
+    # would otherwise take it.
+    "synth_stat.json",
     # rb axi-profile (tools/axi_profile_rtl_buddy.py). Lives in its own
     # `artefacts/axi/<name>/` subtree today, so nothing can reach it — listed
     # so that stays true if a flow ever globs `.json` there.
@@ -122,6 +153,13 @@ SIBLING_OUTPUT_NAMES = (
     # named into the same directory.
     COV_MANIFEST_NAME,
     COV_MODEL_NAME,
+    # rb synth / rb power (phys/). These land *directly* in the producing
+    # run's `artefacts/<name>/`, which is the same directory a co-named FPGA
+    # run clears by `.json` — the case COV_MODEL_NAME above only risks when a
+    # user points cov_dir at one, and this one hits by construction.
+    PHYS_MANIFEST_NAME,
+    PHYS_MODEL_NAME,
+    PHYS_PUBLISH_LOCK_NAME,
     # rb xplr (xplr/). One level deeper than any artefact dir a flow clears,
     # in `artefacts/xplr/<exp-id>/`, and the scan never recurses — listed for
     # the same reason as axi-perf.json, so that stays true if the layout

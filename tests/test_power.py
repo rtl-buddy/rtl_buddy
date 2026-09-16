@@ -1,5 +1,6 @@
 """Tests for the power-analysis config schema."""
 
+import hashlib
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -801,3 +802,436 @@ def test_power_valid_config_without_openroad_keeps_the_report(tmp_path, monkeypa
     assert isinstance(res, PowerFailResults)
     assert "not found" in res.results["desc"]
     assert kept.exists()
+
+
+# ---------------------------------------------------------------------------
+# Per-instance power -> phys-model.json (#558, delivering #114)
+# ---------------------------------------------------------------------------
+
+
+_TOTAL_RPT = (
+    "Group                  Internal  Switching    Leakage      Total\n"
+    "Total                  2.53e-05   1.52e-06   1.41e-06   2.83e-05 100.0%\n"
+)
+
+_INSTANCE_RPT = (
+    "   Internal  Switching    Leakage      Total\n"
+    "      Power      Power      Power      Power (Watts)\n"
+    "--------------------------------------------\n"
+    "   2.28e-06   6.75e-08   7.91e-08   2.42e-06 u_sub/_64_\n"
+    "   1.52e-07   7.79e-08   3.62e-08   2.66e-07 _18_\n"
+)
+
+_INSTANCE_CELLS = "_18_ XOR2_X1\nu_sub/_64_ DFF_X1\n"
+
+
+def test_power_script_walks_the_hierarchy_for_per_instance_numbers(tmp_path):
+    """One `report_power -instances` call over the whole cell list, not one
+    call per cell: the per-cell spelling reruns propagation every time."""
+    backend = _make_power_backend(tmp_path)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert "set rb_insts [get_cells -hierarchical *]" in script
+    assert (
+        f"report_power -instances $rb_insts > {backend._instances_report_path()}"
+        in (script)
+    )
+    # The design-total report is written first, so a failure in the walk
+    # cannot cost the run its headline numbers.
+    assert script.index("report_power >") < script.index("report_power -instances")
+
+
+def test_power_script_wraps_the_walk_in_a_catch(tmp_path):
+    """A Tcl error escaping to the top level would abort the script and take
+    the exit code with it, failing a run whose totals are already on disk."""
+    backend = _make_power_backend(tmp_path)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+    walk = lines.index("  set rb_insts [get_cells -hierarchical *]")
+
+    assert lines[walk - 1] == "catch {"
+    assert "}" in lines[walk:]
+
+
+def test_power_script_records_the_liberty_cell_of_each_instance(tmp_path):
+    """`report_power` prints the path and the powers, never the master — so
+    the walk writes the mapping the model's module column needs."""
+    backend = _make_power_backend(tmp_path)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert f"open {backend._instances_cells_path()} w" in script
+    assert "get_property $rb_inst ref_name" in script
+
+
+def _run_power_with(tmp_path, monkeypatch, *, instances=None, cells=None, log=""):
+    """Run an OpenRoadPower whose fake OpenROAD writes the given reports."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text(log)
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        if instances is not None:
+            Path(backend._instances_report_path()).write_text(instances)
+        if cells is not None:
+            Path(backend._instances_cells_path()).write_text(cells)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    return backend, backend.run()
+
+
+def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
+    from rtl_buddy.phys.manifest import load_manifest
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    backend, result = _run_power_with(
+        tmp_path, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    assert isinstance(result, PowerPassResults)
+    model = load_model(result.results["phys_model"])
+    assert model["design"]["top"] == "demo_top"
+    assert model["modules"] is None
+    assert [row["instance_path"] for row in model["instances"]] == [
+        "_18_",
+        "u_sub/_64_",
+    ]
+    assert model["instances"][1]["module"] == "DFF_X1"
+    assert model["instances"][1]["total_uw"] == pytest.approx(2.42)
+    # Watts on the way in, microwatts in the document.
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+    # Bound to the netlist this run read, which is what a later `rb synth`
+    # into the same directory tests its own output against (#560 review).
+    assert (
+        model["provenance"]["power"]["netlist_sha256"]
+        == hashlib.sha256((tmp_path / "synth_netlist.v").read_bytes()).hexdigest()
+    )
+
+    manifest = load_manifest(Path(backend.artefact_dir) / "phys-manifest.json")
+    assert manifest["command"] == "power"
+    assert manifest["power"]["backend"] == "openroad"
+    assert manifest["power"]["netlist_source"] == "synth"
+    assert manifest["synth"]["backend"] is None
+
+
+RESYNTHESISED = "module demo_top(); // resynthesised\nendmodule\n"
+
+
+def test_the_script_reads_this_runs_own_copy_of_the_netlist(tmp_path):
+    """The finding (#560 round-11 review, Codex P1). Hashing the upstream
+    netlist leaves a window however tightly it is drawn, so the analysis does
+    not read the upstream netlist at all: it reads a copy in its own artefact
+    directory, which is the file it hashes."""
+    backend = _make_power_backend(tmp_path)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert f"read_verilog {backend._netlist_snapshot_path()}" in script
+    assert f"read_verilog {tmp_path / 'synth_netlist.v'}" not in script
+
+
+@pytest.mark.parametrize("swap_at", ["before_openroad", "during_openroad"])
+def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
+    tmp_path, monkeypatch, swap_at
+):
+    """The hash names the bytes OpenROAD parsed, whenever the swap lands.
+
+    A `rb synth` into the upstream artefact directory can rewrite the netlist
+    at any moment after the script is written: before the copy is taken, or
+    while OpenROAD is reading it. Either way the run measures one file — its
+    own copy — and records the hash of that file, so the merge cannot read a
+    real mismatch as a match (#560 round-9, closed by construction in
+    round-11)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    netlist = tmp_path / "synth_netlist.v"
+    snapshot = Path(backend._netlist_snapshot_path())
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    if swap_at == "before_openroad":
+        # The clear runs between the script write and the copy, so a swap
+        # here lands in the one gap left after `_write_script` named the
+        # copy the script reads.
+        clear = backend._clear_stale_report
+
+        def _clear_then_resynthesise():
+            clear()
+            netlist.write_text(RESYNTHESISED)
+
+        backend._clear_stale_report = _clear_then_resynthesise
+
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        # What OpenROAD was handed: the script, and the file it names.
+        seen["script"] = Path(cmd[-1]).read_text()
+        seen["read"] = snapshot.read_bytes()
+        if swap_at == "during_openroad":
+            netlist.write_text(RESYNTHESISED)
+        # Unmoved by the swap — the copy is inside this run's own artefact
+        # directory, which no other command writes into.
+        seen["read_after"] = snapshot.read_bytes()
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        Path(backend._report_path()).write_text(_TOTAL_RPT)
+        Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    result = backend.run()
+
+    assert f"read_verilog {snapshot}" in seen["script"]
+    assert seen["read_after"] == seen["read"]
+    recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+    assert recorded["netlist_sha256"] == hashlib.sha256(seen["read"]).hexdigest()
+    if swap_at == "during_openroad":
+        # The upstream netlist has moved on; the hash still names what was
+        # measured, so a later `rb synth` sees the mismatch.
+        assert (
+            recorded["netlist_sha256"]
+            != hashlib.sha256(netlist.read_bytes()).hexdigest()
+        )
+
+
+def test_a_netlist_that_cannot_be_staged_fails_the_run(tmp_path, monkeypatch):
+    """The generated script names the copy, so a copy that did not happen
+    leaves `read_verilog` nothing to read: this is a failed run, not a
+    by-product warning. The staging file goes with it — a half-written
+    `power_netlist.v` must never be readable as a netlist."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _no_space(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(power_openroad.shutil, "copyfile", _no_space)
+
+    def _unreachable(*_a, **_k):
+        raise AssertionError("OpenROAD must not run without the netlist copy")
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _unreachable)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "could not stage the netlist" in res.results["desc"]
+    assert not Path(backend._netlist_snapshot_path()).exists()
+    assert not Path(backend._netlist_snapshot_path() + ".tmp").exists()
+
+
+def test_a_previous_runs_netlist_copy_does_not_survive_a_failed_rerun(
+    tmp_path, monkeypatch
+):
+    """The copy is the largest thing this flow writes and nothing reads it
+    once OpenROAD has, so it is cleared like the reports beside it."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend = _make_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert not Path(backend._netlist_snapshot_path()).exists()
+
+
+def test_a_post_pnr_run_snapshots_nothing_and_records_no_hash(tmp_path):
+    """`netlist-source: pnr` reads a routed database, not a netlist. There
+    are no bytes to copy and none to identify, which is what it recorded
+    before the copy existed."""
+    odb = tmp_path / "demo_top.routed.odb"
+    odb.write_bytes(b"\x00routed\n")
+    sdc = tmp_path / "constraints.sdc"
+
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.netlist_source = "pnr"
+    backend._resolve_inputs = lambda: {
+        "netlist": None,
+        "odb": str(odb),
+        "sdc": str(sdc),
+        "top": "demo_top",
+    }
+
+    script = Path(backend._write_script()).read_text()
+
+    assert f"read_db {odb}" in script
+    assert "read_verilog" not in script
+    assert backend._snapshot_netlist() is None
+    assert backend._netlist_sha256 is None
+    assert not Path(backend._netlist_snapshot_path()).exists()
+
+
+def test_a_power_run_without_the_per_instance_report_still_passes(
+    tmp_path, monkeypatch
+):
+    """Same resilience rule as the synth half: the design totals are already
+    parsed and reported by the time the model is built (#558)."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    _backend, result = _run_power_with(tmp_path, monkeypatch)
+
+    assert isinstance(result, PowerPassResults)
+    model = load_model(result.results["phys_model"])
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+
+def test_power_ignores_a_previous_runs_per_instance_report(tmp_path, monkeypatch):
+    """The per-instance half is read back inside the same `run()`, so it
+    takes the same stale-artefact treatment as `power.rpt` (#469)."""
+    from rtl_buddy.phys.model import load_model
+
+    backend = _make_power_backend(tmp_path)
+    Path(backend._instances_report_path()).write_text(_INSTANCE_RPT)
+    Path(backend._instances_cells_path()).write_text(_INSTANCE_CELLS)
+
+    backend, result = _run_power_with(tmp_path, monkeypatch)
+
+    assert not Path(backend._instances_report_path()).exists()
+    assert load_model(result.results["phys_model"])["instances"] is None
+
+
+def test_a_failed_power_rerun_withdraws_the_instances_half_it_published(
+    tmp_path, monkeypatch
+):
+    """Publication happens only on a pass, so a rerun that fails leaves the
+    last run's per-instance watts in `phys-model.json` with the report behind
+    them already cleared. The clear withdraws them instead — and leaves the
+    synthesis half, whose own artefacts are untouched, exactly as it was
+    (#558)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import publish_synth
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools import power_openroad
+
+    backend, result = _run_power_with(
+        tmp_path, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+    model_path = Path(result.results["phys_model"])
+    assert load_model(model_path)["instances"]
+
+    # A synthesis into the same artefact directory, as a co-named `rb synth`
+    # would have left it.
+    publish_synth(
+        artefact_dir=backend.artefact_dir,
+        top="demo_top",
+        backend="yosys",
+        run="demo_synth",
+        area_um2=5.586,
+        gate_count=2,
+    )
+
+    def _fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _fake_run)
+    rerun = backend.run()
+
+    assert isinstance(rerun, PowerFailResults)
+    model = load_model(model_path)
+    assert model["instances"] is None
+    assert model["totals"]["total_uw"] is None
+    assert model["totals"]["area_um2"] == 5.586
+
+
+def test_power_script_marks_where_the_by_product_begins(tmp_path):
+    """The marker sits after the design-total report and before the walk, so
+    the log gate can tell a fatal diagnostic from a by-product one (#558)."""
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    backend = _make_power_backend(tmp_path)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+    marker = lines.index(f'puts "{OpenRoadPower._DETAIL_MARKER}"')
+    totals = next(i for i, ln in enumerate(lines) if ln.startswith("report_power >"))
+    walk = lines.index("  set rb_insts [get_cells -hierarchical *]")
+
+    assert totals < marker < walk
+
+
+def test_an_error_in_the_by_product_half_costs_only_that_half(tmp_path, monkeypatch):
+    """An OpenSTA without `report_power -instances` prints an `[ERROR ...]`
+    before the `catch` swallows the failure. The totals are already on disk
+    by then, so the run passes and loses its `instances` half (#558)."""
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.runner.power_results import PowerPassResults
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    _backend, result = _run_power_with(
+        tmp_path,
+        monkeypatch,
+        log=(
+            "[INFO ODB-0227] LEF file: nangate45.lef\n"
+            f"{OpenRoadPower._DETAIL_MARKER}\n"
+            "[ERROR STA-0001] report_power: unknown option -instances\n"
+        ),
+    )
+
+    assert isinstance(result, PowerPassResults)
+    assert result.results["total_w"] == pytest.approx(2.83e-05)
+    assert load_model(result.results["phys_model"])["instances"] is None
+
+
+def test_an_error_before_the_marker_still_fails_the_run(tmp_path, monkeypatch):
+    """Everything up to the marker is the analysis itself: a diagnostic there
+    means the watts cannot be trusted, and the report goes with it (#558)."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    backend, result = _run_power_with(
+        tmp_path,
+        monkeypatch,
+        instances=_INSTANCE_RPT,
+        cells=_INSTANCE_CELLS,
+        log=(
+            "[ERROR STA-0603] no clocks have been defined\n"
+            f"{OpenRoadPower._DETAIL_MARKER}\n"
+        ),
+    )
+
+    assert isinstance(result, PowerFailResults)
+    assert "1 ERROR(s) in OpenROAD log" in result.results["desc"]
+    assert not Path(backend._report_path()).exists()
+
+
+def test_a_log_without_the_marker_is_scanned_whole(tmp_path, monkeypatch):
+    """Backward compatibility: a log from a script that predates the marker
+    has no by-product half to exempt, so every `[ERROR ...]` is fatal."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    _backend, result = _run_power_with(
+        tmp_path,
+        monkeypatch,
+        log="[ERROR STA-0001] report_power: unknown option -instances\n",
+    )
+
+    assert isinstance(result, PowerFailResults)
+    assert "1 ERROR(s) in OpenROAD log" in result.results["desc"]
