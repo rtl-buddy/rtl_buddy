@@ -48,24 +48,32 @@ frontend, the two resolved correctness-gate modes, and under ``slang``
 the plugin path and ``--single-unit``), the resolved ``synth-args``,
 the elaboration parameters and defines, and which branch the script
 took. A **mapped** run adds the ABC delay target parsed out of the SDC
-and drops ``abc-args``, which its hard-coded ABC script ignores; an
-**unmapped** run emits ``abc <abc-args>`` and has no delay target, so
-it does the reverse. ``strategy`` is in neither — no Yosys script line
-reads it.
+and the resolved Liberty list, and drops ``abc-args``, which its
+hard-coded ABC script ignores; an **unmapped** run emits ``abc
+<abc-args>``, has no delay target and reads no Liberty, so it does the
+reverse. ``strategy`` is in neither — no Yosys script line reads it.
 
 *OpenROAD synthesis* (:meth:`OpenRoadSynth._publish_phys_model
 <rtl_buddy.tools.synth_openroad.OpenRoadSynth._publish_phys_model>`).
 The same elaboration subset, with ``synth-args`` taken from the
 **effort** and not from the resolved tool options, because that is
 where stage 1 takes it from; ``abc-args`` from neither source, since
-stage 1's ABC script is hard-coded. Stage 2 contributes exactly two
-things — the command ``strategy`` maps to, and the sha256 of the
-effort's pre-STA Tcl — because they are the only inputs
-``_write_or_script`` reads that the config block does not already
-record.
+stage 1's ABC script is hard-coded. Stage 2 contributes three things —
+the command ``strategy`` maps to, the sha256 of the effort's pre-STA
+Tcl, and the resolved LEF list ``_write_or_script`` reads — and the
+resolved Liberty list sits above both stages, since stage 1 maps
+against it and stage 2 times against it. The two library lists are not
+determined by ``platform`` alone: a config's own ``lib-paths`` /
+``lef-paths`` are appended to the platform's, and with no platform they
+are the whole of it.
 
-*Power analysis.* Tool name, netlist source, mode, activity source and
-register level.
+*Power analysis.* Tool name, netlist source, the identity of the
+upstream run it read, mode, activity source and register level. The
+upstream identity is the netlist sha256 for a ``netlist-source: synth``
+run and the resolved ODB's project-relative path for a
+``netlist-source: pnr`` one, because ``netlist_source`` names the kind
+of upstream and not which one
+(:meth:`~rtl_buddy.tools.power_openroad.OpenRoadPower._upstream_identity`).
 
 The digest is over the *effective* values, not the files they came
 from: two configs that spell one setting differently and resolve to the
