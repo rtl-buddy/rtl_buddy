@@ -12022,16 +12022,21 @@ class RtlBuddy:
     def _project_root_for_git(self) -> str | None:
         """Where git metadata queries run, resolved once; None = inherited cwd.
 
-        Without a root_cfg there is nothing to pin to that git would not
-        already find by walking up from the cwd itself.
+        The command root stands in for list-only invocations, which skip
+        root_cfg but still anchor on the command's own config. With
+        neither, git walks up from the cwd as it would anyway.
         """
         if not self._git_root_resolved:
             self._git_root_resolved = True
+            exec_ctx = getattr(self, "exec_ctx", None)
             root_cfg = getattr(self, "root_cfg", None)
-            if root_cfg is not None:
-                root = root_cfg.get_project_rootdir()
-                if root and os.path.isdir(root):
-                    self._git_root = root
+            for candidate in (
+                root_cfg.get_project_rootdir() if root_cfg is not None else None,
+                str(exec_ctx.command_root) if exec_ctx is not None else None,
+            ):
+                if candidate and os.path.isdir(candidate):
+                    self._git_root = candidate
+                    break
         return self._git_root
 
     def _collect_git_status(self) -> dict | None:

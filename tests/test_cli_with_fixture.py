@@ -9,7 +9,9 @@ non-docs command is invoked.
 
 from __future__ import annotations
 
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -195,8 +197,6 @@ def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
     git status inside every JSON envelope via meta.git. Suppress the
     stderr banner so machine output stays tight."""
     rb = RtlBuddy(name="test_cli_machine_no_banner")
-    import sys
-
     saved_argv = sys.argv[:]
     sys.argv = ["rb", "--machine", "test", "--list", "-c", "tests.yaml"]
     try:
@@ -237,6 +237,51 @@ def test_git_metadata_follows_the_project_not_the_cwd(
     monkeypatch.chdir(outside)
     assert rb._project_root_for_git() == str(minimal_project)
     assert rb._collect_git_status()["branch"] == "trunk"
+
+
+def test_git_metadata_anchors_list_only_commands(
+    minimal_project: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """#581: --list skips root_cfg but still anchors on the command root."""
+    for args in (
+        ["init", "-q", "-b", "projbranch", "."],
+        ["add", "-A"],
+        ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init"],
+    ):
+        subprocess.run(
+            ["git", *args], cwd=minimal_project, check=True, capture_output=True
+        )
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    for args in (
+        ["init", "-q", "-b", "ambient", "."],
+        ["commit", "-q", "--allow-empty", "-m", "other"],
+    ):
+        subprocess.run(
+            ["git", "-c", "user.email=t@e", "-c", "user.name=t", *args],
+            cwd=ambient,
+            check=True,
+            capture_output=True,
+        )
+
+    monkeypatch.chdir(ambient)
+    rb = RtlBuddy(name="test_cli_git_list_only")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rb",
+            "--machine",
+            "test",
+            "--list",
+            "-c",
+            str(minimal_project / "tests.yaml"),
+        ],
+    )
+    assert rb.run() == 0
+
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["meta"]["git"]["branch"] == "projbranch"
 
 
 def test_git_banner_emitted_once_per_invocation(
