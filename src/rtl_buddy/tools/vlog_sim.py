@@ -429,10 +429,43 @@ _NESTED_FILELIST_OPTION_RE = re.compile(
 # Compile-line options whose argument is an OUTPUT location. Their value must
 # never be read as an input: a key that hashed the binary a build produces
 # would move on every build and strand one cache directory per run. The
-# general guard is :func:`_is_managed_output_path` — this is the cheap,
+# general guard is :func:`_is_managed_output_name` — this is the cheap,
 # certain half of it, for an output written somewhere the path says nothing
 # about (an absolute `builder-simv:`, say).
 _CMD_OUTPUT_OPTIONS = frozenset({"-o", "--Mdir", "-Mdir", "--exe-name"})
+
+#: Prefixes whose argument is a VALUE compiled into the model rather than a
+#: path rtl_buddy may relocate. Shared by the compile line and the generated
+#: ``run.f`` so the two cannot disagree (#542 review rounds 2 and 3).
+_MACRO_VALUE_PREFIXES = (
+    "+define+",
+    "+libext+",
+    "+parameter+",
+    "-D",
+    "-G",
+    "-pvalue+",
+)
+
+
+def _is_macro_shaped(token: str) -> bool:
+    """Is ``token`` a define/parameter assignment rather than a path?
+
+    A define's value is compiled INTO the model, so relativising one would
+    make two checkouts that bake in DIFFERENT absolute paths hash to one key
+    and share one binary — and content-keying one would hash a value that is
+    not an input. Either way the honest answer is to leave it exactly as
+    written (#542 review).
+
+    ``+libext+`` is here for the same reason by a different route: its
+    argument is a list of suffixes, never a path at all.
+
+    The trailing rule catches a bare ``NAME=value``, which no filelist or
+    compile line means as a path.
+    """
+    return token.startswith(_MACRO_VALUE_PREFIXES) or (
+        not token.startswith(("-", "+")) and "=" in token
+    )
+
 
 # Directory names an `+incdir+` walk must not descend into (#478 review).
 #
@@ -951,24 +984,22 @@ def _is_pruned_walk_dir(name: str) -> bool:
     )
 
 
-def _is_managed_output_path(path: str) -> bool:
-    """Does ``path`` name something inside an rtl_buddy-managed output tree?
+def _is_managed_output_name(name: str) -> bool:
+    """Is ``name`` a directory rtl_buddy WRITES: ``artefacts``,
+    ``.shared-builds``, an ``obj_dir*``?
 
-    The path-shaped half of what :func:`_is_pruned_walk_dir` does by name
-    (#542 review). A compile-line token resolving in there is a build
-    OUTPUT, not an input, and folding an output's content into the compile
-    key would move the key on every build — one new cache directory per run,
-    forever. So it stays what it already was on the command line: text.
-
-    Deliberately stricter than the ``+incdir+`` walk, which *does* track a
-    ``preproc`` hook's generated headers under ``artefacts/<test>/``. There
-    the directory is named as a search path and its outputs are excluded by
-    name; here a single path is named by an option this code may not
-    recognise, and "it is under an artefact tree" is the only signal
-    available. Missing such a header costs the key nothing it had before.
+    Narrower than :func:`_is_pruned_walk_dir`, and deliberately so (#542
+    review round 3). That predicate also prunes every dot-directory and
+    ``__pycache__``, which is right for an ``+incdir+`` walk — nothing in a
+    ``.git`` is a compile input — and catastrophic as an output test: a
+    workspace at ``/home/ci/.worktrees/pr`` has a dot component in its
+    ABSOLUTE path, so every input under it would be read as an output and
+    the content keying would silently switch itself off for the whole
+    checkout. Managed-output names only, and only ever asked of components
+    BELOW the project root (see :meth:`VlogSim._key_input_path`).
     """
-    return any(
-        _is_pruned_walk_dir(part) for part in Path(path).parts if part not in ("/", "")
+    return name in (ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME) or name.startswith(
+        BUILD_DIR_PREFIX
     )
 
 
@@ -2386,7 +2417,13 @@ class VlogSim:
             # root (#542) so two checkouts of the same content produce the
             # same entry; in the default mode this is the raw line, byte for
             # byte. Either way it is ONE canonical spelling per stamp.
-            stamp_line = self._stamp_relpath(line)
+            #
+            # A `+define+` is the exception, exactly as it is on the compile
+            # line (#542 review round 3): a `tests.yaml` plusdefine whose
+            # VALUE is an absolute in-root path is compiled into the model,
+            # so relativising it would collapse two checkouts that bake in
+            # different paths onto one key AND one stamp.
+            stamp_line = line if _is_macro_shaped(line) else self._stamp_relpath(line)
             if listing is not None:
                 # The line stays entry[0] here too, so a listing that
                 # changes moves the stamp and — outside cache mode — never
@@ -2419,11 +2456,38 @@ class VlogSim:
             # The build's own directory. Reading it would make the key a
             # function of the output it names.
             return None
-        if _is_managed_output_path(resolved):
+        # Only the components BELOW the project root are asked, because
+        # only those are rtl_buddy's to name: the checkout itself may sit
+        # anywhere, `.worktrees/` and all (#542 review round 3).
+        if any(
+            _is_managed_output_name(part)
+            for part in Path(os.path.relpath(resolved, root)).parts
+        ):
             # Anything under an artefact tree, a `.shared-builds/` or an
             # `obj_dir*` is written by a build, not read by one.
             return None
         return resolved
+
+    def _embedded_in_root_paths(self, token):
+        """Absolute in-root paths written INSIDE a larger option token.
+
+        ``-CFLAGS=-I/checkout/inc``, ``-LDFLAGS=-L/checkout/lib``, a
+        pass-through a subclass builds — the token as a whole is not a path,
+        so nothing above recognises it, yet it names one and the build reads
+        it (#542 review round 3). Two checkouts whose header under such an
+        ``-I`` differed took one persistent build directory.
+
+        Matched on exactly what :func:`_relativise_paths` rewrites — the
+        project root plus a separator — so the text that ends up in the key
+        and the content that ends up beside it are derived from one rule and
+        cannot drift. The match stops at whitespace and at the separators
+        compiler options use to pack several values into one token, which is
+        an under-approximation for a path containing one of those: it then
+        resolves to nothing and the token stays text, as it was before.
+        """
+        root_prefix = self._project_root + os.sep
+        for match in re.finditer(re.escape(root_prefix) + r"[^\s:;,'\"]*", token):
+            yield match.group(0)
 
     def _cmd_token_roles(self, key_cmd):
         """Which compile-line tokens name a PATH, and what kind (#542 review).
@@ -2484,16 +2548,22 @@ class VlogSim:
                     ("dir", False),
                 )
                 continue
-            if token.startswith(("-", "+")):
-                # Some other option — a define, a warning switch, a flag.
-                # Its own text stays exactly as written; its argument, if it
-                # takes one, is judged on the next pass, because a boolean
-                # flag is routinely followed by a bare source
-                # (`--binary /proj/tb.sv`).
+            if _is_macro_shaped(token):
+                # A define or parameter assignment. Its value is not a path
+                # this may relocate or read — see :func:`_is_macro_shaped`.
                 continue
-            if "=" in token:
-                # A bare `NAME=value`: a macro assignment, not a path, and
-                # its value may well be one that must stay absolute.
+            if token.startswith(("-", "+")):
+                # Some other option — a warning switch, a flag, a compiler
+                # pass-through. Its own text stays as written, but a path it
+                # EMBEDS does not: `-CFLAGS=-I/checkout/inc` names a real
+                # include directory, and leaving its content out of the key
+                # let two checkouts whose headers differ share one build
+                # (#542 review round 3). Its argument, if it takes one, is
+                # judged on the next pass, because a boolean flag is
+                # routinely followed by a bare source
+                # (`--binary /proj/tb.sv`).
+                for embedded in self._embedded_in_root_paths(token):
+                    yield (index, "", embedded, "embedded")
                 continue
             yield (index, "", token, "file")
 
@@ -2627,6 +2697,20 @@ class VlogSim:
             if resolved is None:
                 continue
             spelling = f"{prefix}{self._stamp_relpath(raw)}"
+            if kind == "embedded":
+                # Classified by what it IS, since the option that named it
+                # said nothing: a directory is keyed by its listing under
+                # the `+incdir+` spelling (which also dedupes it against a
+                # `run.f` entry for the same directory), a file by its sha.
+                if os.path.isdir(resolved):
+                    yield (
+                        f"{_INCDIR_OPTION}{self._stamp_relpath(raw)}",
+                        resolved,
+                        ("dir", True),
+                    )
+                else:
+                    yield (spelling, resolved, "file")
+                continue
             if kind == "filelist":
                 # The list's own bytes, and then everything it names.
                 yield (spelling, resolved, "file")

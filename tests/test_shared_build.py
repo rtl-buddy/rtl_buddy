@@ -6667,3 +6667,173 @@ def test_an_output_option_argument_still_relativises_but_is_never_read(
     assert (
         sim._fingerprint_cmd_inputs(plan_a.key_cmd, plan_a.fingerprint["sources"]) == []
     )
+
+
+def test_a_checkout_under_a_dot_directory_is_still_content_keyed(tmp_path, monkeypatch):
+    """The output test asks only what is BELOW the project root (#542 review
+    round 3).
+
+    Asked of the absolute path, and answered by the `+incdir+` walk's prune
+    predicate, every component counted — and that predicate prunes any
+    dot-directory. A workspace at `/home/ci/.worktrees/pr` therefore had a
+    dot component in its path, so every input under it was read as build
+    output and dropped from the key: the content keying switched itself off
+    for the whole checkout, silently, on exactly the layout a CI runner and
+    a `git worktree` both use.
+    """
+    cache = tmp_path / "cache"
+    dotted = tmp_path / ".worktrees"
+    dotted.mkdir()
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(dotted / name)
+        (dotted / name / "hdr").mkdir()
+    (dotted / "wt-a" / "hdr" / "cmd.svh").write_text("`define CMD_W 8\n")
+    (dotted / "wt-b" / "hdr" / "cmd.svh").write_text("`define CMD_W 16\n")
+
+    def _sim(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            dotted / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"+incdir+{dotted / name / 'hdr'}"],
+        )
+
+    sim_a = _sim("wt-a")
+    plan_a = sim_a._compile_plan()
+    assert sim_a._fingerprint_cmd_inputs(
+        plan_a.key_cmd, plan_a.fingerprint["sources"]
+    ), "a dot component in the checkout path disabled the content keying"
+    assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name
+    # ...while a real managed-output directory below the root is still
+    # refused, whatever the checkout is called.
+    produced = dotted / "wt-a" / "verif" / "blk" / "artefacts" / "gen.svh"
+    produced.parent.mkdir(parents=True, exist_ok=True)
+    produced.write_text("`define G 1\n")
+    assert sim_a._key_input_path(str(produced)) is None
+
+
+def test_a_path_valued_plusdefine_in_run_f_is_never_relativised(tmp_path, monkeypatch):
+    """`tests.yaml` plusdefines reach the builder through `run.f`, so the
+    compile-line rule had to reach them too (#542 review round 3).
+
+    Relativised there, two checkouts whose models bake in different absolute
+    data paths produced one key AND one stamp — so the second reused a
+    binary compiled against the first checkout's file.
+    """
+    cache = tmp_path / "cache"
+    for name in ("wt-a", "wt-b"):
+        _write_checkout(tmp_path / name)
+
+    def _plan(name):
+        _as_a_fresh_process()
+        suite = tmp_path / name / "verif" / "blk"
+        return _make_sim(
+            tmp_path / name,
+            monkeypatch,
+            test_name="t",
+            suite_dir=suite,
+            project_root=tmp_path / name,
+            model_path=suite / "models.yaml",
+            filelist=[
+                "../../rtl/a.sv",
+                f"+define+DATA={tmp_path / name / 'data.hex'}",
+            ],
+            shared_build_root=cache,
+        )._compile_plan()
+
+    plan_a, plan_b = _plan("wt-a"), _plan("wt-b")
+    assert plan_a.shared_dir.name != plan_b.shared_dir.name, (
+        "two checkouts baking in different data paths share one key"
+    )
+    define = [
+        entry[0]
+        for entry in plan_a.fingerprint["sources"]
+        if entry[0].startswith("+define+")
+    ]
+    assert define == [f"+define+DATA={tmp_path / 'wt-a' / 'data.hex'}"], define
+    # ...and the same define arriving as a `tests.yaml` plusdefine, which
+    # reaches the builder on the command line instead, is equally verbatim.
+    _as_a_fresh_process()
+    plusdefine = _cache_sim(
+        tmp_path / "wt-a",
+        monkeypatch,
+        cache_root=cache,
+        test_name="t",
+        compile_opts=[],
+    )
+    plusdefine.test_cfg.pd = {"DATA": str(tmp_path / "wt-a" / "data.hex")}
+    assert (
+        f"+define+DATA={tmp_path / 'wt-a' / 'data.hex'}"
+        in plusdefine._compile_plan().fingerprint["cmd"]
+    )
+
+
+def test_an_in_root_path_embedded_in_an_option_is_content_keyed(tmp_path, monkeypatch):
+    """`-CFLAGS=-I<root>/inc` names a directory the build really reads
+    (#542 review round 3).
+
+    The token as a whole is not a path, so nothing recognised it, and its
+    content never reached the key: two checkouts whose header under that
+    `-I` differed took one persistent build directory.
+    """
+    cache = tmp_path / "cache"
+    for name, content in (("wt-a", "#define W 8\n"), ("wt-b", "#define W 16\n")):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        (checkout / "inc").mkdir()
+        (checkout / "inc" / "dut.h").write_text(content)
+
+    def _plan(name):
+        _as_a_fresh_process()
+        return _cache_sim(
+            tmp_path / name,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=[f"-CFLAGS=-I{tmp_path / name / 'inc'}"],
+        )._compile_plan()
+
+    plan_a, plan_b = _plan("wt-a"), _plan("wt-b")
+    assert plan_a.shared_dir.name != plan_b.shared_dir.name, (
+        "an embedded include directory's content is not in the key"
+    )
+    # The token's TEXT is relativised too, so identical content at two
+    # paths still shares one build.
+    assert "-CFLAGS=-Iinc" in plan_a.fingerprint["cmd"], plan_a.fingerprint["cmd"]
+    (tmp_path / "wt-b" / "inc" / "dut.h").write_text("#define W 8\n")
+    assert _plan("wt-a").shared_dir.name == _plan("wt-b").shared_dir.name
+
+
+def test_an_embedded_path_is_keyed_by_what_it_turns_out_to_be(tmp_path, monkeypatch):
+    """A file embedded in an option is keyed by its hash, a directory by its
+    listing, and a define's value by neither (#542 review round 3)."""
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt-a"
+    _write_checkout(checkout)
+    (checkout / "inc").mkdir()
+    (checkout / "inc" / "dut.h").write_text("#define W 8\n")
+    (checkout / "cfg.vlt").write_text("`verilator_config\n")
+
+    def _entries(opts):
+        _as_a_fresh_process()
+        sim = _cache_sim(
+            checkout, monkeypatch, cache_root=cache, test_name="t", compile_opts=opts
+        )
+        plan = sim._compile_plan()
+        return [
+            entry[0]
+            for entry in sim._fingerprint_cmd_inputs(
+                plan.key_cmd, plan.fingerprint["sources"]
+            )
+        ]
+
+    assert _entries([f"-CFLAGS=-I{checkout / 'inc'}"]) == ["+incdir+inc"]
+    assert _entries([f"--config={checkout / 'cfg.vlt'}"]) == ["cfg.vlt"]
+    # A define keeps its value out of the key's content half entirely.
+    assert _entries([f"+define+DATA={checkout / 'cfg.vlt'}"]) == []
+    # Two paths in one token are both keyed.
+    assert _entries(
+        [f"-CFLAGS=-I{checkout / 'inc'} -include {checkout / 'cfg.vlt'}"]
+    ) == ["+incdir+inc", "cfg.vlt"]
