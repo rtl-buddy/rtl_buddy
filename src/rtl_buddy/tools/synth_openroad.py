@@ -29,6 +29,11 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.publish import (
+    invalidate_half,
+    publish_synth,
+    withdrawal_failure_desc,
+)
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
 # ABC script used by the Yosys stage — area-focused, no timing window
@@ -85,6 +90,10 @@ class OpenRoadSynth:
 
     def _yosys_netlist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth_netlist.v")
+
+    def _stats_path(self) -> str:
+        """Yosys' machine-readable per-module `stat -json` dump (#558)."""
+        return os.path.join(self.artefact_dir, "synth_stat.json")
 
     def _or_script_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.tcl")
@@ -190,6 +199,17 @@ class OpenRoadSynth:
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
+    def _stat_json_cmd(self, liberty: str | None) -> str:
+        """The `stat -json` line that feeds the phys model's module rows (#558).
+
+        Identical to the Yosys backend's, and for the same reasons: `-json`
+        prints to the console so it needs `tee -o`, and `-q` keeps the
+        document out of `synth_yosys.log`, which stage 1 scrapes for its
+        cell count and for `ERROR:` lines.
+        """
+        liberty_arg = f" -liberty {liberty}" if liberty else ""
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+
     def _write_yosys_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
         lib_paths = self._resolve_lib_paths()
@@ -238,10 +258,12 @@ class OpenRoadSynth:
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
             lines.append(f"stat -liberty {lib_paths[0]}")
+            lines.append(self._stat_json_cmd(lib_paths[0]))
         else:
             lines.append(
                 f"write_rtlil {os.path.join(self.artefact_dir, 'synth.rtlil')}"
             )
+            lines.append(self._stat_json_cmd(None))
 
         script = "\n".join(lines) + "\n"
         script_path = self._yosys_script_path()
@@ -364,6 +386,8 @@ class OpenRoadSynth:
             # Stage 1 already wrote its netlist; the start-of-run cleanup only
             # removed the previous run's. Drop this one too, so stage 2 and
             # `rb pnr` / `rb power` cannot read a design that folded to x.
+            # `_fail_after_yosys` clears again on the way out and is what
+            # reports a withdrawal this could not make (#560).
             self._clear_stale_netlists()
             return (
                 None,
@@ -671,6 +695,7 @@ class OpenRoadSynth:
             tns_ps=tns_ps,
             log=log_path,
         )
+        phys_model = self._publish_phys_model(area_um2=area_um2, gate_count=gate_count)
         return SynthPassResults(
             name=self.name + "/results",
             area_um2=area_um2,
@@ -678,13 +703,47 @@ class OpenRoadSynth:
             wns_ps=wns_ps,
             tns_ps=tns_ps,
             static_function_findings=self.static_function_findings or None,
+            phys_model=phys_model,
         )
+
+    def _publish_phys_model(
+        self, *, area_um2: float | None, gate_count: int | None
+    ) -> str | None:
+        """Write `phys-model.json` + its manifest for a run that passed (#558).
+
+        Stage 1 owns the per-module breakdown -- the cell counts and areas are
+        Yosys' -- while the design totals recorded alongside them are stage
+        2's, which is the pairing this backend already reports. Never fails
+        the synthesis: see the Yosys backend's copy for why a by-product does
+        not get to veto a product.
+        """
+        published = publish_synth(
+            artefact_dir=self.artefact_dir,
+            top=self.synth_cfg.get_top(),
+            backend="openroad",
+            run=self.synth_cfg.get_name(),
+            stats_path=self._stats_path(),
+            netlist_path=self._yosys_netlist_path(),
+            log_path=self._or_log_path(),
+            area_um2=area_um2,
+            gate_count=gate_count,
+        )
+        if published["error"] is not None or published["rows"] is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_model_incomplete",
+                synth=self.synth_cfg.get_name(),
+                stats=self._stats_path(),
+                error=published["error"],
+            )
+        return published["model"]
 
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
-    def _clear_stale_netlists(self) -> None:
+    def _clear_stale_netlists(self) -> str | None:
         """Remove the previous run's stage-1 netlists, before anything returns.
 
         Stage 2 reads stage 1's netlist back off a fixed path, having judged
@@ -696,11 +755,27 @@ class OpenRoadSynth:
         missing Liberty or LEF, a filelist error, and the static-lifetime and
         conflicting-driver gates, which fail before or without reading the
         netlist — leaves no stale product behind.
+
+        `synth_stat.json` goes with them: it is read back inside this same
+        `run()` to build the phys model, so a stage 1 that exits 0 without
+        reaching its trailing `tee ... stat -json` must not have the previous
+        run's per-module areas published as this one's (#558). The model and
+        its manifest survive -- the other flow's half may be in them -- but
+        this flow's half is nulled out, since publication happens only on a
+        pass and a failed rerun would otherwise leave module rows standing
+        over a `synth_stat.json` that has just been deleted (#558).
+
+        :returns: ``None``, or the reason the withdrawal did not happen —
+            which every caller turns into a failed run, because the
+            `synth_stat.json` behind the still-published half has just been
+            deleted here. See
+            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
         """
         stale = clear_stale_artefacts(
             [
                 self._yosys_netlist_path(),
                 os.path.join(self.artefact_dir, "synth.rtlil"),
+                self._stats_path(),
             ],
             owner=self.synth_cfg.get_name(),
         )
@@ -712,6 +787,39 @@ class OpenRoadSynth:
                 synth=self.synth_cfg.get_name(),
                 paths=stale,
             )
+        return self._invalidate_phys_half()
+
+    def _invalidate_phys_half(self) -> str | None:
+        """Null this flow's half of any model + manifest already here (#558).
+
+        See the Yosys backend's copy: publication only happens on a pass, so
+        the clear is where a run that will not publish has to withdraw the
+        previous one's module rows, and a withdrawal that failed stops the
+        run rather than leave them over a deleted `synth_stat.json` (#560).
+        The power half is untouched.
+
+        :returns: ``None`` on success, else `invalidate_half`'s ``error``.
+        """
+        result = invalidate_half(self.artefact_dir, "modules")
+        if result["error"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_half_stale",
+                synth=self.synth_cfg.get_name(),
+                error=result["error"],
+            )
+            return result["error"]
+        if result["model"] or result["manifest"]:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.phys_half_invalidated",
+                synth=self.synth_cfg.get_name(),
+                model=result["model"],
+                manifest=result["manifest"],
+            )
+        return None
 
     def _fail_after_yosys(self, desc: str) -> SynthFailResults:
         """Fail a run that has already invoked Yosys, publishing no netlist.
@@ -723,12 +831,30 @@ class OpenRoadSynth:
         the netlist sits at the fixed path `rb pnr` and `rb power` resolve
         (#469). Every post-Yosys failure return goes through here, so a new
         failure gate added to this method inherits the cleanup by using it.
+
+        The clear withdraws this flow's published half as it goes, and a
+        withdrawal it could not make is said out loud in the description this
+        run already fails with: the run was over either way, but the user has
+        to know the artefact directory still publishes module rows over the
+        `synth_stat.json` just deleted (#560).
         """
-        self._clear_stale_netlists()
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
-        self._clear_stale_netlists()
+        # The clear withdraws whatever this flow published here last time,
+        # and nothing else starts if it could not: the `synth_stat.json`
+        # behind those rows has just been deleted, so a run that went ahead
+        # and then failed would leave a breakdown of a design this directory
+        # no longer holds discoverable as a current one (#560).
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=withdrawal_failure_desc(stale_error),
+            )
         log_event(
             logger,
             logging.INFO,

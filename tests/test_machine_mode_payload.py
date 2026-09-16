@@ -90,6 +90,61 @@ def test_fpv_result_row_omits_empty_guardrails():
     assert "coi" not in row
 
 
+# --- #560: the published phys model on the synth / power machine rows -------
+
+
+def test_synth_result_row_names_the_published_phys_model():
+    """A machine consumer of `rb --machine synth` can find the model."""
+    from rtl_buddy.runner.synth_results import SynthPassResults
+
+    results = SynthPassResults(
+        name="s/results",
+        gate_count=46,
+        phys_model="build/phys/synth/block/phys-model.json",
+    )
+    row = RtlBuddy._synth_result_row(
+        object(), {"synth_name": "block", "results": results}
+    )
+    assert row["phys_model"] == "build/phys/synth/block/phys-model.json"
+
+
+def test_synth_result_row_omits_the_model_when_none_was_published():
+    from rtl_buddy.runner.synth_results import SynthPassResults
+
+    results = SynthPassResults(name="s/results", gate_count=46)
+    row = RtlBuddy._synth_result_row(
+        object(), {"synth_name": "block", "results": results}
+    )
+    assert "phys_model" not in row
+
+
+def test_power_result_row_names_the_published_phys_model():
+    """The same for `rb --machine power`."""
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    results = PowerPassResults(
+        name="p/results",
+        mode="static",
+        total_w=0.5,
+        phys_model="build/phys/power/block/phys-model.json",
+    )
+    row = RtlBuddy._power_result_row(
+        object(), {"power_name": "block", "results": results}
+    )
+    assert row["phys_model"] == "build/phys/power/block/phys-model.json"
+    assert row["total_w"] == 0.5
+
+
+def test_power_result_row_omits_the_model_when_none_was_published():
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    results = PowerPassResults(name="p/results", mode="static", total_w=0.5)
+    row = RtlBuddy._power_result_row(
+        object(), {"power_name": "block", "results": results}
+    )
+    assert "phys_model" not in row
+
+
 # --- #347: structured coverage on the machine row and payload ---------------
 
 

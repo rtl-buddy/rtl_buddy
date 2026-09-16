@@ -21,6 +21,11 @@ from ..config.synth import (
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.publish import (
+    invalidate_half,
+    publish_synth,
+    withdrawal_failure_desc,
+)
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
@@ -509,6 +514,10 @@ class YosysSynth:
             return os.path.join(self.artefact_dir, "synth_netlist.v")
         return os.path.join(self.artefact_dir, "synth.rtlil")
 
+    def _stats_path(self) -> str:
+        """Yosys' machine-readable per-module `stat -json` dump (#558)."""
+        return os.path.join(self.artefact_dir, "synth_stat.json")
+
     def _write_filelist(self) -> str:
         fl_path = self._filelist_path()
         vlog_fl = VlogFilelist(
@@ -648,6 +657,23 @@ class YosysSynth:
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
+    def _stat_json_cmd(self, liberty: str | None) -> str:
+        """The `stat -json` line that feeds the phys model's module rows (#558).
+
+        `stat -json` prints to the console rather than to a file, so it is
+        wrapped in `tee -o` — the pattern Yosys' own help points at. `-q`
+        keeps the JSON out of `synth.log`, which is scraped line by line for
+        the design totals and for `ERROR:` lines; a JSON document in there
+        would be noise at best.
+
+        The `-liberty` copy of the human-readable `stat` above it is passed
+        again here because that is what puts an `area` field on each module.
+        Without a Liberty the dump still carries `num_cells`, so an unmapped
+        run gets module rows with a null area rather than no rows at all.
+        """
+        liberty_arg = f" -liberty {liberty}" if liberty else ""
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+
     def _write_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
         opts = self._resolve_opts()
@@ -731,10 +757,12 @@ class YosysSynth:
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._netlist_path(mapped=True)}")
             lines.append(f"stat -liberty {lib_paths[0]}")
+            lines.append(self._stat_json_cmd(lib_paths[0]))
         else:
             if opts.abc_args:
                 lines.append(f"abc {opts.abc_args}")
             lines.append(f"write_rtlil {self._netlist_path()}")
+            lines.append(self._stat_json_cmd(None))
 
         script = "\n".join(lines) + "\n"
         script_path = self._script_path()
@@ -742,7 +770,7 @@ class YosysSynth:
             f.write(script)
         return script_path
 
-    def _clear_stale_netlists(self) -> None:
+    def _clear_stale_netlists(self) -> str | None:
         """Remove the previous run's netlists, before anything can return.
 
         `synth_netlist.v` / `synth.rtlil` are this flow's real product and the
@@ -758,9 +786,33 @@ class YosysSynth:
         a filelist error, and the static-lifetime and conflicting-driver
         gates, which fail before or without reading the netlist -- leaves no
         stale product behind.
+
+        `synth_stat.json` goes with them for the same reason one step in: it
+        is read back inside this same `run()` to build the phys model, and a
+        Yosys that exits 0 without reaching its trailing `tee ... stat -json`
+        would otherwise have the previous run's per-module areas published as
+        this one's (#558).
+
+        The model and its manifest are not *deleted* -- a run of the other
+        flow may have merged its own half into them, and that half's
+        artefacts are still on disk. They are edited instead: this flow's
+        half is nulled out, because publication happens only on a pass and a
+        rerun that fails here would otherwise leave the previous run's
+        per-module rows discoverable with the `synth_stat.json` behind them
+        already gone (#558).
+
+        :returns: ``None``, or the reason the withdrawal did not happen —
+            which every caller turns into a failed run, because the
+            `synth_stat.json` behind the still-published half has just been
+            deleted here. See
+            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
         """
         stale = clear_stale_artefacts(
-            [self._netlist_path(mapped=True), self._netlist_path()],
+            [
+                self._netlist_path(mapped=True),
+                self._netlist_path(),
+                self._stats_path(),
+            ],
             owner=self.synth_cfg.get_name(),
         )
         if stale:
@@ -771,6 +823,45 @@ class YosysSynth:
                 synth=self.synth_cfg.get_name(),
                 paths=stale,
             )
+        return self._invalidate_phys_half()
+
+    def _invalidate_phys_half(self) -> str | None:
+        """Null this flow's half of any model + manifest already here (#558).
+
+        The counterpart of `_publish_phys_model`, called from the clear above
+        so every path that ends without publishing -- a failure, a crash, a
+        gate that returns early -- leaves no module rows standing over
+        artefacts that have just been deleted. The power half is untouched.
+
+        A withdrawal that *succeeded* is bookkeeping and logs at DEBUG. One
+        that failed is not: the clear that called this has already deleted
+        the `synth_stat.json` the published rows were read from, so they are
+        now standing over nothing, and carrying on would let a run that dies
+        before publishing leave them there. It warns and hands the reason
+        back for the caller to fail on (#560).
+
+        :returns: ``None`` on success, else `invalidate_half`'s ``error``.
+        """
+        result = invalidate_half(self.artefact_dir, "modules")
+        if result["error"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_half_stale",
+                synth=self.synth_cfg.get_name(),
+                error=result["error"],
+            )
+            return result["error"]
+        if result["model"] or result["manifest"]:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.phys_half_invalidated",
+                synth=self.synth_cfg.get_name(),
+                model=result["model"],
+                manifest=result["manifest"],
+            )
+        return None
 
     def _fail_after_yosys(self, desc: str) -> SynthFailResults:
         """Fail a run that has already invoked Yosys, publishing no netlist.
@@ -783,12 +874,30 @@ class YosysSynth:
         (#469). Every post-Yosys failure return goes through here so the two
         halves cannot drift apart, and so a new failure gate added to this
         method inherits the cleanup by using it.
+
+        The clear withdraws this flow's published half as it goes, and a
+        withdrawal it could not make is said out loud in the description this
+        run already fails with: the run was over either way, but the user has
+        to know the artefact directory still publishes module rows over the
+        `synth_stat.json` just deleted (#560).
         """
-        self._clear_stale_netlists()
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
-        self._clear_stale_netlists()
+        # The clear withdraws whatever this flow published here last time,
+        # and nothing else starts if it could not: the `synth_stat.json`
+        # behind those rows has just been deleted, so a run that went ahead
+        # and then failed would leave a breakdown of a design this directory
+        # no longer holds discoverable as a current one (#560).
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=withdrawal_failure_desc(stale_error),
+            )
         log_event(
             logger,
             logging.INFO,
@@ -925,13 +1034,9 @@ class YosysSynth:
             # start-of-run cleanup only removed the previous one. Drop it, or
             # `rb pnr` / `rb power` would consume a netlist whose shared net
             # folded to x.
-            self._clear_stale_netlists()
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc=(
-                    f"{len(conflicting)} 'multiple conflicting drivers' "
-                    f"warning(s) in {log_path}"
-                ),
+            return self._fail_after_yosys(
+                f"{len(conflicting)} 'multiple conflicting drivers' "
+                f"warning(s) in {log_path}"
             )
 
         area_um2 = self._parse_area_um2(log_text)
@@ -953,10 +1058,50 @@ class YosysSynth:
             wns_ps=wns_ps,
             log=log_path,
         )
+        phys_model = self._publish_phys_model(
+            area_um2=area_um2,
+            gate_count=gate_count,
+            mapped=bool(self._resolve_lib_paths()),
+        )
         return SynthPassResults(
             name=self.name + "/results",
             area_um2=area_um2,
             gate_count=gate_count,
             wns_ps=wns_ps,
             static_function_findings=len(findings) or None,
+            phys_model=phys_model,
         )
+
+    def _publish_phys_model(
+        self, *, area_um2: float | None, gate_count: int | None, mapped: bool
+    ) -> str | None:
+        """Write `phys-model.json` + its manifest for a run that passed (#558).
+
+        Never fails the synthesis: the per-module breakdown is a by-product
+        of a run whose product -- the netlist -- is already on disk and
+        already judged. A Yosys that skipped its `stat -json` line, or wrote
+        something this cannot read, costs the model its `modules` rows and
+        earns a warning; the totals scraped from the log are written either
+        way, so the document still says what the design came to.
+        """
+        published = publish_synth(
+            artefact_dir=self.artefact_dir,
+            top=self.synth_cfg.get_top(),
+            backend="yosys",
+            run=self.synth_cfg.get_name(),
+            stats_path=self._stats_path(),
+            netlist_path=self._netlist_path(mapped=mapped),
+            log_path=self._log_path(),
+            area_um2=area_um2,
+            gate_count=gate_count,
+        )
+        if published["error"] is not None or published["rows"] is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_model_incomplete",
+                synth=self.synth_cfg.get_name(),
+                stats=self._stats_path(),
+                error=published["error"],
+            )
+        return published["model"]

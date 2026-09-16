@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 import re
@@ -7,8 +8,21 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: How many times `_snapshot_netlist` re-copies a netlist that changed
+#: underneath it before giving up. Three is enough to ride out a single
+#: upstream rewrite landing at an unlucky moment and short enough that a
+#: writer rewriting the file in a loop fails the run rather than pinning
+#: it (#560).
+_SNAPSHOT_ATTEMPTS = 3
+
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
+from ..phys.publish import (
+    invalidate_half,
+    publish_power,
+    sha256_of,
+    withdrawal_failure_desc,
+)
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
@@ -47,6 +61,18 @@ class OpenRoadPower(BasePower):
         artefact_root = Path(suite_dir) / "artefacts" / power_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
+        # The upstream netlist this run measures, and the hash of the
+        # private copy OpenROAD is actually given; see
+        # `_snapshot_netlist`. Both `None` until the run resolves them,
+        # and for a `netlist-source: pnr` run that reads a routed
+        # database and never a netlist at all.
+        self._netlist_source_path: str | None = None
+        self._netlist_sha256: str | None = None
+        # What `_resolve_inputs()` said when the script was generated —
+        # the top `link_design` names, the SDC `read_sdc` reads. `None`
+        # until `_write_script` runs; see `_publish_phys_model` for why
+        # publication reads this rather than resolving a second time.
+        self._script_inputs: dict | None = None
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -60,6 +86,153 @@ class OpenRoadPower(BasePower):
 
     def _report_path(self) -> str:
         return os.path.join(self.artefact_dir, "power.rpt")
+
+    def _instances_report_path(self) -> str:
+        """`report_power -instances`' output: one line per leaf cell (#558)."""
+        return os.path.join(self.artefact_dir, "power_instances.rpt")
+
+    def _instances_cells_path(self) -> str:
+        """The `<instance path> <liberty cell>` sidecar (#558).
+
+        `report_power` prints the path and the four powers, never the master
+        the instance is an instance *of* — so the hierarchy walk that feeds
+        it writes the mapping out alongside. Without this the model's power
+        rows have no module column and cannot be joined to the synth half.
+        """
+        return os.path.join(self.artefact_dir, "power_instances.cells")
+
+    @staticmethod
+    def _staging_path(published: str) -> str:
+        """Where the per-instance block writes ``published`` before it is
+        published (#560).
+
+        Tcl's ``>`` redirection creates the file before the command it
+        redirects runs, and ``report_power -instances`` streams a row per
+        cell into it. A call that emits two thirds of the design and *then*
+        raises therefore leaves a nonempty report at the published path —
+        and the ``catch`` around the block swallows the error by design,
+        because the detail is a by-product that may not fail a run. The
+        publish that follows reads that prefix as a whole breakdown: real
+        watts, for a third of the instances, presented as the design's.
+        Only an entirely empty parse is caught today, and a failure part-way
+        through is never empty. The ``foreach`` writing the cells sidecar
+        has exactly the same shape.
+
+        So the block writes here and renames onto the published names as
+        its last act, which Tcl reaches only when every command before it
+        returned — an atomic publish on success. A failure leaves the
+        staging file and no published one, which is the state the publish
+        already reads as "this run produced no breakdown"; the trailing
+        cleanup, and the next run's stale-clear, remove it.
+        """
+        return published + ".tmp"
+
+    def _netlist_snapshot_path(self) -> str:
+        """This run's own copy of the netlist it hands OpenROAD (#560).
+
+        The analysis reads a netlist another command wrote, in another
+        artefact directory, and records its sha256 as the evidence that
+        these watts and the module rows beside them describe one design.
+        Hashing the upstream path leaves a window however tightly it is
+        drawn: `rb synth` rewriting that file between the hash and
+        OpenROAD's `read_verilog` would have the model name bytes the
+        analysis never measured, and the provenance gate would then read
+        a real mismatch as a match.
+
+        So the netlist is *snapshotted* instead: copied here, hashed
+        here, and read from here. The hash and the bytes OpenROAD parses
+        are then the same file, which no concurrent writer can reach —
+        the upstream directory is not this run's, and this one is.
+
+        The cost is one copy of a netlist that may be megabytes, per
+        power run, in the directory that already holds the run's log and
+        reports; the stale-clear removes it exactly as it removes them.
+        """
+        return os.path.join(self.artefact_dir, "power_netlist.v")
+
+    def _source_identity(self, source: str) -> tuple[int, int]:
+        """`(size, mtime_ns)` of the upstream netlist, as a change witness.
+
+        The pair a writer cannot plausibly leave untouched: truncating and
+        rewriting a netlist changes its length, and `write`/`rename` both
+        stamp the mtime. It is a witness, not a lock — two writes inside one
+        mtime tick that land on the same length would present the same pair,
+        which POSIX gives no way to rule out short of holding the file open
+        against a writer that does not want it held. See `_snapshot_netlist`
+        for what that residue costs.
+        """
+        st = os.stat(source)
+        return (st.st_size, st.st_mtime_ns)
+
+    def _snapshot_netlist(self) -> str | None:
+        """Copy the upstream netlist in, hash the copy, or say why not.
+
+        Called between the stale-clear (which removes the previous run's
+        copy) and OpenROAD, so the file the script names is written once
+        and read once, by this run. Copy-then-rename via a `.tmp`
+        sibling: a crash mid-copy leaves the staging file, never a short
+        `power_netlist.v` that the next reader would take for a netlist.
+
+        The copy is private and therefore immutable, but that alone does
+        not make it *coherent*. When `power.yaml` reads a synthesis in
+        another suite the two commands hold different artefact-tree
+        locks, so a concurrent `rb synth` can truncate and rewrite
+        `synth_netlist.v` under `copyfile`'s read — and the snapshot
+        would then be a torn prefix of two netlists that the recorded
+        sha256 authenticates perfectly. So the source is stat'd either
+        side of each copy and the copy is retried while those stats
+        differ: bounded at `_SNAPSHOT_ATTEMPTS`, because a writer looping
+        over the netlist would otherwise loop this with it.
+
+        Exhausting the attempts fails the run. A power figure over bytes
+        that were never one netlist is worse than a refusal — the refusal
+        is re-runnable, the figure is not detectably wrong.
+
+        A `netlist-source: pnr` run resolves no netlist at all — it reads
+        a routed database — so there is nothing to snapshot and nothing
+        to hash, which is what it recorded before this existed.
+
+        :returns: ``None`` on success (or when there is nothing to do),
+            else a description of the failure. A netlist that cannot be
+            copied into the artefact directory is not a by-product
+            failure to warn about and continue past: the generated
+            script names the copy, so there would be nothing for
+            `read_verilog` to read.
+        """
+        source = self._netlist_source_path
+        self._netlist_sha256 = None
+        if source is None:
+            return None
+        snapshot = Path(self._netlist_snapshot_path())
+        staging = snapshot.with_name(snapshot.name + ".tmp")
+        try:
+            for _attempt in range(_SNAPSHOT_ATTEMPTS):
+                before = self._source_identity(source)
+                shutil.copyfile(source, staging)
+                if self._source_identity(source) != before:
+                    # Somebody rewrote the netlist mid-copy; whatever is in
+                    # the staging file spans the two versions. Drop it and
+                    # read the source again from the top.
+                    continue
+                os.replace(staging, snapshot)
+                # Of the copy, not of the source: these are the bytes
+                # OpenROAD is about to read, and nothing else writes this
+                # path.
+                self._netlist_sha256 = sha256_of(snapshot)
+                return None
+        except OSError as e:
+            with contextlib.suppress(OSError):
+                staging.unlink()
+            return f"could not copy {source} to {snapshot}: {e}"
+        with contextlib.suppress(OSError):
+            staging.unlink()
+        return (
+            f"{source} changed underneath every one of {_SNAPSHOT_ATTEMPTS} "
+            "copies, so no snapshot of it is known to be a single netlist "
+            "— something is writing it concurrently (a `rb synth` of the "
+            "upstream entry); re-run this power analysis once that has "
+            "finished"
+        )
 
     # ------------------------------------------------------------------
     # Inputs resolution
@@ -145,6 +318,80 @@ class OpenRoadPower(BasePower):
             ]
         return []  # "default" → static, no activity commands
 
+    # Printed by the generated script between the design-total `report_power`
+    # and the per-instance block below it. It splits `power.log` into the half
+    # that decides the run and the half that only decides the by-product: see
+    # `_fatal_log_region` (#558).
+    _DETAIL_MARKER = "RB_PHYS_DETAIL_BEGIN"
+
+    def _emit_per_instance_cmds(self) -> list[str]:
+        """Tcl that attributes the run's power to individual leaf instances.
+
+        This is rtl-buddy/rtl_buddy#114 delivered where the OpenROAD session
+        already lives, rather than as the stand-alone `emit_phys.tcl` that
+        issue predates `rb power` by (#558).
+
+        Three properties the shape is chosen for:
+
+        **One analysis, not one per instance.** `report_power` takes a *list*
+        of instances and prints one line each, so the whole design costs a
+        single extra call on top of the design-total report above it. The
+        obvious `foreach ... {report_power -instances $inst}` spelling reruns
+        the propagation per cell and turns a minute into an afternoon on
+        anything real.
+
+        **Leaf cells only.** `get_cells -hierarchical *` returns the leaves —
+        the instances that have a Liberty cell and therefore a power number.
+        Roll-up to the enclosing modules is the model consumer's job.
+
+        **It cannot fail the run.** Everything here is inside a `catch`: the
+        design totals have already been written by the time this executes, so
+        a `get_cells` that finds nothing, or an OpenSTA without the
+        `-instances` form, must cost the run its per-instance detail and
+        nothing else. A Tcl error escaping to the top level would abort the
+        script and take the exit code with it.
+
+        The `catch` alone is not enough, though: an OpenSTA that rejects
+        `-instances` prints an `[ERROR ...]` diagnostic *before* raising, and
+        the post-run log gate fails any run whose log carries one. So the
+        block opens with a marker line naming where the by-product begins —
+        `_fatal_log_region` scans only what precedes it, and this contract
+        holds without the gate having to guess which diagnostics are benign.
+
+        **And a swallowed failure must publish nothing**, which is why the
+        two files are written under staging names and renamed onto the
+        published ones as the block's last two commands. Failing part-way
+        leaves rows on disk, `catch` hides that it failed, and a partial
+        report at the published path parses as a complete design. See
+        `_staging_path`; the trailing deletes clear the staging files a
+        failed block leaves, and are no-ops after a successful rename.
+        """
+        instances = self._instances_report_path()
+        cells = self._instances_cells_path()
+        instances_tmp = self._staging_path(instances)
+        cells_tmp = self._staging_path(cells)
+        return [
+            f'puts "{self._DETAIL_MARKER}"',
+            "catch {",
+            "  set rb_insts [get_cells -hierarchical *]",
+            "  if {[llength $rb_insts] > 0} {",
+            f"    set rb_fh [open {cells_tmp} w]",
+            "    foreach rb_inst $rb_insts {",
+            '      puts $rb_fh "[get_full_name $rb_inst] '
+            '[get_property $rb_inst ref_name]"',
+            "    }",
+            "    close $rb_fh",
+            f"    report_power -instances $rb_insts > {instances_tmp}",
+            # Reached only if everything above returned: this is the
+            # publication, and it is one rename per file.
+            f"    file rename -force {cells_tmp} {cells}",
+            f"    file rename -force {instances_tmp} {instances}",
+            "  }",
+            "}",
+            f"catch {{file delete -force {cells_tmp}}}",
+            f"catch {{file delete -force {instances_tmp}}}",
+        ]
+
     def _write_script(self) -> str:
         platform = self._resolve_platform()
         pdk = platform.get_pdk()
@@ -152,6 +399,10 @@ class OpenRoadPower(BasePower):
         tech_lef = pdk.get_tech_lef()
         macro_lef = pdk.get_macro_lef()
         inputs = self._resolve_inputs()
+        # The script is generated from these, so these are what the run
+        # measured — `_publish_phys_model` reads the capture rather than
+        # resolving again (#560).
+        self._script_inputs = inputs
         netlist = inputs["netlist"]
         sdc = inputs["sdc"]
         odb = inputs["odb"]
@@ -181,6 +432,13 @@ class OpenRoadPower(BasePower):
                     f"power run '{self.power_cfg.get_name()}': "
                     f"upstream netlist not found at {netlist} — run `rb synth` first"
                 )
+            # The script reads this run's own copy, not the upstream
+            # path: `_snapshot_netlist` writes it after the stale-clear
+            # below and hashes what it wrote, so the bytes the model
+            # names and the bytes OpenROAD parses are one file that no
+            # concurrent `rb synth` can reach (#560). Recorded here so
+            # that step knows what to copy.
+            self._netlist_source_path = netlist
 
         lines = [
             "# Generated by rtl_buddy power flow",
@@ -201,13 +459,14 @@ class OpenRoadPower(BasePower):
         else:
             lines.extend(
                 [
-                    f"read_verilog {netlist}",
+                    f"read_verilog {self._netlist_snapshot_path()}",
                     f"link_design {top}",
                     f"read_sdc {sdc}",
                 ]
             )
         lines.extend(self._emit_activity_cmds())
         lines.append(f"report_power > {self._report_path()}")
+        lines.extend(self._emit_per_instance_cmds())
         lines.append("exit")
         lines.append("")
 
@@ -248,10 +507,46 @@ class OpenRoadPower(BasePower):
     # Entry point
     # ------------------------------------------------------------------
 
-    def _clear_stale_report(self) -> None:
-        """Remove the previous run's `power.rpt`."""
+    def _clear_stale_report(self) -> str | None:
+        """Remove the previous run's `power.rpt` and its per-instance half.
+
+        The per-instance report and its cell sidecar are read back inside
+        this same `run()` to build the phys model, so they take the same
+        treatment as the report they accompany: an OpenROAD that exits 0
+        without reaching the `catch` block must not have the last run's
+        per-instance watts published as this one's (#469, #558).
+
+        The netlist snapshot goes with them (#560). It is the largest
+        thing this flow writes, nothing reads it after OpenROAD has, and
+        a failed run that left it behind would leave a copy of a netlist
+        no artefact here still describes. `run()` therefore clears
+        *before* `_snapshot_netlist` takes this run's copy, never after.
+
+        The model and its manifest stay -- a synthesis may have merged its
+        own half into them -- but this flow's half is nulled out, because
+        publication happens only on a pass and a failed rerun would otherwise
+        leave the previous run's per-instance watts discoverable with the
+        report behind them already deleted (#558).
+
+        :returns: ``None``, or the reason the withdrawal did not happen —
+            which every caller turns into a failed run, because the reports
+            behind the still-published half have just been deleted here. See
+            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
+        """
         stale = clear_stale_artefacts(
-            [self._report_path()], owner=self.power_cfg.get_name()
+            [
+                self._report_path(),
+                self._instances_report_path(),
+                self._instances_cells_path(),
+                # The names the per-instance block writes under before it
+                # renames (#560). An OpenROAD killed inside that block never
+                # reaches its trailing deletes, and a staging file left in
+                # the artefact directory would be the next run's to publish.
+                self._staging_path(self._instances_report_path()),
+                self._staging_path(self._instances_cells_path()),
+                self._netlist_snapshot_path(),
+            ],
+            owner=self.power_cfg.get_name(),
         )
         if stale:
             log_event(
@@ -261,6 +556,62 @@ class OpenRoadPower(BasePower):
                 power=self.power_cfg.get_name(),
                 paths=stale,
             )
+        return self._invalidate_phys_half()
+
+    def _invalidate_phys_half(self) -> str | None:
+        """Null this flow's half of any model + manifest already here (#558).
+
+        The counterpart of `_publish_phys_model`, called from the clear so a
+        run that never reaches publication withdraws the previous one's
+        per-instance rows rather than leaving them over a deleted report. The
+        synthesis half is untouched.
+
+        A withdrawal that *succeeded* is bookkeeping and logs at DEBUG. One
+        that failed is not: the clear that called this has already deleted
+        the reports the published half was read from, so the rows are now
+        standing over nothing, and carrying on would let a run that dies
+        before publishing leave them there. It warns and hands the reason
+        back for the caller to fail on (#560).
+
+        :returns: ``None`` on success, else `invalidate_half`'s ``error``.
+        """
+        result = invalidate_half(self.artefact_dir, "instances")
+        if result["error"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.phys_half_stale",
+                power=self.power_cfg.get_name(),
+                error=result["error"],
+            )
+            return result["error"]
+        if result["model"] or result["manifest"]:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "power.phys_half_invalidated",
+                power=self.power_cfg.get_name(),
+                model=result["model"],
+                manifest=result["manifest"],
+            )
+        return None
+
+    def _fatal_log_region(self, log_text: str) -> str:
+        """The part of `power.log` whose `[ERROR ...]` lines fail the run.
+
+        Everything the generated script prints after `_DETAIL_MARKER` belongs
+        to the per-instance block, which is a by-product: it is `catch`ed, and
+        by the time it runs the design totals are already in `power.rpt`. An
+        `[ERROR ...]` down there (an OpenSTA without `report_power
+        -instances`, say) must cost the model its `instances` half and nothing
+        more — failing the run on it would delete totals this wrapper had
+        already parsed.
+
+        A log with no marker is scanned whole: older scripts predate it, and
+        so does a run that died before reaching the totals.
+        """
+        marker_at = log_text.find(self._DETAIL_MARKER)
+        return log_text if marker_at < 0 else log_text[:marker_at]
 
     def _fail_after_openroad(self, desc: str) -> PowerFailResults:
         """Fail a run that has already invoked OpenROAD, publishing no report.
@@ -270,8 +621,16 @@ class OpenRoadPower(BasePower):
         report this wrapper cannot read or parse — with `power.rpt` on disk
         at the fixed path the next run would otherwise quote (#469). Every
         post-OpenROAD failure return goes through here.
+
+        The clear withdraws this flow's published half as it goes, and a
+        withdrawal it could not make is said out loud in the description
+        this run already fails with: the run was over either way, but the
+        user has to know the artefact directory still publishes rows over
+        the reports just deleted (#560).
         """
-        self._clear_stale_report()
+        stale_error = self._clear_stale_report()
+        if stale_error is not None:
+            desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
         return PowerFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> PowerResults:
@@ -302,10 +661,11 @@ class OpenRoadPower(BasePower):
                 power=self.power_cfg.get_name(),
                 error=str(e),
             )
-            self._clear_stale_report()
-            return PowerFailResults(
-                name=self.name + "/results", desc=f"script generation error: {e}"
-            )
+            stale_error = self._clear_stale_report()
+            desc = f"script generation error: {e}"
+            if stale_error is not None:
+                desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
+            return PowerFailResults(name=self.name + "/results", desc=desc)
 
         if not shutil.which(self.executable):
             log_event(
@@ -326,7 +686,35 @@ class OpenRoadPower(BasePower):
         # fixed path and OpenROAD exiting 0 with no [ERROR] does not prove it
         # rewrote it, so clear here and the "power report not produced" path
         # stays reachable instead of quoting a previous run's watts (#469).
-        self._clear_stale_report()
+        #
+        # The clear also withdraws whatever this flow published here last
+        # time, and OpenROAD does not start if it could not: the reports
+        # behind those rows have just been deleted, so a run that went ahead
+        # and then failed would leave a breakdown of a design this directory
+        # no longer holds discoverable as a current one (#560).
+        stale_error = self._clear_stale_report()
+        if stale_error is not None:
+            return PowerFailResults(
+                name=self.name + "/results",
+                desc=withdrawal_failure_desc(stale_error),
+            )
+
+        # After the clear, before OpenROAD: the script names this run's
+        # own copy of the netlist, and the hash recorded beside the watts
+        # is of that copy (#560).
+        snapshot_error = self._snapshot_netlist()
+        if snapshot_error is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.netlist_snapshot_failed",
+                power=self.power_cfg.get_name(),
+                error=snapshot_error,
+            )
+            return PowerFailResults(
+                name=self.name + "/results",
+                desc=f"could not stage the netlist for OpenROAD: {snapshot_error}",
+            )
 
         log_path = self._log_path()
         env = os.environ.copy()
@@ -375,7 +763,11 @@ class OpenRoadPower(BasePower):
         except OSError:
             log_text = ""
 
-        error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
+        error_lines = [
+            ln
+            for ln in self._fatal_log_region(log_text).splitlines()
+            if ln.startswith("[ERROR ")
+        ]
         if error_lines:
             return self._fail_after_openroad(
                 f"{len(error_lines)} ERROR(s) in OpenROAD log"
@@ -413,6 +805,7 @@ class OpenRoadPower(BasePower):
             log=log_path,
             report=report_path,
         )
+        phys_model = self._publish_phys_model(parsed)
         return PowerPassResults(
             name=self.name + "/results",
             mode=self.power_cfg.get_mode(),
@@ -422,4 +815,79 @@ class OpenRoadPower(BasePower):
             switching_w=parsed["switching_w"],
             leakage_w=parsed["leakage_w"],
             activity_source=activity_source,
+            phys_model=phys_model,
         )
+
+    def _publish_phys_model(self, parsed: dict) -> str | None:
+        """Write `phys-model.json` + its manifest for a run that passed (#558).
+
+        Never fails the power analysis. The design totals are already parsed
+        and already reported by the time this runs; the per-instance rows are
+        the by-product, and an OpenSTA that skipped or garbled them costs the
+        model its `instances` half and earns a warning.
+
+        The top comes from the resolution the *script* was generated from
+        rather than the run name, because the model is keyed on the
+        *design*: it is what decides whether a synthesis' module rows
+        already in this directory describe the same thing and may be merged
+        forward. Resolving a second time here would re-read the synth or pnr
+        YAML this analysis references, minutes after OpenROAD was launched
+        against the first answer — a `top:` edited in between, or a
+        referenced entry renamed away, would then have these watts attributed
+        to a design they do not describe and merged against a co-named
+        publication of another one. So `_write_script` captures what it
+        resolved and this reads the capture, the same capture-at-preparation
+        rule the netlist snapshot follows (#560).
+
+        The netlist this run read is identified by the hash
+        `_snapshot_netlist` took of the private copy it gave OpenROAD, not
+        by re-reading the upstream path now: it is what a later synthesis
+        into this directory tests its own output against before carrying
+        these per-instance rows forward, and what this publish tests before
+        carrying any module rows already here forward (#558), so it has to
+        be of the bytes the analysis actually measured -- which is why the
+        analysis reads a copy nothing else can rewrite (#560). A
+        `netlist-source: pnr` run resolves no netlist at all -- it reads the
+        routed ODB -- so it records none, and nothing is inherited in either
+        direction.
+
+        The manifest records where that copy is as well as what it hashed
+        to, so a result read back from an archive can reach the netlist
+        and re-check the hash rather than take it on faith (#560).
+        """
+        inputs = self._script_inputs or {}
+        published = publish_power(
+            artefact_dir=self.artefact_dir,
+            top=inputs.get("top"),
+            backend="openroad",
+            run=self.power_cfg.get_name(),
+            netlist_source=self.power_cfg.get_netlist_source(),
+            netlist_sha256=self._netlist_sha256,
+            # The snapshot, not the upstream path: the manifest names the
+            # bytes the hash beside it identifies, and only the copy is
+            # still guaranteed to be those bytes. Null exactly when the
+            # hash is -- a `netlist-source: pnr` run snapshots nothing.
+            netlist_path=(
+                self._netlist_snapshot_path()
+                if self._netlist_sha256 is not None
+                else None
+            ),
+            report_path=self._report_path(),
+            instances_path=self._instances_report_path(),
+            cells_path=self._instances_cells_path(),
+            log_path=self._log_path(),
+            internal_w=parsed["internal_w"],
+            switching_w=parsed["switching_w"],
+            leakage_w=parsed["leakage_w"],
+            total_w=parsed["total_w"],
+        )
+        if published["error"] is not None or published["rows"] is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.phys_model_incomplete",
+                power=self.power_cfg.get_name(),
+                instances=self._instances_report_path(),
+                error=published["error"],
+            )
+        return published["model"]
