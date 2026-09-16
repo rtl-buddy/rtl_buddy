@@ -17,7 +17,12 @@ _SNAPSHOT_ATTEMPTS = 3
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
-from ..phys.publish import invalidate_half, publish_power, sha256_of
+from ..phys.publish import (
+    invalidate_half,
+    publish_power,
+    sha256_of,
+    withdrawal_failure_desc,
+)
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
 from .power_base import BasePower
@@ -63,6 +68,11 @@ class OpenRoadPower(BasePower):
         # database and never a netlist at all.
         self._netlist_source_path: str | None = None
         self._netlist_sha256: str | None = None
+        # What `_resolve_inputs()` said when the script was generated —
+        # the top `link_design` names, the SDC `read_sdc` reads. `None`
+        # until `_write_script` runs; see `_publish_phys_model` for why
+        # publication reads this rather than resolving a second time.
+        self._script_inputs: dict | None = None
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -90,6 +100,32 @@ class OpenRoadPower(BasePower):
         rows have no module column and cannot be joined to the synth half.
         """
         return os.path.join(self.artefact_dir, "power_instances.cells")
+
+    @staticmethod
+    def _staging_path(published: str) -> str:
+        """Where the per-instance block writes ``published`` before it is
+        published (#560).
+
+        Tcl's ``>`` redirection creates the file before the command it
+        redirects runs, and ``report_power -instances`` streams a row per
+        cell into it. A call that emits two thirds of the design and *then*
+        raises therefore leaves a nonempty report at the published path —
+        and the ``catch`` around the block swallows the error by design,
+        because the detail is a by-product that may not fail a run. The
+        publish that follows reads that prefix as a whole breakdown: real
+        watts, for a third of the instances, presented as the design's.
+        Only an entirely empty parse is caught today, and a failure part-way
+        through is never empty. The ``foreach`` writing the cells sidecar
+        has exactly the same shape.
+
+        So the block writes here and renames onto the published names as
+        its last act, which Tcl reaches only when every command before it
+        returned — an atomic publish on success. A failure leaves the
+        staging file and no published one, which is the state the publish
+        already reads as "this run produced no breakdown"; the trailing
+        cleanup, and the next run's stale-clear, remove it.
+        """
+        return published + ".tmp"
 
     def _netlist_snapshot_path(self) -> str:
         """This run's own copy of the netlist it hands OpenROAD (#560).
@@ -321,21 +357,39 @@ class OpenRoadPower(BasePower):
         block opens with a marker line naming where the by-product begins —
         `_fatal_log_region` scans only what precedes it, and this contract
         holds without the gate having to guess which diagnostics are benign.
+
+        **And a swallowed failure must publish nothing**, which is why the
+        two files are written under staging names and renamed onto the
+        published ones as the block's last two commands. Failing part-way
+        leaves rows on disk, `catch` hides that it failed, and a partial
+        report at the published path parses as a complete design. See
+        `_staging_path`; the trailing deletes clear the staging files a
+        failed block leaves, and are no-ops after a successful rename.
         """
+        instances = self._instances_report_path()
+        cells = self._instances_cells_path()
+        instances_tmp = self._staging_path(instances)
+        cells_tmp = self._staging_path(cells)
         return [
             f'puts "{self._DETAIL_MARKER}"',
             "catch {",
             "  set rb_insts [get_cells -hierarchical *]",
             "  if {[llength $rb_insts] > 0} {",
-            f"    set rb_fh [open {self._instances_cells_path()} w]",
+            f"    set rb_fh [open {cells_tmp} w]",
             "    foreach rb_inst $rb_insts {",
             '      puts $rb_fh "[get_full_name $rb_inst] '
             '[get_property $rb_inst ref_name]"',
             "    }",
             "    close $rb_fh",
-            f"    report_power -instances $rb_insts > {self._instances_report_path()}",
+            f"    report_power -instances $rb_insts > {instances_tmp}",
+            # Reached only if everything above returned: this is the
+            # publication, and it is one rename per file.
+            f"    file rename -force {cells_tmp} {cells}",
+            f"    file rename -force {instances_tmp} {instances}",
             "  }",
             "}",
+            f"catch {{file delete -force {cells_tmp}}}",
+            f"catch {{file delete -force {instances_tmp}}}",
         ]
 
     def _write_script(self) -> str:
@@ -345,6 +399,10 @@ class OpenRoadPower(BasePower):
         tech_lef = pdk.get_tech_lef()
         macro_lef = pdk.get_macro_lef()
         inputs = self._resolve_inputs()
+        # The script is generated from these, so these are what the run
+        # measured — `_publish_phys_model` reads the capture rather than
+        # resolving again (#560).
+        self._script_inputs = inputs
         netlist = inputs["netlist"]
         sdc = inputs["sdc"]
         odb = inputs["odb"]
@@ -449,7 +507,7 @@ class OpenRoadPower(BasePower):
     # Entry point
     # ------------------------------------------------------------------
 
-    def _clear_stale_report(self) -> None:
+    def _clear_stale_report(self) -> str | None:
         """Remove the previous run's `power.rpt` and its per-instance half.
 
         The per-instance report and its cell sidecar are read back inside
@@ -469,12 +527,23 @@ class OpenRoadPower(BasePower):
         publication happens only on a pass and a failed rerun would otherwise
         leave the previous run's per-instance watts discoverable with the
         report behind them already deleted (#558).
+
+        :returns: ``None``, or the reason the withdrawal did not happen —
+            which every caller turns into a failed run, because the reports
+            behind the still-published half have just been deleted here. See
+            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
         """
         stale = clear_stale_artefacts(
             [
                 self._report_path(),
                 self._instances_report_path(),
                 self._instances_cells_path(),
+                # The names the per-instance block writes under before it
+                # renames (#560). An OpenROAD killed inside that block never
+                # reaches its trailing deletes, and a staging file left in
+                # the artefact directory would be the next run's to publish.
+                self._staging_path(self._instances_report_path()),
+                self._staging_path(self._instances_cells_path()),
                 self._netlist_snapshot_path(),
             ],
             owner=self.power_cfg.get_name(),
@@ -487,18 +556,36 @@ class OpenRoadPower(BasePower):
                 power=self.power_cfg.get_name(),
                 paths=stale,
             )
-        self._invalidate_phys_half()
+        return self._invalidate_phys_half()
 
-    def _invalidate_phys_half(self) -> None:
+    def _invalidate_phys_half(self) -> str | None:
         """Null this flow's half of any model + manifest already here (#558).
 
         The counterpart of `_publish_phys_model`, called from the clear so a
         run that never reaches publication withdraws the previous one's
         per-instance rows rather than leaving them over a deleted report. The
         synthesis half is untouched.
+
+        A withdrawal that *succeeded* is bookkeeping and logs at DEBUG. One
+        that failed is not: the clear that called this has already deleted
+        the reports the published half was read from, so the rows are now
+        standing over nothing, and carrying on would let a run that dies
+        before publishing leave them there. It warns and hands the reason
+        back for the caller to fail on (#560).
+
+        :returns: ``None`` on success, else `invalidate_half`'s ``error``.
         """
         result = invalidate_half(self.artefact_dir, "instances")
-        if result["model"] or result["manifest"] or result["error"]:
+        if result["error"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.phys_half_stale",
+                power=self.power_cfg.get_name(),
+                error=result["error"],
+            )
+            return result["error"]
+        if result["model"] or result["manifest"]:
             log_event(
                 logger,
                 logging.DEBUG,
@@ -506,8 +593,8 @@ class OpenRoadPower(BasePower):
                 power=self.power_cfg.get_name(),
                 model=result["model"],
                 manifest=result["manifest"],
-                error=result["error"],
             )
+        return None
 
     def _fatal_log_region(self, log_text: str) -> str:
         """The part of `power.log` whose `[ERROR ...]` lines fail the run.
@@ -534,8 +621,16 @@ class OpenRoadPower(BasePower):
         report this wrapper cannot read or parse — with `power.rpt` on disk
         at the fixed path the next run would otherwise quote (#469). Every
         post-OpenROAD failure return goes through here.
+
+        The clear withdraws this flow's published half as it goes, and a
+        withdrawal it could not make is said out loud in the description
+        this run already fails with: the run was over either way, but the
+        user has to know the artefact directory still publishes rows over
+        the reports just deleted (#560).
         """
-        self._clear_stale_report()
+        stale_error = self._clear_stale_report()
+        if stale_error is not None:
+            desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
         return PowerFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> PowerResults:
@@ -566,10 +661,11 @@ class OpenRoadPower(BasePower):
                 power=self.power_cfg.get_name(),
                 error=str(e),
             )
-            self._clear_stale_report()
-            return PowerFailResults(
-                name=self.name + "/results", desc=f"script generation error: {e}"
-            )
+            stale_error = self._clear_stale_report()
+            desc = f"script generation error: {e}"
+            if stale_error is not None:
+                desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
+            return PowerFailResults(name=self.name + "/results", desc=desc)
 
         if not shutil.which(self.executable):
             log_event(
@@ -590,7 +686,18 @@ class OpenRoadPower(BasePower):
         # fixed path and OpenROAD exiting 0 with no [ERROR] does not prove it
         # rewrote it, so clear here and the "power report not produced" path
         # stays reachable instead of quoting a previous run's watts (#469).
-        self._clear_stale_report()
+        #
+        # The clear also withdraws whatever this flow published here last
+        # time, and OpenROAD does not start if it could not: the reports
+        # behind those rows have just been deleted, so a run that went ahead
+        # and then failed would leave a breakdown of a design this directory
+        # no longer holds discoverable as a current one (#560).
+        stale_error = self._clear_stale_report()
+        if stale_error is not None:
+            return PowerFailResults(
+                name=self.name + "/results",
+                desc=withdrawal_failure_desc(stale_error),
+            )
 
         # After the clear, before OpenROAD: the script names this run's
         # own copy of the netlist, and the hash recorded beside the watts
@@ -719,10 +826,18 @@ class OpenRoadPower(BasePower):
         the by-product, and an OpenSTA that skipped or garbled them costs the
         model its `instances` half and earns a warning.
 
-        The top comes from `_resolve_inputs` rather than the run name because
-        the model is keyed on the *design*: it is what decides whether a
-        synthesis' module rows already in this directory describe the same
-        thing and may be merged forward.
+        The top comes from the resolution the *script* was generated from
+        rather than the run name, because the model is keyed on the
+        *design*: it is what decides whether a synthesis' module rows
+        already in this directory describe the same thing and may be merged
+        forward. Resolving a second time here would re-read the synth or pnr
+        YAML this analysis references, minutes after OpenROAD was launched
+        against the first answer — a `top:` edited in between, or a
+        referenced entry renamed away, would then have these watts attributed
+        to a design they do not describe and merged against a co-named
+        publication of another one. So `_write_script` captures what it
+        resolved and this reads the capture, the same capture-at-preparation
+        rule the netlist snapshot follows (#560).
 
         The netlist this run read is identified by the hash
         `_snapshot_netlist` took of the private copy it gave OpenROAD, not
@@ -740,10 +855,7 @@ class OpenRoadPower(BasePower):
         to, so a result read back from an archive can reach the netlist
         and re-check the hash rather than take it on faith (#560).
         """
-        try:
-            inputs = self._resolve_inputs()
-        except Exception:  # noqa: BLE001 - resolution already succeeded once
-            inputs = {}
+        inputs = self._script_inputs or {}
         published = publish_power(
             artefact_dir=self.artefact_dir,
             top=inputs.get("top"),
