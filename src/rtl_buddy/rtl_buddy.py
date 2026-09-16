@@ -4807,26 +4807,37 @@ class RtlBuddy:
     def _release_blocking_dependency(backend, *, suite_dir):
         """A user-configured dependency that per-key release must not clear.
 
-        `sbatch-args` (and `$SBATCH_DEPENDENCY`) can carry a dependency of
-        the site's own — `--dependency=singleton` serialising a licensed
-        simulator is the motivating case — and it is appended AFTER the
-        generated `afterok`, so it is the sim job's *effective* gate.
-        `scontrol update JobId=<id> Dependency=` clears the whole
-        expression, not this run's clause of it, so releasing a key would
-        drop the user's serialisation and let the fan-out run in parallel
-        against whatever that gate protects (#548 review).
+        `sbatch-args` can carry a dependency of the site's own —
+        `--dependency=singleton` serialising a licensed simulator is the
+        motivating case — and it is appended AFTER the generated
+        `afterok`, so Slurm resolves the repeated option to it and it is
+        the sim job's *effective* gate. `scontrol update JobId=<id>
+        Dependency=` clears the whole expression, not this run's clause of
+        it, so releasing a key would drop the site's serialisation and let
+        the fan-out run in parallel against whatever that gate protects
+        (#548 review).
 
         There is no partial answer available — Slurm takes a dependency
-        expression whole — so the suite simply does not get early release:
-        no gates manifest, no `--gates`, every job waiting for the build
-        job exactly as before. Said once per suite at INFO, because it is
-        deliberate configuration rather than a fault, and silence here
-        would read as the release being broken.
+        expression whole — so such a suite simply does not get early
+        release: no gates manifest, no `--gates`, every job waiting for
+        the build job exactly as before. Said once per suite at INFO,
+        because it is deliberate configuration rather than a fault, and
+        silence here would read as the release being broken.
+
+        An exported ``$SBATCH_DEPENDENCY`` is NOT that case, even though
+        composing treats the two alike (#507). sbatch documents the
+        environment value as the default for `-d`, which a command-line
+        option overrides — and this backend puts a generated
+        `--dependency=afterok:<build>` on every gated submission, so the
+        export never reaches the job as its gate. Clearing is therefore
+        safe, and the suite keeps its early release; the INFO line exists
+        so a reader who set the export and expected it to hold is not left
+        guessing why it did not (#548 review).
 
         ``getattr``, like every other optional backend capability: a
         backend with no notion of a configured dependency has none.
         """
-        probe = getattr(backend, "_configured_dependency", None)
+        probe = getattr(backend, "_sbatch_args_dependency", None)
         configured = probe() if callable(probe) else None
         if configured is not None:
             log_event(
@@ -4836,12 +4847,22 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 dependency=configured,
                 reason=(
-                    "early release disabled: sbatch-args/SBATCH_DEPENDENCY "
-                    f"configures a dependency ({configured}) that a release "
-                    "would clear"
+                    "early release disabled: sbatch-args configures a "
+                    f"dependency ({configured}) that a release would clear"
                 ),
             )
-        return configured
+            return configured
+        env_probe = getattr(backend, "_configured_dependency", None)
+        exported = env_probe() if callable(env_probe) else None
+        if exported is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.env_dependency_overridden",
+                suite_dir=suite_dir,
+                dependency=exported,
+            )
+        return None
 
     @staticmethod
     def _audit_shared_binaries(suite_results):
@@ -5291,35 +5312,20 @@ class RtlBuddy:
             else set()
         )
 
+        # ...unless the job FINISHED and only its final write was lost.
+        # Decided below, once the scheduler has been asked how the build
+        # job ended; until then the conservative reading stands.
+        build_finished_partial = []
+
         def _build_gate_open(test_name):
             if build_handle is None:
                 return True
             if build_result is None:
                 return False
-            return not build_partial or test_name in build_decided
+            if not build_partial or build_finished_partial:
+                return True
+            return test_name in build_decided
 
-        if build_partial and attempt == 0:
-            # Distinct TEST NAMES, on both sides, because that is the unit
-            # the build job compiles: `suite_results` holds one row per
-            # (test, run_id) plus the skipped ones, so counting it would
-            # report "1 of 100 planned" for a single config fanned out over
-            # a hundred runs (#548 review). The first attempt's full fleet
-            # is one row per submitted job, and every planned config has at
-            # least one — the skipped rows never reached a job, or the
-            # build job. Once per suite: a retry pass re-reads the same
-            # envelope and would repeat the warning.
-            planned_names = {
-                handle.spec.test_name for _, handle in state.get("pending") or ()
-            }
-            log_event(
-                logger,
-                logging.WARNING,
-                "dispatch.build_result_partial",
-                suite_dir=build_handle.spec.suite_dir,
-                job_id=build_handle.job_id,
-                decided=len(build_decided),
-                planned=len(planned_names) or None,
-            )
         # Keyed, not .get(): a state carrying pending jobs always set run_token
         # in _dispatch_suite_submit, so a missing key is a bug that must fail
         # loud — .get() would silently disable the staleness check and let a
@@ -5369,6 +5375,58 @@ class RtlBuddy:
                 if build_result is not None and not build_partial
                 else None
             )
+            if build_partial:
+                # Two very different things leave a partial envelope, and
+                # only the scheduler can tell them apart. A build job that
+                # DIED mid-compile never reached the tests its envelope
+                # does not name — their jobs were cancelled behind it, and
+                # closing their gate is what stops the retry round
+                # resubmitting them ungated (#405). A build job that ran to
+                # COMPLETED reached all of them; what it lost was the final
+                # write that would have dropped the `partial` mark (a full
+                # or read-only filesystem at the very end), and treating
+                # its unnamed tests as never-compiled would refuse a retry
+                # to a fleet that has nothing wrong with it. Anything else
+                # — no accounting, a kill, an unknown state — keeps the
+                # conservative reading. The reservation advice stays
+                # suppressed either way: the records are still a fraction
+                # of the compiles the job actually ran.
+                #
+                # Distinct TEST NAMES on both counts, because that is the
+                # unit the build job compiles: `suite_results` holds one
+                # row per (test, run_id) plus the skipped ones, so counting
+                # it would report "1 of 100 planned" for a single config
+                # fanned out over a hundred runs (#548 review). The first
+                # attempt's full fleet is one row per submitted job, and
+                # every planned config has at least one — the skipped rows
+                # reached neither a job nor the build job. Said once per
+                # suite, on the first pass: a retry pass re-reads the same
+                # envelope and would repeat it.
+                planned_names = {
+                    handle.spec.test_name for _, handle in state.get("pending") or ()
+                }
+                if (build_tele or {}).get("state") == "COMPLETED":
+                    build_finished_partial.append(True)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "dispatch.build_result_final_write_lost",
+                        suite_dir=build_handle.spec.suite_dir,
+                        job_id=build_handle.job_id,
+                        decided=len(build_decided),
+                        planned=len(planned_names) or None,
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "dispatch.build_result_partial",
+                        suite_dir=build_handle.spec.suite_dir,
+                        job_id=build_handle.job_id,
+                        decided=len(build_decided),
+                        planned=len(planned_names) or None,
+                        scheduler_state=(build_tele or {}).get("state"),
+                    )
         for idx, handle in pending:
             # Keyed by handle, not by job id: two jobs on different clusters
             # can carry the same id, and telemetry keeps them apart (#509).

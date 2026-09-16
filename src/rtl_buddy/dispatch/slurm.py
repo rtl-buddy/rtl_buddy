@@ -1076,6 +1076,38 @@ class SlurmDispatchBackend(DispatchBackend):
         job untouched, precisely because this backend passed no dependency
         flag at all; now that it passes one, an exported gate would be
         silently replaced instead of added to (#507 review).
+
+        The two halves are separately readable —
+        :meth:`_sbatch_args_dependency` is the first of them — because
+        they do not outrank the same things. Composing treats them alike,
+        since both are gates this backend must not replace. A consumer
+        asking "what will actually hold this job back" must not: a
+        command-line option beats the environment, so on a submission that
+        already carries a generated ``--dependency`` an exported value is
+        not the effective gate at all (#548 review).
+        """
+        found = self._sbatch_args_dependency()
+        if found is not None:
+            return found
+        # An empty or whitespace-only export is not an expression; sbatch
+        # would make nothing of it either, so it is "no gate" rather than
+        # something to compose a comma onto.
+        return os.environ.get(_SBATCH_DEPENDENCY_ENV, "").strip() or None
+
+    def _sbatch_args_dependency(self) -> str | None:
+        """The dependency `sbatch-args` supplies, or ``None``.
+
+        The half of :meth:`_configured_dependency` that OUTRANKS what this
+        backend generates: `sbatch-args` is appended after the generated
+        flags in :meth:`_sbatch_argv`, and a repeated option is resolved
+        by Slurm to the last copy — so this expression, not the generated
+        ``afterok``, is what actually holds the job. Read separately by
+        the per-key release, which must not clear an expression the site
+        meant, and may clear one the generated flag has already overridden
+        (#548).
+
+        Every spelling sbatch itself resolves, abbreviations included (see
+        :func:`_is_dependency_opt`), and the **last** occurrence.
         """
         args = self.sbatch_args
         found = None
@@ -1096,12 +1128,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 # `-dafterok:7`, the joined SHORT spelling. Long
                 # abbreviations begin `--` and were answered above.
                 found = arg[2:]
-        if found is not None:
-            return found
-        # An empty or whitespace-only export is not an expression; sbatch
-        # would make nothing of it either, so it is "no gate" rather than
-        # something to compose a comma onto.
-        return os.environ.get(_SBATCH_DEPENDENCY_ENV, "").strip() or None
+        return found
 
     def _dedup_dependency(self, *, suite_dir: str) -> str | None:
         """The ``--dependency`` value that serialises this build job (#507).

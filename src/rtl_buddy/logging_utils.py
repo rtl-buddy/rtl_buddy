@@ -1199,12 +1199,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "validate; check the directory's permissions and free space."
             )
         case "dispatch.build_result_partial":
+            state = fields.get("scheduler_state")
+            state_note = "" if not state else f" (scheduler state {state})"
             return (
                 f"dispatch: the build job {fields.get('job_id')} for "
-                f"{fields.get('suite_dir')} did not finish — its result names "
-                f"{fields.get('decided')} of {fields.get('planned')} planned "
-                "test(s). Those ran; the rest were never compiled and their "
-                "jobs were cancelled with the build. See the build log."
+                f"{fields.get('suite_dir')} did not finish{state_note} — its "
+                f"result names {fields.get('decided')} of "
+                f"{fields.get('planned')} planned test(s). Those ran; the "
+                "rest were never compiled and their jobs were cancelled with "
+                "the build. See the build log."
             )
         case "dispatch.release_skipped":
             tests = fields.get("tests") or []
@@ -1224,6 +1227,26 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"would drop {fields.get('dependency')} along with this run's "
                 "own gate; every simulation job waits for its build job "
                 "instead."
+            )
+        case "dispatch.env_dependency_overridden":
+            return (
+                f"dispatch: {fields.get('suite_dir')}: the exported "
+                f"SBATCH_DEPENDENCY ({fields.get('dependency')}) is not what "
+                "gates these jobs — a --dependency on the command line "
+                "overrides it, and every job gated on a build job carries "
+                "one. Early release stays on; put the expression in "
+                "cfg-dispatch.sbatch-args if it is meant to hold them."
+            )
+        case "dispatch.build_result_final_write_lost":
+            return (
+                f"dispatch: the build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')} finished, but the write that "
+                "completes its result was lost — the file still names only "
+                f"{fields.get('decided')} of {fields.get('planned')} planned "
+                "test(s). Every test was compiled, so a missing simulation "
+                "result here is an ordinary missing result; only the "
+                "compile-reservation advice is dropped. Check the "
+                "filesystem's free space and permissions."
             )
         case "dispatch.gates_unavailable":
             return (
