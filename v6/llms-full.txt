@@ -148,7 +148,10 @@ Machine mode:
 - writes `rtl_buddy.log` as JSON Lines;
 - disables Rich formatting, colors, and spinners;
 - prints one structured JSON result to stdout for supported commands;
-- captures Python hook stdout as `hook.stdout` events so it cannot corrupt the result.
+- captures Python hook stdout as `hook.stdout` events so it cannot corrupt the result;
+- for `test`, `regression`, and `fpv`, renders the result summary as plain text on stderr and records it as a `summary` event carrying `rows` and `counts`.
+
+Add `--print-failures-only` to drop `PASS`, `SKIP`, and `XFAIL` rows from that stderr render on a long run; the `summary` event still carries every row.
 
 A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process explicitly; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
 
@@ -171,6 +174,8 @@ Structured commands emit this top-level shape:
   }
 }
 ```
+
+`meta.cwd` is the invocation directory; `meta.git` describes the project root, so the two differ when rb is invoked from outside the checkout.
 
 Parse the whole stdout value with `json.loads()`. The stable top-level fields are `command`, `exit_code`, `meta`, and command-specific `payload`. Optional fields may be added under `meta` or `payload`; incompatible changes require a major version change.
 
@@ -880,6 +885,8 @@ Advice is calculated per test using the peak across runs in this invocation:
 - memory advice is suppressed when the longest run is shorter than the accounting sample interval, except that an out-of-memory state still suggests an increase;
 - `phase` is `sim`, `compile+sim`, or `compile` and `edit_hint` identifies the configuration field that actually controlled the allocation;
 - CPU efficiency is measured against the cpus the job **requested**, not the cpus the scheduler handed out (`AllocCPUS`).
+
+`over-threshold` and `near-limit` bound the utilization band a reservation is left alone in, so a test inside it produces no finding. On a run where nearly every test fits, `reduce` findings are the bulk of the table, and a lower `over-threshold` shortens that list: `over-threshold: 0.3` reports only tests that used under a third of what they asked for. Neither threshold suppresses a `raise` from a scheduler `TIMEOUT` or `OUT_OF_MEMORY` kill, which is always reported. Findings are listed `raise` first — in the table, in the `rightsize.advice` events, and in `payload.reservation_advice` — because under-reservation costs failed work while over-reservation only wastes a slot.
 
 The suite's build job gets one row of its own, named `(build job)` with `phase: compile`. It suggests `time` in both directions and `cpus` only downwards, because low CPU efficiency there means build slots idled rather than that more were needed. Its `cpus` suggestion is per build, and it appears only for a job that ran one build at a time: with `compile.parallel` above 1 the job's CPU efficiency also carries idle slots in the tail, which no accounting field separates from a compile that under-used its own CPUs, so the row is withheld with reason `parallel-utilization-ambiguous` rather than advising a reduction that could starve the longest compile. Size `compile.parallel` against the suite's distinct compile keys first, then read the `cpus` row from a `parallel: 1` run. `time` advice is unaffected — concurrent builds take the wall clock of the longest, not of their sum. A `reduce` is withheld when nothing actually compiled (every build reused its stamp), when the head has no per-build records to judge by — `no-build-records`, which covers both a job that left no envelope at all and one whose envelope carries no `builds` list (an older build job, or one whose telemetry could not be serialised) — or when it finished inside one accounting interval; `rightsize.build_advice_withheld` records which, along with how many records it saw and how many seconds of them were real compiling. Without that guard a re-run of an unchanged suite would advise a limit the next real RTL change times out against, cancelling the fan-out behind it.
 
@@ -2818,6 +2825,24 @@ Dispatch implies shared builds. RTL Buddy expands each suite, creates one build 
 `local-parallel` uses subprocesses on the current host and needs no scheduler. It cannot enforce `resources:` reservations or collect usage telemetry.
 
 Slurm dispatch requires a Linux submit host, Slurm client commands, and a filesystem shared with compute nodes. See [Parallel Dispatch](dispatch.md) for cluster configuration, resources, failure recovery, and job accounting.
+
+## Read the results summary
+
+A regression prints a summary to stderr: one row per test, the metadata footer, and a tally of every verdict in the run.
+
+```text
+Results: 780 PASS, 3 FAIL, 2 SKIP (785 total)
+```
+
+Verdicts are listed in the order `PASS`, `FAIL`, `XFAIL`, `XPASS`, `SKIP`, `NA`, and the tally always counts the whole run.
+
+On a large regression, show only the rows that need attention:
+
+```bash
+rb --print-failures-only regression -c regression.yaml
+```
+
+The flag drops `PASS`, `SKIP`, and `XFAIL` rows from the console render and keeps the tally. `rtl_buddy.log` and the machine-mode `summary` event still carry every row, so saved records and downstream parsing see the full result set.
 
 
 ---
@@ -5336,37 +5361,41 @@ Run `uv run python scripts/gen_cli_reference.py` from the repo root to regenerat
 Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --debug               -D                                      Print rtl_buddy debug  │
-│                                                               details to console     │
-│ --verbose             -v                                      Print execution        │
-│                                                               details to console     │
-│ --machine                                                     Emit machine-oriented  │
-│                                                               logs and plain console │
-│                                                               output                 │
-│ --color                   --no-color                          Logs without ANSI      │
-│                                                               color codes            │
-│                                                               [default: color]       │
-│ --builder-mode        -M                TEXT                  Override default       │
-│                                                               builder_mode           │
-│ --builder             -B                TEXT                  Override platform      │
-│                                                               default builder        │
-│ --extra-sim-timeout                     INTEGER RANGE [x>=0]  Seconds to add to      │
-│                                                               every test's           │
-│                                                               sim_timeout,           │
-│                                                               overriding the         │
-│                                                               builder's              │
-│                                                               extra-sim-timeout      │
-│ --early-stop          -E                [pre|comp|sim|post]   Run step to stop early │
-│                                                               at                     │
-│ --version                                                     Prints version         │
-│ --install-completion                                          Install completion for │
-│                                                               the current shell.     │
-│ --show-completion                                             Show completion for    │
-│                                                               the current shell, to  │
-│                                                               copy it or customize   │
-│                                                               the installation.      │
-│ --help                                                        Show this message and  │
-│                                                               exit.                  │
+│ --debug                -D                                      Print rtl_buddy debug │
+│                                                                details to console    │
+│ --verbose              -v                                      Print execution       │
+│                                                                details to console    │
+│ --machine                                                      Emit machine-oriented │
+│                                                                logs and plain        │
+│                                                                console output        │
+│ --print-failures-only                                          Hide PASS, SKIP, and  │
+│                                                                XFAIL rows from       │
+│                                                                console summaries     │
+│ --color                    --no-color                          Logs without ANSI     │
+│                                                                color codes           │
+│                                                                [default: color]      │
+│ --builder-mode         -M                TEXT                  Override default      │
+│                                                                builder_mode          │
+│ --builder              -B                TEXT                  Override platform     │
+│                                                                default builder       │
+│ --extra-sim-timeout                      INTEGER RANGE [x>=0]  Seconds to add to     │
+│                                                                every test's          │
+│                                                                sim_timeout,          │
+│                                                                overriding the        │
+│                                                                builder's             │
+│                                                                extra-sim-timeout     │
+│ --early-stop           -E                [pre|comp|sim|post]   Run step to stop      │
+│                                                                early at              │
+│ --version                                                      Prints version        │
+│ --install-completion                                           Install completion    │
+│                                                                for the current       │
+│                                                                shell.                │
+│ --show-completion                                              Show completion for   │
+│                                                                the current shell, to │
+│                                                                copy it or customize  │
+│                                                                the installation.     │
+│ --help                                                         Show this message and │
+│                                                                exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
 │ test               run a simple test                                                 │
@@ -8146,7 +8175,7 @@ cfg-dispatch:
 | `retry.jitter` | 0.5; must be in `[0, 1)` |
 | `retry.classifiers` | `[license-queue]`; unknown classifiers are fatal |
 | `rightsize.report` | true |
-| `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5 |
+| `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5; lower `over-threshold` to shorten the `reduce` list on a run where most tests fit |
 
 Local-parallel ignores scheduler memory/time reservations and produces no right-sizing advice; an elaboration profile's `cpus` still sizes its pyslang worker, and `compile.parallel` still applies to simulation builds as concurrency inside the build job. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` and a successful build. See [Parallel dispatch](../concepts/dispatch.md).
 

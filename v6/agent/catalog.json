@@ -984,6 +984,12 @@
           "slug": "run-in-parallel",
           "title": "Run in parallel",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/regressions/run-in-parallel.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/regressions/#read-the-results-summary",
+          "slug": "read-the-results-summary",
+          "title": "Read the results summary",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/regressions/read-the-results-summary.md"
         }
       ],
       "slug": "concepts/regressions",

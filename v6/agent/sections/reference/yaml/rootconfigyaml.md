@@ -250,7 +250,7 @@ cfg-dispatch:
 | `retry.jitter` | 0.5; must be in `[0, 1)` |
 | `retry.classifiers` | `[license-queue]`; unknown classifiers are fatal |
 | `rightsize.report` | true |
-| `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5 |
+| `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5; lower `over-threshold` to shorten the `reduce` list on a run where most tests fit |
 
 Local-parallel ignores scheduler memory/time reservations and produces no right-sizing advice; an elaboration profile's `cpus` still sizes its pyslang worker, and `compile.parallel` still applies to simulation builds as concurrency inside the build job. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` and a successful build. See [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/).
 

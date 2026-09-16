@@ -86,3 +86,21 @@ Dispatch implies shared builds. RTL Buddy expands each suite, creates one build 
 `local-parallel` uses subprocesses on the current host and needs no scheduler. It cannot enforce `resources:` reservations or collect usage telemetry.
 
 Slurm dispatch requires a Linux submit host, Slurm client commands, and a filesystem shared with compute nodes. See [Parallel Dispatch](dispatch.md) for cluster configuration, resources, failure recovery, and job accounting.
+
+## Read the results summary
+
+A regression prints a summary to stderr: one row per test, the metadata footer, and a tally of every verdict in the run.
+
+```text
+Results: 780 PASS, 3 FAIL, 2 SKIP (785 total)
+```
+
+Verdicts are listed in the order `PASS`, `FAIL`, `XFAIL`, `XPASS`, `SKIP`, `NA`, and the tally always counts the whole run.
+
+On a large regression, show only the rows that need attention:
+
+```bash
+rb --print-failures-only regression -c regression.yaml
+```
+
+The flag drops `PASS`, `SKIP`, and `XFAIL` rows from the console render and keeps the tally. `rtl_buddy.log` and the machine-mode `summary` event still carry every row, so saved records and downstream parsing see the full result set.
