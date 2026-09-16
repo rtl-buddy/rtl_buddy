@@ -130,6 +130,43 @@ def _attach(
 
 
 # ---------------------------------------------------------------------------
+# git plumbing
+# ---------------------------------------------------------------------------
+
+
+def test_gitprov_git_injects_no_optional_locks(tmp_path, monkeypatch):
+    """#581: reads must not orphan .git/index.lock."""
+    from rtl_buddy.xplr import gitprov
+
+    seen = []
+
+    def _record(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(gitprov.subprocess, "run", _record)
+    gitprov._git(tmp_path, "status", "--porcelain")
+
+    assert seen == [["git", "--no-optional-locks", "status", "--porcelain"]]
+
+
+def test_gitprov_failure_message_omits_the_injected_flag(tmp_path, monkeypatch):
+    """The injected flag must not leak into the user-facing error."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.xplr import gitprov
+
+    def _fail(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(gitprov.subprocess, "run", _fail)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        gitprov._git(tmp_path, "rev-parse", "HEAD")
+
+    assert "git rev-parse HEAD failed" in str(excinfo.value)
+    assert "--no-optional-locks" not in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # commit policy: auto (default)
 # ---------------------------------------------------------------------------
 

@@ -246,6 +246,121 @@ def test_show_git_rev_is_best_effort(monkeypatch):
     rb.show_git_rev()
 
 
+def test_git_metadata_status_takes_no_optional_locks(monkeypatch):
+    """#581: reading status must not take .git/index.lock."""
+    rb = RtlBuddy(name="rtl_buddy")
+    seen = []
+
+    def _record(argv, *args, **kwargs):
+        seen.append(argv)
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.subprocess.run", _record)
+    rb._collect_git_status()
+
+    status = [argv for argv in seen if "status" in argv]
+    assert status, f"expected a git status call, got {seen}"
+    for argv in status:
+        assert "--no-optional-locks" in argv, argv
+        # must precede the subcommand
+        assert argv.index("--no-optional-locks") < argv.index("status"), argv
+
+
+def test_git_metadata_survives_no_optional_locks(tmp_path):
+    """The flag must not change the reported branch/commit/counts."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+
+    def git(*args):
+        subprocess.run(
+            ["git", *args], cwd=repo, env=env, check=True, capture_output=True
+        )
+
+    git("init", "-q", "-b", "main")
+    (repo / "tracked.txt").write_text("one\n")
+    git("add", "tracked.txt")
+    git("commit", "-qm", "initial")
+    # one unstaged, one staged
+    (repo / "tracked.txt").write_text("two\n")
+    (repo / "added.txt").write_text("new\n")
+    git("add", "added.txt")
+
+    rb = RtlBuddy(name="rtl_buddy")
+    cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        status = rb._collect_git_status()
+    finally:
+        os.chdir(cwd)
+
+    assert status is not None
+    assert status["branch"] == "main"
+    assert status["commit"]
+    assert status["modified"] == 1, status
+    assert status["staged"] == 1, status
+    assert not (repo / ".git" / "index.lock").exists()
+
+
+def test_git_metadata_pins_the_project_root(tmp_path, monkeypatch):
+    """#581: git metadata describes the project, not the inherited cwd."""
+    project = tmp_path / "project"
+    project.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    rb = RtlBuddy(name="rtl_buddy")
+    rb.root_cfg = SimpleNamespace(get_project_rootdir=lambda: str(project))
+
+    seen = []
+
+    def _record(argv, *args, **kwargs):
+        seen.append(kwargs.get("cwd"))
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.subprocess.run", _record)
+    monkeypatch.chdir(elsewhere)
+    rb._collect_git_status()
+
+    assert seen and all(cwd == str(project) for cwd in seen), seen
+
+
+def test_git_metadata_root_resolves_once_per_invocation(tmp_path, monkeypatch):
+    """Banner and machine envelope must not disagree about the root."""
+    first = tmp_path / "first"
+    first.mkdir()
+    second = tmp_path / "second"
+    second.mkdir()
+
+    rb = RtlBuddy(name="rtl_buddy")
+    rb.root_cfg = SimpleNamespace(get_project_rootdir=lambda: str(first))
+    assert rb._project_root_for_git() == str(first)
+
+    # A later root_cfg rebuild (cross-root regression) must not move it.
+    rb.root_cfg = SimpleNamespace(get_project_rootdir=lambda: str(second))
+    assert rb._project_root_for_git() == str(first)
+
+
+def test_git_metadata_root_falls_back_to_inherited_cwd(tmp_path):
+    """No root_cfg: inherit the cwd and let git walk up, as before."""
+    rb = RtlBuddy(name="rtl_buddy")
+    assert rb._project_root_for_git() is None
+
+
+def test_git_metadata_root_resolution_is_silent(caplog):
+    """Resolving must not log; machine mode parses stdout as JSON."""
+    rb = RtlBuddy(name="rtl_buddy")
+    with caplog.at_level(logging.DEBUG):
+        rb._project_root_for_git()
+    assert caplog.records == []
+
+
 def test_root_options_ignores_forwarded_help_args_after_double_dash(monkeypatch):
     rb = RtlBuddy(name="rtl_buddy")
     fake_ctx = SimpleNamespace(resilient_parsing=False, invoked_subcommand="verible")

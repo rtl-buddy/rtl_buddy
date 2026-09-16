@@ -74,14 +74,18 @@ def _git(
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run one git command in ``repo``; fail loudly unless ``check=False``."""
+    """Run one git command in ``repo``; fail loudly unless ``check=False``.
+
+    ``--no-optional-locks`` keeps reads from orphaning ``.git/index.lock``;
+    write paths still take the lock they need (#581).
+    """
 
     full_env = None
     if env is not None:
         full_env = dict(os.environ)
         full_env.update(env)
     result = subprocess.run(
-        ["git", *args],
+        ["git", "--no-optional-locks", *args],
         cwd=repo,
         capture_output=True,
         text=True,

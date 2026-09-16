@@ -791,6 +791,9 @@ class RtlBuddy:
         self.builder = None
         self.root_cfg = None
         self.coverage = None
+        self._git_banner_shown = False
+        self._git_root = None
+        self._git_root_resolved = False
         self.run_depth = RunDepth.POST
         self.share_build = False
         self.expect_prebuilt = False
@@ -836,27 +839,6 @@ class RtlBuddy:
         # surface it here. Existing commands that return None continue
         # to exit cleanly with code 0.
         return rv if isinstance(rv, int) else 0
-
-    # Subcommands that expose a `--list` flag whose only job is to emit
-    # configured names from the primary config file. The `--list` paths
-    # do not need RootConfig, the selected builder, or CoverageReporter,
-    # so list-only invocations short-circuit those setup steps.
-    _LIST_FLAG_COMMANDS = {
-        "test",
-        "synth",
-        "pnr",
-        "power",
-        "fpga",
-        "cdc",
-        "fpv",
-        "elab",
-    }
-
-    def _is_list_invocation(self, ctx: typer.Context) -> bool:
-        return (
-            ctx.invoked_subcommand in self._LIST_FLAG_COMMANDS
-            and "--list" in sys.argv[1:]
-        )
 
     def root_options(
         self,
@@ -941,12 +923,6 @@ class RtlBuddy:
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
 
         log_event(logger, logging.INFO, "cli.start", version=version("rtl-buddy"))
-
-        if (
-            ctx.invoked_subcommand in self._GIT_COMMANDS
-            and not self._is_list_invocation(ctx)
-        ):
-            self.show_git_rev()
 
         # RootConfig + CoverageReporter construction is deferred to
         # _enter_command_context() so root_config.yaml is discovered by
@@ -1082,6 +1058,15 @@ class RtlBuddy:
                 builder_mode=self.rtl_builder_mode,
                 run_depth=self.run_depth.value,
             )
+
+        # After root_cfg, so the banner and the machine envelope agree on
+        # which repo they describe.
+        if (
+            not self._git_banner_shown
+            and getattr(self, "_pending_invoked_subcommand", None) in self._GIT_COMMANDS
+        ):
+            self._git_banner_shown = True
+            self.show_git_rev()
 
         return ctx
 
@@ -12034,6 +12019,21 @@ class RtlBuddy:
             raise typer.Exit(reported_exit_code)
         raise typer.Exit(0)
 
+    def _project_root_for_git(self) -> str | None:
+        """Where git metadata queries run, resolved once; None = inherited cwd.
+
+        Without a root_cfg there is nothing to pin to that git would not
+        already find by walking up from the cwd itself.
+        """
+        if not self._git_root_resolved:
+            self._git_root_resolved = True
+            root_cfg = getattr(self, "root_cfg", None)
+            if root_cfg is not None:
+                root = root_cfg.get_project_rootdir()
+                if root and os.path.isdir(root):
+                    self._git_root = root
+        return self._git_root
+
     def _collect_git_status(self) -> dict | None:
         # Optional metadata: every caller already treats None as "no git info".
         # `check=False` covers a git that runs and refuses (no repo, no commits);
@@ -12042,13 +12042,17 @@ class RtlBuddy:
         # dispatch cluster -- jobs inherit the submitter's PATH and can land on a
         # node without the binary -- so catch OSError (FileNotFoundError is a
         # subclass) and degrade to None rather than taking the caller down.
+        cwd = self._project_root_for_git()
+        # --no-optional-locks: an orphaned .git/index.lock breaks the
+        # checkout, and status does not need one to be read (#581).
         try:
             status_result = subprocess.run(
-                ["git", "status", "-sb"],
+                ["git", "--no-optional-locks", "status", "-sb"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
                 check=False,
+                cwd=cwd,
             )
             commit_result = subprocess.run(
                 ["git", "log", "-1", "--pretty=%h"],
@@ -12056,6 +12060,7 @@ class RtlBuddy:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 check=False,
+                cwd=cwd,
             )
         except OSError:
             return None
