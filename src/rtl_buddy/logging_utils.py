@@ -348,6 +348,20 @@ def _build_location(fields: Mapping[str, Any]) -> str:
     return str(fields.get("build_path") or fields.get("build_dir"))
 
 
+def _sim_exit_phrase(fields: Mapping[str, Any]) -> str:
+    """``exited 1`` / ``killed by signal 6`` for a sim-failure line.
+
+    The console twin of ``tools.vlog_post.describe_sim_exit``, spelled here
+    rather than imported: this module is below ``tools`` in the import
+    order, and a process killed by a signal reports a negative code that
+    "exited -6" would misreport (#546).
+    """
+    code = fields.get("returncode")
+    if isinstance(code, int) and code < 0:
+        return f"killed by signal {-code}"
+    return f"exited {code}"
+
+
 def _human_message(event: str, fields: Mapping[str, Any]) -> str:
     test = fields.get("test")
     run_id = fields.get("run_id")
@@ -1108,6 +1122,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'postproc'}: post-processing completed with result {fields.get('result')} ({fields.get('desc')})"
         case "postproc.no_markers":
             return f"{fields.get('test')}: no PASS/FAIL markers found in {fields.get('log')}; result is NA"
+        case "sim.unknown_verdict":
+            return (
+                f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} and "
+                "the transcript has no PASS/FAIL verdict; result is FAIL (#546)"
+            )
+        case "sim.stage_failed":
+            return (
+                f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} before "
+                f"the --early-stop {fields.get('stage')} stop; result is FAIL "
+                "(transcript not post-processed)"
+            )
         case "postproc.conflicting_markers":
             return (
                 f"{fields.get('test')}: both PASS and FAIL markers found in "

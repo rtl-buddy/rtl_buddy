@@ -130,7 +130,9 @@ from .runner.test_results import (
     DispatchFailResults,
     EarlyStopResults,
     SetupFailResults,
+    EARLY_STOP_KEY,
     SkipResults,
+    is_run_failure,
 )
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.xfail import apply_xfail
@@ -1145,12 +1147,17 @@ class RtlBuddy:
         # The exit code reflects whether rtl_buddy and the tools ran, not the
         # verdict of the design under test per se. A real FAIL (sim failure,
         # compile/setup/filelist failure, timeout) or a strict XPASS fails the
-        # run; a NA result — an intentional early stop that only needs hand
-        # checking — does not, nor do PASS/SKIP/XFAIL.
+        # run; an *intentional* early stop — NA carrying `early_stop`, which
+        # only needs hand checking — does not, nor do PASS/SKIP/XFAIL.
+        #
+        # An NA that merely means "no verdict was produced" (an aborted
+        # simulator, a transcript with no PASS/FAIL banner) is an unknown
+        # outcome, not a successful stop, and fails the run (#546): the
+        # blanket NA exemption this used to apply was how a dispatched run
+        # whose sim job exited 1 still reported exit 0.
         exit_code = 0
         for suite_result in suite_results:
-            results = suite_result["results"]
-            if not results.is_pass() and results.results.get("result") != "NA":
+            if is_run_failure(suite_result["results"]):
                 exit_code |= 1
         return exit_code
 
@@ -2314,7 +2321,10 @@ class RtlBuddy:
             results=res,
             run_token=run_token,
         )
-        exit_code = 0 if res.is_pass() else 1
+        # The head's grading rule, applied here too, so one run cannot be
+        # scored differently by the job and by the collector (#546): an
+        # unknown NA is a failure, an intentional early stop is not.
+        exit_code = 1 if is_run_failure(res) else 0
         if self.machine:
             self._emit_machine_result(
                 "_test-job",
@@ -3227,6 +3237,11 @@ class RtlBuddy:
             row["run_id"] = run_id
         if "seed" in res:
             row["seed"] = res["seed"]
+        # An NA that stopped on purpose (-E pre|comp|sim) is the one NA
+        # that keeps the exit code at 0; automation reading --machine needs
+        # that discriminator, not the human `desc` (#546).
+        if res.get(EARLY_STOP_KEY):
+            row["early_stop"] = True
         cov = self._machine_coverage(test_results)
         if cov is not None:
             row["coverage"] = cov

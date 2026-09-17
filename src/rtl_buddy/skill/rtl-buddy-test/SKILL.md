@@ -30,10 +30,12 @@ syntax and schemas, use `rb test --help`, `rb randtest --help`, and
 - Other simulations need a line beginning `PASS` or `FAIL` in `test.log`.
   Follow `FAIL` with `ERR:` or `FAT:` so `desc` contains the reason.
 - Treat `payload.results[*].result` and `desc` as authoritative. `NA` means no
-  real verdict was produced and needs review; it is not proof of a pass.
+  verdict was produced and needs review; it is not proof of a pass.
 - `test`, `randtest`, and `regression` exit 0 with no real `FAIL` (including an
-  intentional `NA` or `XFAIL`), 1 for a real `FAIL` or strict `XPASS`, and 2 for
-  a fatal configuration or environment error.
+  intentional early-stop `NA` or an `XFAIL`), 1 for a real `FAIL`, an unknown
+  `NA`, or a strict `XPASS`, and 2 for a fatal configuration or environment
+  error. Only an `NA` carrying `early_stop: true` (a `-E pre|comp|sim` stop)
+  exits 0.
 
 ## Reproducible seeds
 

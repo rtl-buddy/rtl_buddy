@@ -21,11 +21,11 @@ command-specific payload otherwise. Never scrape the human table.
 `filelist`, `hier`, `wave`, and `axi-profile` are pass-through commands. `rb mcp`
 owns stdout. Machine mode makes initialized `rtl_buddy.log` files JSONL.
 
-Run and regression commands normally exit 0 when every result counts as
-successful, 1 for any `FAIL` or strict `XPASS`, and 2 for fatal configuration or
-environment errors. Simulation exits 0 with no real failure, including `NA`/`XFAIL`.
-Reporting, audit, and pass-through commands define their own codes; use the
-relevant specialist or bundled docs page.
+Run and regression commands exit 0 when every result counts as successful, 1 for
+a `FAIL`, unknown `NA` or strict `XPASS`, 2 for a fatal config or environment error;
+sim exits 0 with no real failure, including an intentional early-stop `NA` or `XFAIL`.
+Reporting, audit and pass-through commands define their own codes; see the
+specialist or bundled docs page.
 
 ## Tests, random tests, and regressions
 

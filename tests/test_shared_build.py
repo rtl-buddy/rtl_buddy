@@ -2432,7 +2432,12 @@ def test_each_of_a_runners_runs_keeps_the_executable_it_launched(tmp_path, monke
     monkeypatch.setattr(sim, "execute", _execute)
     monkeypatch.setattr(sim, "pre", lambda **kwargs: None)
     monkeypatch.setattr(
-        sim, "post", lambda *, run_id: TestResults("results", {"run_id": run_id})
+        sim,
+        "post",
+        # `sim_returncode` rides along with every post() call since #546.
+        lambda *, run_id, sim_returncode=None: TestResults(
+            "results", {"run_id": run_id}
+        ),
     )
     runner = RtlBuddyTestRunner(
         name="rtl_buddy/testrunner",

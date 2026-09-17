@@ -48,6 +48,60 @@ def count_assertion_failures(*paths) -> int:
     return total
 
 
+def describe_sim_exit(sim_returncode) -> str:
+    """How a simulator ended, for a one-line desc or console message.
+
+    ``exited 1`` / ``killed by signal 6``. A process killed by a signal
+    comes back as a negative code (SIGABRT is -6, which is what an abort
+    looks like), and "exited -6" would misreport it. One spelling, because
+    every message about a failed simulation shows the same fact.
+    """
+    if sim_returncode is not None and sim_returncode < 0:
+        return f"killed by signal {-sim_returncode}"
+    return f"exited {sim_returncode}"
+
+
+def grade_unknown_sim_exit(results: dict, sim_returncode, *, test, run_id=None):
+    """Re-grade an unknown ``NA`` whose simulator exited nonzero (#546).
+
+    Marker parsing grades a transcript with no PASS/FAIL banner as ``NA``
+    -- "unknown", which is not a pass. A simulator that died (Verilator's
+    ``Aborting...`` after a null dereference, a segfault, a wrapper
+    swallowing ``$fatal``) leaves exactly that transcript *and* a nonzero
+    exit status, and the pair is a failure rather than an outcome to
+    hand-check. Mutates ``results`` in place and returns whether it did.
+
+    Only the unknown case is re-graded: a simulator exit code is not a
+    verdict on its own, so a transcript that did state one keeps it -- a
+    PASS banner with a nonzero exit stays PASS, a FAIL keeps its own
+    reason -- and so does a UVM or cocotb verdict, neither of which is
+    ever ``NA``. ``sim_returncode`` of ``None`` means "no simulation ran
+    here" and grades nothing.
+
+    Applied where the verdict is decided, before ``postproc.completed``
+    announces it: ``docs/agents.md`` documents that event's ``result`` and
+    ``desc`` as authoritative, so a later re-grade would leave JSONL
+    consumers recording an unknown outcome while the envelope and the exit
+    code say failure (#574 review).
+    """
+    if not sim_returncode or results.get("result") != "NA":
+        return False
+    log_event(
+        logger,
+        logging.ERROR,
+        "sim.unknown_verdict",
+        test=test,
+        run_id=run_id,
+        returncode=sim_returncode,
+    )
+    results["result"] = "FAIL"
+    results["desc"] = (
+        f"Sim {describe_sim_exit(sim_returncode)} with no PASS/FAIL "
+        "verdict in the transcript"
+    )
+    return True
+
+
 class VlogPost:
     """
     Verilog test output post-processing
