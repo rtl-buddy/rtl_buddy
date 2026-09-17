@@ -1,6 +1,7 @@
 """Tests for the power-analysis config schema."""
 
 import hashlib
+import os
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -16,6 +17,7 @@ from rtl_buddy.config.power import (
     PowerToolConfigFile,
 )
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.phys.manifest import load_manifest, resolve
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +495,72 @@ def test_power_pnr_source_requires_pnr_path(tmp_path):
         """)
     )
     with pytest.raises(FatalRtlBuddyError, match="requires 'pnr-path'"):
+        PowerSuiteConfig(str(p))
+
+
+# ---------------------------------------------------------------------------
+# phys-run — naming the synthesis run the power half is published beside
+# ---------------------------------------------------------------------------
+
+
+def _phys_run_yaml(value: str, *, source: str = "synth") -> str:
+    upstream = (
+        '    synth: "demo_synth"\n    synth-path: "../synth/synth.yaml"\n'
+        if source == "synth"
+        else '    pnr: "demo_pnr"\n    pnr-path: "../pnr/pnr.yaml"\n'
+    )
+    return (
+        "rtl-buddy-filetype: power_config\n"
+        "runs:\n"
+        '  - name: "demo_power"\n'
+        '    desc: "demo"\n'
+        f'    netlist-source: "{source}"\n'
+        f"{upstream}"
+        f'    phys-run: "{value}"\n'
+        '    platform: "nangate45_typ"\n'
+    )
+
+
+def test_power_phys_run_is_absent_by_default(tmp_path):
+    """The co-location convention is unchanged for every config that says
+    nothing: the power half is published into the run's own directory."""
+    p = tmp_path / "power.yaml"
+    p.write_text(_POWER_YAML_STATIC)
+    run = PowerSuiteConfig(str(p)).get_runs("demo_static_power")[0]
+    assert run.get_phys_run() is None
+
+
+def test_power_phys_run_names_a_synthesis_run(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(_phys_run_yaml("nightly_synth"))
+    run = PowerSuiteConfig(str(p)).get_runs("demo_power")[0]
+    assert run.get_phys_run() == "nightly_synth"
+
+
+def test_power_phys_run_rejects_a_path(tmp_path):
+    """A run name, not a directory. The value is joined onto the synth
+    suite's `artefacts/`, and refusing a separator here is what keeps that
+    join from reaching anywhere else (#589)."""
+    p = tmp_path / "power.yaml"
+    p.write_text(_phys_run_yaml("../../elsewhere/artefacts/nightly"))
+    with pytest.raises(FatalRtlBuddyError, match="not a path"):
+        PowerSuiteConfig(str(p))
+
+
+def test_power_phys_run_rejects_a_bare_parent_directory(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(_phys_run_yaml(".."))
+    with pytest.raises(FatalRtlBuddyError, match="not a directory"):
+        PowerSuiteConfig(str(p))
+
+
+def test_power_phys_run_requires_a_synth_netlist_source(tmp_path):
+    """A `netlist-source: pnr` run records no netlist hash, so its half can
+    never merge with a synthesis' — pointing it at one would replace the
+    module rows rather than complete them."""
+    p = tmp_path / "power.yaml"
+    p.write_text(_phys_run_yaml("demo_synth", source="pnr"))
+    with pytest.raises(FatalRtlBuddyError, match="netlist-source"):
         PowerSuiteConfig(str(p))
 
 
@@ -2214,3 +2282,293 @@ def test_a_platform_without_macro_lef_lists_only_what_the_script_reads(tmp_path)
         "/pdk/fake/nangate45_typ.lib",
         "/pdk/fake/tech.lef",
     ]
+
+
+# ---------------------------------------------------------------------------
+# phys-run — where the power half is published (#589)
+# ---------------------------------------------------------------------------
+
+
+_STAT_JSON = (
+    '{"modules": {"\\\\demo_top": {"num_cells": 4}}, "design": {"num_cells": 4}}'
+)
+
+
+def _synth_suite_yaml(entries) -> str:
+    body = "".join(
+        f'  - name: "{entry}"\n'
+        '    desc: "demo"\n'
+        '    model: "demo_top"\n'
+        '    model_path: "models.yaml"\n'
+        '    tool: "yosys"\n'
+        "    reglvl: 0\n"
+        for entry in entries
+    )
+    return f"rtl-buddy-filetype: synth_config\nsyntheses:\n{body}"
+
+
+def _make_paired_power_backend(
+    tmp_path, *, phys_run="demo_synth", entries=("demo_synth",), synth_in_project=True
+):
+    """A power backend in the layout `phys-run:` exists for (#589).
+
+    The synthesis suite under `synth/demo/` and the power suite under
+    `power/demo/`, so the two runs' artefact directories cannot coincide
+    by accident and the co-location convention produces two half-filled
+    models. Re-callable on one ``tmp_path``: a test that runs the same
+    entry twice builds a second backend over the directories the first
+    one left.
+
+    Returns the backend, the synthesis run's artefact directory, and the
+    netlist that directory holds — the file the analysis is stubbed to
+    read, as an `rb synth` into it would have written.
+    """
+    from unittest.mock import MagicMock
+    from rtl_buddy.config.power import PowerActivity
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True, exist_ok=True)
+    synth_suite = (root if synth_in_project else tmp_path / "elsewhere") / "synth/demo"
+    synth_suite.mkdir(parents=True, exist_ok=True)
+    (synth_suite / "models.yaml").write_text(
+        'rtl-buddy-filetype: model_config\nmodels:\n  - name: "demo_top"\n'
+        "    filelist: []\n"
+    )
+    (synth_suite / "synth.yaml").write_text(_synth_suite_yaml(entries))
+    synth_artefacts = synth_suite / "artefacts" / "demo_synth"
+    synth_artefacts.mkdir(parents=True, exist_ok=True)
+    netlist = synth_artefacts / "synth_netlist.v"
+    netlist.write_text("module demo_top(); endmodule\n")
+
+    power_suite = root / "power" / "demo"
+    power_suite.mkdir(parents=True, exist_ok=True)
+    sdc = power_suite / "constraints.sdc"
+    sdc.write_text("create_clock -period 10 [get_ports clk]\n")
+
+    cfg = PowerConfig(
+        name="demo_power",
+        desc="demo",
+        tool="openroad",
+        mode="static",
+        netlist_source="synth",
+        synth_name="demo_synth",
+        synth_suite_path=str(synth_suite / "synth.yaml"),
+        pnr_name=None,
+        pnr_suite_path=None,
+        constraints=str(sdc),
+        platform="nangate45_typ",
+        activity=PowerActivity(
+            saif=None,
+            vcd=None,
+            scope=None,
+            default_toggle_rate=0.1,
+            default_static_prob=0.5,
+        ),
+        _reglvl=None,
+        tool_overrides=None,
+        phys_run=phys_run,
+    )
+    backend = OpenRoadPower(
+        name="demo/openroad",
+        power_cfg=cfg,
+        suite_dir=str(power_suite),
+        root_cfg=MagicMock(),
+    )
+    backend._resolve_inputs = lambda: {
+        "netlist": str(netlist),
+        "odb": None,
+        "sdc": str(sdc),
+        "top": "demo_top",
+    }
+    backend._resolve_platform = lambda: _FakePlatform()
+    return backend, synth_artefacts, netlist
+
+
+def _publish_the_synthesis_half(artefacts, netlist):
+    """What an `rb synth` into ``artefacts`` leaves for a power run to find."""
+    from rtl_buddy.phys.publish import publish_synth
+
+    (artefacts / "synth_stat.json").write_text(_STAT_JSON)
+    return publish_synth(
+        artefact_dir=str(artefacts),
+        top="demo_top",
+        backend="yosys",
+        run="demo_synth",
+        stats_path=str(artefacts / "synth_stat.json"),
+        netlist_path=str(netlist),
+        area_um2=5.586,
+        gate_count=4,
+    )
+
+
+def test_phys_run_publishes_the_power_half_into_the_synthesis_directory(
+    tmp_path, monkeypatch
+):
+    """The whole of the field: the model goes where the synthesis writes
+    its own half, and the raw output stays with the run that produced it
+    (#589)."""
+    backend, synth_artefacts, _netlist = _make_paired_power_backend(tmp_path)
+
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    assert Path(result.results["phys_model"]).parent == synth_artefacts
+    assert (synth_artefacts / "phys-manifest.json").exists()
+    own = Path(backend.artefact_dir)
+    assert not (own / "phys-model.json").exists()
+    assert not (own / "phys-manifest.json").exists()
+    # The reports, the log and the netlist copy are this run's own output
+    # and are read back from its own directory.
+    assert (own / "power.rpt").exists()
+    assert (own / "power_instances.rpt").exists()
+    assert (own / "power_netlist.v").exists()
+    # And the manifest reaches them from where it now sits: the paths are
+    # project-relative, so they join back onto the power run's directory
+    # from the synthesis run's.
+    manifest_path = synth_artefacts / "phys-manifest.json"
+    manifest = load_manifest(str(manifest_path))
+    report = manifest["power"]["report"]
+    assert not os.path.isabs(report)
+    assert Path(resolve(str(manifest_path), report)) == own / "power.rpt"
+
+
+def test_without_phys_run_the_model_stays_in_the_runs_own_directory(
+    tmp_path, monkeypatch
+):
+    """The convention `phys-run:` overrides, unchanged for a config that
+    says nothing."""
+    backend, synth_artefacts, _netlist = _make_paired_power_backend(
+        tmp_path, phys_run=None
+    )
+
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    assert Path(result.results["phys_model"]).parent == Path(backend.artefact_dir)
+    assert not (synth_artefacts / "phys-model.json").exists()
+
+
+def test_phys_run_completes_the_synthesis_half_already_published_there(
+    tmp_path, monkeypatch
+):
+    """The half-filled model the field exists to end: the two suites are in
+    two directories, so nothing but the name pairs them — and with the name
+    given, one document comes out holding both halves (#589)."""
+    from rtl_buddy.phys.model import load_model
+
+    backend, synth_artefacts, netlist = _make_paired_power_backend(tmp_path)
+    _publish_the_synthesis_half(synth_artefacts, netlist)
+
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    model = load_model(result.results["phys_model"])
+    assert [row["module"] for row in model["modules"]] == ["demo_top"]
+    assert len(model["instances"]) == 2
+    assert model["totals"]["area_um2"] == pytest.approx(5.586)
+    assert model["totals"]["total_uw"] == pytest.approx(28.3)
+
+
+def test_a_phys_run_naming_no_synthesis_entry_fails_the_analysis(tmp_path, monkeypatch):
+    """A typo or a rename would otherwise publish a merged model into a
+    directory no run owns — harder to find than the half-filled pair."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend, _artefacts, _netlist = _make_paired_power_backend(
+        tmp_path, phys_run="typo_synth"
+    )
+
+    result = _run_prepared_power(backend, monkeypatch, instances=_INSTANCE_RPT)
+
+    assert isinstance(result, PowerFailResults)
+    assert "typo_synth" in result.results["desc"]
+
+
+def test_a_phys_run_outside_the_project_is_refused(tmp_path, monkeypatch):
+    """`synth-path:` reaching into another checkout would put the merged
+    model where this project's `rb phys` discovery never walks."""
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend, _artefacts, _netlist = _make_paired_power_backend(
+        tmp_path, synth_in_project=False
+    )
+
+    result = _run_prepared_power(backend, monkeypatch, instances=_INSTANCE_RPT)
+
+    assert isinstance(result, PowerFailResults)
+    assert "outside the project" in result.results["desc"]
+
+
+def test_a_paired_run_says_so_when_the_synthesis_half_read_another_netlist(
+    tmp_path, monkeypatch, caplog
+):
+    """The pairing was asked for by name, so the gate refusing it is news.
+    Without the field there is no expectation to disappoint and the same
+    mismatch stays quiet."""
+    from rtl_buddy.phys.model import load_model
+
+    backend, synth_artefacts, _netlist = _make_paired_power_backend(tmp_path)
+    stale = synth_artefacts / "an_older_netlist.v"
+    stale.write_text("module demo_top(); wire other; endmodule\n")
+    _publish_the_synthesis_half(synth_artefacts, stale)
+
+    with caplog.at_level("WARNING"):
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+
+    assert "phys_pair_mismatch" in caplog.text
+    model = load_model(result.results["phys_model"])
+    assert model["modules"] is None
+    assert len(model["instances"]) == 2
+
+
+def test_a_paired_run_is_quiet_when_the_two_halves_agree(tmp_path, monkeypatch, caplog):
+    """The ordinary pair. A warning here would be noise on every run."""
+    backend, synth_artefacts, netlist = _make_paired_power_backend(tmp_path)
+    _publish_the_synthesis_half(synth_artefacts, netlist)
+
+    with caplog.at_level("WARNING"):
+        _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+
+    assert "phys_pair_mismatch" not in caplog.text
+
+
+def test_a_failed_paired_rerun_withdraws_its_half_from_the_synthesis_directory(
+    tmp_path, monkeypatch
+):
+    """The withdrawal follows the publication. A rerun that fails has
+    deleted the reports behind its rows, so the rows go too — out of the
+    synthesis run's directory, leaving the synthesis' own half alone."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.tools import power_openroad
+
+    backend, synth_artefacts, netlist = _make_paired_power_backend(tmp_path)
+    _publish_the_synthesis_half(synth_artefacts, netlist)
+    _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+    assert load_model(str(synth_artefacts / "phys-model.json"))["instances"]
+
+    rerun, _artefacts, _netlist = _make_paired_power_backend(tmp_path)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _dies(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _dies)
+
+    rerun.run()
+
+    model = load_model(str(synth_artefacts / "phys-model.json"))
+    assert model["instances"] is None
+    assert [row["module"] for row in model["modules"]] == ["demo_top"]

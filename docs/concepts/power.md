@@ -35,6 +35,7 @@ runs:
     mode: static
     synth: demo_synth_nangate45
     synth-path: ../../synth/demo/synth.yaml
+    phys-run: demo_synth_nangate45
     constraints: ../../synth/demo/constraints.sdc
     platform: nangate45_typ
     reglvl: 1000
@@ -53,7 +54,7 @@ runs:
     reglvl: 1000
 ```
 
-Paths resolve from `power.yaml`. A synth-source run requires `synth`, `synth-path`, and `constraints`. A P&R-source run requires `pnr` and `pnr-path`; it uses the routed SDC unless `constraints` overrides it.
+Paths resolve from `power.yaml`. A synth-source run requires `synth`, `synth-path`, and `constraints`. A P&R-source run requires `pnr` and `pnr-path`; it uses the routed SDC unless `constraints` overrides it. `phys-run` is optional and names the synthesis run this one publishes its half of the physical model beside; see [Pair the model with a synthesis run](#pair-the-model-with-a-synthesis-run).
 
 See [YAML Formats: power.yaml](../reference/yaml.md#poweryaml) for all fields.
 
@@ -107,6 +108,30 @@ The summary identifies the selected design source and resolved activity source, 
 
 A run passes when OpenROAD exits 0, emits no `[ERROR ...]` line, and produces a parseable `Total` row in `power.rpt`. It skips when filtered by `reglvl` or when its tool has no registered backend.
 
+## Pair the model with a synthesis run
+
+A complete physical model needs both halves — the synthesis' per-module cells and area, the power run's per-instance watts — and the two halves meet in one artefact directory. Each run publishes into its own by default, so a merged model is what a power run named after the synthesis it reads *and* configured in the same directory produces. Split the suites into `synth/` and `power/`, or rename either run, and each half lands in a directory of its own: `rb phys instance` exits 2 on the synthesis' directory and `rb phys module` reports no modules in the power run's, with nothing saying why.
+
+`phys-run` says the pairing out loud:
+
+```yaml
+runs:
+  - name: demo_power_static
+    synth: demo_synth_nangate45
+    synth-path: ../../synth/demo/synth.yaml
+    phys-run: demo_synth_nangate45
+```
+
+The value names a run in the `synth.yaml` that `synth-path` already points at, and the power half is published into that run's `artefacts/<run>/` — the directory the synthesis writes its own half into. It is a run name, not a path: the directory is derived, so moving the synthesis suite moves the pairing with it. Everything else this run writes — the log, the reports, its copy of the netlist — stays in the power run's own artefact directory, and the manifest names them there.
+
+The named directory need not exist yet. A power run may land first and the synthesis fill the other half later, which is what publishing into a directory chosen rather than inherited is for. A `phys-run` that names no entry in the referenced `synth.yaml`, or that resolves outside the project because `synth-path` reaches into another checkout, fails the run as any other configuration error does. `phys-run` requires `netlist-source: synth`: a `pnr`-source run records no netlist hash, so its half can never merge with a synthesis' and pointing it at one would replace the module rows rather than complete them.
+
+One directory holds one power half. Two power runs that name the same `phys-run` — a static and a dynamic analysis of one design, say — publish into it in turn, and the model there describes whichever ran last; a failed rerun of either withdraws the rows that are there. Leave `phys-run` off the runs whose breakdowns are to be kept apart, and they publish into their own directories as before.
+
+The manifest's header names the run whose publication it is, so a shared directory reads as the synthesis or as the power run depending on which published last, and that is the name `rb phys runs` lists. Each half's own block names its producer either way. Changing or removing `phys-run` leaves the previous directory's power half where it is, as renaming any run leaves its artefact directory behind: re-run the analysis, or delete the directory.
+
+**Naming the pairing does not make it.** The netlist sha256 both producers record is still the whole of the merge gate, and it decides exactly as before. What changes is that a refusal is no longer silent: a run given a `phys-run` whose module rows were counted off a netlist it did not read logs a warning and publishes its half alone. Re-run the synthesis and the power analysis over one netlist to pair them. See [Read a model with only one half](phys.md#read-a-model-with-only-one-half).
+
 ## Inspect artefacts
 
 Outputs land under `<power-dir>/artefacts/<run>/`:
@@ -125,7 +150,9 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 
 Query the model with `rb phys`; see [Physical Metrics](phys.md).
 
-The per-instance half is a by-product, never a gate: the design totals are parsed and reported before it is read, and the hierarchy walk that produces it runs inside a Tcl `catch`. An OpenSTA that cannot produce it costs the model its `instances` block — `null`, with a warning — and the run still reports `PASS`. A `rb synth` run writing into the same artefact directory for the same top fills the model's per-module half rather than replacing it. Either half travels only when both runs recorded the same netlist hash: this run keeps the per-module rows already there when the netlist it read is the one they were counted off, and a *later* synthesis keeps these per-instance rows when the netlist it writes hashes equal to the one this run read. The two flows are still not symmetric, but the check is — the ordinary `rb synth` then `rb power` pair passes it because a power run reads exactly what the synthesis wrote, while a rebuild between the two runs fails it in whichever direction publishes second. A `netlist-source: pnr` run reads the routed database rather than a netlist and records no such hash, so it inherits no per-module rows and its own rows are never carried forward by a synthesis. The netlist a `netlist-source: synth` run measures is copied into its own artefact directory as `power_netlist.v` first, and it is that copy OpenROAD reads and that copy the hash identifies. The bytes measured and the bytes named are therefore the same file, which no other command writes: a synthesis landing in the upstream directory mid-analysis is caught rather than recorded as a match. The manifest names that copy alongside the hash, so a result read back from an archive reaches the netlist the numbers were measured over and can re-check the hash against it; a `netlist-source: pnr` run names none. The copy is removed before each run and again if the run fails, like the reports beside it.
+`phys-model.json` and `phys-manifest.json` are the exception to the table above: with `phys-run` set they are written into the synthesis run's artefact directory instead, and everything else stays here. See [Pair the model with a synthesis run](#pair-the-model-with-a-synthesis-run).
+
+The per-instance half is a by-product, never a gate: the design totals are parsed and reported before it is read, and the hierarchy walk that produces it runs inside a Tcl `catch`. An OpenSTA that cannot produce it costs the model its `instances` block — `null`, with a warning — and the run still reports `PASS`. A `rb synth` run publishing into the same artefact directory for the same top fills the model's per-module half rather than replacing it. Either half travels only when both runs recorded the same netlist hash: this run keeps the per-module rows already there when the netlist it read is the one they were counted off, and a *later* synthesis keeps these per-instance rows when the netlist it writes hashes equal to the one this run read. The two flows are still not symmetric, but the check is — the ordinary `rb synth` then `rb power` pair passes it because a power run reads exactly what the synthesis wrote, while a rebuild between the two runs fails it in whichever direction publishes second. A `netlist-source: pnr` run reads the routed database rather than a netlist and records no such hash, so it inherits no per-module rows and its own rows are never carried forward by a synthesis. The netlist a `netlist-source: synth` run measures is copied into its own artefact directory as `power_netlist.v` first, and it is that copy OpenROAD reads and that copy the hash identifies. The bytes measured and the bytes named are therefore the same file, which no other command writes: a synthesis landing in the upstream directory mid-analysis is caught rather than recorded as a match. The manifest names that copy alongside the hash, so a result read back from an archive reaches the netlist the numbers were measured over and can re-check the hash against it; a `netlist-source: pnr` run names none. The copy is removed before each run and again if the run fails, like the reports beside it.
 
 An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names.
 

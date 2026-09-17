@@ -48,7 +48,8 @@ uv run rb tool-check
 - **Waveform viewing** (`rb wave`): opens [Surfer](https://surfer-project.org/) with live signal-value annotation in your editor via the WCP protocol
 - **Hierarchy rendering** (`rb hier`): module hierarchy diagrams via [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view), with optional clock-domain annotations
 - **AXI interconnect profiling** (`rb axi-profile`): discover AXI bundles from RTL, emit a bind-style SV monitor, ingest a test's FST into per-test `axi-perf.json` + per-transaction Parquet, and launch a packaged marimo notebook for interactive analysis
-- **Coordination hub** (`rb hub`): TCP + HTTP/WebSocket broker that mediates between the rtl-buddy-view SPA, Surfer (via `rb wave`), and editor adapters; supports runtime model switching and AXI-perf overlays; optional macOS LaunchAgent install
+- **Coordination hub** (`rb hub`): TCP + HTTP/WebSocket broker that mediates between the rtl-buddy-view SPA, Surfer (via `rb wave`), and editor adapters, and serves the graph (`/gph`), coverage (`/cov`), and physical-metrics (`/phy`) panes; supports runtime model switching, AXI-perf overlays, and cross-pane focus; optional macOS LaunchAgent install
+- **Physical metrics** (`rb phys`): query the merged synthesis + power model — per-module gate counts and area, per-instance power, and a provenance-labelled run listing (`rb phys summary/module/instance/runs`); the same model drives the hub's `/phy` pane with heat-shaded tables and a run selector
 - **Spec traceability** (`rb spec`): trace `specs.yaml` items to design models (`check-design`) and tests (`check-coverage`)
 - **Tool dependency check** (`rb tool-check`): declarative manifest of external tool dependencies — reports which `rb` subcommands are ready and which are blocked on missing or out-of-version tools
 - **Coverage workflows**: collect, merge, summarize, and export Verilator coverage

@@ -8,7 +8,7 @@ description: Query saved synthesis and power artefacts by module and instance wi
 
 ## Read the model a run produced
 
-Every synthesis and power run writes `phys-model.json` and `phys-manifest.json` into its artefact directory. Without an override, `rb phys` reads the newest `phys-manifest.json` under the project root.
+Every synthesis and power run writes `phys-model.json` and `phys-manifest.json` into an artefact directory — its own, or the one a power run's `phys-run:` names. Without an override, `rb phys` reads the newest `phys-manifest.json` under the project root.
 
 ```bash
 rb phys summary
@@ -53,15 +53,15 @@ Both flows record a **config fingerprint**: the platform, the effort, the constr
 
 A manifest under `artefacts/xplr/<exp-id>/` carries that **experiment id** in every payload's run header and in the run listing. The id comes from the path, so it is there before the experiment's `record.json` exists; the record is read only for the experiment's `hypothesis`, which becomes the entry's label. A malformed record costs the label and nothing else. A run inside a materialized checkout is labelled too: `rb xplr materialize` puts the worktree at `artefacts/xplr/worktrees/<exp-id>/`, so the id is one level further down and the reproducible runs — the ones checked out at a pinned sha — are exactly the ones that must not lose it. The `worktrees/` directory is not itself an experiment, and a worktree sidecar naming another location says this checkout is not that experiment's.
 
-None of this gates the merge. The netlist sha256 both producers record is what decides whether two halves describe one design, and it is the stronger test in both directions: the same options can produce two netlists, and two option sets can produce one. That gate is also what keeps same-top experiments from cross-pollinating a merged model — a power half only pairs with the synthesis whose bytes it measured.
+None of this gates the merge. The netlist sha256 both producers record is what decides whether two halves describe one design, and it is the stronger test in both directions: the same options can produce two netlists, and two option sets can produce one. That gate is also what keeps same-top experiments from cross-pollinating a merged model — a power half only pairs with the synthesis whose bytes it measured. A power run's `phys-run:` chooses which directory the two halves are asked to meet in and changes nothing about the gate; when the gate then refuses, that run says so rather than publishing a half-filled model quietly.
 
 The keys are additive. A document written by an earlier rtl-buddy carries none of them, and every reader reports them as not recorded rather than refusing the document.
 
 ## Read a model with only one half
 
-A synthesis fills the model's `modules` half and a power run fills its `instances` half. A run of both into the same artefact directory, for the same top, produces a complete model in either order; see [Synthesis](synthesis.md#inspect-artefacts) and [Power Analysis](power.md#inspect-artefacts).
+A synthesis fills the model's `modules` half and a power run fills its `instances` half. The two meet in one artefact directory, for the same top, and produce a complete model in either order. Which directory that is is the power run's to say: by default each run publishes into its own, so the halves meet only where a power run is named after the synthesis it reads and configured in the same directory, and `phys-run: <synth run>` in `power.yaml` names the synthesis run to publish beside instead. See [Pair the model with a synthesis run](power.md#pair-the-model-with-a-synthesis-run), [Synthesis](synthesis.md#inspect-artefacts) and [Power Analysis](power.md#inspect-artefacts).
 
-With one half absent, every verb still answers from the half that is present and says which command produces the other — unless that command could not merge with what is already here. The merge is gated on the netlist hash both producers record, so a power half taken from a routed database (`netlist-source: pnr`, which has no netlist to hash) cannot be paired with: a later `rb synth` into that directory would *replace* the model rather than complete it. The note says so, and names what does work — synthesise, then re-run `rb power` on the netlist the synthesis wrote, so both halves measure the same one. `rb phys instance` is the exception: instance rows exist only in the power half, so it exits 2 pointing at `rb power`.
+With one half absent, every verb still answers from the half that is present and says which command produces the other — either because the other command has not run yet, because it published somewhere else, or because it could not merge with what is already here. The merge is gated on the netlist hash both producers record, so a power half taken from a routed database (`netlist-source: pnr`, which has no netlist to hash) cannot be paired with: a later `rb synth` into that directory would *replace* the model rather than complete it. The note says so, and names what does work — synthesise, then re-run `rb power` on the netlist the synthesis wrote, so both halves measure the same one. `rb phys instance` is the exception: instance rows exist only in the power half, so it exits 2 pointing at `rb power`.
 
 ## What the module join can answer
 
