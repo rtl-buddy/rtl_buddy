@@ -55,6 +55,11 @@ class _FakeBackend(DispatchBackend):
         self.write_results = write_results
         self.submitted = []
         self.build_submitted = []
+        self.verilate_submitted = []
+        # What each build job was chained behind, in submission order
+        # (#593): the verilate job's id for a split compile's build
+        # half, None everywhere else.
+        self.build_dependencies = []
         self.dependencies = []
         self.waited = False
         self.cancelled = False
@@ -64,9 +69,21 @@ class _FakeBackend(DispatchBackend):
         # (#495).
         self.telemetry_queries = []
 
-    def submit_build(self, spec):
-        self.build_submitted.append(spec)
-        return JobHandle(job_id="fake-build", spec=spec)
+    def submit_build(self, spec, *, dependency=None):
+        # Kept apart, so `build_submitted` keeps meaning "the build job"
+        # whether or not this suite's compile was split (#593).
+        if spec.phase == "verilate":
+            self.verilate_submitted.append(spec)
+        else:
+            self.build_submitted.append(spec)
+        self.build_dependencies.append(dependency)
+        # `fake-build` for the whole compile and for the build half of a
+        # split one, so an unsplit suite's ids are what they always were;
+        # the verilate half needs its own, since telemetry keys on the id.
+        return JobHandle(
+            job_id="fake-verilate" if spec.phase == "verilate" else "fake-build",
+            spec=spec,
+        )
 
     def submit(self, spec, *, dependency=None, delay_sec=0.0):
         # `delay_sec` is accepted (and ignored) so the base fake matches the
@@ -735,9 +752,9 @@ def test_build_compile_failure_surfaces_as_compile_fail(
         def __init__(self):
             super().__init__(write_results=False)  # sim envelope never appears
 
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             write_build_result_json(spec.result_json, built=[], failed=["basic"])
-            return super().submit_build(spec)
+            return super().submit_build(spec, dependency=dependency)
 
     backend = _CompileFailBuild()
     monkeypatch.setattr(
@@ -772,7 +789,7 @@ def test_build_compile_failure_puts_the_real_error_in_the_summary(
     _mark_stub_builder_verilator(minimal_project)
 
     class _CompileFailBuild(_FakeBackend):
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             write_build_result_json(
                 spec.result_json,
                 built=["extra"],
@@ -791,7 +808,7 @@ def test_build_compile_failure_puts_the_real_error_in_the_summary(
                     }
                 ],
             )
-            return super().submit_build(spec)
+            return super().submit_build(spec, dependency=dependency)
 
         def submit(self, spec, *, dependency=None, delay_sec=0.0):
             # The real gated job declines to recompile and reports the
@@ -849,9 +866,9 @@ def test_a_sim_failure_is_not_relabelled_as_the_build_job_s_compile_error(
     _mark_stub_builder_verilator(minimal_project)
 
     class _SimFailAfterBuildFail(_FakeBackend):
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             write_build_result_json(spec.result_json, built=[], failed=["basic"])
-            return super().submit_build(spec)
+            return super().submit_build(spec, dependency=dependency)
 
         def submit(self, spec, *, dependency=None, delay_sec=0.0):
             handle = super().submit(spec, dependency=dependency, delay_sec=delay_sec)
@@ -895,7 +912,7 @@ def test_an_evidence_less_build_failure_keeps_the_retry_s_own_compile_fail(
     _mark_stub_builder_verilator(minimal_project)
 
     class _EvidencelessBuildFail(_FakeBackend):
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             write_build_result_json(
                 spec.result_json,
                 built=["extra"],
@@ -908,7 +925,7 @@ def test_an_evidence_less_build_failure_keeps_the_retry_s_own_compile_fail(
                     }
                 ],
             )
-            return super().submit_build(spec)
+            return super().submit_build(spec, dependency=dependency)
 
         def submit(self, spec, *, dependency=None, delay_sec=0.0):
             self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
@@ -945,7 +962,7 @@ def test_an_inputs_changed_retry_s_own_failure_is_not_relabelled(
     _mark_stub_builder_verilator(minimal_project)
 
     class _DriftedBuildFail(_FakeBackend):
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             write_build_result_json(
                 spec.result_json,
                 built=["extra"],
@@ -960,7 +977,7 @@ def test_an_inputs_changed_retry_s_own_failure_is_not_relabelled(
                     }
                 ],
             )
-            return super().submit_build(spec)
+            return super().submit_build(spec, dependency=dependency)
 
         def submit(self, spec, *, dependency=None, delay_sec=0.0):
             self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
@@ -1048,8 +1065,8 @@ class _RecordingBackend(_FakeBackend):
         # build envelope to read compile records out of.
         self.build_result = build_result
 
-    def submit_build(self, spec):
-        handle = super().submit_build(spec)
+    def submit_build(self, spec, *, dependency=None):
+        handle = super().submit_build(spec, dependency=dependency)
         if self.build_result is not None:
             write_build_result_json(
                 spec.result_json,
@@ -1087,7 +1104,7 @@ class _DelayedPlanBackend(_RecordingBackend):
         self.consumed_build_plans = {}
         self.consumed_sim_plans = {}
 
-    def submit_build(self, spec):
+    def submit_build(self, spec, *, dependency=None):
         self.build_submitted.append(spec)
         return JobHandle(job_id=f"delayed-build-{len(self.build_submitted)}", spec=spec)
 
@@ -1224,9 +1241,9 @@ def test_a_later_suites_sweep_hook_does_not_alter_an_earlier_suites_submission(
     real_submit_build = recording_backend.submit_build
     real_submit = recording_backend.submit
 
-    def submit_build_recording_env(spec):
+    def submit_build_recording_env(spec, **kwargs):
         seen["build"][Path(spec.test_config_path).name] = os.environ["SBATCH_NTASKS"]
-        return real_submit_build(spec)
+        return real_submit_build(spec, **kwargs)
 
     def submit_recording_env(spec, **kwargs):
         seen["sim"][spec.test_name] = os.environ["SBATCH_NTASKS"]
@@ -4160,12 +4177,12 @@ class _RetryBackend(_FakeBackend):
         self.states: dict[str, str] = {}
         self.wait_calls = 0
 
-    def submit_build(self, spec):
+    def submit_build(self, spec, *, dependency=None):
         # A real build job always writes its result file; the head now takes
         # its absence as "the gate never opened" (#405 review).
         if self.build_result:
             write_build_result_json(spec.result_json, built=[], failed=[])
-        return super().submit_build(spec)
+        return super().submit_build(spec, dependency=dependency)
 
     def submit(self, spec, *, dependency=None, delay_sec=0.0):
         self.submitted.append(spec)
@@ -5871,7 +5888,7 @@ def test_a_partial_build_envelope_is_used_for_what_it_names_only(
         def __init__(self):
             super().__init__(write_results=False)  # no sim envelope appears
 
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             write_build_result_json(
                 spec.result_json,
                 built=[],
@@ -5886,7 +5903,7 @@ def test_a_partial_build_envelope_is_used_for_what_it_names_only(
                 ],
                 partial=True,
             )
-            return super().submit_build(spec)
+            return super().submit_build(spec, dependency=dependency)
 
     backend = _PartialBuild()
     monkeypatch.setattr(
@@ -5936,7 +5953,7 @@ def test_a_partial_build_envelope_does_not_feed_reservation_advice(
     _mark_stub_builder_verilator(minimal_project)
 
     class _PartialBuild(_FakeBackend):
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             write_build_result_json(
                 spec.result_json,
                 built=["basic"],
@@ -5944,7 +5961,7 @@ def test_a_partial_build_envelope_does_not_feed_reservation_advice(
                 builds=[{"test": "basic", "builder": "verilator", "duration_sec": 2.0}],
                 partial=True,
             )
-            return super().submit_build(spec)
+            return super().submit_build(spec, dependency=dependency)
 
     backend = _PartialBuild()
     monkeypatch.setattr(
@@ -6015,7 +6032,7 @@ def test_a_partial_envelope_counts_configs_not_result_rows(
     """
 
     class _PartialBuild(_RecordingBackend):
-        def submit_build(self, spec):
+        def submit_build(self, spec, *, dependency=None):
             handle = _FakeBackend.submit_build(self, spec)
             write_build_result_json(
                 spec.result_json,
@@ -6152,7 +6169,7 @@ class _PartialEnvelopeBackend(_RecordingBackend):
     def build_outcome(self, handle):
         return self._build_state
 
-    def submit_build(self, spec):
+    def submit_build(self, spec, *, dependency=None):
         handle = _FakeBackend.submit_build(self, spec)
         write_build_result_json(
             spec.result_json,
@@ -6443,8 +6460,11 @@ def _orphan_the_run(project: Path) -> tuple[Path, dict]:
 
 def _all_job_ids(payload) -> list[str]:
     ids = [entry["job_id"] for entry in payload["pending"]]
-    if payload["build"] is not None:
-        ids.append(payload["build"]["job_id"])
+    # Both compile jobs, where the compile was split (#593): an orphan's
+    # verilate job is as much a survivor as its build job.
+    for key in ("build", "verilate"):
+        if payload.get(key) is not None:
+            ids.append(payload[key]["job_id"])
     return ids
 
 
@@ -6773,7 +6793,8 @@ def test_cancel_scancels_the_orphaned_fleet_then_submits_a_fresh_one(
     assert json.loads(manifest_path.read_text())["status"] == "cancelled"
     assert len(backend.submitted) > submitted_before
     console = _console_text(result)
-    assert "cancelled 3 job(s) left by an earlier run" in console
+    # Four: two sim jobs plus the compile's two chained halves (#593).
+    assert "cancelled 4 job(s) left by an earlier run" in console
     for job_id in orphan_ids:
         assert job_id in console
 
@@ -7317,7 +7338,8 @@ def test_an_incomplete_record_is_an_orphan_to_cancel_but_never_to_adopt(
     backend.cancelled_handles = []
     result, _rb = _dispatched_regression(["--orphans", "cancel"])
     assert result.exit_code == 0, result.output
-    assert backend.cancelled_handles == [["fake-build"]]
+    # Both halves of the compile it had placed, in manifest order (#593).
+    assert backend.cancelled_handles == [["fake-verilate", "fake-build"]]
     assert json.loads(manifest_path.read_text())["status"] == "cancelled"
 
 
@@ -7715,3 +7737,240 @@ def test_the_cancel_probe_is_bounded_by_the_grace_it_has_left(
     # one, and never longer than one poll interval when the grace is spent.
     assert backend.probe_timeouts[0] is None
     assert backend.probe_timeouts[-1] == RtlBuddy.ORPHAN_CANCEL_POLL_S
+
+
+# ------------------------------------------- #593: the split compile
+
+
+class _SplittingBackend(_RecordingBackend):
+    """A recording fake answering to the one backend name the split needs.
+
+    Chaining a second job behind the first is a scheduler's job, so the head
+    only splits for Slurm — which means a fake that wants to see the split
+    has to claim that name, exactly as ``_ReleasingBackend`` does for the
+    per-key release.
+    """
+
+    name = "slurm"
+
+
+def _splitting_run(monkeypatch, project, argv=(), **kwargs):
+    _mark_stub_builder_verilator(project)
+    backend = _SplittingBackend(**kwargs)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+            *argv,
+        ]
+    )
+    return backend, result
+
+
+def test_a_verilate_job_is_chained_in_front_of_the_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The whole feature: two reservations, in order, and the fan-out still
+    waiting on the build job alone (#593)."""
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    assert [spec.phase for spec in backend.verilate_submitted] == ["verilate"]
+    assert [spec.phase for spec in backend.build_submitted] == ["build"]
+    # The verilate job goes out first, ungated; the build job waits on it.
+    assert backend.build_dependencies == [None, "fake-verilate"]
+    # Sims keep their `afterok` on the build job, and only on it: a
+    # simulation released by the verilation would find no executable.
+    assert {call["dependency"] for call in backend.array_calls} == {"fake-build"}
+
+
+def test_the_verilate_job_owns_its_own_envelope_log_and_gate(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Mirrors the build job's naming, so the halves never overwrite each
+    other — and carries no gates manifest, because there is no build for a
+    released simulation to find."""
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    (verilate,) = backend.verilate_submitted
+    (build,) = backend.build_submitted
+    assert Path(verilate.result_json).name.startswith("verilate-result-")
+    assert Path(verilate.log_path).name.startswith("verilate-")
+    assert verilate.gates_json is None
+    # The build job's own names are untouched.
+    assert Path(build.result_json).name.startswith("build-result-")
+    assert build.gates_json is not None
+
+
+def test_a_non_verilator_suite_is_not_split(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The split rewrites the Verilator front end off the compile line, so
+    it is offered only where that line is Verilator's."""
+    _set_stub_builder_family(minimal_project, "vcs")
+    backend = _SplittingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert backend.verilate_submitted == []
+    assert [spec.phase for spec in backend.build_submitted] == ["full"]
+    assert backend.build_dependencies == [None]
+
+
+def test_split_verilate_false_keeps_the_single_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The escape hatch: one job, and an argv byte-identical to before."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n  compile:\n    cpus: 4\n    split-verilate: false\n",
+    )
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    assert backend.verilate_submitted == []
+    assert [spec.phase for spec in backend.build_submitted] == ["full"]
+
+
+def test_a_suite_may_turn_the_split_off_for_itself(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        "compile:\n  split-verilate: false\n" + tests_yaml.read_text()
+    )
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+    assert backend.verilate_submitted == []
+
+
+def test_the_verilate_job_is_reserved_from_its_own_block(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`compile.cpus` sizes the make; the verilation is single-threaded and
+    takes `compile.verilate` — mem and time inherited where unstated."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    verilate:\n      mem: 32G\n",
+    )
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    (verilate,) = backend.verilate_submitted
+    (build,) = backend.build_submitted
+    assert (verilate.resources.cpus, verilate.resources.mem) == (2, "32G")
+    assert verilate.resources.time == "02:00:00"
+    assert (build.resources.cpus, build.resources.mem) == (4, "8G")
+
+
+def test_collect_attaches_telemetry_to_both_halves_of_the_compile(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two jobs, two sacct rows, two envelopes — and one query for both."""
+    backend, result = _splitting_run(
+        monkeypatch,
+        minimal_project,
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600},
+            "fake-build": {"state": "COMPLETED", "elapsed_s": 30, "timelimit_s": 7200},
+            "fake-verilate": {
+                "state": "COMPLETED",
+                "elapsed_s": 70,
+                "timelimit_s": 7200,
+            },
+        },
+        build_result={"built": ["basic"], "failed": [], "builds": []},
+    )
+    assert result.exit_code == 0, result.output
+
+    assert backend.telemetry_queries[0][:2] == ["fake-verilate", "fake-build"]
+    (verilate,) = backend.verilate_submitted
+    envelope = json.loads(Path(verilate.result_json).read_text())
+    assert envelope["telemetry"]["elapsed_s"] == 70
+
+
+def test_both_halves_of_the_compile_get_a_reservation_advice_row(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Each job's wall clock is its own to size, so each gets its own row."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n',
+    )
+    compiled = [
+        {
+            "test": "basic",
+            "builder": "hook-chosen-builder",
+            "duration_sec": 42.5,
+            "reused": False,
+            "group": "obj_dir_cafe",
+        }
+    ]
+    backend, result = _splitting_run(
+        monkeypatch,
+        minimal_project,
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600},
+            "fake-build": {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+            "fake-verilate": {
+                "state": "COMPLETED",
+                "elapsed_s": 60,
+                "timelimit_s": 7200,
+            },
+        },
+        build_result={"built": ["basic"], "failed": [], "builds": compiled},
+    )
+    assert result.exit_code == 0, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    rows = {entry["phase"]: entry for entry in advice if entry["resource"] == "time"}
+    assert rows["compile"]["test"] == "(build job)"
+    assert rows["compile"]["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert rows["verilate"]["test"] == "(verilate job)"
+    # Written at the key that governs the verilate job, not at the one it
+    # merely inherits from.
+    assert rows["verilate"]["edit_hint"]["path"] == "cfg-dispatch.compile.verilate.time"
+
+
+def test_a_cancelled_fan_out_names_the_verilate_jobs_log(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A fan-out reaped by `kill-on-invalid-dep` never had a build job run,
+    so the log that says why is the verilate job's (#593)."""
+    backend, result = _splitting_run(monkeypatch, minimal_project, write_results=False)
+    assert result.exit_code != 0
+
+    (verilate,) = backend.verilate_submitted
+    assert str(verilate.log_path) in result.output.replace("\n", "")

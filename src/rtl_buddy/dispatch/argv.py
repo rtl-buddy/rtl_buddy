@@ -28,7 +28,13 @@ import sys
 from pathlib import Path
 
 from ..seed_mode import SeedMode
-from .base import BuildJobSpec, ElabJobSpec, RunnableJobSpec, TestJobSpec
+from .base import (
+    BUILD_PHASE_FULL,
+    BuildJobSpec,
+    ElabJobSpec,
+    RunnableJobSpec,
+    TestJobSpec,
+)
 
 
 def job_log_path(result_json: str | Path) -> Path:
@@ -43,6 +49,8 @@ def job_log_path(result_json: str | Path) -> Path:
     - ``…/dispatch/result-<tag>.json`` → ``…/dispatch/rtl_buddy-<tag>.log``
     - ``…/.dispatch/build-result-<pid>.json``
       → ``…/.dispatch/build-rtl_buddy-<pid>.log``
+    - ``…/.dispatch/verilate-result-<pid>.json``
+      → ``…/.dispatch/verilate-rtl_buddy-<pid>.log`` (#593)
     - anything else (``foo.json``) → ``…/rtl_buddy-foo.log``
 
     The result sits alongside the scheduler's own stdout log for the same
@@ -53,6 +61,8 @@ def job_log_path(result_json: str | Path) -> Path:
     stem = path.stem
     if stem.startswith("build-result-"):
         name = f"build-rtl_buddy-{stem[len('build-result-') :]}.log"
+    elif stem.startswith("verilate-result-"):
+        name = f"verilate-rtl_buddy-{stem[len('verilate-result-') :]}.log"
     elif stem.startswith("result-"):
         name = f"rtl_buddy-{stem[len('result-') :]}.log"
     else:
@@ -81,6 +91,10 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
     """The ``rb _build-job`` invocation for one suite's shared compile."""
     argv = _rb_argv(spec)
     argv += ["_build-job", "-c", spec.test_config_path, "--share-build"]
+    if spec.phase != BUILD_PHASE_FULL:
+        # Omitted at the default, like --parallel below: an unsplit suite's
+        # argv stays byte-identical to a pre-#593 head's (#593).
+        argv += ["--phase", spec.phase]
     # Beside --share-build because it qualifies it: the flag says "share a
     # build", this says where that build lives (#542). Omitted entirely when
     # no cache root is configured, so every existing project's argv — and

@@ -52,6 +52,11 @@ import pprint
 from pathlib import Path
 
 from ..artifact_lock import build_dir_lock
+from ..dispatch.base import (
+    BUILD_PHASE_BUILD,
+    BUILD_PHASE_FULL,
+    BUILD_PHASE_VERILATE,
+)
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import (
     DEFAULT_FILE_LOG,
@@ -545,6 +550,12 @@ _BOOKKEEPING_FILE_PATTERNS = (
     "#*#",  # emacs autosave
 )
 
+#: What the verilate half of a split compile leaves in the build directory
+#: for the build half to consult (#593): the plan fingerprint it verilated,
+#: whether it succeeded, and the transcript that says why it did not. A
+#: dotfile, like the build lock beside it, so no suffix clear can match it.
+VERILATE_MARKER_NAME = ".rb-verilate.json"
+
 # rtl_buddy's OWN outputs, by name (#478 review).
 #
 # Pruning the `artefacts` directory is not enough on its own, because an
@@ -571,6 +582,7 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
     SIMV_NAME,
     ICARUS_SNAPSHOT_NAME,
     SHARED_BUILD_STAMP_NAME,
+    VERILATE_MARKER_NAME,
     RESULT_JSON_NAME,
 ) + DISPATCH_OUTPUT_PATTERNS
 # The head's own `rtl_buddy.log` is deliberately not here: it is excluded
@@ -592,6 +604,16 @@ _NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PAT
 # against the *reader's* own root — but it is what makes a stamp found in a
 # shared cache self-describing for a human and for `rb graph`.
 _STAMP_META = frozenset({"deps", "deps_format", "simv", "root"})
+
+#: The flags that make a Verilator run build as well as verilate. One of
+#: them has to be in the compile line for there to be a build step to hold
+#: back, so their absence is what "this line cannot be split" means (#593).
+_BUILD_STEP_FLAGS = ("--binary", "--build")
+
+#: Does this Verilator support ``--no-verilate``? Keyed on the resolved
+#: executable and answered once per process: it costs a ``--help``, and the
+#: build half of every compile key in a suite asks the same question.
+_NO_VERILATE_SUPPORT: dict[str, bool] = {}
 
 #: Environment override for the persistent shared-build cache root (#542).
 #: Below ``--shared-build-root`` and above the root config's
@@ -1508,6 +1530,7 @@ class VlogSim:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        build_phase=BUILD_PHASE_FULL,
     ):
         """
         compile and execute sim for given test
@@ -1598,6 +1621,19 @@ class VlogSim:
         # validate — worth a WARNING, because the whole serialization
         # guarantee rests on it (#369).
         self.expect_prebuilt = expect_prebuilt
+        # Which half of the compile this instance runs (#593). ``full`` is
+        # `verilator --binary`, and every path off a split Slurm build job
+        # takes it. ``verilate`` emits the sources and `V<top>.mk` and
+        # stops; ``build`` runs make over what that left.
+        self.build_phase = build_phase
+        # Decided by the build half, consumed by :meth:`_compile_argv`:
+        # whether the marker cleared this key to skip the front end. False
+        # is a full compile, which is what every fallback falls back to.
+        self._skip_verilate = False
+        # What the verilate half spent on this key, off its marker. The two
+        # halves are one compile to every consumer of the record, so the
+        # build half reports their sum rather than its own C++ step.
+        self._verilate_sec = None
         # That build job's envelope, when the head knew one (#498). It is
         # what separates the two reasons a stamp fails to validate: the
         # build's compile FAILED for this test (deterministic — retrying it
@@ -3656,7 +3692,7 @@ class VlogSim:
                 )
         return None
 
-    def _record_compile(self, *, duration_sec, reused):
+    def _record_compile(self, *, duration_sec, reused, verilate_sec=None):
         """Stamp :attr:`last_compile` with this instance's compile outcome.
 
         The one writer, so every path records the same three keys. Callers
@@ -3664,12 +3700,24 @@ class VlogSim:
         build envelope's ``builds`` list, and the in-process path folds it
         into the run's own result envelope. Best-effort telemetry — nothing
         downstream may fail because a value here is ``None``.
+
+        ``verilate_sec`` is what a preceding verilate job spent on this key
+        (#593). It makes ``duration_sec`` the WHOLE compile rather than the
+        C++ step alone — which is what every consumer of the number reads
+        it as — and the two halves ride along beside it so a reader can
+        still see where the time went.
         """
         self.last_compile = {
             "duration_sec": duration_sec,
             "builder": self.rtl_builder_cfg.get_name(),
             "reused": reused,
         }
+        if verilate_sec is not None:
+            self.last_compile["duration_sec"] = round(
+                verilate_sec + (duration_sec or 0), 2
+            )
+            self.last_compile["verilate_sec"] = verilate_sec
+            self.last_compile["build_sec"] = duration_sec
 
     def _build_compile_plan(self):
         """Derive this test's :class:`_CompilePlan` — the pre-builder half.
@@ -4027,8 +4075,8 @@ class VlogSim:
         """
         return self._compile_plan().group_dir
 
-    def _compile_argv(self, plan, *, quiet=False):
-        """The builder command line ``plan`` would run.
+    def _compile_argv_base(self, plan, *, quiet=False):
+        """The builder command line ``plan`` would run, before any phase.
 
         Derived here and nowhere else, for the reason ``group_dir`` is: the
         reuse breadcrumb (:meth:`_write_reuse_transcript`) records the
@@ -4111,6 +4159,252 @@ class VlogSim:
 
         run_cmd += ["-f", plan.filelist_path]
         return run_cmd
+
+    def _compile_argv(self, plan, *, quiet=False):
+        """:meth:`_compile_argv_base`, rewritten for this job's phase (#593).
+
+        What a caller that wants "the command this compile runs" asks for —
+        the reuse breadcrumb above all. :meth:`_compile_with_plan` assembles
+        the two halves itself, because it has to look at the base line
+        before it can know whether the phase applies at all.
+        """
+        return self._apply_build_phase(self._compile_argv_base(plan, quiet=quiet))
+
+    @staticmethod
+    def _splittable(run_cmd):
+        """Is there a build step in ``run_cmd`` for a verilate job to omit?
+
+        A compile line with neither ``--binary`` nor ``--build`` already
+        stops after the front end (``--cc`` alone, or any non-Verilator
+        family), so there is nothing to split: the verilate job runs it
+        whole and stamps, and the build job reuses that build (#593).
+        """
+        return any(arg in _BUILD_STEP_FLAGS for arg in run_cmd)
+
+    def _apply_build_phase(self, run_cmd):
+        """Rewrite ``run_cmd`` for the half of the compile this job runs (#593).
+
+        Applied at emission, never folded into ``plan.builder_opts``: the
+        compile key and the fingerprint are derived from the configured
+        command line, and a phase that changed them would give the two
+        halves of one compile two different shared build directories.
+
+        ``verilate`` expands ``--binary`` into its own documented parts
+        with the build left out — ``--main --exe --timing``, no
+        ``--build`` — so Verilator emits the C++ sources and the
+        ``V<top>.mk`` under ``--Mdir`` and stops. ``build`` adds
+        ``--no-verilate``, which Verilator documents as "when using
+        --build, disable the generation of C++/SystemC code, and execute
+        only the build", so the make runs over what the first half left.
+        """
+        if self.build_phase == BUILD_PHASE_FULL:
+            return run_cmd
+        if self.build_phase == BUILD_PHASE_BUILD:
+            # Only where the marker cleared this key. Every fallback — no
+            # marker, a stale one, a Verilator without the flag — runs the
+            # whole compile here instead, which is the argv it already is.
+            return run_cmd + ["--no-verilate"] if self._skip_verilate else run_cmd
+        if not self._splittable(run_cmd):
+            return run_cmd
+        rewritten = []
+        for arg in run_cmd:
+            if arg == "--binary":
+                rewritten += ["--exe", "--main", "--timing"]
+            elif arg == "--build":
+                # A line spelling the parts out (`--cc --exe --main
+                # --build`) needs only this half of the rewrite.
+                continue
+            else:
+                rewritten.append(arg)
+        return rewritten
+
+    def _verilator_supports_no_verilate(self):
+        """Will this Verilator run the make step alone (#593)?
+
+        Probed rather than version-gated: the flag is what the build half
+        needs, and a build reserved for a make that silently re-verilates
+        is the one outcome worth a ``--help`` to avoid. Answered once per
+        executable per process; anything that goes wrong reads as "no",
+        which falls the key back to a full compile.
+        """
+        exe = self.rtl_builder_cfg.get_exe()
+        cached = _NO_VERILATE_SUPPORT.get(exe)
+        if cached is not None:
+            return cached
+        try:
+            probe = subprocess.run(
+                [exe, "--help"], capture_output=True, text=True, timeout=60
+            )
+            supported = "--no-verilate" in f"{probe.stdout}{probe.stderr}"
+        except (OSError, subprocess.SubprocessError):
+            supported = False
+        _NO_VERILATE_SUPPORT[exe] = supported
+        return supported
+
+    @staticmethod
+    def _verilate_marker_path(stamp_dir):
+        """Where the verilate half records what it did, beside the stamp."""
+        return Path(stamp_dir) / VERILATE_MARKER_NAME
+
+    def _write_verilate_marker(
+        self, stamp_dir, *, fingerprint, status, transcript, duration_sec
+    ):
+        """Record this key's verilation for the build half. Never raises.
+
+        Best-effort like the stamp write beside it: a marker that did not
+        land makes the build half do the whole compile itself, which is
+        slower and never wrong.
+
+        ``duration_sec`` is carried so the build half can report the
+        compile's whole cost rather than its own C++ step: the two halves
+        are one compile to every consumer of the record.
+        """
+        path = self._verilate_marker_path(stamp_dir)
+        try:
+            self._replace_text(
+                path,
+                json.dumps(
+                    {
+                        "fingerprint_sha": _fingerprint_sha(fingerprint),
+                        "status": status,
+                        "transcript": transcript,
+                        "duration_sec": duration_sec,
+                        "timestamp": time.time(),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.verilate_marker_write_failed",
+                test=self.test_name,
+                marker=str(path),
+                error=str(exc),
+            )
+
+    def _read_verilate_marker(self, stamp_dir):
+        """The marker in ``stamp_dir`` as a dict, or ``None``. Never raises."""
+        try:
+            stored = json.loads(self._verilate_marker_path(stamp_dir).read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return stored if isinstance(stored, dict) else None
+
+    @staticmethod
+    def _verilate_marker_is_ok(marker, fingerprint):
+        """Does ``marker`` vouch for a successful verilation of THESE inputs?"""
+        if not isinstance(marker, dict) or marker.get("status") != "ok":
+            return False
+        recorded = marker.get("fingerprint_sha")
+        own = _fingerprint_sha(fingerprint)
+        return recorded is not None and own is not None and recorded == own
+
+    def _settle_verilate_phase(self, stamp_dir, fingerprint, *, forced):
+        """Has this key already been verilated? ``0`` = done, ``None`` = do it.
+
+        The marker is to this phase what the stamp is to a whole compile.
+        Two configs on one compile key land in one group, and the second
+        must not pay a second front end for the sources the first left —
+        which is what the build job's group-leader rule would normally
+        prevent, except that its subject is a stamp this phase
+        deliberately does not write (#593).
+        """
+        if forced:
+            return None
+        if not self._verilate_marker_is_ok(
+            self._read_verilate_marker(stamp_dir), fingerprint
+        ):
+            return None
+        log_event(
+            logger,
+            logging.INFO,
+            "compile.verilate_reused",
+            test=self.test_name,
+            **_build_dir_fields(stamp_dir, shared=self._shared_build_dir is not None),
+        )
+        self._record_compile(duration_sec=0.0, reused=True)
+        return 0
+
+    def _settle_split_phase(self, stamp_dir, fingerprint):
+        """What the build half of a split compile does with this key (#593).
+
+        Returns a compile status to return outright, or ``None`` to go on
+        and compile — with :attr:`_skip_verilate` saying whether that
+        compile may skip the front end.
+
+        Four outcomes, and only the first is the fast one:
+
+        * a marker for these exact inputs, ``ok``, and a Verilator that
+          takes ``--no-verilate``: run the make alone.
+        * a marker for these inputs saying ``failed``: the verilation is
+          deterministic, so re-running it under the build reservation would
+          fail again and write over the transcript that holds the errors.
+          The key fails here carrying that transcript.
+        * no marker, or one from other inputs: verilate and build here, and
+          say which of the two it was.
+        * a Verilator that cannot be told to skip the front end: the same
+          full compile, said differently, because the reservation the
+          verilate job spent is the thing to reconsider.
+        """
+        marker = self._read_verilate_marker(stamp_dir)
+        if marker is None:
+            self._report_build_phase_fallback("marker-missing")
+            return None
+        recorded = marker.get("fingerprint_sha")
+        own = _fingerprint_sha(fingerprint)
+        if recorded is None or own is None or recorded != own:
+            self._report_build_phase_fallback("marker-stale")
+            return None
+        if marker.get("status") != "ok":
+            return self._decline_failed_verilation(marker)
+        if not self._verilator_supports_no_verilate():
+            self._report_build_phase_fallback("no-verilate-unsupported")
+            return None
+        self._skip_verilate = True
+        self._verilate_sec = marker.get("duration_sec")
+        return None
+
+    def _report_build_phase_fallback(self, reason):
+        """Say that this key's build job had to verilate for itself (#593).
+
+        WARNING, because it is the reservation that is wrong: the suite
+        paid for a verilate job and a build job, and one of them did the
+        whole compile under the other's cpus and memory.
+        """
+        log_event(
+            logger,
+            logging.WARNING,
+            "compile.build_phase_fallback",
+            test=self.test_name,
+            reason=reason,
+        )
+
+    def _decline_failed_verilation(self, marker):
+        """The verilate job failed this key; report it without re-running it.
+
+        The same reasoning as a gated sim job declining a failed build
+        (#498): the sources, the flags and the toolchain are unchanged, so
+        the second attempt fails identically and only costs the transcript
+        that holds the first one's errors.
+        """
+        transcript = (
+            marker.get("transcript") or self._get_build_compile_transcript_path()
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "compile.verilate_failed",
+            test=self.test_name,
+            transcript=transcript,
+        )
+        self.compile_fail_desc = (
+            "the verilate job failed to verilate this test; not re-running "
+            f"it under the build reservation (see {transcript})"
+        )
+        self.last_compile_failure = {"returncode": 1, "transcript": transcript}
+        return 1
 
     def _rebuild_forced(self, build_dir, *, shared=True):
         """Does ``--rebuild`` override the stamp on ``build_dir`` right now?
@@ -4647,6 +4941,9 @@ class VlogSim:
         # with "no stamp or no simv" — one job's drift cascading to the whole
         # fan-out, and a plain re-run rebuilding from scratch.
         stale_stamp = None
+        # Did `--rebuild` claim this directory? Read after the block below,
+        # where a split phase's reuse check has to respect it (#593).
+        forced = False
 
         if self.share_build:
             if plan.unsupported_reason is None:
@@ -4694,7 +4991,28 @@ class VlogSim:
                     return 0
                 stale_stamp = Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME
 
-        run_cmd = self._compile_argv(plan)
+        # Where this key's stamp and verilate marker live: the shared build
+        # directory when there is one, else beside the test's own compile
+        # outputs (the builder interprets `build_dir` relative to those).
+        stamp_dir = self._shared_build_dir or compile_work_dir
+        base_argv = self._compile_argv_base(plan)
+        # Is this invocation the verilation ALONE? Only where a build step
+        # was there to hold back: a line that already stops after the front
+        # end is run whole and stamped, and the build half then reuses it
+        # (#593).
+        verilate_only = self.build_phase == BUILD_PHASE_VERILATE and self._splittable(
+            base_argv
+        )
+        if self.build_phase == BUILD_PHASE_BUILD:
+            settled = self._settle_split_phase(stamp_dir, fingerprint)
+            if settled is not None:
+                return settled
+        elif verilate_only:
+            settled = self._settle_verilate_phase(stamp_dir, fingerprint, forced=forced)
+            if settled is not None:
+                return settled
+
+        run_cmd = self._apply_build_phase(base_argv)
         run_str = " ".join(run_cmd)
         if self.expect_prebuilt:
             # This job was ordered after a build job precisely so it would not
@@ -4816,7 +5134,13 @@ class VlogSim:
         # Recorded before the pass/fail branch: a compile that failed after
         # 14 minutes is exactly the number a build-job reservation is sized
         # against, and dropping it would leave the slowest builds invisible.
-        self._record_compile(duration_sec=round(e_time - s_time, 2), reused=False)
+        self._record_compile(
+            duration_sec=round(e_time - s_time, 2),
+            reused=False,
+            # Set only where the build half consumed a marker, so an
+            # unsplit compile records exactly the three keys it always did.
+            verilate_sec=self._verilate_sec,
+        )
         license_queued = self._compile_queued_for_license(result)
         # Unconditional since #494 (see _write_compile_transcript): a reuse
         # writes this file, so a compile that ran has to as well, or the
@@ -4827,6 +5151,18 @@ class VlogSim:
         # (#498). Every consumer that points a reader at "the transcript"
         # reads the path off the events below, never off a name of its own.
         transcript_path = self._write_compile_transcript(run_str, result)
+        if verilate_only:
+            # What the build half reads instead of a stamp. There is no
+            # stamp to write: nothing runnable exists yet, and one here
+            # would let a gated simulation reuse a directory holding no
+            # executable (#593).
+            self._write_verilate_marker(
+                stamp_dir,
+                fingerprint=fingerprint,
+                status="ok" if result.returncode == 0 else "failed",
+                transcript=transcript_path,
+                duration_sec=round(e_time - s_time, 2),
+            )
         if result.returncode != 0:
             log_event(
                 logger,
@@ -4878,12 +5214,12 @@ class VlogSim:
                 logger.debug("compile stdout\n%s", result.stdout)
             if self._get_simulator_family() == "icarus":
                 self._write_icarus_simv_wrapper()
-            if fingerprint is not None:
+            if fingerprint is not None and not verilate_only:
                 # A shared build owns its directory and stamps it; an
                 # unshared one has no directory of its own (`build_dir` is a
                 # bare relative name the builder interprets), so its stamp
                 # goes beside the rest of the test's compile outputs.
-                stamp_dir = self._shared_build_dir or compile_work_dir
+                #
                 # Recorded from the finished build, not predicted from the
                 # filelist: the builder is the only thing that knows which
                 # headers it actually opened (#303). Read from the *build
@@ -4961,6 +5297,14 @@ class VlogSim:
                         tracked_deps=None if deps is None else len(deps),
                     )
                     self._record_build_stamp(stamp_dir)
+            if self.build_phase == BUILD_PHASE_BUILD:
+                # A consumed marker must not outlive the build it cleared:
+                # the stale-fingerprint check is the second line of
+                # defence, not the first (#593). Removed on a fallback
+                # build too — that one produced the executable the marker
+                # was promising a build step for.
+                with contextlib.suppress(OSError):
+                    self._verilate_marker_path(stamp_dir).unlink(missing_ok=True)
         return result.returncode
 
     def execute(

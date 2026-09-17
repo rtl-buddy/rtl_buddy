@@ -584,6 +584,40 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "compile.stamp_write_failed above for why the stamp is "
                 "missing."
             )
+        case "compile.build_phase_fallback":
+            reason = {
+                "marker-missing": (
+                    "the verilate job left no record of this compile key"
+                ),
+                "marker-stale": (
+                    "the verilate job's record is for different compile inputs"
+                ),
+                "no-verilate-unsupported": (
+                    "this Verilator does not support --no-verilate"
+                ),
+            }.get(fields.get("reason"), str(fields.get("reason")))
+            return (
+                f"{fields.get('test')}: verilating as well as building, "
+                f"because {reason}. The compile is correct, but it runs the "
+                "front end under the BUILD job's reservation while the "
+                "verilate job's was paid for and unused — check "
+                "cfg-dispatch.compile.verilate, or set "
+                "compile.split-verilate: false."
+            )
+        case "compile.verilate_failed":
+            return (
+                f"{fields.get('test')}: the verilate job failed to verilate "
+                "this test, so the build job reports it rather than running "
+                "the same verilation again under its own reservation. The "
+                f"errors are in {fields.get('transcript')}."
+            )
+        case "compile.verilate_marker_write_failed":
+            return (
+                f"{fields.get('test')}: the verilate job could not write "
+                f"{fields.get('marker')} ({fields.get('error')}), so the "
+                "build job will verilate this key as well as building it. "
+                "Check the build directory's permissions and free space."
+            )
         case "build_job.group_adoption_declined":
             return (
                 f"{fields.get('test')}: could not adopt the build "
@@ -852,7 +886,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "dispatch.suite_submitted":
             ids = fields.get("job_ids") or []
             build = fields.get("build_job")
+            verilate = fields.get("verilate_job")
             build_note = f"build job {build}, " if build else "no build job needed, "
+            if verilate:
+                build_note = f"verilate job {verilate}, {build_note}"
             count = fields.get("jobs")
             plural = "" if count == 1 else "s"
             return (
@@ -1011,6 +1048,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{target or 'compile'}: reused {shared}shared build "
                 f"{_build_location(fields)} ({built}); nothing compiled"
             )
+        case "compile.verilate_reused":
+            # The verilate job's counterpart of build_reused (#593): there is
+            # no stamp yet — nothing runnable to vouch for — so the marker
+            # is what says this key's front end has already run.
+            return (
+                f"{target or 'compile'}: already verilated into "
+                f"{_build_location(fields)}; nothing to verilate"
+            )
         case "compile.rebuild_forced":
             # The counterpart of build_reused: with --rebuild the reader's
             # question flips to "did it actually recompile?", and this is
@@ -1118,6 +1163,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
             return (
                 f"Submitted shared-build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')}{concurrency}"
+            )
+        case "dispatch.verilate_submitted":
+            # The first half of a split compile (#593). Same shape as the
+            # build-job line above, because a reader watching the queue
+            # sees the two side by side.
+            parallel = fields.get("parallel") or 1
+            concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
+            return (
+                f"Submitted verilate job {fields.get('job_id')} for "
                 f"{fields.get('suite_dir')}{concurrency}"
             )
         case "dispatch.build_job_deduped":

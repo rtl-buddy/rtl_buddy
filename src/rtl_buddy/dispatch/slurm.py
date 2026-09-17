@@ -45,6 +45,7 @@ from ..logging_utils import log_event
 from ..tool_manifest import require as require_tool
 from .argv import build_job_argv, elab_job_argv, test_job_argv
 from .base import (
+    BUILD_PHASE_VERILATE,
     BuildJobSpec,
     DispatchBackend,
     JobHandle,
@@ -465,6 +466,12 @@ _DEFAULT_ACCT_INTERVAL_S = 1.0
 # form that also holds where `flock` is process-local (an NFS mount with
 # `nolock`).
 _BUILD_JOB_NAME_PREFIX = "rb-build"
+# The verilate half of a split compile gets its own name, over the same
+# digest (#593). It has to: `singleton` serialises on the (user, name)
+# pair, and one name shared with the build job would make each phase wait
+# for the other's predecessor — a chain that deadlocks the moment two runs
+# of one suite overlap.
+_VERILATE_JOB_NAME_PREFIX = "rb-verilate"
 # The clause itself. It names no job ids — Slurm resolves it against the
 # (user, job name) pair at schedule time — which is what makes it free of
 # the check-then-submit race a queue probe has, and what makes it work on
@@ -549,6 +556,12 @@ def build_job_name(spec: BuildJobSpec) -> str:
     waits, then finds the stamp does not validate and builds — never a
     wrong build. A different suite, which owns a different shared tree,
     never adopts another build's wait.
+
+    The two halves of a split compile (#593) are two identities over that
+    one digest — ``rb-verilate-<hash>`` and ``rb-build-<hash>``. Sharing a
+    name would make each phase's ``singleton`` wait for the other phase's
+    predecessor, which two overlapping runs of one suite can satisfy only
+    by deadlock.
     """
     # `os.fsencode`, not `.encode("utf-8")`: a path byte that is not valid
     # UTF-8 arrives here surrogate-escaped (PEP 383), and encoding that
@@ -558,7 +571,12 @@ def build_job_name(spec: BuildJobSpec) -> str:
     digest = hashlib.sha256(os.fsencode(os.path.abspath(spec.suite_dir))).hexdigest()[
         :12
     ]
-    return f"{_BUILD_JOB_NAME_PREFIX}-{digest}"
+    prefix = (
+        _VERILATE_JOB_NAME_PREFIX
+        if getattr(spec, "phase", None) == BUILD_PHASE_VERILATE
+        else _BUILD_JOB_NAME_PREFIX
+    )
+    return f"{prefix}-{digest}"
 
 
 def _parse_mem_to_bytes(text: str) -> int | None:
@@ -1171,7 +1189,18 @@ class SlurmDispatchBackend(DispatchBackend):
             return configured
         return f"{configured},{_DEDUP_DEPENDENCY}"
 
-    def submit_build(self, spec: BuildJobSpec) -> JobHandle:
+    def submit_build(
+        self, spec: BuildJobSpec, *, dependency: str | None = None
+    ) -> JobHandle:
+        """Submit one build job, optionally chained behind another (#593).
+
+        ``dependency`` is the verilate job's id, for the ``build`` half of
+        a split compile. It is ANDed onto whatever
+        :meth:`_dedup_dependency` produced and carries
+        ``--kill-on-invalid-dep=yes``: a verilate job that fails must reap
+        the build job rather than leave it ``PENDING`` with reason
+        ``DependencyNeverSatisfied`` for a head that may already be gone.
+        """
         job_name = build_job_name(spec)
         cmd = self._reservation_argv(
             spec.resources,
@@ -1196,19 +1225,35 @@ class SlurmDispatchBackend(DispatchBackend):
         # would otherwise silently drop the dedup. It carries the user's
         # expression too, so composing loses neither condition.
         #
-        # No `--kill-on-invalid-dep`: `singleton` waits for terminations, so
-        # it cannot become unsatisfiable. A composed user `afterok` still
-        # can — that is the exposure their own flag already had, unchanged
-        # here.
-        dependency = self._dedup_dependency(suite_dir=spec.suite_dir)
+        # `singleton` alone needs no `--kill-on-invalid-dep`: it waits for
+        # terminations, so it cannot become unsatisfiable. A composed user
+        # `afterok` still can — that is the exposure their own flag already
+        # had — and so can the chain below, which is why only that one adds
+        # the flag.
+        dedup = self._dedup_dependency(suite_dir=spec.suite_dir)
+        # The chained `afterok` first, so the expression reads in the order
+        # the phases run. A refused dedup (a `?` expression, see
+        # `_dedup_dependency`) still gets the gate: the build half must not
+        # start before its verilation, and the in-job build lock is what
+        # makes two concurrent builders safe without it.
+        clauses = [f"afterok:{dependency}"] if dependency is not None else []
+        if dedup is not None:
+            clauses.append(dedup)
+        expression = ",".join(clauses) or None
+        if expression is not None:
+            cmd.append(f"--dependency={expression}")
         if dependency is not None:
-            cmd.append(f"--dependency={dependency}")
+            # Only for the chained gate: `singleton` waits for terminations
+            # and so can never become unsatisfiable, while an `afterok` on a
+            # job that failed can — and a job left PENDING on it outlives
+            # every head that could clean it up.
+            cmd.append("--kill-on-invalid-dep=yes")
         # Informational, and BEFORE the submit so it cannot see this run's
         # own job: which jobs the dependency above will make this one wait
         # for. The guarantee does not depend on the answer.
         inflight = (
             self._queued_build_ids(job_name, cwd=spec.suite_dir)
-            if dependency is not None
+            if dedup is not None
             else []
         )
         cmd += ["--wrap", shlex.join(build_job_argv(spec))]
@@ -1240,12 +1285,17 @@ class SlurmDispatchBackend(DispatchBackend):
                 suite_dir=spec.suite_dir,
                 job_name=job_name,
                 job_ids=inflight,
-                dependency=dependency,
+                dependency=expression,
             )
         log_event(
             logger,
             logging.INFO,
-            "dispatch.build_submitted",
+            # One event per phase, with identical fields (#593): a reader
+            # filtering the machine log for the compile's two reservations
+            # should not have to disambiguate them by job name.
+            "dispatch.verilate_submitted"
+            if spec.phase == BUILD_PHASE_VERILATE
+            else "dispatch.build_submitted",
             backend=self.name,
             job_id=job_id,
             # The identity name `--dependency=singleton` serialises on

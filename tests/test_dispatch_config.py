@@ -11,6 +11,8 @@ import pytest
 from rtl_buddy.config.dispatch import (
     DEFAULT_JOB_CPUS,
     DEFAULT_JOB_TIME,
+    DEFAULT_VERILATE_CPUS,
+    CompileVerilateFile as Verilate,
     DispatchCompileFile,
     DispatchConfigFile,
     DispatchResourcesFile,
@@ -18,15 +20,20 @@ from rtl_buddy.config.dispatch import (
     RetryConfigFile,
     SuiteCompileFile,
     TestbenchCompileFile as TbCompile,
+    aggregate_verilate_resources,
     combine_for_in_job_compile,
     compile_parallel,
     compile_resource_origins,
+    compile_split_verilate,
     greedy_schedule,
     aggregate_compile_resources,
     mem_to_bytes,
     resolve_compile_resources,
     resolve_resources,
+    resolve_verilate_resources,
     validate_testbench_compile_block,
+    verilate_build_block,
+    verilate_resource_origins,
     cpu_request_overrides,
     sbatch_args_cpu_request_options,
     time_to_seconds,
@@ -1755,3 +1762,222 @@ def test_root_config_parses_max_array_tasks(minimal_project: Path):
     )
     cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
     assert (cfg.max_array_size, cfg.max_array_tasks) == (1001, 1000)
+
+
+# --- compile.verilate: the verilate job's own reservation (#593) -----------
+
+_SPLIT_CFG = DispatchConfigFile(
+    compile=DispatchCompileFile(cpus=8, mem="16G", time="02:00:00")
+).initialise()
+
+
+def test_verilate_cpus_defaults_to_two_and_inherits_compile_mem_and_time():
+    """The verilation is single-threaded; the peak it holds is the compile's."""
+    resolved = resolve_verilate_resources(_SPLIT_CFG)
+    assert resolved == JobResources(
+        cpus=DEFAULT_VERILATE_CPUS, mem="16G", time="02:00:00"
+    )
+    # `compile.cpus` describes the make and must not reach this job.
+    assert resolved.cpus != resolve_compile_resources(_SPLIT_CFG).cpus
+
+
+def test_a_verilate_block_layers_over_every_compile_layer():
+    """Testbench over suite over cfg-dispatch, and any of them over `compile:`."""
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(
+            cpus=8, mem="16G", time="02:00:00", verilate=Verilate(cpus=3, mem="24G")
+        )
+    ).initialise()
+    assert resolve_verilate_resources(cfg) == JobResources(
+        cpus=3, mem="24G", time="02:00:00"
+    )
+    suite = SuiteCompileFile(mem="48G", verilate=Verilate(time="00:40:00"))
+    assert resolve_verilate_resources(cfg, suite) == JobResources(
+        cpus=3, mem="24G", time="00:40:00"
+    )
+    tb = TbCompile(mem="96G", verilate=Verilate(cpus=4, mem="128G"))
+    assert resolve_verilate_resources(cfg, suite, tb) == JobResources(
+        cpus=4, mem="128G", time="00:40:00"
+    )
+
+
+def test_a_verilate_block_absent_falls_back_per_build():
+    """A testbench sized for its own verilation is sized for this job too."""
+    tb = TbCompile(mem="256G", time="06:00:00")
+    assert resolve_verilate_resources(_SPLIT_CFG, None, tb) == JobResources(
+        cpus=DEFAULT_VERILATE_CPUS, mem="256G", time="06:00:00"
+    )
+
+
+def test_verilate_fields_take_the_compile_validators():
+    """Same rules as the block they override, at every layer."""
+    with pytest.raises(FatalRtlBuddyError, match="sexagesimal"):
+        DispatchConfigFile(
+            compile=DispatchCompileFile(verilate=Verilate(time=14400))
+        ).initialise()
+    with pytest.raises(FatalRtlBuddyError, match="not a value Slurm understands"):
+        DispatchConfigFile(
+            compile=DispatchCompileFile(verilate=Verilate(mem="lots"))
+        ).initialise()
+    with pytest.raises(FatalRtlBuddyError, match="must be at least 1"):
+        DispatchConfigFile(
+            compile=DispatchCompileFile(verilate=Verilate(cpus=0))
+        ).initialise()
+    with pytest.raises(FatalRtlBuddyError, match="greater than zero"):
+        validate_testbench_compile_block(TbCompile(verilate=Verilate(mem="0")))
+
+
+def test_split_verilate_defaults_on_and_the_suite_may_override_it():
+    """Layered like `parallel`: `None` at suite level means inherit (#593)."""
+    assert compile_split_verilate(None) is True
+    assert compile_split_verilate(DispatchConfigFile().initialise()) is True
+    off = DispatchConfigFile(
+        compile=DispatchCompileFile(split_verilate=False)
+    ).initialise()
+    assert compile_split_verilate(off) is False
+    # A suite that overrides only `mem` keeps inheriting the root answer.
+    assert compile_split_verilate(off, SuiteCompileFile(mem="48G")) is False
+    assert compile_split_verilate(off, SuiteCompileFile(split_verilate=True)) is True
+    assert (
+        compile_split_verilate(_SPLIT_CFG, SuiteCompileFile(split_verilate=False))
+        is False
+    )
+
+
+def test_a_testbench_compile_block_refuses_split_verilate():
+    """One compile per suite, split or not, so one testbench cannot decide."""
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        validate_testbench_compile_block(TbCompile(split_verilate=False))
+    assert "split-verilate is not accepted on a testbench compile block" in str(
+        excinfo.value
+    )
+
+
+def test_a_suite_verilate_block_loads_from_tests_yaml(minimal_project: Path):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        "compile:\n"
+        "  mem: 48G\n"
+        "  split-verilate: false\n"
+        "  verilate:\n"
+        "    cpus: 3\n"
+        "    mem: 96G\n"
+        '    time: "00:45:00"\n' + tests_yaml.read_text()
+    )
+    block = SuiteConfig(path=str(tests_yaml)).get_compile()
+    assert block.split_verilate is False
+    assert (block.verilate.cpus, block.verilate.mem, block.verilate.time) == (
+        3,
+        "96G",
+        "00:45:00",
+    )
+    assert compile_split_verilate(_SPLIT_CFG, block) is False
+
+
+def test_a_root_verilate_block_loads_from_root_config(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text() + "\ncfg-dispatch:\n"
+        "  compile:\n"
+        "    cpus: 8\n"
+        "    mem: 16G\n"
+        "    split-verilate: false\n"
+        "    verilate:\n"
+        "      cpus: 2\n"
+        "      mem: 64G\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.compile.split_verilate is False
+    assert (cfg.compile.verilate.cpus, cfg.compile.verilate.mem) == (2, "64G")
+
+
+def test_verilate_build_block_prefers_the_verilate_key_over_the_compile_one():
+    """The per-build figure the aggregation combines, and where it came from."""
+    plain = verilate_build_block(TbCompile(cpus=8, mem="96G", time="01:00:00"))
+    # `cpus` has no fallback: the make's width says nothing about the front end.
+    assert (plain.cpus, plain.mem, plain.time) == (None, "96G", "01:00:00")
+    own = verilate_build_block(
+        TbCompile(cpus=8, mem="96G", verilate=Verilate(cpus=2, mem="128G"))
+    )
+    assert (own.cpus, own.mem) == (2, "128G")
+
+
+def test_the_verilate_job_aggregates_over_the_builds_it_runs():
+    """Same arithmetic as the build job's: max cpus, summed mem, makespan."""
+    resources, origins = aggregate_verilate_resources(
+        _SPLIT_CFG,
+        None,
+        [
+            ("tb_small", TbCompile(verilate=Verilate(mem="8G", time="00:10:00"))),
+            ("tb_big", TbCompile(verilate=Verilate(mem="96G", time="01:00:00"))),
+        ],
+        parallel=2,
+    )
+    assert resources.mem == "104G"
+    # The whole-job floor still binds: `compile.time` is two hours, and the
+    # makespan of these two over two workers is one.
+    assert resources.time == "02:00:00"
+    assert resources.cpus == DEFAULT_VERILATE_CPUS
+    assert origins["mem"]["aggregated"] is True
+    # The key an edit hint must name is the verilate one, not `compile.mem`.
+    assert origins["mem"]["sources"][0]["key"] == "verilate.mem"
+
+
+def test_the_verilate_job_queues_its_builds_over_its_own_workers():
+    """Above the whole-job floor, `time` is the makespan, as for the build job."""
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(mem="4G", time="00:10:00")
+    ).initialise()
+    blocks = [
+        ("tb_a", TbCompile(verilate=Verilate(time="00:30:00"))),
+        ("tb_b", TbCompile(verilate=Verilate(time="00:30:00"))),
+        ("tb_c", TbCompile(verilate=Verilate(time="00:20:00"))),
+    ]
+    paired, _ = aggregate_verilate_resources(cfg, None, blocks, parallel=2)
+    # 30 + 20 on one worker, 30 on the other: 50 minutes, not ceil(80/2).
+    assert paired.time == "00:50:00"
+    serial, _ = aggregate_verilate_resources(cfg, None, blocks, parallel=1)
+    assert serial.time == "01:20:00"
+
+
+def test_the_verilate_aggregate_names_the_compile_key_it_fell_back_to():
+    """A build sized only by `compile.mem` is summed under THAT key (#593)."""
+    resources, origins = aggregate_verilate_resources(
+        _SPLIT_CFG,
+        None,
+        [("tb_big", TbCompile(mem="256G"))],
+        parallel=1,
+    )
+    assert resources.mem == "256G"
+    assert origins["mem"]["sources"] == [
+        {"origin": "testbench", "testbench": "tb_big", "key": "mem"}
+    ]
+
+
+def test_a_suite_with_no_verilate_keys_gets_the_resolved_compile_figures():
+    """Nothing to write and nothing changes: today's reservation, 2 cpus."""
+    resources, origins = aggregate_verilate_resources(
+        _SPLIT_CFG, SuiteCompileFile(mem="48G"), [("a", None), ("b", None)]
+    )
+    assert resources == JobResources(
+        cpus=DEFAULT_VERILATE_CPUS, mem="48G", time="02:00:00"
+    )
+    # The suite's own `compile.mem` won, so that is the key to edit...
+    assert origins["mem"]["sources"] == [
+        {"origin": "suite", "testbench": None, "key": "mem"}
+    ]
+    # ...while a field no tests.yaml layer set is written at the verilate key,
+    # which beats every `compile:` layer.
+    assert origins["cpus"]["sources"] == [
+        {"origin": "cfg-dispatch", "testbench": None, "key": "verilate.cpus"}
+    ]
+
+
+def test_verilate_resource_origins_records_the_layer_and_the_key():
+    suite = SuiteCompileFile(mem="48G", verilate=Verilate(time="00:40:00"))
+    tb = TbCompile(verilate=Verilate(cpus=4))
+    assert verilate_resource_origins(suite, tb) == {
+        "mem": {"origin": "suite", "key": "mem"},
+        "time": {"origin": "suite", "key": "verilate.time"},
+        "cpus": {"origin": "testbench", "key": "verilate.cpus"},
+    }

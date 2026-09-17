@@ -40,7 +40,7 @@ from pathlib import Path
 
 from ..config.dispatch import JobResources
 from ..seed_mode import SeedMode
-from .base import BuildJobSpec, JobHandle, TestJobSpec
+from .base import BUILD_PHASE_VERILATE, BuildJobSpec, JobHandle, TestJobSpec
 from .plan import run_scoped_path
 
 RUN_SCHEMA_VERSION = 1
@@ -76,7 +76,14 @@ ACTIVE_STATUSES = (STATUS_SUBMITTING, STATUS_RUNNING)
 _PATH_FIELDS = frozenset(
     {"result_json", "log_path", "plan_path", "build_result_json", "gates_json"}
 )
-_SPEC_TYPES = {"build": BuildJobSpec, "test": TestJobSpec}
+# `verilate` and `build` are both BuildJobSpec (#593): what separates them
+# is the spec's own `phase`, and the kind exists so a manifest reads as the
+# fleet it records rather than as two jobs with one name.
+_SPEC_TYPES = {
+    "build": BuildJobSpec,
+    "verilate": BuildJobSpec,
+    "test": TestJobSpec,
+}
 _SPEC_KINDS = {BuildJobSpec: "build", TestJobSpec: "test"}
 
 
@@ -110,6 +117,8 @@ def encode_spec(spec) -> dict:
     kind = _SPEC_KINDS.get(type(spec))
     if kind is None:
         raise TypeError(f"cannot record job spec of type {type(spec).__name__}")
+    if kind == "build" and getattr(spec, "phase", None) == BUILD_PHASE_VERILATE:
+        kind = "verilate"
     payload = {"kind": kind}
     for field in dataclasses.fields(spec):
         payload[field.name] = _encode(getattr(spec, field.name))
@@ -193,6 +202,7 @@ def write_run_manifest(
     suite_config,
     plan,
     build=None,
+    verilate=None,
     pending=(),
     rows,
     status=STATUS_SUBMITTING,
@@ -222,6 +232,10 @@ def write_run_manifest(
         "suite_config": str(suite_config),
         "plan": str(plan),
         "build": _handle_entry(build) if build is not None else None,
+        # The verilate half of a split compile (#593). Absent — not just
+        # null — in a manifest from before it, which `verilate_from` reads
+        # as "this run did not split".
+        "verilate": _handle_entry(verilate) if verilate is not None else None,
         "pending": [
             dict(_handle_entry(handle), row=int(row)) for row, handle in pending
         ],
@@ -264,6 +278,15 @@ def record_build_handle(path, handle) -> str | None:
 
     def mutate(payload):
         payload["build"] = None if handle is None else _handle_entry(handle)
+
+    return _amend(path, mutate)
+
+
+def record_verilate_handle(path, handle) -> str | None:
+    """Name the verilate job in the manifest, as soon as it is accepted."""
+
+    def mutate(payload):
+        payload["verilate"] = None if handle is None else _handle_entry(handle)
 
     return _amend(path, mutate)
 
@@ -417,17 +440,18 @@ def discover_run_manifests(
 
 
 def handles_from(payload) -> list[JobHandle]:
-    """Every job the manifest names, build job first; raises on a bad spec."""
+    """Every job the manifest names, compile jobs first; raises on a bad spec."""
     handles = []
-    build = payload.get("build")
-    if isinstance(build, dict):
-        handles.append(
-            JobHandle(
-                job_id=str(build["job_id"]),
-                spec=decode_spec(build.get("spec")),
-                cluster=build.get("cluster"),
+    for key in ("verilate", "build"):
+        entry = payload.get(key)
+        if isinstance(entry, dict):
+            handles.append(
+                JobHandle(
+                    job_id=str(entry["job_id"]),
+                    spec=decode_spec(entry.get("spec")),
+                    cluster=entry.get("cluster"),
+                )
             )
-        )
     for entry in payload.get("pending") or []:
         handles.append(
             JobHandle(
@@ -441,13 +465,22 @@ def handles_from(payload) -> list[JobHandle]:
 
 def build_from(payload) -> JobHandle | None:
     """The manifest's build-job handle, or ``None`` where it had none."""
-    build = payload.get("build")
-    if not isinstance(build, dict):
+    return _handle_from(payload, "build")
+
+
+def verilate_from(payload) -> JobHandle | None:
+    """The manifest's verilate-job handle, or ``None`` where it had none (#593)."""
+    return _handle_from(payload, "verilate")
+
+
+def _handle_from(payload, key) -> JobHandle | None:
+    entry = payload.get(key)
+    if not isinstance(entry, dict):
         return None
     return JobHandle(
-        job_id=str(build["job_id"]),
-        spec=decode_spec(build.get("spec")),
-        cluster=build.get("cluster"),
+        job_id=str(entry["job_id"]),
+        spec=decode_spec(entry.get("spec")),
+        cluster=entry.get("cluster"),
     )
 
 

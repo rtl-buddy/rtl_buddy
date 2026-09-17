@@ -87,12 +87,15 @@ from .runner.mut_results import MutResults
 from .config.dispatch import (
     ORPHANS_POLICIES,
     JobResources,
+    aggregate_verilate_resources,
     combine_for_in_job_compile,
     compile_parallel,
     compile_parallel_origin,
     compile_resource_origins,
+    compile_split_verilate,
     aggregate_compile_resources,
     resolve_compile_resources,
+    resolve_verilate_resources,
     resolve_resources,
     cpu_request_overrides,
 )
@@ -102,7 +105,16 @@ from .dispatch import (
     validate_backend_name,
 )
 from .dispatch.argv import job_log_path
-from .dispatch.base import BuildJobSpec, ElabJobSpec, TestJobSpec, telemetry_key
+from .dispatch.base import (
+    BUILD_PHASE_BUILD,
+    BUILD_PHASE_FULL,
+    BUILD_PHASE_VERILATE,
+    BUILD_PHASES,
+    BuildJobSpec,
+    ElabJobSpec,
+    TestJobSpec,
+    telemetry_key,
+)
 from .dispatch.gates import release_batches, wait_for_gates, write_gates
 from .dispatch.plan import (
     PLAN_SCHEMA_VERSION,
@@ -127,9 +139,11 @@ from .dispatch.run_manifest import (
     row_identities,
     record_build_handle,
     record_pending_handles,
+    record_verilate_handle,
     run_manifest_path,
     set_run_status,
     update_pending_job_ids,
+    verilate_from,
     write_run_manifest,
 )
 from .dispatch.retry import backoff_delay, classify_missing_result
@@ -2590,6 +2604,15 @@ class RtlBuddy:
                 "simulation jobs as soon as that key is built",
             ),
         ] = None,
+        phase: Annotated[
+            str,
+            typer.Option(
+                "--phase",
+                hidden=True,
+                help="which half of the compile to run: full (verilate and "
+                "build), verilate (front end only), or build (make only)",
+            ),
+        ] = BUILD_PHASE_FULL,
     ):
         """
         internal: compile a suite's runnable tests on a compute node (#351)
@@ -2623,6 +2646,14 @@ class RtlBuddy:
         ``afterok`` on this job, which is what still cancels the fan-out if
         this job dies.
         """
+        if phase not in BUILD_PHASES:
+            # Rejected before anything is entered or written, like
+            # `--parallel` below: a phase nobody implements would compile
+            # the wrong half of the suite, and this flag only ever comes
+            # from the head (#593).
+            raise FatalRtlBuddyError(
+                f"--phase must be one of {', '.join(BUILD_PHASES)} (got {phase!r})."
+            )
         if parallel < 1:
             # Rejected before anything is entered or written: a job allowed
             # zero concurrent builds would compile nothing, and a fatal here
@@ -2688,6 +2719,7 @@ class RtlBuddy:
             parallel_configured=parallel_configured,
             parallel_origin=parallel_origin,
             gates=gates,
+            phase=phase,
         )
 
         if plan is not None:
@@ -2736,6 +2768,8 @@ class RtlBuddy:
                 # per-process memo makes the whole suite's shared build
                 # rebuild exactly once (#494/#369).
                 rebuild=rebuild,
+                # Which half of the compile this job runs (#593).
+                build_phase=phase,
             )
             try:
                 res = runner.prepare()
@@ -2859,6 +2893,12 @@ class RtlBuddy:
             the key keeps its gate instead.
             """
             if gates_path is None or not members or cancellation_has_started():
+                return
+            if phase == BUILD_PHASE_VERILATE:
+                # There is no build to release these jobs onto: this half
+                # emitted sources and a Makefile, and the build half still
+                # has to run (#593). The head passes no `--gates` to a
+                # verilate job, so this is the second guard, not the first.
                 return
             if verdict_error is not None:
                 # The envelope these jobs would consult is not on disk, so
@@ -3010,6 +3050,13 @@ class RtlBuddy:
                 # distinct means two.
                 "group": (os.path.relpath(group_dir, suite_dir) if group_dir else None),
             }
+            for half in ("verilate_sec", "build_sec"):
+                # Where the compile was split, `duration_sec` above is the
+                # whole of it and these say where the time went (#593).
+                # Additive: absent for every unsplit compile, which is what
+                # keeps an existing envelope's shape.
+                if record.get(half) is not None:
+                    build_entry[half] = record[half]
             # The stamp as it stands now that every member is done: a
             # sibling's adoption rewrote its listing after the leader
             # recorded, and the gated jobs validate — and compare their
@@ -3254,14 +3301,20 @@ class RtlBuddy:
                     # build is stamped, reused or adopted, and names the
                     # directory the stamp actually went in — which for an
                     # unshared build is not `group_dir`.
+                    #
+                    # The verilate half writes no stamp by design (#593) —
+                    # there is nothing runnable to vouch for yet — and its
+                    # siblings short-circuit on its marker instead, so the
+                    # absence is not a fault to report there.
                     if getattr(runner, "last_build_stamp", unreported) is None:
-                        log_event(
-                            logger,
-                            logging.WARNING,
-                            "build_job.group_leader_unstamped",
-                            test=name,
-                            group=group_dir,
-                        )
+                        if phase != BUILD_PHASE_VERILATE:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "build_job.group_leader_unstamped",
+                                test=name,
+                                group=group_dir,
+                            )
                     else:
                         group_leaders.setdefault(group_dir, name)
                 rows.append((index, name, built, None, runner, group_dir))
@@ -3524,6 +3577,7 @@ class RtlBuddy:
             parallel_configured=parallel_configured,
             parallel_origin=parallel_origin,
             groups=len(groups),
+            phase=phase,
         )
         if result_json_path is not None:
             # Persist the outcome so the head can map a compile failure to a
@@ -4264,6 +4318,27 @@ class RtlBuddy:
                 error=reason,
             )
 
+    @staticmethod
+    def _state_handles(state):
+        """Every job one collect state holds, compile jobs first.
+
+        One expression, because several places need it and a list that
+        forgot the verilate job (#593) would leave it running after an
+        interrupt, or out of the wait that makes the fleet this run's
+        responsibility. ``None`` entries — a suite that submitted no build
+        job — are dropped: they crash both ``wait_all`` and ``cancel_all``
+        (#361).
+        """
+        return [
+            handle
+            for handle in [
+                (state or {}).get("verilate_handle"),
+                (state or {}).get("build_handle"),
+                *(handle for _, handle in (state or {}).get("pending") or []),
+            ]
+            if handle is not None
+        ]
+
     def _wait_or_cancel(self, backend, state):
         """Await one submitted suite's fleet; cancel it if the head dies.
 
@@ -4277,11 +4352,7 @@ class RtlBuddy:
         The multi-suite regression does not use this: its cancel scope
         spans submission of every suite, not just the wait.
         """
-        handles = [
-            h
-            for h in [state["build_handle"], *(h for _, h in state["pending"])]
-            if h is not None
-        ]
+        handles = self._state_handles(state)
         try:
             backend.wait_all(handles)
         except BaseException:
@@ -4584,14 +4655,7 @@ class RtlBuddy:
         path = (state or {}).get("run_manifest")
         if path is None:
             return
-        handles = [
-            handle
-            for handle in [
-                (state or {}).get("build_handle"),
-                *(handle for _, handle in (state or {}).get("pending") or []),
-            ]
-            if handle is not None
-        ]
+        handles = self._state_handles(state)
         live = self._await_fleet_gone(backend, handles) if handles else []
         if live:
             self._report_cancel_failed(
@@ -4604,15 +4668,10 @@ class RtlBuddy:
             return
         self._close_run_manifest(state, STATUS_CANCELLED)
 
-    @staticmethod
-    def _cwd_of_state(state):
+    def _cwd_of_state(self, state):
         """The suite directory one collect state's jobs were submitted from."""
-        for handle in [
-            (state or {}).get("build_handle"),
-            *(handle for _, handle in (state or {}).get("pending") or []),
-        ]:
-            if handle is not None:
-                return getattr(handle.spec, "suite_dir", None)
+        for handle in self._state_handles(state):
+            return getattr(handle.spec, "suite_dir", None)
         return None
 
     def _adopt_orphan_run(
@@ -4734,6 +4793,8 @@ class RtlBuddy:
             build_compile_resources,
             build_compile_origins,
             build_parallel,
+            verilate_resources,
+            verilate_origins,
         ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
         # ...and finally what the plan does not carry. `--builder-mode`,
         # `--builder`, `--extra-sim-timeout`, the forwarded shared-build root
@@ -4749,11 +4810,19 @@ class RtlBuddy:
             build_resources=self._scaled_build_resources(
                 build_compile_resources, build_parallel
             ),
+            # ...and the verilate job's, on the same footing (#593): a suite
+            # that has raised `compile.verilate.mem` since the orphan went
+            # out would otherwise adopt a fleet whose verilation was killed
+            # under the old figure and report that as this run's verdict.
+            verilate_resources=self._scaled_build_resources(
+                verilate_resources, build_parallel
+            ),
         )
         if spec_difference is not None:
             raise self._adopt_mismatch(manifest_path, payload, spec_difference)
         try:
             build_handle = build_from(payload)
+            verilate_handle = verilate_from(payload)
             pending = pending_from(payload)
         except (KeyError, TypeError, ValueError) as e:
             raise self._adopt_mismatch(
@@ -4785,11 +4854,15 @@ class RtlBuddy:
             job_ids=group_job_ids(orphan["live"]),
             jobs=len(orphan["live"]),
             build_job=build_handle.job_id if build_handle is not None else None,
+            verilate_job=(
+                verilate_handle.job_id if verilate_handle is not None else None
+            ),
         )
         return {
             "suite_results": suite_results,
             "pending": pending,
             "build_handle": build_handle,
+            "verilate_handle": verilate_handle,
             # The ORPHAN's token, not this invocation's: its jobs stamp
             # their envelopes with the token their own head planned them
             # with, and collection accepts an envelope by that identity.
@@ -4798,6 +4871,8 @@ class RtlBuddy:
             "suite_compile": suite_compile,
             "build_compile_resources": build_compile_resources,
             "build_compile_origins": build_compile_origins,
+            "verilate_resources": verilate_resources,
+            "verilate_origins": verilate_origins,
             # Re-read from THIS invocation's backend rather than recorded:
             # an `sbatch-args` cpu override is a property of the config an
             # edit hint would tell the user to change, and that is the one
@@ -4821,7 +4896,9 @@ class RtlBuddy:
             "time": resources.time,
         }
 
-    def _adopt_spec_difference(self, payload, *, sim_resources, build_resources):
+    def _adopt_spec_difference(
+        self, payload, *, sim_resources, build_resources, verilate_resources=None
+    ):
         """First recorded job option that differs from this run's, else ``None``.
 
         The plan describes the tests; these describe the invocation. A
@@ -4878,15 +4955,25 @@ class RtlBuddy:
             return None
 
         build = payload.get("build")
+        # Read out here as well as compared below: a simulation job's
+        # derived `expect_prebuilt` and `rebuild` follow from whether the
+        # suite submitted a build job at all.
         build_spec = build.get("spec") if isinstance(build, dict) else None
-        if build_spec is not None:
+        for key, what, resources in (
+            ("verilate", "verilate job", verilate_resources),
+            ("build", "build job", build_resources),
+        ):
+            entry = payload.get(key)
+            spec = entry.get("spec") if isinstance(entry, dict) else None
+            if spec is None:
+                continue
             difference = compare(
-                build_spec,
-                "build job",
+                spec,
+                what,
                 {
                     **shared,
                     "rebuild": self.rebuild,
-                    "resources": self._resources_dict(build_resources),
+                    "resources": self._resources_dict(resources),
                 },
             )
             if difference is not None:
@@ -5061,9 +5148,11 @@ class RtlBuddy:
             "with the same arguments the interrupted run used."
         )
 
-    @staticmethod
-    def _resolve_build_compile(suite_cfg, dispatch_cfg, entries):
-        """``(suite compile block, build reservation, its origins, parallel)``.
+    def _resolve_build_compile(self, suite_cfg, dispatch_cfg, entries):
+        """The compile's reservations, as this invocation would submit them.
+
+        ``(suite compile block, build reservation, its origins, parallel,
+        verilate reservation, its origins)``.
 
         The suite's own ``compile:`` block (#497) is the most specific
         suite-wide layer of the compile reservation and is per suite
@@ -5186,13 +5275,68 @@ class RtlBuddy:
             planned_builds,
             parallel=build_parallel,
         )
+        # ...and the same aggregation over the verilate keys, for the job in
+        # front of it (#593). Resolved unconditionally, even where the
+        # compile is not split: an adoption compares what THIS invocation
+        # would have reserved, and a suite that has since turned the split
+        # off must still be able to say what the orphan's verilate job was
+        # sized from.
+        verilate_resources, verilate_origins = aggregate_verilate_resources(
+            dispatch_cfg,
+            suite_compile,
+            planned_builds,
+            parallel=build_parallel,
+        )
 
         return (
             suite_compile,
             build_compile_resources,
             build_compile_origins,
             build_parallel,
+            verilate_resources,
+            verilate_origins,
         )
+
+    def _suite_splits_verilate(self, backend, dispatch_cfg, suite_compile, entries):
+        """Should this suite's compile go out as two chained jobs (#593)?
+
+        Four conditions, and the answer is no unless all of them hold:
+
+        * the backend can chain jobs. Only Slurm can: the split's whole
+          mechanism is a second submission with ``--dependency=afterok``
+          on the first, and a pool that runs jobs itself has nothing to
+          express that with.
+        * ``compile.split-verilate`` resolves true (default), so a project
+          whose Verilator predates ``--no-verilate``, or whose compiles are
+          too short to be worth two queue waits, can turn it off.
+        * every planned build compiles with the plain ``verilator
+          --binary`` line. cocotb and SystemC drive their own sim classes
+          and replace ``--binary`` with an ``--exe --build`` of their own,
+          and a mixed suite would have to verilate the odd build under the
+          build job's reservation anyway — so one entry that is not makes
+          the whole suite unsplit.
+        * the builder is resolvable at all. An unresolvable one is a
+          failure the build job reports per test; it must not decide how
+          the suite is submitted.
+        """
+        if backend.name != "slurm":
+            return False
+        if not compile_split_verilate(dispatch_cfg, suite_compile):
+            return False
+        for entry in entries:
+            cfg = entry["cfg"]
+            tb = cfg.get_testbench()
+            if tb.is_cocotb() or tb.is_systemc():
+                return False
+            try:
+                builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(
+                    cfg.get_builder_name()
+                )
+            except FatalRtlBuddyError:
+                return False
+            if builder_cfg.get_simulator_family() != "verilator":
+                return False
+        return bool(entries)
 
     def _dispatch_suite_submit(
         self,
@@ -5302,13 +5446,20 @@ class RtlBuddy:
             # Every test filtered out by -l/-s: nothing to compile or run.
             # Submitting a build job here would queue an rb _build-job that
             # iterates nothing and make wait_all block on it for zero work.
-            return {"suite_results": suite_results, "pending": [], "build_handle": None}
+            return {
+                "suite_results": suite_results,
+                "pending": [],
+                "build_handle": None,
+                "verilate_handle": None,
+            }
 
         (
             suite_compile,
             build_compile_resources,
             build_compile_origins,
             build_parallel,
+            verilate_resources,
+            verilate_origins,
         ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
 
         # ``run_token`` is the head's per-invocation nonce (one per regression
@@ -5398,26 +5549,73 @@ class RtlBuddy:
             entry["compile_in_job"] and len(entry["rows"]) > 1 for entry in entries
         )
         if any(not entry["compile_in_job"] for entry in entries) or fans_out_in_job:
-            build_handle = self._submit_dispatch_build(
-                suite_cfg,
-                backend,
-                suite_dir=suite_dir,
-                dispatch_cfg=dispatch_cfg,
-                reg_level=reg_level,
-                start_level=start_level,
-                dispatch_root=dispatch_root,
-                plan_path=plan_path,
-                run_token=run_token,
-                planned=len(entries),
-                suite_compile=suite_compile,
-                compile_resources=build_compile_resources,
-                parallel=build_parallel,
+            # Two chained jobs where the compile can be split (#593): the
+            # verilation is single-threaded at peak memory and the C++ build
+            # is `compile.cpus` cores at a fraction of it, so one allocation
+            # covering both idles most of its cores through the first half.
+            # Submitted first, because the build job takes an `afterok` on
+            # its id.
+            splits = self._suite_splits_verilate(
+                backend, dispatch_cfg, suite_compile, entries
             )
+            verilate_handle = (
+                self._submit_dispatch_build(
+                    suite_cfg,
+                    backend,
+                    suite_dir=suite_dir,
+                    dispatch_cfg=dispatch_cfg,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    dispatch_root=dispatch_root,
+                    plan_path=plan_path,
+                    run_token=run_token,
+                    planned=len(entries),
+                    suite_compile=suite_compile,
+                    compile_resources=verilate_resources,
+                    parallel=build_parallel,
+                    phase=BUILD_PHASE_VERILATE,
+                )
+                if splits
+                else None
+            )
+            if verilate_handle is not None:
+                self._grow_run_manifest(
+                    run_manifest,
+                    record_verilate_handle,
+                    verilate_handle,
+                    suite_dir=suite_dir,
+                )
+            try:
+                build_handle = self._submit_dispatch_build(
+                    suite_cfg,
+                    backend,
+                    suite_dir=suite_dir,
+                    dispatch_cfg=dispatch_cfg,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    dispatch_root=dispatch_root,
+                    plan_path=plan_path,
+                    run_token=run_token,
+                    planned=len(entries),
+                    suite_compile=suite_compile,
+                    compile_resources=build_compile_resources,
+                    parallel=build_parallel,
+                    phase=BUILD_PHASE_BUILD if splits else BUILD_PHASE_FULL,
+                    dependency=(
+                        verilate_handle.job_id if verilate_handle is not None else None
+                    ),
+                )
+            except BaseException:
+                # A verilate job with no build job behind it would hold its
+                # allocation, verilate the suite and never be collected.
+                backend.cancel_all([verilate_handle])
+                raise
             self._grow_run_manifest(
                 run_manifest, record_build_handle, build_handle, suite_dir=suite_dir
             )
         else:
             build_handle = None
+            verilate_handle = None
             log_event(
                 logger,
                 logging.INFO,
@@ -5655,7 +5853,9 @@ class RtlBuddy:
         except BaseException:
             # A mid-fan-out submit failure must not leak this suite's build
             # job or already-submitted arrays.
-            backend.cancel_all([build_handle] + [handle for _, handle in pending])
+            backend.cancel_all(
+                [verilate_handle, build_handle] + [handle for _, handle in pending]
+            )
             raise
         # The whole suite is out, so every id the build job could release is
         # known: hand it the map (#548). Written here and not inside the try
@@ -5686,6 +5886,11 @@ class RtlBuddy:
             "suite_results": suite_results,
             "pending": pending,
             "build_handle": build_handle,
+            # The verilate half of a split compile (#593), or None. A
+            # separate key rather than a list, because the two jobs are not
+            # interchangeable: only the build job's envelope decides a
+            # test's compile verdict, and only it gates the fan-out.
+            "verilate_handle": verilate_handle,
             "run_token": run_token,
             "submitted_at": submitted_at,
             # Where this suite's fleet is recorded, so collection can retire
@@ -5701,6 +5906,10 @@ class RtlBuddy:
             # nor the suite_cfg the testbench blocks live in.
             "build_compile_resources": build_compile_resources,
             "build_compile_origins": build_compile_origins,
+            # ...and the verilate job's own pair, for the same reason
+            # (#593).
+            "verilate_resources": verilate_resources,
+            "verilate_origins": verilate_origins,
             # What superseded this suite's resolved cpus, as it stood when
             # these jobs were submitted. Snapshotted rather than recomputed
             # at analysis, because the environment half of it can move under
@@ -5746,6 +5955,7 @@ class RtlBuddy:
             # report and no wait to explain.
             return
         build_handle = state["build_handle"]
+        verilate_handle = state.get("verilate_handle")
         log_console_event(
             logger,
             logging.INFO,
@@ -5753,11 +5963,20 @@ class RtlBuddy:
             backend=backend.name,
             suite=suite,
             build_job=build_handle.job_id if build_handle is not None else None,
+            # The verilate half of a split compile (#593). Additive, and
+            # absent where the compile went out as one job — which is what
+            # keeps an unsplit suite's line unchanged.
+            verilate_job=(
+                verilate_handle.job_id if verilate_handle is not None else None
+            ),
             job_ids=group_job_ids(handle.job_id for handle in handles),
-            # Build job included: this is the same scale `dispatch.progress`
-            # (remaining/total) and `dispatch.suite_drained` count on, so the
-            # per-suite counts announced here sum to the fleet's `total`.
-            jobs=len(handles) + (1 if build_handle is not None else 0),
+            # Compile jobs included: this is the same scale
+            # `dispatch.progress` (remaining/total) and
+            # `dispatch.suite_drained` count on, so the per-suite counts
+            # announced here sum to the fleet's `total`.
+            jobs=len(handles)
+            + (1 if build_handle is not None else 0)
+            + (1 if verilate_handle is not None else 0),
         )
 
     def _plan_dispatch_suite(
@@ -5844,8 +6063,16 @@ class RtlBuddy:
         suite_compile=None,
         compile_resources=None,
         parallel=None,
+        phase=BUILD_PHASE_FULL,
+        dependency=None,
     ):
         """Submit the suite's compile as a Slurm build job (compute node).
+
+        ``phase`` is which half of that compile this job runs (#593), and
+        ``dependency`` the job id it must not start before — the verilate
+        job's, for the ``build`` half. Every file this job owns is named
+        after the phase, so a split suite's two jobs never write over each
+        other's envelope or log.
 
         ``suite_compile`` is the suite's own ``compile:`` block (#497),
         layered over ``cfg-dispatch.compile`` field by field — ``parallel``
@@ -5878,9 +6105,18 @@ class RtlBuddy:
         """
         dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
+        # The prefix every file this job owns is named with. The build half
+        # of a split compile keeps the build job's names, so a suite that
+        # stops splitting produces the same paths it always did.
+        tag = "verilate" if phase == BUILD_PHASE_VERILATE else "build"
         configured_parallel = compile_parallel(dispatch_cfg, suite_compile)
-        configured_dependency = self._release_blocking_dependency(
-            backend, suite_dir=suite_dir
+        # Asked only for the job that could release anything: the verilate
+        # half never gets a gates manifest, and probing here twice would
+        # say `dispatch.gates_skipped` twice for one suite (#593).
+        configured_dependency = (
+            self._release_blocking_dependency(backend, suite_dir=suite_dir)
+            if phase != BUILD_PHASE_VERILATE
+            else None
         )
         if parallel is None:
             parallel = max(1, min(configured_parallel, planned))
@@ -5916,11 +6152,12 @@ class RtlBuddy:
             builder_mode=self.rtl_builder_mode,
             builder_override=self._builder_override,
             extra_sim_timeout=self._extra_sim_timeout_override,
-            log_path=run_scoped_path(dispatch_root, "build", run_token, suffix=".log"),
+            log_path=run_scoped_path(dispatch_root, tag, run_token, suffix=".log"),
             plan_path=plan_path,
+            phase=phase,
             # Where the build job records which configs compiled; the head
             # reads it at collect for compile-fail parity.
-            result_json=run_scoped_path(dispatch_root, "build-result", run_token),
+            result_json=run_scoped_path(dispatch_root, f"{tag}-result", run_token),
             # ...and where the head will record which sim job is waiting on
             # which planned config, so the build job can release a compile
             # key's sims as soon as that key is built (#548). Keyed on the
@@ -5930,7 +6167,12 @@ class RtlBuddy:
             # build job's argv is byte-identical to before.
             gates_json=(
                 run_scoped_path(dispatch_root, "gates", run_token)
-                if backend.name == "slurm" and configured_dependency is None
+                # ...and never for the verilate half: it leaves sources and
+                # a Makefile, so there is no build for a released
+                # simulation to find (#593).
+                if backend.name == "slurm"
+                and configured_dependency is None
+                and phase != BUILD_PHASE_VERILATE
                 else None
             ),
         )
@@ -5943,7 +6185,7 @@ class RtlBuddy:
         # that is read and rejected.
         if spec.gates_json is not None:
             Path(spec.gates_json).unlink(missing_ok=True)
-        return backend.submit_build(spec)
+        return backend.submit_build(spec, dependency=dependency)
 
     @staticmethod
     def _release_blocking_dependency(backend, *, suite_dir):
@@ -6533,10 +6775,39 @@ class RtlBuddy:
         # wait_all includes it. Later passes collect a resubmitted sim
         # subset; the build job is never resubmitted, so re-querying it would
         # buy a second identical row and a second identical write (#495).
+        verilate_handle = state.get("verilate_handle")
         query_handles = [h for _, h in pending]
-        if attempt == 0 and build_handle is not None:
-            query_handles = [build_handle, *query_handles]
+        if attempt == 0:
+            # The compile jobs, in the order they ran, on the first pass
+            # only — same reasoning as the build handle's: one `sacct` call
+            # covers them, and neither is ever resubmitted (#495, #593).
+            query_handles = [
+                handle
+                for handle in (verilate_handle, build_handle)
+                if handle is not None
+            ] + query_handles
         telemetry = backend.collect_telemetry(query_handles)
+        if attempt == 0 and verilate_handle is not None:
+            # The verilate job's own numbers, on its own envelope and in
+            # `state` for its own right-sizing row (#593). The build job's
+            # block below says why both halves of this are best-effort.
+            verilate_tele = telemetry.get(telemetry_key(verilate_handle))
+            if verilate_tele:
+                if verilate_handle.spec.result_json is not None:
+                    attach_telemetry_json(
+                        verilate_handle.spec.result_json, verilate_tele
+                    )
+                state["verilate_telemetry"] = verilate_tele
+            verilate_result = (
+                load_build_result_json(verilate_handle.spec.result_json)
+                if verilate_handle.spec.result_json is not None
+                else None
+            )
+            state["verilate_compile_work"] = (
+                _summarize_compile_work(verilate_result["builds"])
+                if verilate_result is not None and not verilate_result.get("partial")
+                else None
+            )
         if attempt == 0 and build_handle is not None:
             build_tele = telemetry.get(telemetry_key(build_handle))
             if build_tele:
@@ -6689,10 +6960,17 @@ class RtlBuddy:
                         f" (scheduler state {sched_state})" if sched_state else ""
                     )
                     attempt_note = f" after {attempt + 1} attempts" if attempt else ""
-                    build_note = (
-                        f" and build log {build_handle.spec.log_path}"
-                        if build_handle is not None
-                        else ""
+                    # Both compile jobs, where the compile was split
+                    # (#593): a fan-out killed by `kill-on-invalid-dep`
+                    # never had a build job run at all, so the log that
+                    # says why is the verilate job's.
+                    build_note = "".join(
+                        f" and {label} log {handle.spec.log_path}"
+                        for label, handle in (
+                            ("verilate", verilate_handle),
+                            ("build", build_handle),
+                        )
+                        if handle is not None
                     )
                     # The scheduler log holds the job's stdout; its own
                     # rtl_buddy log holds the events, and after #437 that
@@ -6952,6 +7230,34 @@ class RtlBuddy:
                     # this suite's root (#527). Same value the per-test rows
                     # above got: one submission, one file to edit.
                     sbatch_args_config_path=sbatch_args_config_path,
+                )
+            )
+        verilate_telemetry = (state or {}).get("verilate_telemetry")
+        if verilate_telemetry:
+            # Its own row, from its own reservation and its own provenance
+            # (#593). Everything the build job's call reads from the suite
+            # is the same; what differs is which keys an edit hint names,
+            # and the verilate provenance map spells those itself.
+            findings.extend(
+                analyze_build_reservation(
+                    verilate_telemetry,
+                    (state or {}).get("verilate_resources")
+                    or resolve_verilate_resources(
+                        self.root_cfg.get_dispatch_cfg(), suite_compile
+                    ),
+                    state["verilate_handle"].spec.parallel,
+                    rightsize_cfg,
+                    suite_display,
+                    getattr(self.root_cfg, "root_cfg_path", None),
+                    compile_work=(state or {}).get("verilate_compile_work"),
+                    accounting_interval_s=(
+                        backend.accounting_interval_s() if backend is not None else None
+                    ),
+                    compile_origins=(state or {}).get("verilate_origins") or {},
+                    suite_config_hint=suite_config_path or suite_display,
+                    cpus_override=(state or {}).get("cpus_override") or [],
+                    sbatch_args_config_path=sbatch_args_config_path,
+                    phase="verilate",
                 )
             )
         return _raise_first(findings)
@@ -7410,14 +7716,7 @@ class RtlBuddy:
                     # A suite that selected zero tests submits nothing and
                     # returns build_handle=None; a None in all_handles crashes
                     # both wait_all and the cancel_all cleanup path (#361).
-                    suite_handles = [
-                        handle
-                        for handle in [
-                            state["build_handle"],
-                            *(handle for _, handle in state["pending"]),
-                        ]
-                        if handle is not None
-                    ]
+                    suite_handles = self._state_handles(state)
                     all_handles.extend(suite_handles)
                     if state.get("adopted"):
                         adopted_handles.update(id(handle) for handle in suite_handles)
