@@ -94,6 +94,9 @@ from dataclasses import dataclass, field
 
 from ..config.dispatch import (
     compile_parallel_origin,
+    format_mem,
+    format_time,
+    greedy_schedule,
     mem_to_bytes,
     sbatch_arg_sets_cpu_count_directly,
     time_to_seconds,
@@ -141,6 +144,14 @@ class RightsizeFinding:
     # is a contract, and a machine reader already gets the same
     # attribution, per field, in `edit_hint`.
     parallel_origin: str | None = None
+    # Set only where the reservation is an AGGREGATE of several builds and
+    # `suggested` therefore names ONE contributor's new value rather than
+    # the whole-job figure (#551). `suggested_total` keeps that figure —
+    # the number the job should end up reserving — and `aggregate_delta` is
+    # what was added to the contributor to reach it. Additive and None
+    # everywhere else, so an ordinary finding is unchanged.
+    suggested_total: str | None = None
+    aggregate_delta: str | None = None
 
     def as_event(self) -> dict:
         return {
@@ -159,21 +170,9 @@ class RightsizeFinding:
             "edit_hint": dict(self.edit_hint),
             "phase": self.phase,
             "allocated": self.allocated,
+            "suggested_total": self.suggested_total,
+            "aggregate_delta": self.aggregate_delta,
         }
-
-
-def format_mem(bytes_val: int) -> str:
-    """Bytes → sbatch-friendly integer ``M``/``G`` string (rounded up)."""
-    mb = math.ceil(bytes_val / 2**20)
-    if mb >= 4096:
-        return f"{math.ceil(mb / 1024)}G"
-    return f"{mb}M"
-
-
-def format_time(seconds: float) -> str:
-    """Seconds → ``HH:MM:SS`` rounded up to the whole minute."""
-    minutes = math.ceil(seconds / 60)
-    return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
 
 
 def _is_arg_override(entry: str) -> bool:
@@ -345,6 +344,13 @@ def _aggregate(rows):
                 "compile_in_job": bool(row.get("compile_in_job")),
                 "governed_by": row.get("governed_by") or {},
                 "compile_floor": row.get("compile_floor") or {},
+                # Which tests.yaml layer supplied each compile field for THIS
+                # test, and the testbench whose block did where that layer is
+                # the testbench one (#551). Per row rather than per suite,
+                # because a suite's testbenches can now size their compiles
+                # differently from one another.
+                "compile_origins": row.get("compile_origins"),
+                "compile_testbench": row.get("compile_testbench"),
                 # What the head resolved and submitted as `--cpus-per-task`
                 # for this test. It IS the request by construction, so it
                 # beats anything the scheduler reports back: `AllocCPUS` is
@@ -426,6 +432,85 @@ def _aggregate(rows):
 # The build job is not a test, but every finding needs a row label. A
 # parenthesised name cannot collide with a real test name.
 BUILD_JOB_ROW = "(build job)"
+
+
+def _compile_origin(origins, field):
+    """Which tests.yaml layer won one compile field, and whose block did.
+
+    ``compile_origins`` arrives in two shapes, both from
+    :func:`~rtl_buddy.config.dispatch.compile_resource_origins`. A per-test
+    row carries the flat ``{field: "suite"|"testbench"}`` map — there the
+    governing testbench is the test's own, so naming it again would be
+    noise. The build job carries the nested
+    ``{field: {"origin": ..., "testbench": ...}}`` map, because its
+    reservation is a maximum over several testbenches and ``mem`` may come
+    from one while ``time`` comes from another (#551). Returns
+    ``(origin, testbench)`` for either, and ``(None, None)`` for a field no
+    tests.yaml layer set.
+    """
+    value = (origins or {}).get(field)
+    if isinstance(value, dict):
+        return value.get("origin"), value.get("testbench")
+    return value, None
+
+
+def _compile_edit_path(origins, field, *, testbench=None):
+    """The tests.yaml key holding the compile value that WON, or ``None``.
+
+    ``None`` means no tests.yaml layer set the field, so ``cfg-dispatch``
+    still governs it and the hint belongs in root_config.yaml. ``testbench``
+    is the fallback name for the flat per-test map, which records that a
+    testbench block won without repeating which one.
+    """
+    origin, governing_tb = _compile_origin(origins, field)
+    governing_tb = governing_tb or testbench
+    if origin == "testbench" and governing_tb:
+        return f"testbenches[name={governing_tb}].compile.{field}"
+    if origin in ("suite", "testbench"):
+        # A testbench-governed field whose governing name went missing is a
+        # defensive case only — the head records the two together. The suite
+        # key at least lands the reader in the file that holds the block,
+        # which ``cfg-dispatch`` in root_config.yaml would not.
+        return f"compile.{field}"
+    return None
+
+
+def _compile_paths(
+    origins, field, key, *, suite_config_hint=None, root_config_hint=None
+):
+    """Render one of a field's provenance lists as ``file:key`` paths.
+
+    A build job's reservation is aggregated (#551), so two lists matter
+    besides the single edit target. ``sources`` is every place that
+    INDEPENDENTLY produces the winning number — two testbenches at the
+    same figure, or a block that exactly reaches the whole-job value the
+    suite states — where lowering one alone moves nothing.
+    ``contributors`` is every build whose value was ADDED to reach it,
+    where the number cannot be decomposed into an edit at all. Returns
+    ``[]`` for a provenance map that predates these lists, so an older
+    state dict degrades to today's advice rather than to silence.
+    """
+    entry = (origins or {}).get(field)
+    if not isinstance(entry, dict):
+        return []
+    paths = []
+    for source in entry.get(key) or []:
+        path = _compile_edit_path(
+            {field: source}, field, testbench=source.get("testbench")
+        )
+        # Each path is rendered `file:key`, the way the `edit_hint` a reader
+        # would otherwise have got names both halves — a tie can straddle
+        # the suite's tests.yaml and root_config.yaml, and "compile.time"
+        # beside "cfg-dispatch.compile.time" is only half the answer.
+        if path is None:
+            path, config_file = f"cfg-dispatch.compile.{field}", root_config_hint
+        else:
+            config_file = suite_config_hint
+        if config_file:
+            path = f"{config_file}:{path}"
+        if path not in paths:
+            paths.append(path)
+    return paths
 
 
 def analyze_build_reservation(
@@ -622,9 +707,10 @@ def analyze_build_reservation(
         # Advice that named one would be unappliable, and would come back on
         # the next run (#505 review).
         if resource_field == "cpus" and cpus_override:
+            compile_path = _compile_edit_path(origins, "cpus")
             masked = (
-                "compile.cpus"
-                if origins.get("cpus") == "suite" and suite_config_hint
+                compile_path
+                if compile_path and suite_config_hint
                 else "cfg-dispatch.compile.cpus"
             )
             # An environment variable lives in no file, so there is nothing
@@ -650,14 +736,19 @@ def analyze_build_reservation(
             if from_args and override_file:
                 edit["file"] = override_file
             return edit
-        # Point at whichever file holds the value that WON. A suite-level
-        # `compile:` block is the most specific layer, so for a field it
-        # set, editing cfg-dispatch would move nothing (#497). Otherwise
-        # cfg-dispatch lives in root_config.yaml, and without a path to it
-        # there is nothing honest to point at — a suite's tests.yaml does
-        # not govern a build job it does not override.
-        if origins.get(resource_field) == "suite" and suite_config_hint:
-            edit = {"file": suite_config_hint, "path": f"compile.{resource_field}"}
+        # Point at whichever file — and key — holds the value that WON. A
+        # suite-level `compile:` block is more specific than cfg-dispatch and
+        # a testbench's own more specific still, so for a field either set,
+        # editing cfg-dispatch would move nothing (#497, #551). This job's
+        # reservation is the maximum over the planned testbenches, so the key
+        # named is the one that supplied THIS field, which for a two-geometry
+        # suite is the large entry's block and not the small one's.
+        # Otherwise cfg-dispatch lives in root_config.yaml, and without a
+        # path to it there is nothing honest to point at — a suite's
+        # tests.yaml does not govern a build job it does not override.
+        compile_path = _compile_edit_path(origins, resource_field)
+        if compile_path and suite_config_hint:
+            edit = {"file": suite_config_hint, "path": compile_path}
         else:
             edit = {"path": f"cfg-dispatch.compile.{resource_field}"}
             if root_config_hint:
@@ -679,9 +770,170 @@ def analyze_build_reservation(
         "parallel_origin": parallel_key,
     }
 
+    def withheld_from_reduce(resource_field):
+        """Can a `reduce` for this field be written into one config value?
+
+        The build job's reservation is aggregated over the planned builds
+        (#551), which breaks that assumption in two distinct ways, and a
+        row the reader cannot apply is a row that comes back next run:
+
+        * the number is a SUM of several builds (``compile-aggregate``).
+          The suggestion is a whole-job figure, and writing it into any one
+          contributor's key leaves the aggregate where it was — telemetry
+          saying "30 minutes was enough" cannot become `time: 30m` on the
+          60-minute testbench. There is nothing honest to decompose it
+          into, so nothing is suggested (#551 review round 2).
+        * two sources produce it INDEPENDENTLY (``compile-origin-tied``) —
+          two testbenches at the same figure, or one that merely reaches
+          the whole-job floor. Lowering either alone moves nothing.
+
+        `raise` is unaffected either way: moving any one source up moves a
+        maximum up, and a sum with it.
+        """
+        entry = origins.get(resource_field)
+        if not isinstance(entry, dict):
+            return False
+        # Counted from the lists, not from the rendered paths: two planned
+        # builds can share one YAML key and still add up twice, so the
+        # number of contributors is what says "this is a sum", while the
+        # paths are only how it is described.
+        for reason, key in (
+            ("compile-aggregate", "contributors"),
+            ("compile-origin-tied", "sources"),
+        ):
+            # A single contributor is not a sum, and a single source is not
+            # a tie — both are the ordinary, appliable case.
+            if len(entry.get(key) or []) <= 1:
+                continue
+            paths = _compile_paths(
+                origins,
+                resource_field,
+                key,
+                suite_config_hint=suite_config_hint,
+                root_config_hint=root_config_hint,
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "rightsize.build_advice_withheld",
+                suite=suite_display,
+                reason=reason,
+                resource=resource_field,
+                paths=paths,
+                builds=(compile_work or {}).get("records"),
+                compiled=compiled,
+                compiled_sec=(compile_work or {}).get("compiled_sec"),
+                elapsed_s=elapsed,
+                interval_s=accounting_interval_s,
+            )
+            return True
+        return False
+
+    def _rescheduled_total(entry, value):
+        """The makespan this field's queue reaches with the key set to ``value``.
+
+        ``None`` when the provenance map carries no schedule — an older
+        state dict, or a field that is not a queue at all (``mem`` adds up
+        regardless of order) — in which case the caller keeps the
+        arithmetic it already had.
+        """
+        schedule = entry.get("schedule")
+        if not schedule:
+            return None
+        governing = entry.get("testbench")
+        makespan, _, _ = greedy_schedule(
+            [value if name == governing else seconds for name, seconds in schedule],
+            entry.get("parallel") or 1,
+        )
+        return makespan
+
+    def raise_fields(resource_field, suggested_value, current_value, render):
+        """Turn a whole-job `raise` into the contributor's own new value.
+
+        A summed reservation has no single field holding the total, so a
+        suggestion written verbatim into the contributor the hint names
+        re-aggregates PAST the target: 30 + 60 minutes reserved, a 135
+        target, and `135` in the 60-minute testbench gives 165 (#551
+        review round 3). What that key has to become is its own value plus
+        the shortfall, leaving every other contributor where it is —
+        60 + (135 - 90) = 105, which re-aggregates to exactly 135.
+
+        Returns the finding's suggestion fields. For anything that is not
+        an aggregate — and for a provenance map predating this, where the
+        whole-job figure is still the best answer — that is just
+        ``suggested``, exactly as before.
+        """
+        plain = {"suggested": render(suggested_value)}
+        entry = origins.get(resource_field)
+        if not isinstance(entry, dict) or not entry.get("aggregated"):
+            return plain
+        own = entry.get("contributor_value")
+        if own is None or not current_value:
+            return plain
+        delta = suggested_value - current_value
+        if delta <= 0:
+            # Only a `raise` is translated; a shortfall that is not one has
+            # nothing to add, and `reduce` is withheld for an aggregate.
+            return plain
+        # One key can be several contributors: two builds of one testbench
+        # run back to back, and raising that key by the whole shortfall
+        # raises the total by TWICE it. Each occurrence carries its share
+        # (rounded up, so the target is reached rather than missed by the
+        # remainder) — #551 review round 5.
+        primary = {"origin": entry.get("origin"), "testbench": entry.get("testbench")}
+        occurrences = sum(
+            1 for source in entry.get("contributors") or [] if source == primary
+        )
+        candidate = own + -(-delta // max(1, occurrences))
+
+        # ...and that arithmetic assumes the schedule survives the edit,
+        # which it need not. Raising one copy of a repeated build can push
+        # a later copy BEHIND a neighbour that was running alongside it,
+        # so the queue absorbs part of the raise: A=60, B=66, A=60 over two
+        # workers is a 120-minute makespan, and A=90 re-schedules to 156,
+        # not the 180 the arithmetic promised. A raise that under-delivers
+        # is the one shape this must never emit — it re-times-out and the
+        # advice looks applied (#551 review round 6). So the proposal is
+        # SCHEDULED, not predicted, and the remaining gap closed until it
+        # clears the target.
+        reached = _rescheduled_total(entry, candidate)
+        rounds = 0
+        while reached is not None and reached < suggested_value and rounds < 8:
+            candidate += suggested_value - reached
+            reached = _rescheduled_total(entry, candidate)
+            rounds += 1
+        if reached is not None and reached < suggested_value:
+            # Still short after a bounded search: fall back to the whole-job
+            # figure, which is safe by construction — a build whose own time
+            # IS the target cannot finish before it, so the makespan cannot
+            # either. It over-reserves rather than under-reserves, and the
+            # reader still gets a number to write.
+            return plain
+        return {
+            "suggested": render(candidate),
+            "suggested_total": render(suggested_value),
+            "aggregate_delta": f"+{render(candidate - own)}",
+        }
+
+    def with_aggregate(edit, override):
+        """Say in the hint what the translated number means, and why."""
+        if not override.get("suggested_total"):
+            return edit
+        edit = dict(edit)
+        note = (
+            f"the build job reserves {override['suggested_total']} in total "
+            f"across its builds; this value is that key's own "
+            f"{override['aggregate_delta']}, so the total reaches it with "
+            "the other builds unchanged"
+        )
+        edit["note"] = f"{edit['note']} {note}" if edit.get("note") else note
+        return edit
+
     # --- time -------------------------------------------------------
     limit = build_telemetry.get("timelimit_s")
     if limit and state == "TIMEOUT":
+        target = limit * rightsize_cfg.margin
+        raised = raise_fields("time", target, limit, format_time)
         findings.append(
             RightsizeFinding(
                 resource="time",
@@ -689,9 +941,9 @@ def analyze_build_reservation(
                 peak=f">{format_time(limit)}",
                 utilization=1.0,
                 direction="raise",
-                suggested=format_time(limit * rightsize_cfg.margin),
-                edit_hint=hint("time"),
+                edit_hint=with_aggregate(hint("time"), raised),
                 **common,
+                **raised,
             )
         )
     elif limit and elapsed is not None:
@@ -701,6 +953,7 @@ def analyze_build_reservation(
         # needs no division and says so by carrying no note.
         suggested_s = max(elapsed * rightsize_cfg.margin, _TIME_FLOOR_S)
         if util > rightsize_cfg.near_limit:
+            raised = raise_fields("time", suggested_s, limit, format_time)
             findings.append(
                 RightsizeFinding(
                     resource="time",
@@ -708,15 +961,16 @@ def analyze_build_reservation(
                     peak=format_time(elapsed),
                     utilization=util,
                     direction="raise",
-                    suggested=format_time(suggested_s),
-                    edit_hint=hint("time"),
+                    edit_hint=with_aggregate(hint("time"), raised),
                     **common,
+                    **raised,
                 )
             )
         elif (
             may_reduce
             and util < rightsize_cfg.over_threshold
             and suggested_s <= limit * _REDUCE_KEEP_RATIO
+            and not withheld_from_reduce("time")
         ):
             findings.append(
                 RightsizeFinding(
@@ -770,6 +1024,11 @@ def analyze_build_reservation(
                 # one: the suite's own where it set it (#547 review).
                 parallel_origin=parallel_key,
             )
+        elif efficiency < rightsize_cfg.over_threshold and withheld_from_reduce("cpus"):
+            # Two planned builds asking for the same cpus, or one whose block
+            # merely reaches the whole-job value: no single edit lowers the
+            # maximum, so the row would not retire (#551 review).
+            pass
         elif efficiency < rightsize_cfg.over_threshold:
             suggested_total = max(
                 1, math.ceil(cpus * efficiency * rightsize_cfg.margin)
@@ -894,7 +1153,11 @@ def analyze_suite_reservations(
     it set is named in the suite's tests.yaml instead, because
     cfg-dispatch is the layer the suite block overrides and editing it
     would leave the allocation exactly where it is, so the advice would
-    never retire. ``accounting_interval_s`` is the
+    never retire. It is the suite-wide FALLBACK: a row that carries its own
+    ``compile_origins`` (every in-job compile the head sized) is attributed
+    from that instead, and a field its testbench's ``compile:`` block won is
+    named as ``testbenches[name=...].compile.<field>`` (#551).
+    ``accounting_interval_s`` is the
     scheduler's usage-sampling interval, used to suppress memory advice
     derived from a peak that was never sampled (#365); ``None`` disables
     that suppression. ``sbatch_args_config_path`` is the config file the
@@ -910,6 +1173,12 @@ def analyze_suite_reservations(
     origins = compile_origins or {}
     for test, agg in _aggregate(suite_results).items():
         governed_by = agg["governed_by"]
+        # This test's own compile attribution where submit recorded one, the
+        # suite-wide map otherwise: a row predating per-testbench blocks, and
+        # every row whose job does not compile for itself, still resolve to
+        # the suite's layering (#551).
+        row_origins = agg.get("compile_origins") or origins
+        row_testbench = agg.get("compile_testbench")
         # An in-job compile's allocation is max(sim, compile), so no `reduce`
         # can take it below the compile side however far the test's own
         # resources: are trimmed. These are the floors each suggestion is
@@ -952,10 +1221,13 @@ def analyze_suite_reservations(
         # The YAML field the override masks — named in the note so a reader
         # can see what was superseded, resolved by the same layering the
         # unmasked hint would have used.
+        compile_cpus_path = _compile_edit_path(
+            row_origins, "cpus", testbench=row_testbench
+        )
         if governed_by.get("cpus") != "compile":
             masked_cpus_path = f"tests[name={test}].resources.cpus"
-        elif origins.get("cpus") == "suite" and suite_config_path:
-            masked_cpus_path = "compile.cpus"
+        elif compile_cpus_path and suite_config_path:
+            masked_cpus_path = compile_cpus_path
         else:
             masked_cpus_path = "cfg-dispatch.compile.cpus"
 
@@ -967,6 +1239,8 @@ def analyze_suite_reservations(
             _cpus_override=cpus_override,
             _per_task=per_task,
             _tasks=tasks,
+            _origins=row_origins,
+            _testbench=row_testbench,
         ):
             # `cfg-dispatch.sbatch-args` is appended after the generated
             # reservation flags and wins, so an argument written there that
@@ -1001,19 +1275,22 @@ def analyze_suite_reservations(
             # A field the compile reservation won is masked by the max, so
             # editing the test's resources: would not move the allocation.
             from_compile = from_compile or _governed_by.get(resource_field) == "compile"
-            # ...and of the two files that can hold the compile reservation,
-            # the suite's own `compile:` block is the layer that wins, so a
-            # field it set is edited there. Sending a project to
-            # cfg-dispatch.compile for it would move nothing and the advice
-            # would come back every run (#497).
-            if (
-                from_compile
-                and origins.get(resource_field) == "suite"
-                and suite_config_path
-            ):
+            # ...and of the files that can hold the compile reservation, the
+            # suite's own `compile:` block beats cfg-dispatch and this
+            # testbench's own block beats that, so a field is edited at the
+            # layer that actually won. Sending a project to
+            # cfg-dispatch.compile for a field a tests.yaml overrides would
+            # move nothing and the advice would come back every run (#497,
+            # #551).
+            compile_path = (
+                _compile_edit_path(_origins, resource_field, testbench=_testbench)
+                if from_compile
+                else None
+            )
+            if compile_path and suite_config_path:
                 return {
                     "file": suite_config_path,
-                    "path": f"compile.{resource_field}",
+                    "path": compile_path,
                 }
             if from_compile and root_config_path:
                 return {
