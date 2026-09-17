@@ -187,7 +187,11 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist, apply_exclude_globs
-from .tools.vlog_sim import share_build_unsupported_reason
+from .tools.vlog_sim import (
+    SHARED_BUILD_ROOT_ENV,
+    resolve_shared_build_root,
+    share_build_unsupported_reason,
+)
 from .config.xplr import load_xplr_config
 from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
@@ -849,6 +853,10 @@ class RtlBuddy:
         self._git_root_resolved = False
         self.run_depth = RunDepth.POST
         self.share_build = False
+        # `--shared-build-root` as typed, before precedence and anchoring
+        # (#542). The resolved value is the `shared_build_root` property,
+        # which needs `root_cfg` and so cannot be settled at parse time.
+        self._shared_build_root_flag = None
         self.expect_prebuilt = False
         # `--rebuild`: distrust the build stamps and compile anyway (#494).
         self.rebuild = False
@@ -1148,6 +1156,75 @@ class RtlBuddy:
             self.show_git_rev()
 
         return ctx
+
+    @property
+    def shared_build_root(self) -> str | None:
+        """The persistent shared-build cache root in force, or None (#542).
+
+        ``--shared-build-root`` beats :data:`SHARED_BUILD_ROOT_ENV`, which
+        beats ``cfg-rtl-reg.shared-build-root``: the flag is this run's
+        explicit intent, the variable is the job/CI environment's, and the
+        config is the project's default. An *empty* flag or variable is an
+        override too — it turns the cache off for this run without editing
+        the project's config.
+
+        Derived on each read rather than cached, because a regression whose
+        suites span project roots rebuilds ``root_cfg`` per suite and a
+        relative root anchors to whichever project owns the suite.
+        """
+        return self._resolve_shared_build_root()[0]
+
+    def _resolve_shared_build_root(self) -> tuple[str | None, bool]:
+        """``(root or None, was it explicitly disabled)`` — see the property.
+
+        The second element is what a dispatched job cannot work out for
+        itself (#542 review round 5). ``None`` alone is ambiguous: it is
+        both "nobody asked for a cache" and "somebody asked for no cache",
+        and a job told only the former re-reads the environment and the
+        project config and turns the cache back on — so `--shared-build-root
+        ''` would disable the head and nothing else.
+        """
+        if self.root_cfg is None:
+            return None, False
+        # `getattr`, because `root_cfg` is duck-typed on this path: a
+        # command handler under test hands in a stand-in with only the
+        # accessors it needs, and a cache root is never what may break one.
+        project_root = getattr(self.root_cfg, "get_project_rootdir", None)
+        if project_root is None:
+            return None, False
+        raw, source = self._shared_build_root_flag, "cli"
+        if raw is None:
+            raw, source = os.environ.get(SHARED_BUILD_ROOT_ENV), "env"
+        if raw is None:
+            configured = getattr(self.root_cfg, "get_shared_build_root", None)
+            raw, source = (configured() if configured is not None else None), "config"
+        root = resolve_shared_build_root(raw, project_root())
+        if root is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cli.shared_build_root",
+                root=root,
+                source=source,
+            )
+        # A value was GIVEN and resolved to nothing: that is a disable, not
+        # an absence.
+        return root, root is None and raw is not None
+
+    @property
+    def shared_build_root_for_jobs(self) -> str | None:
+        """What to forward to a dispatched job, as the tri-state argv wants.
+
+        A path enables the cache there; ``""`` disables it (the job parses
+        an empty ``--shared-build-root`` exactly as the head parsed an empty
+        flag); ``None`` says nothing and lets the job resolve its own, which
+        is what every project without a cache root gets and what keeps their
+        job scripts byte-identical.
+        """
+        root, disabled = self._resolve_shared_build_root()
+        if root is not None:
+            return root
+        return "" if disabled else None
 
     def _exit_code_from_results(self, suite_results):
         # The exit code reflects whether rtl_buddy and the tools ran, not the
@@ -1506,6 +1583,15 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
         rebuild: Annotated[
             bool,
             typer.Option(
@@ -1661,6 +1747,7 @@ class RtlBuddy:
             seed_mode = SeedMode.MASTER
         self.share_build = share_build
         self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
 
         # `rb test` enters the same planning path `rb regression --dispatch`
         # already uses (#440): one plan, one build job, and one gated sim job
@@ -1829,6 +1916,15 @@ class RtlBuddy:
                 "(implies nothing about --share-build)",
             ),
         ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
         dispatch: Annotated[
             str,
             typer.Option(
@@ -1852,6 +1948,7 @@ class RtlBuddy:
         repeat a test with multiple random seeds
         """
         self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
         self.rtl_builder_mode = (
             "debug" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2109,6 +2206,15 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
         rebuild: Annotated[
             bool,
             typer.Option(
@@ -2152,6 +2258,7 @@ class RtlBuddy:
         self.share_build = share_build
         self.expect_prebuilt = expect_prebuilt
         self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
         # Resolved against the invocation cwd for the reason --result-json is:
         # the head writes the path it sees, and this job's cwd is the suite
         # dir. Absent for an ungated job, and for a head too old to pass it —
@@ -2378,6 +2485,15 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs",
             ),
         ] = True,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
         rebuild: Annotated[
             bool,
             typer.Option(
@@ -2479,6 +2595,7 @@ class RtlBuddy:
         )
         self.share_build = share_build
         self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
         # Resolve before entering the context: a relative --result-json is
         # the dispatching process's path, not the suite dir's, and the log
         # that pairs with it is derived from the resolved envelope.
@@ -2564,6 +2681,7 @@ class RtlBuddy:
                 run_depth=RunDepth.COMP,
                 suite_dir=suite_dir,
                 share_build=share_build,
+                shared_build_root=self.shared_build_root,
                 # The build job is where `--rebuild` belongs under dispatch:
                 # it is the single writer of the shared directory, and its
                 # per-process memo makes the whole suite's shared build
@@ -3513,6 +3631,7 @@ class RtlBuddy:
             run_depth=self.run_depth,
             suite_dir=suite_dir,
             share_build=self.share_build,
+            shared_build_root=self.shared_build_root,
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
@@ -4412,6 +4531,12 @@ class RtlBuddy:
                     # array from compiling; handing the elements --rebuild
                     # would defeat that and re-run #369.
                     rebuild=self.rebuild and build_handle is None,
+                    # Resolved once, by the head, and handed to the build job
+                    # and every sim job alike: both derive the shared build
+                    # directory from it and must agree (#542). An explicit
+                    # disable travels as `""`, since `None` would let the job
+                    # turn the cache back on from its own environment.
+                    shared_build_root=self.shared_build_root_for_jobs,
                     # ...and told where that build job records its verdict,
                     # so "the stamp did not validate" can be split into "the
                     # compile FAILED, deterministically" (report it, do not
@@ -4769,6 +4894,7 @@ class RtlBuddy:
             # forced recompile costs one compile instead of one per element
             # (#494).
             rebuild=self.rebuild,
+            shared_build_root=self.shared_build_root_for_jobs,
             reg_level=reg_level,
             start_level=start_level,
             builder_mode=self.rtl_builder_mode,
@@ -5954,6 +6080,15 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
         rebuild: Annotated[
             bool,
             typer.Option(
@@ -6007,6 +6142,7 @@ class RtlBuddy:
         )
         self.share_build = share_build
         self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
         log_event(
             logger,
             logging.INFO,

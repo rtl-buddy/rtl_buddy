@@ -73,6 +73,19 @@ class BuildJobSpec:
     # release a pending job (Slurm); ``None`` everywhere else keeps the
     # argv — and the gate — exactly as it was. See ``dispatch.gates``.
     gates_json: Path | None = None
+    # The persistent shared-build cache root the head resolved (#542), or
+    # None for the in-tree default. Carried rather than re-derived in the
+    # job: the head's precedence (CLI over environment over config) is not
+    # reproducible from the job's own environment alone, and a build job
+    # that picked a different root from its simulation jobs would compile
+    # where none of them looks.
+    #
+    # Tri-state: a path enables the cache, `""` says the head was explicitly
+    # told NOT to cache (and travels as an empty `--shared-build-root`, which
+    # the job parses the same way), and None says nothing at all — leaving
+    # the job to resolve its own, which is what keeps an unconfigured
+    # project's job script byte-identical.
+    shared_build_root: str | None = None
 
 
 @dataclass
@@ -117,6 +130,10 @@ class TestJobSpec:
     # overwrite the build's `compile.log` and hide the real error), while a
     # merely absent or stale stamp still deserves the recompile.
     build_result_json: Path | None = None
+    # The same resolved cache root the build job was given (#542): both
+    # sides derive the shared build directory from it, so they must agree.
+    # Tri-state, as on :class:`BuildJobSpec`.
+    shared_build_root: str | None = None
     log_path: Path | None = None
     # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
     # from it instead of re-running the suite's sweep hook. See BuildJobSpec.

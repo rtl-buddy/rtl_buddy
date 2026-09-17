@@ -187,6 +187,40 @@ The test's `compile.log` records the same breadcrumb, with the command a rebuild
 
 Verilator, VCS, and Icarus support shared builds. An unsupported builder or an absolute `builder-simv` uses the test's own build directory and logs why cross-test sharing was declined. RTL Buddy overrides relative output-location options so the shared directory owns `simv`.
 
+### Persistent build cache
+
+`artefacts/.shared-builds/` lives inside the workspace, so a CI job that wipes the workspace after every run (`deleteDir()`, `git clean -ffdx`) throws the cache away and recompiles inputs that never changed. Point `shared-build-root` at a directory outside the workspace and the cache outlives the run:
+
+```yaml
+cfg-rtl-reg:
+  reg-cfg-path: regression.yaml
+  shared-build-root: /shared/nfs/rb-build-cache
+```
+
+```bash
+rb regression --share-build --shared-build-root /shared/nfs/rb-build-cache
+```
+
+`--shared-build-root` beats `RTL_BUDDY_SHARED_BUILD_ROOT`, which beats the config key; an empty value at either of the first two turns the cache off for that run, and under `--dispatch` that disable is forwarded to the build and simulation jobs so they do not re-enable it from the config. A relative root resolves against the project root — the directory holding `root_config.yaml` — not the working directory, so a dispatched build job and its simulation jobs resolve one path. The root is created on demand and only applies with `--share-build` (which `--dispatch` implies).
+
+Builds land in `<root>/<suite-namespace>/obj_dir_<key>/`, where the namespace is the suite directory relative to the project root with `/` replaced by `__` (`verif/demo_tiny_alu` → `verif__demo_tiny_alu`); a suite outside the project root gets a digest of its absolute path instead. Nothing in the layout names the checkout, which is the point: every checkout on the host shares the cache.
+
+In this mode the compile key changes shape. It is spelled relative to the project root — `run.f` entries and any absolute in-root path in the compile line alike — and it **includes the content hash** of every tracked input. That covers what the compile *line* names as well as what `run.f` does: an absolute in-root `+incdir+` or `-y` directory, a `-v` file, or a bare source path reaching the builder through `builder-opts.compile-time` contributes the same content identity a filelist entry does (a file its hash, a directory the hashes of the files inside it, pruned and filtered by the same rules). A `-f`/`-F` filelist contributes what it *names*, not just its own bytes: the chain is expanded recursively (bounded depth, cycle-safe) and every in-root source, include directory and further list in it is keyed. A chain deeper than the bound fails closed — what was not read enters the key as an absolute path, which makes that suite's key checkout-specific rather than promising inputs nobody looked at, and `compile.cache_key_depth_bound` says so once. The two options are read the way the simulators read them — a relative entry inside a `-f` list resolves against the builder's working directory, one inside a `-F` list against the directory holding that list, and a nested `-f`/`-F` resets the rule for the file it names — so the key hashes the files the build actually opens. One list reached under two bases is therefore read under each, since its relative entries name different files each time, while the same list under the same base is read once. A relative entry whose base is unknown is left as text rather than guessed at. Otherwise two checkouts whose `run.f` matched but whose header under such an `+incdir+` — or whose RTL behind byte-identical nested lists — differed would take one directory and rebuild over each other. (`run.f` itself has no nested lists: RTL Buddy unrolls every `-F` chain when it writes one.)
+
+Only tokens RTL Buddy resolves as a path are relativised. A `+define+NAME=<path>` — on the compile line or in `tests.yaml` `plusdefines`, which reach `run.f` — a `-D`/`-G`/`-pvalue+`, a `+libext+`, or any other `key=value` token keeps its value exactly as written, because a define's value is compiled *into* the model: two checkouts whose builds bake in different absolute paths must get different keys, not one shared binary. An in-root path *embedded* in a larger option is the other way round — it names a directory the build really reads, so it is relativised **and** keyed by its listing. Both spellings count: an absolute one (`-CFLAGS=-I<root>/inc`) is found by its project-root prefix under any option, and a relative one (`-CFLAGS=-I../../inc`, the usual `builder-opts.compile-time` spelling) by the option that introduces it — `-I`, `+incdir+` or `-y` — then resolved against the builder's working directory. A payload that resolves to nothing under the project root stays text, and one directory named twice in the command line is keyed once. A compile-line path *outside* the project root stays part of the key as text; a relative one is resolved against the directory the builder will run in, so `+incdir+inc` is keyed by its contents like any other, and it falls back to text only where that directory is not yet known. An output location such as `-o` is relativised so the key carries no checkout prefix, but is never read. Only `.shared-builds/` and `obj_dir*` *below the project root* are refused outright, so a workspace that itself sits under a dot-directory (`/home/ci/.worktrees/pr`) is keyed like any other; an `+incdir+` into an artefact tree is listed with RTL Buddy's own outputs excluded by name, which is how a `preproc` hook's generated headers are tracked, and a file named directly there is refused only when its own name is one of those outputs.
+
+An input RTL Buddy cannot hash — one above the 64 MB cap, typically a ROM or memory-init image — falls back to its size and modification time rather than to nothing, so two checkouts with different images cannot collide on one directory. Mtimes differ per checkout, so a suite with such an input stops sharing builds across checkouts; it still reuses its own. Inputs outside the project root are unaffected: two checkouts naming one absolute path name the same bytes.
+
+Two checkouts with byte-identical inputs therefore get the same directory and reuse each other's build wherever they sit; two checkouts on different commits get different directories, instead of rebuilding over one another. That makes the directory content-addressed, so a run keeps one directory per distinct input set rather than one per key — a cache to prune rather than a build to rebuild. The stamp is checked on top of the key as usual, and records the project root it was written from so another checkout can re-anchor its entries.
+
+Switching the cache on or off changes every key, so the first run after either compiles once. Nothing prunes the cache; do it between runs, never during one (the build lock lives inside the directory it guards — see [Known issues](../known-issues.md)):
+
+```bash
+find /shared/nfs/rb-build-cache -mindepth 2 -maxdepth 2 -name 'obj_dir_*' -mtime +14 -exec rm -rf {} +
+```
+
+A generated input that is not reproducible byte-for-byte — a `preproc` hook that stamps a timestamp into a header — moves the key rather than only the stamp here, so it strands a directory per run instead of rebuilding in place.
+
 ## Run with randomized seeds
 
 ```bash

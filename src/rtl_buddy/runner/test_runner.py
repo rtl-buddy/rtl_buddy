@@ -45,6 +45,7 @@ class TestRunner:
         run_depth=None,
         suite_dir=None,
         share_build=False,
+        shared_build_root=None,
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
@@ -72,6 +73,11 @@ class TestRunner:
         self.test_runner_mode = test_runner_mode
         self.suite_dir = suite_dir
         self.share_build = share_build
+        # Where a shared build is cached, when a persistent root is
+        # configured (#542). Threaded, not re-derived: the head resolved the
+        # CLI/env/config precedence once, and a runner that resolved it again
+        # could disagree with the build job it is gated on.
+        self.shared_build_root = shared_build_root
         self.expect_prebuilt = expect_prebuilt
         # `--rebuild`: compile even when the stamp says the build is warm
         # (#494). Threaded rather than re-derived — the sim instance is
@@ -105,6 +111,7 @@ class TestRunner:
             replay_run_id=self.replay_run_id,
             suite_dir=self.suite_dir,
             share_build=self.share_build,
+            shared_build_root=self.shared_build_root,
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,

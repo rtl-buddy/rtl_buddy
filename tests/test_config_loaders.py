@@ -2427,3 +2427,51 @@ def test_the_invalid_model_top_event_has_a_human_message_case():
     assert "design/x/models.yaml" in msg
     assert "blk_a" in msg
     assert "a/b" in msg
+
+
+# ---------------------------------------------------------------------------
+# cfg-rtl-reg.shared-build-root — the persistent build cache (#542)
+# ---------------------------------------------------------------------------
+
+
+def test_root_config_reads_the_shared_build_root(minimal_project: Path):
+    """The key is optional, read as configured, and absent means absent."""
+    cfg = minimal_project / "root_config.yaml"
+    assert RootConfig(name="no-root").get_shared_build_root() is None
+    cfg.write_text(
+        cfg.read_text().replace(
+            "cfg-rtl-reg:\n",
+            "cfg-rtl-reg:\n  shared-build-root: /shared/nfs/rb-build-cache\n",
+            1,
+        )
+    )
+    assert (
+        RootConfig(name="with-root").get_shared_build_root()
+        == "/shared/nfs/rb-build-cache"
+    )
+
+
+def test_the_lenient_reg_block_loader_does_not_flag_the_shared_build_root(
+    tmp_path, caplog
+):
+    """``load_reg_cfg_paths`` warns about an unknown key so a misspelled
+    ``*-reg-cfg-path`` cannot reproduce #389's silence. ``shared-build-root``
+    is a known key of the block, not a typo (#542)."""
+    import logging
+
+    from rtl_buddy.config.root import load_reg_cfg_paths
+
+    rc = tmp_path / "root_config.yaml"
+    rc.write_text(
+        "cfg-rtl-reg:\n"
+        '  reg-cfg-path: "regression.yaml"\n'
+        "  shared-build-root: /nfs/cache\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        loaded = load_reg_cfg_paths(rc)
+    assert loaded is not None and loaded.shared_build_root == "/nfs/cache"
+    assert [
+        record
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "root_config.reg_cfg_unknown_keys"
+    ] == []

@@ -254,3 +254,49 @@ def test_gates_manifest_is_absent_when_the_backend_cannot_release():
     ``local-parallel`` run still gets."""
     assert "--gates" not in build_job_argv(_build_spec())
     assert BuildJobSpec(suite_dir=".", test_config_path="tests.yaml").gates_json is None
+
+
+def test_the_shared_build_root_reaches_both_job_kinds():
+    """The build job and its gated sim jobs must derive ONE build directory.
+
+    The cache root is what the layout is rooted at (#542), so a root the
+    head resolved and then forwarded to only one of the two would send the
+    build to a directory none of the simulations ever looks in — and the
+    fan-out would report "no stamp or no simv" for every element of a build
+    that succeeded.
+    """
+    root = "/shared/nfs/rb-build-cache"
+    assert "--shared-build-root" in build_job_argv(_build_spec(shared_build_root=root))
+    build = build_job_argv(_build_spec(shared_build_root=root))
+    assert build[build.index("--shared-build-root") + 1] == root
+    sim = sim_job_argv(_test_spec(shared_build_root=root))
+    assert sim[sim.index("--shared-build-root") + 1] == root
+    # Beside the flag it qualifies, so a reader of a job script sees the
+    # pair rather than hunting for the root at the end of the line.
+    assert build[build.index("--share-build") + 1] == "--shared-build-root"
+    assert sim[sim.index("--share-build") + 1] == "--shared-build-root"
+
+
+def test_no_shared_build_root_leaves_both_argvs_untouched():
+    """Every project without a cache root keeps its argv — and therefore its
+    job-script diffs — exactly as before (#542)."""
+    assert "--shared-build-root" not in build_job_argv(_build_spec())
+    assert "--shared-build-root" not in sim_job_argv(_test_spec())
+    assert "--shared-build-root" not in sim_job_argv(_test_spec(share_build=False))
+
+
+def test_an_explicit_disable_is_forwarded_as_an_empty_argument():
+    """`None` and `""` mean different things to a job (#542 review round 5).
+
+    A job told nothing re-resolves the root from its own environment and
+    the project config — so a head that had been told `--shared-build-root
+    ''` and forwarded `None` would disable itself and nothing else, and the
+    build and simulation jobs would go on caching.
+    """
+    build = build_job_argv(_build_spec(shared_build_root=""))
+    sim = sim_job_argv(_test_spec(shared_build_root=""))
+    assert build[build.index("--shared-build-root") + 1] == ""
+    assert sim[sim.index("--shared-build-root") + 1] == ""
+    # ...and that is distinguishable from saying nothing at all.
+    assert "--shared-build-root" not in build_job_argv(_build_spec())
+    assert "--shared-build-root" not in sim_job_argv(_test_spec())
