@@ -639,6 +639,44 @@ def test_pnr_clear_list_covers_every_non_log_template_output():
     assert written <= named, f"undocumented output: {sorted(written - named)}"
 
 
+def test_pnr_template_legalizes_after_every_cell_inserting_repair():
+    """Every pass that inserts or moves cells must be followed by a
+    `detailed_placement` before `global_route`, or the router meets cells at
+    unlegalized locations and fails with DRT-0073 "no access point" on
+    exactly the inserted instances (#591). `repair_timing -hold` after CTS
+    was the one that shipped without it."""
+    from importlib.resources import files
+
+    template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
+    commands = [
+        line.strip()
+        for line in template.splitlines()
+        if line.strip() and not line.strip().startswith(("#", "puts "))
+    ]
+    route_at = commands.index(
+        "set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS"
+    )
+    pre_route = commands[:route_at]
+    inserters = [
+        i
+        for i, cmd in enumerate(pre_route)
+        if cmd.startswith(("repair_design", "repair_timing", "clock_tree_synthesis"))
+    ]
+    assert inserters, "no cell-inserting passes found; did the template move?"
+    for i in inserters:
+        tail = pre_route[i + 1 :]
+        assert "detailed_placement" in tail, (
+            f"`{pre_route[i]}` is not followed by a legalization pass before "
+            "routing (#591)"
+        )
+
+    # The legalization that closes placement is also checked, so a repair
+    # that legalization cannot absorb fails there — with a named cell —
+    # rather than as a router mystery.
+    last_dp = len(pre_route) - 1 - pre_route[::-1].index("detailed_placement")
+    assert "check_placement" in pre_route[last_dp + 1 :]
+
+
 def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
     """A run that reaches OpenROAD but writes nothing must score zero DRCs
     rather than a previous run's violation count, and must not leave the
