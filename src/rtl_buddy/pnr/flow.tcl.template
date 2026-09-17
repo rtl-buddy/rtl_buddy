@@ -110,6 +110,13 @@ puts ">>> Post-CTS timing repair"
 estimate_parasitics -placement
 repair_timing -hold
 
+# repair_timing -hold inserts buffers at unlegalized locations; without a
+# legalization pass here the detailed router has no access points for them
+# and dies with DRT-0073 (#591).
+puts ">>> Detail placement (legalize repair cells)"
+detailed_placement
+check_placement
+
 puts ">>> Global route"
 set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
 global_route -congestion_iterations 20
