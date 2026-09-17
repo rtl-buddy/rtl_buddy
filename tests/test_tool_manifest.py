@@ -617,10 +617,12 @@ def test_slurm_explains_scontrol_as_an_optional_probe():
     """`rb tool-check --explain slurm` must name scontrol and what it buys.
 
     The backend shells out to `scontrol show config` for the cluster's
-    MaxArraySize (#509). Missing scontrol is not a gate — chunking simply
-    stays off — but a site that hits `Invalid job array specification`
-    needs the manifest to say so and to name the config fallback, since
-    --explain is what the bundled skill tells agents to read.
+    MaxArraySize (#509), and the build job to `scontrol update … Dependency=`
+    for per-key release (#548). Missing scontrol is not a gate — chunking
+    simply stays off and simulations wait for the whole build job — but a
+    site that hits `Invalid job array specification`, or wonders why no key
+    is released, needs the manifest to say so and to name the config
+    fallback, since --explain is what the bundled skill tells agents to read.
     """
     by_name = {s.name: s for s in tm.get_manifest()}
     slurm = by_name["slurm"]
@@ -639,6 +641,11 @@ def test_slurm_explains_scontrol_as_an_optional_probe():
     # max-array-size is pinned to the real MaxArraySize (#527).
     assert "max_array_tasks" in text
     assert "cfg-dispatch.max-array-tasks" in text
+    # ...and its second role (#548), including the half a submit-host check
+    # cannot answer: the release is issued from the compute node running the
+    # build job, so scontrol has to be on THAT PATH.
+    assert "Dependency=" in text
+    assert "compute node" in text
     # Still optional overall: sbatch is the version probe and the gate.
     assert slurm.version_cmd[0] == "sbatch"
     assert slurm.optional

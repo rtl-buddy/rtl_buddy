@@ -1180,6 +1180,116 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "build never succeeded — Slurm would leave them pending forever "
                 f"({fields.get('jobs')})"
             )
+        case "dispatch.key_released":
+            tests = fields.get("tests") or []
+            job_ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: compile key {fields.get('group')} is built — "
+                f"released {len(job_ids)} simulation job(s) for "
+                f"{', '.join(str(name) for name in tests)} "
+                f"({', '.join(str(job_id) for job_id in job_ids)}); they start "
+                "now instead of waiting for the rest of the build job"
+            )
+        case "build_job.partial_result_failed":
+            return (
+                f"build job: could not update {fields.get('path')} with the "
+                f"compile keys built so far ({fields.get('error')}). The "
+                "simulation jobs released for those keys will find no verdict "
+                "for themselves and recompile if their stamp does not "
+                "validate; check the directory's permissions and free space."
+            )
+        case "dispatch.build_result_partial":
+            state = fields.get("scheduler_state")
+            state_note = "" if not state else f" (scheduler state {state})"
+            return (
+                f"dispatch: the build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')} did not finish{state_note} — its "
+                f"result names {fields.get('decided')} of "
+                f"{fields.get('planned')} planned test(s). Those ran; the "
+                "rest were never compiled and their jobs were cancelled with "
+                "the build. See the build log."
+            )
+        case "dispatch.release_skipped":
+            tests = fields.get("tests") or []
+            return (
+                f"dispatch: compile key {fields.get('group')} is built, but "
+                "its build record could not be written "
+                f"({fields.get('error')}), so its {len(tests)} simulation "
+                "job(s) were NOT released: they keep the dependency on this "
+                "build job and start when it ends, as they did before early "
+                "release existed. Nothing recompiles under a simulation "
+                "reservation — holding the gate is what prevents it, and it "
+                "held."
+            )
+        case "dispatch.gates_skipped":
+            return (
+                f"dispatch: {fields.get('suite_dir')}: {fields.get('reason')}. "
+                "Slurm takes a dependency expression whole, so a release "
+                f"would drop {fields.get('dependency')} along with this run's "
+                "own gate; every simulation job waits for its build job "
+                "instead."
+            )
+        case "dispatch.env_dependency_overridden":
+            return (
+                f"dispatch: {fields.get('suite_dir')}: the exported "
+                f"SBATCH_DEPENDENCY ({fields.get('dependency')}) is not what "
+                "gates these jobs — a --dependency on the command line "
+                "overrides it, and every job gated on a build job carries "
+                "one. Early release stays on; put the expression in "
+                "cfg-dispatch.sbatch-args if it is meant to hold them."
+            )
+        case "dispatch.build_result_final_write_lost":
+            return (
+                f"dispatch: the build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')} finished, but the write that "
+                "completes its result was lost — the file still names only "
+                f"{fields.get('decided')} of {fields.get('planned')} planned "
+                "test(s). Every test was compiled, so a missing simulation "
+                "result here is an ordinary missing result; only the "
+                "compile-reservation advice is dropped. Check the "
+                "filesystem's free space and permissions."
+            )
+        case "dispatch.gates_unavailable":
+            return (
+                "dispatch: no gates manifest at "
+                f"{fields.get('path')} ({fields.get('reason')}), so each "
+                "compile key's simulation jobs wait for the whole build job "
+                "as before. The head writes it after its last submission; a "
+                "head that was killed mid-fan-out never got there."
+            )
+        case "dispatch.gates_write_failed":
+            return (
+                f"dispatch: could not write the gates manifest "
+                f"{fields.get('path')} for {fields.get('suite_dir')} "
+                f"({fields.get('error')}), so this suite's simulation jobs "
+                "stay gated on its whole build job. The jobs themselves are "
+                "submitted and correct; only the early start is lost."
+            )
+        case "dispatch.release_unavailable":
+            return (
+                f"dispatch: {fields.get('reason')}. `scontrol` is an optional "
+                "Slurm binary and it has to be on the PATH of the compute "
+                "node running the build job, not just the submit host."
+            )
+        case "dispatch.release_failed":
+            skipped = fields.get("skipped")
+            job_note = (
+                "" if fields.get("job_id") is None else f" of {fields.get('job_id')}"
+            )
+            tail = (
+                ""
+                if not skipped
+                else (
+                    f" {skipped} further job(s) were not attempted, and no "
+                    "later compile key in this build job will try either — "
+                    "they all keep their afterok gate and start when it ends."
+                )
+            )
+            return (
+                f"dispatch: could not clear the dependency{job_note} for "
+                f"{fields.get('group')} ({fields.get('error')})."
+                f"{tail}"
+            )
         case "compile.share_build_opts_overridden":
             return (
                 f"{fields.get('test')}: shared build owns the output location, "

@@ -343,7 +343,7 @@ def load_result_json(path, *, expected_run_token=None):
     return raw
 
 
-def write_build_result_json(path, *, built, failed, builds=None):
+def write_build_result_json(path, *, built, failed, builds=None, partial=False):
     """Atomically write a build job's compile outcome to ``path``.
 
     ``built``/``failed`` are lists of expanded test names whose shared
@@ -371,6 +371,19 @@ def write_build_result_json(path, *, built, failed, builds=None):
     envelope alone — the gated sim job reads them to decline a retry that
     would only fail again, and the head reads them to put the real error in
     the run summary instead of the retry's.
+
+    ``partial`` marks an envelope the build job is still rewriting (#548).
+    Under Slurm it releases a compile key's simulation jobs the moment that
+    key is built, and those jobs consult this file to tell a stamp that
+    disagrees with a build that EXISTS (decline) from one with a build that
+    never happened (recompile). Written only at the end, the file would not
+    be there when the first released key's jobs asked — so the job rewrites
+    it after every group and the final write omits the key. Its absence
+    therefore means "complete", which is what every envelope before this
+    one meant. A reader that does not know the key sees the records listed
+    and nothing worse; one that does must treat a test a partial envelope
+    does NOT list as a test the build job never reached, because it did not
+    finish.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -383,6 +396,10 @@ def write_build_result_json(path, *, built, failed, builds=None):
     }
     if builds is not None:
         envelope["builds"] = [dict(entry) for entry in builds]
+    if partial:
+        # Only ever written true, so a complete envelope is byte-identical
+        # to one from before this key existed.
+        envelope["partial"] = True
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(envelope, ensure_ascii=True, indent=2) + "\n")
     os.replace(tmp, path)
@@ -395,7 +412,9 @@ def load_build_result_json(path):
     Returns ``{"built": [...], "failed": [...], "builds": [...]}``. Unlike
     :func:`load_result_json` this never raises: the annotation it feeds is
     advisory, so a build job that died before writing simply yields no
-    compile-fail mapping.
+    compile-fail mapping. ``partial`` says the build job had not finished
+    when it wrote this one (#548): the records it holds are real, but a
+    test it does not name is one the job never reached.
 
     ``builds`` is the per-config compile record (#495) and is empty for an
     envelope written before it existed — the key is additive, so a mixed
@@ -421,4 +440,9 @@ def load_build_result_json(path):
         "builds": [
             entry for entry in (raw.get("builds") or []) if isinstance(entry, dict)
         ],
+        # An envelope the build job was still rewriting (#548). Absent means
+        # complete — what every envelope written before the key existed
+        # means too — so a reader that ignores this stays correct on every
+        # envelope a finished build job writes.
+        "partial": raw.get("partial") is True,
     }

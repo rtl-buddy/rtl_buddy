@@ -327,6 +327,116 @@ def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
     return selected or None
 
 
+# The whole of one key's release, not one call of it and not one cluster's
+# share of it. A key fanned out over a thousand runs is a thousand
+# `scontrol` calls, and at one 30 s timeout each an unreachable controller
+# would hold the build job — and the compile slot it occupies — for hours
+# to buy an optimization. The batch gets a budget instead, and the first
+# systemic failure ends it. The caller (the build job) holds ONE deadline
+# per compile key and passes what is left of it as `budget_s`, so a key
+# whose jobs span several clusters does not get a fresh budget per cluster
+# (#548 review).
+RELEASE_BUDGET_S = 60
+
+
+class ReleaseOutcome(NamedTuple):
+    """What one batch of :func:`release_dependency` actually managed.
+
+    ``systemic`` is set when the batch stopped early — a timeout, or
+    ``scontrol`` not being executable at all. Those say something about
+    this host and this controller rather than about a job id, so retrying
+    the remaining ids would pay the same cost again; ``skipped`` is what
+    was never attempted, and the caller should stop asking for the rest of
+    the run. A per-id refusal (``rc != 0``: an unknown or already-finished
+    job) is an ordinary ``failure`` and the batch continues.
+    """
+
+    released: list[str]
+    failures: list[tuple[str, str]]
+    skipped: list[str]
+    systemic: str | None
+
+
+def release_dependency(
+    job_ids: Sequence[str],
+    *,
+    cluster: str | None = None,
+    cwd: str | None = None,
+    budget_s: float | None = None,
+) -> ReleaseOutcome:
+    """Clear these jobs' scheduler dependency; report what happened (#548).
+
+    ``scontrol update JobId=<id> Dependency=`` is how a job sitting
+    ``PENDING`` with reason ``Dependency`` is told to stop waiting. It
+    takes a plain id and an array *element* id alike (``1234`` /
+    ``1234_3``), and clearing one element leaves its siblings pending, so
+    a compile key's sims can be released without disturbing the rest of
+    the array they were grouped into.
+
+    Called from the build job, once a key has compiled, against ids the
+    head wrote into the gates manifest. ``cluster`` is the one those ids
+    were issued by, since a job id is unique only within its cluster
+    (#509) — the caller batches by it. One call per id: ``scontrol
+    update`` addresses a single job.
+
+    The whole batch shares ``budget_s`` (default :data:`RELEASE_BUDGET_S`)
+    and each call is time-boxed to what is left of it, so the cost of this
+    is bounded by the batch and not by the fan-out.
+
+    Best effort, and it never raises. The ``afterok`` gate is still on
+    every job that was not reached, so a release that does not happen
+    costs the run its early start and nothing else; a raise, by contrast,
+    would escape the build job and cancel the whole fan-out.
+    """
+    cluster_argv = [] if cluster is None else ["-M", cluster]
+    released: list[str] = []
+    failures: list[tuple[str, str]] = []
+    systemic: str | None = None
+    deadline = time.monotonic() + (RELEASE_BUDGET_S if budget_s is None else budget_s)
+    pending = list(job_ids)
+    while pending:
+        job_id = pending.pop(0)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            systemic = "release budget exhausted"
+            pending.insert(0, job_id)
+            break
+        try:
+            proc = subprocess.run(
+                [
+                    "scontrol",
+                    *cluster_argv,
+                    "update",
+                    f"JobId={job_id}",
+                    "Dependency=",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=min(_SCONTROL_TIMEOUT_S, remaining),
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            # Not about this job id: a wedged controller or an scontrol
+            # that cannot be run answers the same way for every id behind
+            # it. Stop the batch and tell the caller to stop asking.
+            systemic = str(e)[:200]
+            failures.append((job_id, systemic))
+            break
+        if proc.returncode != 0:
+            failures.append(
+                (
+                    job_id,
+                    (
+                        proc.stderr.strip()
+                        or f"`scontrol update` failed (rc={proc.returncode})"
+                    )[:200],
+                )
+            )
+            continue
+        released.append(job_id)
+    return ReleaseOutcome(released, failures, pending, systemic)
+
+
 # `MaxRSS` is a high-water mark over samples, so a job shorter than the
 # sampling interval reports whatever the first sample caught — near zero.
 # The stock `JobAcctGatherFrequency` is 30 s and dispatch exists to produce
@@ -966,6 +1076,38 @@ class SlurmDispatchBackend(DispatchBackend):
         job untouched, precisely because this backend passed no dependency
         flag at all; now that it passes one, an exported gate would be
         silently replaced instead of added to (#507 review).
+
+        The two halves are separately readable —
+        :meth:`_sbatch_args_dependency` is the first of them — because
+        they do not outrank the same things. Composing treats them alike,
+        since both are gates this backend must not replace. A consumer
+        asking "what will actually hold this job back" must not: a
+        command-line option beats the environment, so on a submission that
+        already carries a generated ``--dependency`` an exported value is
+        not the effective gate at all (#548 review).
+        """
+        found = self._sbatch_args_dependency()
+        if found is not None:
+            return found
+        # An empty or whitespace-only export is not an expression; sbatch
+        # would make nothing of it either, so it is "no gate" rather than
+        # something to compose a comma onto.
+        return os.environ.get(_SBATCH_DEPENDENCY_ENV, "").strip() or None
+
+    def _sbatch_args_dependency(self) -> str | None:
+        """The dependency `sbatch-args` supplies, or ``None``.
+
+        The half of :meth:`_configured_dependency` that OUTRANKS what this
+        backend generates: `sbatch-args` is appended after the generated
+        flags in :meth:`_sbatch_argv`, and a repeated option is resolved
+        by Slurm to the last copy — so this expression, not the generated
+        ``afterok``, is what actually holds the job. Read separately by
+        the per-key release, which must not clear an expression the site
+        meant, and may clear one the generated flag has already overridden
+        (#548).
+
+        Every spelling sbatch itself resolves, abbreviations included (see
+        :func:`_is_dependency_opt`), and the **last** occurrence.
         """
         args = self.sbatch_args
         found = None
@@ -986,12 +1128,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 # `-dafterok:7`, the joined SHORT spelling. Long
                 # abbreviations begin `--` and were answered above.
                 found = arg[2:]
-        if found is not None:
-            return found
-        # An empty or whitespace-only export is not an expression; sbatch
-        # would make nothing of it either, so it is "no gate" rather than
-        # something to compose a comma onto.
-        return os.environ.get(_SBATCH_DEPENDENCY_ENV, "").strip() or None
+        return found
 
     def _dedup_dependency(self, *, suite_dir: str) -> str | None:
         """The ``--dependency`` value that serialises this build job (#507).
@@ -2022,6 +2159,22 @@ class SlurmDispatchBackend(DispatchBackend):
             # An interrupted or failed run must leave the ids on the console:
             # they are the only route to `squeue`/`sacct` afterwards (#435).
             job_ids=group_job_ids(h.job_id for h in handles if h is not None),
+        )
+
+    def build_outcome(self, handle: JobHandle) -> str | None:
+        """The build job's scheduler state, from one ``sacct`` row (#548).
+
+        The state out of :meth:`collect_telemetry`, which is where every
+        other consumer reads it. The head prefers the row it already
+        fetched for this handle and only calls this when that row is
+        missing — a site with no slurmdbd — so the query below is a last
+        resort rather than a second identical sacct per suite (#495).
+        Returns the state verbatim (``COMPLETED``, ``TIMEOUT``,
+        ``CANCELLED``…), or ``None`` where there is no accounting to ask,
+        which keeps the caller's conservative reading.
+        """
+        return (self.collect_telemetry([handle]).get(telemetry_key(handle)) or {}).get(
+            "state"
         )
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:

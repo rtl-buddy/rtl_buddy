@@ -66,6 +66,13 @@ class BuildJobSpec:
     # directory, and its per-process memo turns one user request into
     # exactly one rebuild per build dir for the whole suite.
     rebuild: bool = False
+    # Where the head records which sim job holds which plan index (#548),
+    # so this job can clear the `afterok` dependency of one compile key's
+    # sims the moment that key is built instead of holding them for the
+    # slowest key in the plan. Set only for a backend that can be told to
+    # release a pending job (Slurm); ``None`` everywhere else keeps the
+    # argv — and the gate — exactly as it was. See ``dispatch.gates``.
+    gates_json: Path | None = None
 
 
 @dataclass
@@ -334,6 +341,31 @@ class DispatchBackend(ABC):
         backend-shaped dicts; the Slurm backend documents its fields.
         """
         return {}
+
+    def build_outcome(self, handle: JobHandle) -> str | None:
+        """How this suite's build job ENDED, or ``None`` if not knowable.
+
+        ``"COMPLETED"`` means it ran to the end and exited 0; anything else
+        is a name for how it did not (``"FAILED"``, a scheduler state).
+        Not a substitute for the build-result envelope, which says what it
+        built — this says only whether it got to the end of saying it.
+
+        The head asks exactly one question with it (#548). A build job
+        that releases a compile key's simulations early rewrites its
+        envelope as it goes, so an incomplete envelope can mean two very
+        different things: a job that died partway, whose unnamed tests
+        were never compiled and whose jobs were cancelled behind it, or a
+        job that finished and lost only the write that would have marked
+        the envelope complete. The first must keep those tests' gates shut
+        — reopening them would let the retry round resubmit, ungated, jobs
+        the head deliberately skipped (#405) — and the second must not,
+        since every test really was compiled.
+
+        ``None`` (the default, and what a backend answers for a job it
+        cannot speak for) keeps the conservative reading, so a backend
+        that never implements this loses nothing it had.
+        """
+        return None
 
     def accounting_interval_s(self) -> float | None:
         """Seconds between usage samples, or ``None`` if not known.

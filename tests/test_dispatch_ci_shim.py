@@ -27,6 +27,11 @@ from rtl_buddy.dispatch.argv import job_log_path
 
 _REPO = Path(__file__).resolve().parent.parent
 _SHIMS = _REPO / "tests" / "dispatch_shims"
+# `scontrol` is an optional Slurm binary and only the build job's per-key
+# release (#548) needs one, so its shim sits in its own directory: every
+# other test in this module runs with no `scontrol` on PATH, which is the
+# configuration those tests were written against.
+_SCONTROL_SHIM = _SHIMS / "scontrol_shim"
 _FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_project"
 _SWEEP_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_sweep_project"
 _PARALLEL_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_parallel_project"
@@ -80,13 +85,15 @@ def _run_regression(
     fixture=_FIXTURE,
     extra_env=None,
     prepare_project=None,
+    extra_path_dirs=(),
 ):
     project = work_dir / "proj"
     shutil.copytree(fixture, project)
     if prepare_project is not None:
         prepare_project(project)
     env = dict(os.environ)
-    env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
+    prefix = os.pathsep.join(str(path) for path in (*extra_path_dirs, _SHIMS))
+    env["PATH"] = f"{prefix}{os.pathsep}{env['PATH']}"
     env["RB_SHIM_DB"] = str(work_dir / "jobs.db")
     env["RB_SHIM_LOG"] = str(work_dir / "jobs.log")
     env.update(extra_env or {})
@@ -400,3 +407,105 @@ def test_shim_build_job_envelope_gains_telemetry_and_compile_records(
         compile_block = json.loads(path.read_text())["result"]["results"]["compile"]
         assert compile_block["builder"], (path, compile_block)
         assert compile_block["reused"] in (True, False), compile_block
+
+
+# ------------------------------ per-key release, end to end (#548)
+
+
+@pytest.fixture(scope="module")
+def release_shim_run(tmp_path_factory):
+    """One regression over the two-compile-key fixture, with `scontrol`.
+
+    The shim ``sbatch`` runs each submission synchronously, so without
+    ``RB_SHIM_DEFER_DIR`` the build job would run *before* the head has
+    submitted a single sim job and there would be nothing to release yet.
+    Deferring is what makes the real ordering observable here: head submits
+    everything and writes the gates manifest, then the jobs run.
+    """
+    work = tmp_path_factory.mktemp("dispatch_release")
+    scontrol_log = work / "scontrol.txt"
+    argv = work / "sbatch_argv.txt"
+    proc, envelope, project, diag = _run_regression(
+        work,
+        fixture=_PARALLEL_FIXTURE,
+        extra_path_dirs=(_SCONTROL_SHIM,),
+        extra_env={
+            "RB_SHIM_DEFER_DIR": str(work / "deferred"),
+            "RB_SHIM_SCONTROL_LOG": str(scontrol_log),
+            "RB_SHIM_ARGV": str(argv),
+        },
+    )
+    return proc, envelope, project, diag, scontrol_log, argv
+
+
+def test_shim_build_job_releases_each_compile_key_it_finishes(release_shim_run):
+    """Both keys built, so both keys' array elements were released (#548).
+
+    The ids are the ones ``sbatch`` actually handed out, so this covers the
+    whole loop: head → gates manifest → build job → ``scontrol update``.
+    """
+    proc, envelope, project, diag, scontrol_log, argv = release_shim_run
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
+    assert results == {"alpha": "PASS", "beta": "PASS"}, diag
+
+    # The array element ids the head submitted, read off the recorded argv.
+    array_line = [line for line in argv.read_text().splitlines() if "--array=" in line]
+    assert len(array_line) == 1, array_line
+    # Both elements were submitted gated on the build job, and stay that way:
+    # the release clears the dependency, it does not replace the gate.
+    assert "--dependency=afterok:" in array_line[0], array_line[0]
+    assert "--kill-on-invalid-dep=yes" in array_line[0], array_line[0]
+
+    manifests = list(project.glob("verif/*/artefacts/.dispatch/gates-*.json"))
+    assert len(manifests) == 1, [str(path) for path in manifests]
+    manifest = json.loads(manifests[0].read_text())
+    submitted = {entry["test"]: entry["job_id"] for entry in manifest["entries"]}
+    assert set(submitted) == {"alpha", "beta"}, manifest
+
+    released = [
+        line.split()[-2].removeprefix("JobId=")
+        for line in scontrol_log.read_text().splitlines()
+        if " update " in f" {line} "
+    ]
+    assert sorted(released) == sorted(submitted.values()), (
+        released,
+        submitted,
+        diag,
+    )
+    assert all(
+        line.endswith("Dependency=") for line in scontrol_log.read_text().splitlines()
+    ), scontrol_log.read_text()
+
+    # ...and the build job said so on its own log, per key.
+    build_logs = list(project.glob("verif/*/artefacts/.dispatch/build-rtl_buddy-*.log"))
+    assert build_logs, diag
+    events = [
+        json.loads(line)
+        for log in build_logs
+        for line in log.read_text().splitlines()
+        if line.strip().startswith("{")
+    ]
+    keys = [e for e in events if e.get("event") == "dispatch.key_released"]
+    assert len(keys) == 2, keys
+    assert {name for e in keys for name in e["tests"]} == {"alpha", "beta"}
+    assert sorted(job for e in keys for job in e["job_ids"]) == sorted(released)
+
+
+def test_shim_regression_without_scontrol_says_so_and_still_passes(shim_run):
+    """The default shim PATH has no `scontrol`: every sim job keeps its
+    `afterok` and the build job logs one line about why (#548)."""
+    proc, _envelope, project, diag = shim_run
+    assert proc.returncode == 0, diag
+
+    build_logs = list(project.glob("verif/*/artefacts/.dispatch/build-rtl_buddy-*.log"))
+    assert build_logs, diag
+    events = [
+        json.loads(line).get("event")
+        for log in build_logs
+        for line in log.read_text().splitlines()
+        if line.strip().startswith("{")
+    ]
+    assert events.count("dispatch.release_unavailable") == 1, events
+    assert "dispatch.key_released" not in events

@@ -5558,3 +5558,772 @@ def test_the_collect_audit_skips_a_malformed_stamp_identity(caplog):
     events = _mismatch_events(caplog)
     assert len(events) == 1
     assert events[0]["tests"] == ["delta", "gamma"]
+
+
+# ------------------------------ the head's gates manifest (#548)
+
+
+class _ReleasingBackend(_FakeBackend):
+    """A fake that answers to the one backend name the head gates on.
+
+    The flag is not "a fake backend" but "a backend whose pending jobs can
+    be released", which today is Slurm alone — so the fixture has to claim
+    the name to see the manifest at all.
+    """
+
+    name = "slurm"
+    # What `SlurmDispatchBackend._sbatch_args_dependency()` would answer: a
+    # dependency the site put in `sbatch-args`, which sbatch appends AFTER
+    # the generated `--dependency=afterok` and therefore resolves to — the
+    # sim job's effective gate, and not ours to clear (#548).
+    configured_dependency = None
+    # ...and an exported `$SBATCH_DEPENDENCY`, which sbatch documents as
+    # the default for `-d` and a command-line option overrides. Every gated
+    # submission carries one, so this never gates the job.
+    env_dependency = None
+
+    def _sbatch_args_dependency(self):
+        return self.configured_dependency
+
+    def _configured_dependency(self):
+        return self.configured_dependency or self.env_dependency
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        return [self.submit(spec, dependency=dependency) for spec in specs]
+
+
+def _log_records(log_path: Path) -> list[dict]:
+    """Every record in a machine-mode rtl_buddy log, fields included."""
+    if not log_path.exists():
+        return []
+    return [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
+
+
+def _gates_manifest(project: Path) -> dict:
+    paths = list(project.glob("artefacts/.dispatch/gates-*.json"))
+    assert len(paths) == 1, [str(path) for path in paths]
+    return json.loads(paths[0].read_text())
+
+
+def test_head_records_every_submitted_job_against_its_plan_index(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The manifest is the build job's only way to name a key's jobs (#548).
+
+    The plan index is the shared name: the build job knows its configs by
+    position in the plan manifest, and the head knows which job it gave
+    each of them.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    manifest = _gates_manifest(minimal_project)
+    assert manifest["schema_version"] == 1
+    # Same index space as the plan beside it, and the same order.
+    plans = list(minimal_project.glob("artefacts/.dispatch/plan-*.json"))
+    planned = [test["name"] for test in json.loads(plans[0].read_text())["tests"]]
+    assert [entry["test"] for entry in manifest["entries"]] == planned
+    assert [entry["index"] for entry in manifest["entries"]] == list(
+        range(len(planned))
+    )
+    assert [entry["job_id"] for entry in manifest["entries"]] == [
+        "fake-1",
+        "fake-2",
+    ]
+    # And the token the build job checks the manifest's identity with, so a
+    # manifest an earlier head left at this pid's path is refused.
+    assert manifest["run_token"] == json.loads(plans[0].read_text())["run_token"]
+
+    # The build job is told where to read it, beside its own envelope.
+    spec = backend.build_submitted[0]
+    assert spec.gates_json is not None
+    assert Path(spec.gates_json).parent == Path(spec.result_json).parent
+
+    # The gate itself is untouched: every sim still carries the afterok that
+    # reaps the fan-out if the build job dies (#548 keeps it deliberately).
+    assert backend.dependencies == ["fake-build", "fake-build"]
+
+
+def test_head_writes_no_gates_manifest_for_a_backend_that_cannot_release(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`local-parallel` has no pending queue to clear, so it gets no
+    manifest and its build job's argv is unchanged."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted[0].gates_json is None
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+
+
+def test_head_writes_no_gates_manifest_without_a_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No build job, nothing to release from: a suite whose tests each
+    compile in their own job is ungated already (#358)."""
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted == []
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+
+
+def test_a_gates_manifest_that_cannot_be_written_does_not_fail_the_run(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The manifest is an optimization on top of a gate that is already
+    correct, so losing it must cost the run its early start and nothing
+    else — above all not the fleet that is already submitted."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(rtl_buddy_module, "write_gates", _boom)
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.cancelled is False
+    assert len(backend.submitted) == 2
+
+
+def test_a_configured_dependency_turns_early_release_off_for_the_suite(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--dependency=singleton` in sbatch-args is the job's real gate.
+
+    It is appended after the generated `afterok`, and
+    `scontrol update JobId=<id> Dependency=` clears an expression whole
+    rather than one clause of it — so releasing a key would drop the
+    site's own serialisation (a licensed simulator, a staging job). There
+    is no partial answer, so the suite gets no early release at all
+    (#548 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    backend.configured_dependency = "singleton"
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    # --machine so the head's own log is JSON lines and the event below is
+    # readable as a record rather than as rendered text.
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    # No manifest, no --gates: the build job never even probes for scontrol.
+    assert backend.build_submitted[0].gates_json is None
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    # ...and the run is otherwise untouched: every sim still submitted and
+    # still gated on the build job.
+    assert len(backend.submitted) == 2
+    assert backend.dependencies == ["fake-build", "fake-build"]
+
+    skipped = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.gates_skipped"
+    ]
+    assert len(skipped) == 1, skipped
+    assert skipped[0]["dependency"] == "singleton"
+    assert "early release disabled" in skipped[0]["reason"]
+    assert "sbatch-args" in skipped[0]["reason"]
+
+
+def test_no_configured_dependency_leaves_early_release_on(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary case: nothing configured, so nothing is given up."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted[0].gates_json is not None
+    assert list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    assert not [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.gates_skipped"
+    ]
+
+
+def test_the_gates_skipped_event_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "dispatch.gates_skipped",
+        {
+            "suite_dir": "/w/verif/blk",
+            "dependency": "singleton",
+            "reason": "early release disabled: sbatch-args/SBATCH_DEPENDENCY "
+            "configures a dependency (singleton) that a release would clear",
+        },
+    )
+    assert "/w/verif/blk" in message and "singleton" in message
+    assert "waits for its build job" in message
+    assert "dispatch gates_skipped" not in message
+
+
+def test_a_partial_build_envelope_is_used_for_what_it_names_only(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A build job that released a key and then died (#548).
+
+    Its envelope exists — it is rewritten per compile key so a released
+    simulation can read its own verdict — but it stops at the key the job
+    reached. `basic` really compiled and its jobs really ran, so its row
+    is the build job's verdict; `extra` was never compiled and its job was
+    cancelled with the build, which is the same story as no envelope at
+    all. The head must not read the file's mere existence as "the build
+    finished".
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _PartialBuild(_FakeBackend):
+        def __init__(self):
+            super().__init__(write_results=False)  # no sim envelope appears
+
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=[],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "error_tail": ["%Error: Exiting due to 1 error(s)"],
+                    }
+                ],
+                partial=True,
+            )
+            return super().submit_build(spec)
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    # The record it DOES hold is used, exactly as a complete one would be.
+    assert "compile failed in build job" in rows["basic"]["desc"]
+    # The test it never reached falls back to the missing-result story.
+    assert "produced no result" in rows["extra"]["desc"]
+
+    partial = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.build_result_partial"
+    ]
+    assert len(partial) == 1, partial
+    assert partial[0]["decided"] == 1
+    assert partial[0]["planned"] == 2
+
+
+def test_a_partial_build_envelope_does_not_feed_reservation_advice(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Its records are a fraction of the compiles the reservation paid for.
+
+    Advising a smaller compile block from them would shrink it towards a
+    build job that died rather than towards one that finished (#548).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _PartialBuild(_FakeBackend):
+        def submit_build(self, spec):
+            write_build_result_json(
+                spec.result_json,
+                built=["basic"],
+                failed=[],
+                builds=[{"test": "basic", "builder": "verilator", "duration_sec": 2.0}],
+                partial=True,
+            )
+            return super().submit_build(spec)
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    states = []
+    original = rtl_buddy_module.RtlBuddy._dispatch_collect
+
+    def _spy(self, backend_arg, state, *args, **kwargs):
+        out = original(self, backend_arg, state, *args, **kwargs)
+        states.append(state)
+        return out
+
+    monkeypatch.setattr(rtl_buddy_module.RtlBuddy, "_dispatch_collect", _spy)
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert states and states[0]["build_compile_work"] is None
+
+
+def test_the_partial_envelope_events_have_dedicated_human_messages():
+    from rtl_buddy.logging_utils import _human_message
+
+    head = _human_message(
+        "dispatch.build_result_partial",
+        {
+            "suite_dir": "/w/verif/blk",
+            "job_id": "1234",
+            "decided": 1,
+            "planned": 4,
+        },
+    )
+    assert "1234" in head and "/w/verif/blk" in head and "did not finish" in head
+    assert "dispatch build_result_partial" not in head
+
+    job = _human_message(
+        "build_job.partial_result_failed",
+        {
+            "path": "/w/.dispatch/build-result-7.json",
+            "error": "[Errno 28] No space left on device",
+        },
+    )
+    assert "build-result-7.json" in job and "No space left" in job
+    assert "build_job partial_result_failed" not in job
+
+
+def test_a_partial_envelope_counts_configs_not_result_rows(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "1 of 100 planned" for one config over a hundred runs (#548 review).
+
+    The build job compiles CONFIGS — one per distinct test name — while
+    `suite_results` holds one row per (test, run_id) plus every skipped
+    test. Counting rows makes a wide seed fan-out look like a build job
+    that reached almost nothing.
+    """
+
+    class _PartialBuild(_RecordingBackend):
+        def submit_build(self, spec):
+            handle = _FakeBackend.submit_build(self, spec)
+            write_build_result_json(
+                spec.result_json,
+                built=["basic"],
+                failed=[],
+                builds=[{"test": "basic", "builder": "verilator"}],
+                partial=True,
+            )
+            return handle
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["--machine", "randtest", "basic", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # One config, five runs.
+    assert [spec.run_id for spec in backend.submitted] == [1, 2, 3, 4, 5]
+
+    partial = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.build_result_partial"
+    ]
+    # Once per suite, whatever the fan-out, and in configs on both sides.
+    assert len(partial) == 1, partial
+    assert partial[0]["decided"] == 1
+    assert partial[0]["planned"] == 1
+
+
+def test_an_exported_dependency_does_not_turn_early_release_off(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`$SBATCH_DEPENDENCY` is a default, not a gate, on a gated job.
+
+    sbatch documents the export as the default for `-d`, and a command-line
+    option overrides it — every job gated on a build job carries a
+    generated `--dependency=afterok`, so the export never holds it back.
+    Clearing that dependency therefore drops nothing the site configured,
+    and the suite keeps its early release. Composing still treats the two
+    alike (#507); only "what will actually hold this job" tells them
+    apart (#548 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    backend.env_dependency = "afterok:9"
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert backend.build_submitted[0].gates_json is not None
+    assert list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    records = _log_records(minimal_project / "rtl_buddy.log")
+    assert not [r for r in records if r.get("event") == "dispatch.gates_skipped"]
+    # ...but a reader who set the export and expected it to hold is told.
+    overridden = [
+        r for r in records if r.get("event") == "dispatch.env_dependency_overridden"
+    ]
+    assert len(overridden) == 1, overridden
+    assert overridden[0]["dependency"] == "afterok:9"
+
+
+def test_sbatch_args_wins_over_an_export_when_both_are_set(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The command-line half decides, as it does for sbatch itself."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    backend.configured_dependency = "singleton"
+    backend.env_dependency = "afterok:9"
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted[0].gates_json is None
+    records = _log_records(minimal_project / "rtl_buddy.log")
+    skipped = [r for r in records if r.get("event") == "dispatch.gates_skipped"]
+    assert [r["dependency"] for r in skipped] == ["singleton"]
+    # One answer, not two: the export is not also reported as ignored.
+    assert not [
+        r for r in records if r.get("event") == "dispatch.env_dependency_overridden"
+    ]
+
+
+class _PartialEnvelopeBackend(_RecordingBackend):
+    """A build job that leaves a partial envelope naming only `basic`.
+
+    ``build_state`` is what the backend reports for it, which is the only
+    thing that distinguishes a job that DIED mid-compile from one that
+    finished and lost the write completing its result (#548 review).
+    ``via`` chooses which half of the backend answers: ``"telemetry"`` is
+    the Slurm shape (an sacct row the head already fetched),
+    ``"outcome"`` the local-parallel one (no accounting at all, so the
+    head has to ask `build_outcome` directly).
+    """
+
+    def __init__(self, build_state, via="telemetry"):
+        super().__init__(write_results=False)  # no sim envelope appears
+        self._build_state = build_state
+        if via == "telemetry":
+            self.telemetry = {"fake-build": {"state": build_state, "elapsed_s": 5}}
+        else:
+            self.telemetry = {}
+
+    def build_outcome(self, handle):
+        return self._build_state
+
+    def submit_build(self, spec):
+        handle = _FakeBackend.submit_build(self, spec)
+        write_build_result_json(
+            spec.result_json,
+            built=["basic"],
+            failed=[],
+            builds=[{"test": "basic", "builder": "verilator", "duration_sec": 2.0}],
+            partial=True,
+        )
+        return handle
+
+
+def _run_partial_envelope(
+    minimal_project, monkeypatch, build_state, *, retry=False, via="telemetry"
+):
+    _mark_stub_builder_verilator(minimal_project)
+    if retry:
+        # The gate only shows through the retry classifier, which is the
+        # one consumer of `build_succeeded`.
+        _enable_retry(minimal_project)
+    backend = _PartialEnvelopeBackend(build_state, via=via)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    states = []
+    original = rtl_buddy_module.RtlBuddy._dispatch_collect
+
+    def _spy(self, backend_arg, state, *args, **kwargs):
+        out = original(self, backend_arg, state, *args, **kwargs)
+        states.append(state)
+        return out
+
+    monkeypatch.setattr(rtl_buddy_module.RtlBuddy, "_dispatch_collect", _spy)
+    gates = {}
+    real_classify = rtl_buddy_module.classify_missing_result
+
+    def _classify(spec, sched_state, **kwargs):
+        gates[spec.test_name] = kwargs.get("build_succeeded")
+        return real_classify(spec, sched_state, **kwargs)
+
+    monkeypatch.setattr(rtl_buddy_module, "classify_missing_result", _classify)
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    return result, states, _log_records(minimal_project / "rtl_buddy.log"), gates
+
+
+def test_a_partial_envelope_from_a_killed_build_job_closes_the_unnamed_gates(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The conservative reading, and the one an unknown state keeps.
+
+    A build job the scheduler killed never reached the tests its envelope
+    does not name: their jobs were cancelled behind it, so nothing in
+    their artefacts is this attempt's evidence and a retry would resubmit
+    them with no gate at all (#405).
+    """
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "TIMEOUT", retry=True
+    )
+    assert result.exit_code == 1, result.output
+
+    # `basic` is named, so its gate opened; `extra` is not, so it stayed
+    # shut and its missing result can never be retried.
+    assert gates == {"basic": True, "extra": False}, gates
+
+    partial = [r for r in records if r.get("event") == "dispatch.build_result_partial"]
+    assert len(partial) == 1, partial
+    assert partial[0]["scheduler_state"] == "TIMEOUT"
+    assert not [
+        r for r in records if r.get("event") == "dispatch.build_result_final_write_lost"
+    ]
+    # `extra`'s gate stayed shut, so its missing result is not retryable.
+    assert states[0]["build_compile_work"] is None
+
+
+def test_a_partial_envelope_from_a_completed_build_job_is_a_lost_final_write(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """COMPLETED means it reached every test; only the last write was lost.
+
+    Reading that as "never compiled" would refuse the ordinary retry
+    classification to a fleet with nothing wrong with it. The advice stays
+    suppressed either way — the records are still a fraction of the
+    compiles the reservation paid for (#548 review).
+    """
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "COMPLETED", retry=True
+    )
+    assert result.exit_code == 1, result.output
+
+    # Every planned test's gate is open: the build job reached them all, so
+    # a missing result is an ordinary missing result and classifies as one.
+    assert gates == {"basic": True, "extra": True}, gates
+
+    lost = [
+        r for r in records if r.get("event") == "dispatch.build_result_final_write_lost"
+    ]
+    assert len(lost) == 1, lost
+    assert lost[0]["decided"] == 1 and lost[0]["planned"] == 2
+    assert not [r for r in records if r.get("event") == "dispatch.build_result_partial"]
+    # Advice is still dropped: the records are a fraction of the compiles.
+    assert states[0]["build_compile_work"] is None
+
+
+def test_the_final_write_lost_event_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "dispatch.build_result_final_write_lost",
+        {
+            "suite_dir": "/w/verif/blk",
+            "job_id": "1234",
+            "decided": 1,
+            "planned": 4,
+        },
+    )
+    assert "1234" in message and "/w/verif/blk" in message
+    assert "finished" in message and "lost" in message
+    assert "dispatch build_result_final_write_lost" not in message
+
+    killed = _human_message(
+        "dispatch.build_result_partial",
+        {
+            "suite_dir": "/w/verif/blk",
+            "job_id": "1234",
+            "decided": 1,
+            "planned": 4,
+            "scheduler_state": "TIMEOUT",
+        },
+    )
+    assert "TIMEOUT" in killed and "did not finish" in killed
+
+    overridden = _human_message(
+        "dispatch.env_dependency_overridden",
+        {"suite_dir": "/w/verif/blk", "dependency": "afterok:9"},
+    )
+    assert "SBATCH_DEPENDENCY" in overridden and "afterok:9" in overridden
+    assert "sbatch-args" in overridden
+    assert "dispatch env_dependency_overridden" not in overridden
+
+
+def test_a_backend_without_accounting_still_tells_the_two_readings_apart(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`local-parallel` has no telemetry, and must not lose the distinction.
+
+    `LocalProcessBackend.collect_telemetry()` returns `{}` by design — a
+    bare host reserves nothing, so there is nothing to compare against —
+    so a reading taken from the sacct state alone would call every partial
+    envelope a dead build job there, shut the gates of every config the
+    last snapshot missed, and refuse valid missing-result retries on a run
+    that was fine. The pool knows the build process's exit status; the
+    head asks for it through `build_outcome` (#548 review).
+    """
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "COMPLETED", retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+
+    lost = [
+        r for r in records if r.get("event") == "dispatch.build_result_final_write_lost"
+    ]
+    assert len(lost) == 1, lost
+    assert gates == {"basic": True, "extra": True}, gates
+    assert states[0]["build_compile_work"] is None
+
+
+def test_a_backend_without_accounting_keeps_the_conservative_reading_on_failure(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A build process that exited nonzero never reached the rest."""
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "FAILED", retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+
+    partial = [r for r in records if r.get("event") == "dispatch.build_result_partial"]
+    assert len(partial) == 1, partial
+    assert partial[0]["scheduler_state"] == "FAILED"
+    assert gates == {"basic": True, "extra": False}, gates
+
+
+def test_a_backend_that_cannot_say_keeps_the_conservative_reading(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`None` from both halves is "unknown", and unknown stays cautious."""
+    result, _states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, None, retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+    assert [
+        r["event"]
+        for r in records
+        if r.get("event", "").startswith("dispatch.build_result")
+    ] == ["dispatch.build_result_partial"]
+    assert gates == {"basic": True, "extra": False}, gates
