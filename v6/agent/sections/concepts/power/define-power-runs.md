@@ -10,6 +10,7 @@ runs:
     mode: static
     synth: demo_synth_nangate45
     synth-path: ../../synth/demo/synth.yaml
+    phys-run: demo_synth_nangate45
     constraints: ../../synth/demo/constraints.sdc
     platform: nangate45_typ
     reglvl: 1000
@@ -28,6 +29,6 @@ runs:
     reglvl: 1000
 ```
 
-Paths resolve from `power.yaml`. A synth-source run requires `synth`, `synth-path`, and `constraints`. A P&R-source run requires `pnr` and `pnr-path`; it uses the routed SDC unless `constraints` overrides it.
+Paths resolve from `power.yaml`. A synth-source run requires `synth`, `synth-path`, and `constraints`. A P&R-source run requires `pnr` and `pnr-path`; it uses the routed SDC unless `constraints` overrides it. `phys-run` is optional and names the synthesis run this one publishes its half of the physical model beside; see [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/#pair-the-model-with-a-synthesis-run).
 
 See [YAML Formats: power.yaml](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#poweryaml) for all fields.

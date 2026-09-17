@@ -610,6 +610,7 @@ runs:
 | `netlist-source` | Default `synth` | `synth` or `pnr` |
 | `synth`, `synth-path` | Required for synth source | Upstream synthesis entry and YAML path |
 | `pnr`, `pnr-path` | Required for P&R source | Upstream P&R entry and YAML path |
+| `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory this run publishes `phys-model.json` into |
 | `constraints` | Required for synth source | SDC path; for P&R source defaults to routed SDC |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
@@ -620,7 +621,7 @@ runs:
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
-P&R source reads the routed ODB and estimates parasitics from global routing; synthesis source reads the generated netlist. See [Power Analysis](../concepts/power.md).
+P&R source reads the routed ODB and estimates parasitics from global routing; synthesis source reads the generated netlist. Without `phys-run` the physical model is published into this run's own `artefacts/<name>/`, so it merges with a synthesis' half only when both runs write there; `phys-run` names the synthesis run to publish beside instead and is a run name, never a path. See [Power Analysis](../concepts/power.md) and [Pair the model with a synthesis run](../concepts/power.md#pair-the-model-with-a-synthesis-run).
 
 ## power_regression.yaml
 

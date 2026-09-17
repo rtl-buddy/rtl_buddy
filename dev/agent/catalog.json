@@ -998,6 +998,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/interpret-results.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#pair-the-model-with-a-synthesis-run",
+          "slug": "pair-the-model-with-a-synthesis-run",
+          "title": "Pair the model with a synthesis run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/pair-the-model-with-a-synthesis-run.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#inspect-artefacts",
           "slug": "inspect-artefacts",
           "title": "Inspect artefacts",
