@@ -13,6 +13,7 @@ Open the printed `http://127.0.0.1:<http_port>/` URL. The landing page links the
 | `/sch` | Interactive schematic. |
 | `/gph` | Design knowledge graph. |
 | `/cov` | Coverage browser. |
+| `/phy` | Synthesis area and power browser. |
 
 Use a second shell to inspect or stop the process:
 

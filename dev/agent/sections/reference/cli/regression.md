@@ -39,6 +39,11 @@ Usage: rtl-buddy regression [OPTIONS]
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --shared-build-root                    TEXT     persistent directory the shared      │
+│                                                 builds are cached under, so the      │
+│                                                 cache survives a workspace wipe      │
+│                                                 [default: (cfg-rtl-reg               │
+│                                                 shared-build-root, else in-tree)]    │
 │ --rebuild                                       recompile even when a valid build    │
 │                                                 already exists (implies nothing      │
 │                                                 about --share-build)                 │
@@ -50,6 +55,11 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 local-parallel                       │
 │                                                 [default: (cfg-dispatch jobs, else   │
 │                                                 min(4, cpu count))]                  │
+│ --orphans                              TEXT     what to do about an interrupted      │
+│                                                 run's jobs that are still queued or  │
+│                                                 running (warn, cancel, adopt)        │
+│                                                 [default: (cfg-dispatch orphans,     │
+│                                                 else warn)]                          │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

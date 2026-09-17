@@ -31,6 +31,13 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                branch/toggle/expression bin or an SVA cover point. The hub caches    │
 │                the focus and replays it to the pane on connect, so sending this      │
 │                before the browser tab is open works.                                 │
+│ phys-focus     Broadcast phys_focus{target} — point the hub's synth+power pane       │
+│                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
+│                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
+│                'module:alu'; an unprefixed string is read as an instance path.       │
+│                --metric foregrounds one physical metric. The hub caches the focus    │
+│                and replays it to the pane on connect, so sending this before the     │
+│                browser tab is open works.                                            │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
 │                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
 │                (clears any cached diagnostics from SOURCE). Use --instance to attach │

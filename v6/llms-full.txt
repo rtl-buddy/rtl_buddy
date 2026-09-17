@@ -71,7 +71,7 @@ A query exits 1 when nothing matches and 2 when no graph exists. Full node expan
 
 ## Use the MCP server
 
-`rb mcp` exposes graph, coverage, hierarchy, and available live-hub operations as MCP tools over stdio:
+`rb mcp` exposes graph, coverage, physical-metrics, hierarchy, and available live-hub operations as MCP tools over stdio:
 
 ```json
 {"mcpServers": {"rtl-buddy": {"command": "rb", "args": ["mcp"]}}}
@@ -84,6 +84,8 @@ uv add "rtl_buddy[mcp]"
 ```
 
 Each response wraps the corresponding `--machine` payload in `{tool, ok, meta, payload}`. Command-level failures return `ok: false` and an `error`; they do not become transport failures. The CLI provides the same operations when MCP is unavailable.
+
+The physical-metrics tools are `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`, reading the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; they run no EDA tool and need no hub. `phys_runs` lists every run under the project with the power mode, the activity and the configuration fingerprint each recorded, and is where the `phys_dir` the other three take comes from. `phys_focus` joins them when a live hub is discovered. `phys_module` joins on the model's `module` column, which holds RTL module names in the synthesis half and Liberty cell names in the power half — see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
 
 ## Bundled agent skills
 
@@ -145,7 +147,7 @@ rb --machine regression -c regression.yaml
 
 Machine mode:
 
-- writes `rtl_buddy.log` as JSON Lines;
+- writes `rtl_buddy.log` as JSON Lines for the commands that write one at all;
 - disables Rich formatting, colors, and spinners;
 - prints one structured JSON result to stdout for supported commands;
 - captures Python hook stdout as `hook.stdout` events so it cannot corrupt the result;
@@ -154,6 +156,14 @@ Machine mode:
 Add `--print-failures-only` to drop `PASS`, `SKIP`, and `XFAIL` rows from that stderr render on a long run; the `summary` event still carries every row.
 
 A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process explicitly; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
+
+### Know which commands write a log
+
+Every command that runs a flow — `test`, `regression`, `synth`, `power` and the rest — attaches `<command_root>/rtl_buddy.log` and writes its events there. The file is opened for writing, and a process's first open of it truncates it: a flow's log is that run's log, not an accumulation of every run before it.
+
+Read commands attach no file log. Those are `rb phys`, `rb cov`, the `rb graph` read verbs (`query`, `path`, `explain`), `rb xplr`, and `--list` on any flow command. They answer from artefacts and configs already on disk, so the log would be the only file they wrote — and writing it would truncate the log of the flow being asked about, which is the file to read next. Their events reach the console on stderr, and their result reaches stdout as JSON like any other structured command.
+
+Read the log of the flow that produced the artefacts, not of the read verb that reported them.
 
 ## Parse command results
 
@@ -686,7 +696,7 @@ For each suite, dispatch:
 3. Groups simulations with identical resolved resources into Slurm arrays and gates them with `afterok` on the build.
 4. Collects each worker's `result.json` into the normal summary and exit status.
 
-The build job compiles one key at a time by default. `cfg-dispatch.compile.parallel` raises that to N distinct builds compiled concurrently inside the same job. Concurrency is over distinct compile keys, never over tests: configs sharing a key are compiled once, by whichever of them the job reaches first, and the rest adopt that build. Two builders writing one build directory is corruption, so a group's members are never in flight together. Adoption compares the leader's build against the dependencies it reported consuming, not against the whole fingerprint, because members of a group already share a `run.f`, a command line and a builder by construction; the only thing that can differ is a file that moved during the job, and one always does on a cold tree (each config's own `preproc` output, created after the previous config was fingerprinted). An adoption also rewrites the stamp's directory listing to what the tree now holds, so the simulation jobs gated on the build — which run after every config's `preproc` and validate that listing by name — reuse it rather than rejecting a stamp that still describes the leader's cold view. A config whose *consumed* input differs is a different matter: one compile key is one binary, so rather than recompile and let the last writer decide what both tests simulate, the job reports `build_job.group_input_drift` and fails that config. Give it its own compile key, or fix the hook that rewrites the input per test. Builders that report no dependencies (VCS, Icarus) cannot be narrowed this way and fall back to the full stamp comparison. Configs whose resolved `builder-simv` output is one file — an absolute pin, or a relative spelling whose `..` escapes the per-test workspace — are grouped the same way even though their compile directories differ, because the executable they write is one path. A config whose compile fails is still reported per test, and the job still exits 0 so its `afterok` dependents run.
+The build job compiles one key at a time by default. `compile.parallel` — `cfg-dispatch.compile.parallel`, or the suite's own where it sets one — raises that to N distinct builds compiled concurrently inside the same job. Concurrency is over distinct compile keys, never over tests: configs sharing a key are compiled once, by whichever of them the job reaches first, and the rest adopt that build. Two builders writing one build directory is corruption, so a group's members are never in flight together. Adoption compares the leader's build against the dependencies it reported consuming, not against the whole fingerprint, because members of a group already share a `run.f`, a command line and a builder by construction; the only thing that can differ is a file that moved during the job, and one always does on a cold tree (each config's own `preproc` output, created after the previous config was fingerprinted). An adoption also rewrites the stamp's directory listing to what the tree now holds, so the simulation jobs gated on the build — which run after every config's `preproc` and validate that listing by name — reuse it rather than rejecting a stamp that still describes the leader's cold view. A config whose *consumed* input differs is a different matter: one compile key is one binary, so rather than recompile and let the last writer decide what both tests simulate, the job reports `build_job.group_input_drift` and fails that config. Give it its own compile key, or fix the hook that rewrites the input per test. Builders that report no dependencies (VCS, Icarus) cannot be narrowed this way and fall back to the full stamp comparison. Configs whose resolved `builder-simv` output is one file — an absolute pin, or a relative spelling whose `..` escapes the per-test workspace — are grouped the same way even though their compile directories differ, because the executable they write is one path. A config whose compile fails is still reported per test, and the job still exits 0 so its `afterok` dependents run.
 
 Preprocessing hooks always run serially, and their position relative to compilation depends on `parallel`. At the default `parallel: 1` the job runs `preproc` and then the compile for one config before touching the next, so a hook that regenerates a shared input cannot overwrite what an earlier config is about to compile. Above 1 the compile key is only knowable after that config's `preproc` has run, so every hook runs first and the builders then overlap: raising `parallel` requires that no config's `preproc` mutate another config's inputs. Simulation jobs already require this — each `rb _test-job` re-runs its own `preproc` concurrently on its own node.
 
@@ -703,7 +713,10 @@ Verilator, VCS, and Icarus can place outputs in a shared compile-key directory. 
 A job gated on a build job keeps its **simulation** reservation. The compile block is not folded into it: that would inflate every gated job in the fan-out, and change which jobs share an array, to pay for a compile that normally does not happen there. What a gated job does when the build's stamp fails to validate depends on why:
 
 - The build job recorded this test's **builder** as having run and exited non-zero **on the same inputs** — the per-build record carries its exit status, and the record's input fingerprint matches the one this job just derived. That fingerprint follows the same content rule the stamp does, so a source whose bytes are unchanged still matches after a `touch`, a re-checkout, or a hook that regenerated it identically — only a real edit counts as "the inputs moved". The job does not recompile. A deterministic compile error fails the same way again, and it would fail under the simulation reservation, so a large elaboration is killed for memory and the summary reports that kill instead of the design error. The row reports the build job's exit status and error lines, and `compile.log` is left as the build job wrote it.
-- The build job recorded this test as **built**. The binary the whole fan-out was gated on is in the shared directory, so the stamp is disagreeing with a build that exists. The job does not recompile: it would run at simulation size, into the directory every sibling element is queued on, and the memory kill that usually follows would replace the reason with `%Error: Verilator threw signal 9`. The row instead reports what the stamp check found, and `compile.build_stamp_rejected` says the same thing in the job's log. It also says whether this job's compile inputs hash to the digest the build job recorded: a different digest means this node is not looking at the build job's compile, which is usually a `preproc` generating different bytes here or an edit that landed mid-run.
+- The build job recorded this test as **built**. The binary the whole fan-out was gated on is in the shared directory, so the stamp is disagreeing with a build that exists. The job does not recompile: it would run at simulation size, into the directory every sibling element is queued on, and the memory kill that usually follows would replace the reason with `%Error: Verilator threw signal 9`. The row instead reports what the stamp check found, and `compile.build_stamp_rejected` says the same thing in the job's log. It also says whether this job's compile inputs hash to the digest the build job recorded: a different digest means this node is not looking at the build job's compile, which is usually a `preproc` generating different bytes here or an edit that landed mid-run. A **missing** stamp is this outcome too, not a reason to build: the envelope is consulted after the stamp check whatever the check found, so an absent stamp beside a real executable declines exactly as a stale one does.
+- The build job recorded this test as built **with `stamp_written: false`** — the compile succeeded and only the stamp write failed (a read-only or full filesystem under the shared build directory; the build job logged `compile.stamp_write_failed` with the error). Same outcome, its own reason: the row names the write rather than sending you to look for a build that is sitting in the directory. Give that filesystem room and permissions, and re-run.
+A declining job leaves the shared directory exactly as the build job left it — the stamp included. Only a compile that is about to run in that directory removes the stamp describing what was there, so one element's drift cannot cascade: its same-key siblings still validate the same stamp and reuse the same binary, and a later run still reuses it rather than rebuilding from scratch.
+
 - Nothing built this config and nothing proved it cannot be built — the envelope names it in neither list (a crashed or cancelled build job), or names it failed **without** a builder exit status (a preproc or filelist error, a crashed worker: the simulation job re-runs its own preproc, so those can pass here), or the **inputs changed** since the failed build (the fingerprints differ, so the recorded failure may not reproduce), or there is no readable envelope at all. The job recompiles, at its **simulation** size, and writes the transcript to `compile.retry.log` in its **run's** artifact directory (`run-NNNN/` under the test directory, or the test directory itself for a single run) — the retry is one run's recompile, and sibling runs of a fanned-out test share the test directory, so a test-scoped file would be one run's story overwritten and advertised by every sibling. The build job's `compile.log` is never touched. `cfg-dispatch.compile` does not size this path — it sizes only the build job (and the self-compiling jobs above) — so a suite that relies on this recovery for heavy builds must size the applicable simulation reservation (the test or testbench `resources:`, or `cfg-dispatch.resources`) for compilation; better, fix whatever drifts the inputs so the stamp validates and no gated job compiles at all. Read `compile.prebuilt_stamp_invalid` in the job's log to see that the retry happened and what it says drifted.
 
 A compile that reuses an existing build says so. `compile.build_reused` names the reused directory and the age of its stamp — once per build directory per process on the console (every reuse still lands in the log file), which on a local run is your terminal and under dispatch is the job's own log — and the test's `compile.log` carries the same breadcrumb, naming the command a rebuild would run. Under dispatch a gated job that reuses writes that breadcrumb into the build job's `compile.log`, keeping the build's own transcript below it; a gated *retry* never writes there at all, which is why it has its own file. A run that compiled nothing is now visible as such instead of only as a missing file. What a stamp validates against is content: every tracked input under the project root is compared by hash, so a `preproc` hook that regenerates a file byte-for-byte reuses the build, while any real edit invalidates it even on a node whose cached `stat` still describes the file as it was.
@@ -719,6 +732,48 @@ The identity is coarser than a compile key, deliberately: it is the suite direct
 The build job itself carries no `--kill-on-invalid-dep`: `singleton` waits for terminations and can never become unsatisfiable. A configured `afterok` composed into it still can, exactly as it could before.
 
 When a build job exists, every dependent is submitted with `--kill-on-invalid-dep=yes`. A failed build therefore removes jobs that could never satisfy `afterok`; collection also cancels any `DependencyNeverSatisfied` remnants. A user-supplied `--kill-on-invalid-dep=no` in `sbatch-args` overrides the default.
+
+### Start simulations as their compile key finishes
+
+Every simulation job of a suite is gated on that suite's one build job, so a suite with three compile keys and `compile.parallel: 2` would hold a key that finished in the first minute until the slowest key in the plan was done. The build job therefore releases each key as it lands: once a key has compiled and its stamp is on disk, the build job clears the dependency of exactly that key's simulation jobs with `scontrol update JobId=<id> Dependency=`, and they start while the other keys are still compiling. It logs one `dispatch.key_released` per key, naming the tests and job ids.
+
+The `afterok` gate is not replaced, only cleared per key. Every job is still submitted with it, and with `--kill-on-invalid-dep=yes`, so a build job that dies mid-compile still reaps every job it had not released.
+
+A released job is outside that net, deliberately. Clearing its dependency also removes what `--kill-on-invalid-dep` acts on, so an element still pending when the build job later dies on another key — held by the array's `%N` throttle, or by priority — runs anyway rather than being reaped with its siblings. That is the right outcome: its own key is built and stamped, it validates that stamp and simulates the binary the build job left for it, and what happened to an unrelated compile key afterwards says nothing about its result. An interrupted or failed head still cancels it, since `cancel_all` cancels by job id and not by dependency.
+
+What is *not* released:
+
+- A key whose compile **failed**. Its jobs keep the gate, start after the build job, read the build record and decline the recompile exactly as before.
+- A key whose compile succeeded but left **no stamp** (`stamp_written: false`). There is nothing for the simulation job to validate early.
+- A key whose build record could not be written — the envelope above is what a released job reads to learn the build exists, so without it the release would send that job into the recompile the record exists to prevent. Logged as `dispatch.release_skipped`.
+- Every job of a suite whose `cfg-dispatch.sbatch-args` carries a `--dependency=…` of its own. That expression is appended after the generated `afterok`, so Slurm resolves the repeated option to it and it is the job's effective gate; `Dependency=` clears an expression whole rather than one clause of it, so a release would drop the site's own serialisation (`--dependency=singleton` around a licensed simulator, for instance). The head writes no gates file for such a suite and logs `dispatch.gates_skipped` once. An exported `SBATCH_DEPENDENCY` is not this case — sbatch treats it as the default for `-d`, which the generated option overrides, so it never gates the job and early release stays on (`dispatch.env_dependency_overridden` says so). Put the expression in `sbatch-args` if it is meant to hold these jobs.
+- Every job, when there is no `scontrol` on the PATH of the **compute node** running the build job — that is where the release is issued from, not the submit host. It is an optional Slurm binary; without it the build job logs `dispatch.release_unavailable` once and the run behaves as it did before this existed.
+
+A released simulation reads `build-result-<pid>.json` the moment its own stamp fails to validate, so the build job writes that file as it goes rather than once at the end: after each compile key it rewrites the envelope with everything decided so far, marked `"partial": true`, and the write at the end drops the mark. Without it a released job would find no verdict for itself, read that as inconclusive, and recompile into the shared directory its siblings are pointed at. A `partial` envelope left by a build job that did not end successfully — the scheduler's state under Slurm, the build process's exit status under `local-parallel` — means the job did not finish: the head uses the records it holds but treats a test it does not name exactly as it treats a missing envelope, and says so with `dispatch.build_result_partial`. One left by a job that did end successfully means the opposite — every test was compiled and only the write that drops the mark was lost — so every gate opens and a missing simulation result is classified as an ordinary one (`dispatch.build_result_final_write_lost`). Either way the build job's compile-reservation advice is dropped, since its records cover only part of what the reservation paid for.
+
+The head writes the plan-index-to-job-id map the build job needs to `artefacts/.dispatch/gates-<pid>.json`, immediately after the last submission of the suite — the build job is submitted first, so it polls for that file (up to two minutes) at its first release and logs `dispatch.gates_unavailable` if it never appears. Each entry records the cluster that issued its job id, so a `--clusters=a,b` fan-out is released one `scontrol -M <cluster>` batch per cluster. A release the scheduler refuses is a `dispatch.release_failed` warning and nothing more: those jobs start when the build job ends. One key's whole release shares a 60-second budget, and a timeout or an unusable `scontrol` ends it and turns early release off for the rest of the build job — the warning says how many jobs were not attempted. A per-id refusal does not: an unknown job id says nothing about the next one.
+
+A released array element honours the array's `%N` throttle from `cfg-dispatch.max-jobs-per-array` like any other element, so the release changes when an element becomes eligible, not how many of them run at once. Retried jobs are never released — they are submitted after collection, when the build job is long gone. `--dispatch local-parallel` has no pending queue to clear and is unchanged: its gate is still "the build job exited 0".
+
+### Interrupted runs: warn, cancel, adopt
+
+A head that is killed — Ctrl-C too late to cancel, a dropped SSH session, a login node reboot — takes every job ID it held with it, but the fleet keeps running. Before its first submission the head therefore opens `artefacts/.dispatch/run-<pid>-<token>.json` — the run token, the suite config, the plan and the planned rows, with `status: "submitting"` — and grows it as each submission is accepted: the build job, then each array. The window that matters opens at the first `sbatch`, not at the last one, so a head killed between its build job and its final array still leaves a record naming exactly the jobs that were accepted. After the last submission the status becomes `running` and the record is complete. A retry round re-points the `pending` job IDs before it is waited on, so a head killed during one still leaves a record naming the jobs the scheduler is running.
+
+Every per-run file under `.dispatch/` carries the run token beside the PID for the same reason — `plan-<pid>-<token>.json`, `build-result-<pid>-<token>.json`, `build-<pid>-<token>.log`, `gates-<pid>-<token>.json`, the `array-<pid>-<token>-<n>/` scratch directories and the run record. The OS reuses PIDs, so after a reboot a new head can carry the PID of a run whose fleet is still queued; a PID-keyed name would have it write its plan over the one those jobs are still reading, and its record over the only route back to them. Its `status` starts at `running` and is rewritten to `collected` when the run collects its results, or `cancelled` when the head takes the fleet down on the way out. A manifest left at `running` is what an interrupted run leaves behind.
+
+On start, every `--dispatch slurm` run scans the suite's whole `artefacts/.dispatch/` tree — the root and the namespaced directories beneath it, since a regression with co-located suite configs writes into a namespace and a plain `rb test` writes into the root — for manifests still marked `running` whose `suite_config` is this suite's and whose run token is not this invocation's, and asks `squeue` whether any of their jobs are still there. A `squeue` that cannot answer reports those jobs live rather than gone, so a broken probe errs towards leaving them alone. A manifest with nothing left in the queue is marked `stale` and never probed again. One with live jobs is an *orphan*, and `--orphans` (or `cfg-dispatch.orphans`) decides what happens to it. An incomplete record (`submitting`) counts as live for `warn` and `cancel` — those IDs are real jobs — but can never be adopted, because the rows its head never submitted would score as missing results for jobs that were never launched:
+
+| Policy | Effect |
+|---|---|
+| `warn` (default) | Logs `dispatch.orphans_found` with the manifest, the run token and the live job IDs, then submits a fresh fleet exactly as before. The orphan keeps running. |
+| `cancel` | `scancel`s the orphan's jobs and re-probes until the queue no longer holds them, marks its manifest `cancelled` (`dispatch.orphans_cancelled`), then submits a fresh fleet. If they are still there after 30 seconds — a refused `scancel`, an unreachable controller — nothing is submitted: the run fails with `dispatch.orphans_cancel_failed` naming the IDs to cancel by hand. |
+| `adopt` | Submits nothing. Waits on the orphan's jobs, collects their result envelopes, and marks its manifest `collected` (`dispatch.orphans_adopted`). |
+
+`adopt` requires exactly one orphan whose recorded run matches this invocation: the same test config, the same backend, the same expanded tests and run IDs in the same order, the same *plan*, and the same invocation options. The plan check compares the orphan's own `plan-<pid>.json` entry by entry against this invocation's fresh expansion — plusargs, plusdefines, the resolved testbench, hook paths, per-test `resources:`, the builder, and the resolved seed with the master seed behind it — because test names alone are not the run: a changed plusdefine or a different `--master-seed` simulates something else. Anything that differs is a fatal error naming the test and the field, because adopting across it would report the orphan's results under this run's configuration. The options check covers what the plan does not carry: `--builder-mode`, `--builder`, `--extra-sim-timeout`, the shared-build root as forwarded to the jobs and `--rebuild` reach them on their specs, and so does each job's **resolved reservation** — a test that inherits `cfg-dispatch.resources` carries no `resources:` of its own anywhere in the plan, so raising its `time` after an orphan hit the old limit would otherwise adopt that orphan and return the scheduler timeout from the old limit as the verdict. A re-run that changes any of them is refused rather than collecting a fleet built, reserved and run under different instructions. One consequence: a run whose seeds are drawn fresh each time (`rb randtest` with new seeds) plans different seeds on every invocation and can never be adopted. Two orphans with live jobs are fatal too — choosing one would silently abandon the other's fleet. The adopted jobs' envelopes are accepted by the orphan's run token, the same identity check a live head makes, so a stale envelope from an older run is still rejected.
+
+Identity comes from the manifest and never from scheduler job names: two runs of one suite submit the same build-job name (that is what the shared-build dedup serialises on), so a name-keyed search could adopt or cancel someone else's fleet.
+
+`--orphans` is inert off a scheduler. `local-parallel` runs its jobs as the head's own children and `local` runs them in the head itself, so an interrupted run of either leaves nothing behind; `--orphans adopt` there is a fatal error rather than a silent full re-run.
 
 A missing result from a scheduler kill, worker crash, or dependency failure is a failed row, not a dropped test. A compile failure for one compile key does not stop unrelated keys; the affected tests report that compile's exit status and error lines, and their simulation jobs do not repeat it.
 
@@ -785,7 +840,7 @@ tests:
 
 Tests with identical resolved reservations share an array. Compilation normally uses `cfg-dispatch.compile`; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.
 
-## Set per-suite compile resources
+## Set compile resources per suite and testbench
 
 `cfg-dispatch.compile` is one reservation for every suite's build job, so a repo with one large top-level testbench and many leaf-cell benches sizes them all for the largest. A suite that differs states its own reservation at the **top level of its `tests.yaml`**, in the same `{cpus, mem, time}` shape:
 
@@ -794,21 +849,63 @@ rtl-buddy-filetype: test_config
 
 compile:
   mem: 48G          # this suite's verilation only; cpus and time inherited
+  parallel: 1       # ...and how many of its builds run at once
 
 testbenches:
   - name: soc_tb
     ...
 ```
 
-The compile reservation resolves field by field in this order: suite `compile`, `cfg-dispatch.compile`, `cfg-dispatch.resources`, built-in defaults. A field the suite omits inherits, so the example above keeps the cluster-wide `cpus: 8` and `time: "02:00:00"` and moves only memory. The block sizes the suite's build job, and — for a builder that cannot share a build — the compile half of the field-wise maximum that sizes each simulation job.
+The compile reservation resolves field by field in this order: testbench `compile`, suite `compile`, `cfg-dispatch.compile`, `cfg-dispatch.resources`, built-in defaults. A field an outer layer omits inherits, so the example above keeps the cluster-wide `cpus: 8` and `time: "02:00:00"` and moves only memory and concurrency. The block sizes the suite's build job, and — for a builder that cannot share a build — the compile half of the field-wise maximum that sizes each simulation job.
 
-`parallel` is not accepted at suite level. It sizes the build job against the partition's widest node, which is a cluster fact; keep it in `cfg-dispatch.compile`. Note that unknown keys are dropped silently rather than rejected, so a `parallel` written here simply has no effect.
+A testbench states its own `compile:` when the suite's entries verilate at different scales — the same top level at two geometries, say, where the small one takes four minutes and 6 GB and the product one takes two hours and 130 GB:
+
+```yaml
+compile:
+  mem: 8G           # the small geometry, which most pull requests run
+
+testbenches:
+  - name: tb_chip_small
+    filelist: [...]
+  - name: tb_chip_t1
+    filelist: [...]
+    compile:
+      mem: 256G
+      time: "06:00:00"
+```
+
+A testbench block takes the same `{cpus, mem, time}` shape and wins over the suite block field by field, in both directions — it may lower a field as well as raise one. Writing `parallel` there is an error: it is how many builds the one build job runs at once, so it belongs to the suite block or to `cfg-dispatch`.
+
+**The two blocks mean different things, and the build job's reservation is where that shows.** A suite-level `compile:` describes the **whole job** — the allocation you watch in `squeue` — and nothing below it may take the reservation under that figure. A testbench `compile:` describes **one build**, so the suite's build job aggregates them over the testbenches the plan actually selected tests from, then floors the result at the whole-job value:
+
+| Field | Over the planned builds' blocks | Then |
+|---|---|---|
+| `cpus` | the largest single block's | floored at the suite-resolved value, then × `compile.parallel` as always |
+| `mem` | the sum of the largest `min(parallel, n)` per-build figures — the builds that can be in flight together each hold their own peak | floored at the suite-resolved value |
+| `time` | the makespan of the build job's own work queue: each build goes to whichever of the `parallel` workers frees up first, in plan order, and the job ends when the last worker does | floored at the suite-resolved value |
+
+At `parallel: 1` that makespan is the serial total; with a worker per build it is the longest build. In between it is a real schedule, not `ceil(sum / parallel)` — 30, 30 and 20 minutes over two workers finish in **50**, not 40, and a reservation sized from the lower figure times the job out mid-compile.
+
+The unit of the aggregation is one **build**, not one testbench: the build job groups on the compile directory a config resolves to after `preproc`, so two selected tests on one testbench that differ in `plusdefines`, `builder`, `model` or `assertions` compile separately and each hold their own peak. rtl_buddy counts one reservation per distinct `(testbench, plusdefines, builder, model, assertions)` among the planned tests — `assertions: true` puts Verilator's `--assert` flags into the compile command, so it splits the key like the rest. Two kinds of test are counted individually instead: one whose builder cannot share a build, which compiles into its own artefact directory, and one that declares a `preproc:` hook, whose plusdefines the hook may still change after this count is taken — a test with a preprocessing hook is assumed to produce its own compile. It cannot see the real compile key from the submit host, so where two such configs happen to resolve to the same key the job is reserved for a build it does not run — an over-count, which is the safe direction.
+
+A config whose builder **cannot share a build** is counted per test, because it compiles into its own artefact directory: the build job runs `preproc` and compile for the whole plan, self-compiling configs included, and two of those are two builds however alike they are. Each field of a testbench `compile:` block must be greater than zero — a negative `mem` would be subtracted from the sum, and both are rejected when the suite loads.
+
+A testbench with no `compile:` of its own enters no `cpus` or `time` sum; it is covered by the whole-job value, so a suite of five plain benches under `time: "00:30:00"` still reserves thirty minutes. `mem` is the exception, and only once some build *has* stated its own: memory is the one field where two builds genuinely need their peaks at the same moment, so every other planned build then contributes the figure the whole-job value implies for one build. A 256G testbench sharing a slot with an unannotated build under `compile: {mem: 8G, parallel: 2}` reserves 264G, not 256G. `time` differs because an unannotated build's wall clock is unknown and the whole-job figure already describes the queue they run in. A suite that states no per-testbench `mem` at all is untouched: there `compile.mem` keeps the meaning this page has always asked for — the whole job at `parallel` concurrent builds. Only planned tests count either: a run that selects nothing from `tb_chip_t1` reserves the suite's `8G`, which is what stops a pull request fencing off memory for a build it never runs.
+
+Reservation advice names the entry whose block supplied the winning field, as `testbenches[name=tb_chip_t1].compile.mem`. Two shapes have no such entry to name, and both withhold the `reduce` row rather than aim it somewhere inapplicable, recording the reason and the paths in `rightsize.build_advice_withheld`:
+
+- the value is a **sum of several builds** (`compile-aggregate`) — the suggestion is a whole-job figure, and writing it into one contributor's key would leave the total where it was;
+- two sources produce it **independently** (`compile-origin-tied`) — two builds at the same figure, one that merely reaches the whole-job floor, or two of the `parallel` workers finishing at the same makespan, where lowering either alone moves nothing.
+
+`raise` advice is unaffected by both: moving any one source up moves a maximum, and a sum with it. Where the field is a sum, though, the `suggested` value is translated into the named contributor's **own** new value rather than the whole-job figure — writing a 135-minute target into the 60-minute half of a 30 + 60 reservation would re-aggregate to 165, so the advice says `01:45:00` instead, and the machine event carries the whole-job figure as `suggested_total` beside the `aggregate_delta` that was added. For `time` the proposed value is then **scheduled** rather than predicted: one key can be several builds, and raising it can push a later copy behind a neighbour it used to run beside, so the queue absorbs part of the raise. rtl_buddy re-runs the same `parallel`-worker schedule on the proposed edit and closes the remaining gap until the makespan clears the target — advice that re-timed-out after being applied would be worse than none. A simulation job that compiles for itself is sized from its own testbench's block alone, never from the aggregate.
+
+`parallel` layers the same way, over `cfg-dispatch.compile.parallel`, and must be at least 1. The build job is per suite, so a suite that compiles one key writes `parallel: 1` and its build job reserves `cpus` instead of `cpus` × the cluster-wide value — on a busy partition that is the difference between starting and queueing. A suite that says nothing keeps inheriting the cluster-wide value. Sizing it against the partition's widest node is the writer's job at either level, since only `cpus` is scaled for you. The build job's `Compiling N distinct build(s)` line names whichever key governed it, so the log says which file to edit; where the planned-config cap lowered the value it quotes what the file holds and reports the cap separately, rather than attributing the capped number to the key. `parallel` is still meaningless in a per-test or per-testbench `resources:` block, where unknown keys are dropped silently; in a testbench `compile:` block it is rejected at load instead, because there the key reads as if it meant something.
 
 The block is a scheduling fact only. It is not part of the compile fingerprint, so adding or changing it never invalidates a shared build stamp.
 
-Size `compile.time` for the longest batch the build job runs, not for one build. With `compile.parallel: N` the suite's unique compile keys are compiled N at a time, so the job's wall clock is the makespan of a work queue N workers deep: each worker takes the next unbuilt key as it frees up, and the job ends when the last one finishes. `ceil(distinct builds / N)` times the slowest build is a safe upper bound to size against, and it is close to the real figure only when the builds take similar times; a mix of one long build and several short ones finishes nearer the long one alone. At the default `parallel: 1` it is the serial total of every key.
+Size the **suite-level** `compile.time` for the longest batch the build job runs, not for one build (a testbench block states one build and is queued for you). With `compile.parallel: N` the suite's unique compile keys are compiled N at a time, so the job's wall clock is the makespan of a work queue N workers deep: each worker takes the next unbuilt key as it frees up, and the job ends when the last one finishes. `ceil(distinct builds / N)` times the slowest build is a safe upper bound to size against, and it is close to the real figure only when the builds take similar times; a mix of one long build and several short ones finishes nearer the long one alone. At the default `parallel: 1` it is the serial total of every key.
 
-Size `compile.mem` for `parallel` concurrent builds: the head scales only the `cpus` reservation, and N elaborations need roughly N times the memory. Size it from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
+Size the **suite-level** `compile.mem` for `parallel` concurrent builds while no testbench states its own: the head scales only the `cpus` reservation, and N elaborations need roughly N times the memory. Once any testbench block does state one, the figure switches meaning — it is then read as one build's peak, for each build that declared none, and the head adds them up; write it per build from that point on. Size it from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
 
 VCS license wait under `-licqueue` counts against the Slurm time limit. Give `compile.time` queue headroom; `compile.license_queued` records only completed builds that waited. N concurrent elaborations hold up to N licenses at once, so raising `parallel` multiplies license pressure and can convert compute time into queue time; keep it at or below what the site's license pool can serve.
 
@@ -845,7 +942,7 @@ At normal verbosity dispatch prints:
 - a line when each suite drains;
 - a warning with outstanding IDs when `max-wait` expires.
 
-Set `progress-interval: 0` to suppress console progress; events remain in the head log. On timeout or interrupt, the head cancels the outstanding fleet.
+Set `progress-interval: 0` to suppress console progress; events remain in the head log. On timeout or interrupt, the head cancels the outstanding fleet and then re-probes the queue before retiring its run record: if the jobs survived the `scancel`, the record stays `running` and `dispatch.orphans_cancel_failed` names them, so the next run can still find them. Each of those re-probes carries what is left of the grace period as its own `squeue` timeout, so an unresponsive controller cannot hold the check open past it — a query that runs out of time says nothing about the jobs and they are treated as still live.
 
 The poll that decides a fleet has drained asks `squeue` for every state in which a job is still alive — `PENDING` through the held `REQUEUE_HOLD`, `RESV_DEL_HOLD` and `SPECIAL_EXIT`, and `STOPPED`, whose job keeps its CPUs — because a state missing from that filter makes a live job invisible: the wait would return while it was still queued, the collector would score its absent envelope as a failure, and nothing would cancel it. Two states squeue lists as non-terminal are deliberately **out** of it, `PREEMPTED` and `REVOKED`: both are results whose record Slurm keeps until it is purged, so waiting on one would delay collection and the license-queue retry for as long as the site's purge takes, and under a finite `max-wait` fail a run whose jobs had all ended. A preempted job is where the collector expects it — retry treats `PREEMPTED` as an allocation lost, beside `TIMEOUT` and `NODE_FAIL`, and re-submits it — and a preemption configured to requeue moves the job on to `REQUEUED`, which the filter does ask for, so only a terminally preempted job drains. A revoked record is a federation sibling whose job started on another cluster and will never progress here. The build-job dedup probe asks for those two as well, since naming a predecessor whose record is still in the queue costs nothing there; the two filters are derived from one list — the probe's set is the drain set plus the retained results — so they cannot drift apart. A `squeue` too old to know one of those names refuses the query and says which name it refuses; rtl_buddy drops that one and asks again (`dispatch.wait_states_narrowed`, DEBUG), since a state its Slurm does not have is a state no job can be in. Only a refusal that names nothing drops the filter entirely, leaving squeue's own narrower default of pending, running and completing — logged as a WARNING (`dispatch.wait_states_unfiltered`), because a job held in another state can then be reported finished early. Both are remembered for **that cluster** alone, and both events name it: a federation can run several Slurm versions, and applying one cluster's rejection to the rest would poll a newer cluster with a filter too narrow to see its own held job. A poll that fails for any other reason — a controller timeout, an unreachable cluster — is not an answer about the jobs at all: they stay outstanding, `dispatch.wait_poll_failed` records it (WARNING the first time per cluster, DEBUG after, so a wedged `squeue` cannot fill the console), and the next poll asks again, so a `squeue` that never answers ends in the `max-wait` failure rather than in a silent early collection. `Invalid job id specified` is the one error that does mean completion: it is what squeue answers once every one of those ids has aged out of the queue.
 
@@ -855,7 +952,10 @@ Logs are separated by process:
 |---|---|---|
 | Head | `<suite>/rtl_buddy.log` | Console output |
 | Simulation | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` or `local-parallel-<tag>.log` |
-| Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log` |
+| Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log`, `gates-<pid>.json` |
+| Run record | — | `artefacts/.dispatch/run-<pid>-<token>.json` (the submitted fleet and its status; see [Interrupted runs](#interrupted-runs-warn-cancel-adopt)) |
+
+Every `<pid>` in that table is followed by the run's own token (`plan-<pid>-<token>.json`, `build-result-<pid>-<token>.json`, `build-<pid>-<token>.log`, `gates-<pid>-<token>.json`), so a reused PID cannot collide with a run whose jobs are still reading those files.
 
 `<tag>` is the run ID or `single`; `<pid>` is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.
 
@@ -870,7 +970,7 @@ Per-test outputs remain `artefacts/<test>/`. If two co-located configs expand
 tests onto the same per-test directory, the regression exits before submitting
 any jobs. Rename one test or put the configs in separate directories.
 
-`build-result-<pid>.json` carries the build job's `built` and `failed` test names and a `builds` list with one record per planned config: `test`, `builder`, `duration_sec`, `reused`, and `group` (the suite-relative path of the output the compile writes — the shared `artefacts/.shared-builds/obj_dir_<key>` directory, or an unshared build's own executable). Equal `group` values identify one single-writer output: a shared compile, or several configs pinned to one executable by `builder-simv:`. Where sharing is unsupported every test's output is its own, so distinct `group` values there say nothing about the compile keys. A config that never reached a builder still gets a record, with null timings. A record for a build that **succeeded** — compiled, reused, or adopted from a same-key sibling — also carries `fingerprint_sha`, the digest of the inputs its stamp recorded, taken over the same content-decides comparison the stamp uses, so a byte-identical input matches whatever its timestamp says; a gated simulation job whose stamp check fails compares its own digest against it to report whether the disagreement is over the same inputs. A record for a build that **failed** carries up to four more fields: `returncode` (the builder's exit status), `fingerprint_sha` (the same digest, of the inputs that compile failed on), `error_tail` (the last non-blank lines of its transcript, or the worker's exception when no builder ran) and `transcript` (suite-relative). `returncode` plus a `fingerprint_sha` matching its own inputs is what a gated simulation job requires before declining its own recompile — a failure recorded without a returncode never reached a builder, and one whose fingerprint differs was a different compile, so both still get the retry — and `error_tail` is what puts the real compile error in the run summary. At collect the head folds the build job's own `sacct` row into the same file under `telemetry`, and copies each test's compile record into that test's `result-<tag>.json`, where [`rb graph results`](graph.md#results-overlay) surfaces it. Both are best-effort: an envelope written by an older build job simply has no `builds` key, and an annotation that cannot be written leaves the result itself untouched.
+`build-result-<pid>.json` carries the build job's `built` and `failed` test names and a `builds` list with one record per planned config: `test`, `builder`, `duration_sec`, `reused`, and `group` (the suite-relative path of the output the compile writes — the shared `artefacts/.shared-builds/obj_dir_<key>` directory, or an unshared build's own executable). Equal `group` values identify one single-writer output: a shared compile, or several configs pinned to one executable by `builder-simv:`. Where sharing is unsupported every test's output is its own, so distinct `group` values there say nothing about the compile keys. A config that never reached a builder still gets a record, with null timings. A record for a build that **succeeded** — compiled, reused, or adopted from a same-key sibling — also carries `fingerprint_sha`, the digest of the inputs its stamp recorded, taken over the same content-decides comparison the stamp uses, so a byte-identical input matches whatever its timestamp says; a gated simulation job whose stamp check fails compares its own digest against it to report whether the disagreement is over the same inputs. A record for a build whose compile succeeded but whose **stamp could not be written** also carries `stamp_written: false`; the field is absent otherwise, which is what every envelope written before it existed means too. A gated simulation job reads it as "built", declining its own recompile exactly as it does for a stamp that failed to validate, and reports the write rather than the stamp. A record for a build that **failed** carries up to four more fields: `returncode` (the builder's exit status), `fingerprint_sha` (the same digest, of the inputs that compile failed on), `error_tail` (the last non-blank lines of its transcript, or the worker's exception when no builder ran) and `transcript` (suite-relative). `returncode` plus a `fingerprint_sha` matching its own inputs is what a gated simulation job requires before declining its own recompile — a failure recorded without a returncode never reached a builder, and one whose fingerprint differs was a different compile, so both still get the retry — and `error_tail` is what puts the real compile error in the run summary. At collect the head folds the build job's own `sacct` row into the same file under `telemetry`, and copies each test's compile record into that test's `result-<tag>.json`, where [`rb graph results`](graph.md#results-overlay) surfaces it. Both are best-effort: an envelope written by an older build job simply has no `builds` key, and an annotation that cannot be written leaves the result itself untouched.
 
 ## Apply reservation advice
 
@@ -888,7 +988,7 @@ Advice is calculated per test using the peak across runs in this invocation:
 
 `over-threshold` and `near-limit` bound the utilization band a reservation is left alone in, so a test inside it produces no finding. On a run where nearly every test fits, `reduce` findings are the bulk of the table, and a lower `over-threshold` shortens that list: `over-threshold: 0.3` reports only tests that used under a third of what they asked for. Neither threshold suppresses a `raise` from a scheduler `TIMEOUT` or `OUT_OF_MEMORY` kill, which is always reported. Findings are listed `raise` first — in the table, in the `rightsize.advice` events, and in `payload.reservation_advice` — because under-reservation costs failed work while over-reservation only wastes a slot.
 
-The suite's build job gets one row of its own, named `(build job)` with `phase: compile`. It suggests `time` in both directions and `cpus` only downwards, because low CPU efficiency there means build slots idled rather than that more were needed. Its `cpus` suggestion is per build, and it appears only for a job that ran one build at a time: with `compile.parallel` above 1 the job's CPU efficiency also carries idle slots in the tail, which no accounting field separates from a compile that under-used its own CPUs, so the row is withheld with reason `parallel-utilization-ambiguous` rather than advising a reduction that could starve the longest compile. Size `compile.parallel` against the suite's distinct compile keys first, then read the `cpus` row from a `parallel: 1` run. `time` advice is unaffected — concurrent builds take the wall clock of the longest, not of their sum. A `reduce` is withheld when nothing actually compiled (every build reused its stamp), when the head has no per-build records to judge by — `no-build-records`, which covers both a job that left no envelope at all and one whose envelope carries no `builds` list (an older build job, or one whose telemetry could not be serialised) — or when it finished inside one accounting interval; `rightsize.build_advice_withheld` records which, along with how many records it saw and how many seconds of them were real compiling. Without that guard a re-run of an unchanged suite would advise a limit the next real RTL change times out against, cancelling the fan-out behind it.
+The suite's build job gets one row of its own, named `(build job)` with `phase: compile`. It suggests `time` in both directions and `cpus` only downwards, because low CPU efficiency there means build slots idled rather than that more were needed. Its `cpus` suggestion is per build, and it appears only for a job that ran one build at a time: with the resolved `compile.parallel` above 1 the job's CPU efficiency also carries idle slots in the tail, which no accounting field separates from a compile that under-used its own CPUs, so the row is withheld with reason `parallel-utilization-ambiguous` rather than advising a reduction that could starve the longest compile. Size `compile.parallel` against the suite's distinct compile keys first, then read the `cpus` row from a `parallel: 1` run. `time` advice is unaffected — concurrent builds take the wall clock of the longest, not of their sum. A `reduce` is withheld when nothing actually compiled (every build reused its stamp), when the head has no per-build records to judge by — `no-build-records`, which covers both a job that left no envelope at all and one whose envelope carries no `builds` list (an older build job, or one whose telemetry could not be serialised) — or when it finished inside one accounting interval; `rightsize.build_advice_withheld` records which, along with how many records it saw and how many seconds of them were real compiling. Without that guard a re-run of an unchanged suite would advise a limit the next real RTL change times out against, cancelling the fan-out behind it.
 
 ### Requested cpus versus allocated cpus
 
@@ -1179,6 +1279,8 @@ This protection is host-local. Do not run the same suite concurrently from multi
 
 Read `<command_root>/rtl_buddy.log`. It is plain text by default and JSON Lines under `--machine`. For regressions, inspect the relevant suite log for test details and the manifest-root log for the final summary.
 
+The log belongs to the flow that wrote it. A file log is opened for writing and a process's first open of it truncates it, so the file holds one run and not an accumulation of every run before it. The commands that take no lock also attach no file log — `rb phys`, `rb cov`, the `rb graph` read verbs, `rb xplr`, and `--list` on any flow command — because they write nothing else, and opening the log would destroy the record of the run being read about. They report on the console and, under `--machine`, in the JSON result on stdout. See [Agent Use](../agents.md#know-which-commands-write-a-log).
+
 
 ---
 
@@ -1199,7 +1301,7 @@ Use an expected-failure marker only for a known, understood failure that should 
 | `xfail: true` | `XFAIL`, counts as pass | `XPASS`, counts as pass | Either outcome is acceptable |
 | `xfail_strict: true` | `XFAIL`, counts as pass | `XPASS`, counts as fail | A pass means the marker is stale |
 
-If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged.
+If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged, so a marker does not cover an unknown `NA`: that outcome still exits 1.
 
 Prefer `xfail_strict: true` for a known bug or intentionally failing teaching case so the regression reports when the underlying behavior changes.
 
@@ -1891,9 +1993,9 @@ rb mcp --list-tools
 }
 ```
 
-Graph, test-status, coverage, and hierarchy tools mirror their `rb --machine` payloads. Each call rereads graph and coverage files, so no daemon is required and updates are visible without restarting the MCP server.
+Graph, test-status, coverage, physical-metrics, and hierarchy tools mirror their `rb --machine` payloads. Each call rereads the graph, coverage, and physical artefact files, so no daemon is required and updates are visible without restarting the MCP server.
 
-When a live hub is discoverable, the server also advertises tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage focus. Without a hub those tools are omitted rather than exposed in a permanently failing state.
+When a live hub is discoverable, the server also advertises tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage and physical focus. Without a hub those tools are omitted rather than exposed in a permanently failing state.
 
 ## Load graph.json directly
 
@@ -2045,7 +2147,7 @@ description: Start and operate the rtl_buddy hub, connect browser and editor pee
 
 # Hub (`rb hub`)
 
-The hub coordinates the schematic, waveform viewer, source editor, graph pane, and coverage pane. It translates between their view, wave, and source coordinates and routes live events among connected peers.
+The hub coordinates the schematic, waveform viewer, source editor, graph pane, coverage pane, and synth+power pane. It translates between their view, wave, and source coordinates and routes live events among connected peers.
 
 ## Quick start
 
@@ -2062,6 +2164,7 @@ Open the printed `http://127.0.0.1:<http_port>/` URL. The landing page links the
 | `/sch` | Interactive schematic. |
 | `/gph` | Design knowledge graph. |
 | `/cov` | Coverage browser. |
+| `/phy` | Synthesis area and power browser. |
 
 Use a second shell to inspect or stop the process:
 
@@ -2151,13 +2254,14 @@ The hub accepts inbound connections only; every adapter is responsible for conne
 | Schematic SPA | `view` | WebSocket `/ws`. |
 | Graph pane | `graph` | WebSocket `/ws`. |
 | Coverage pane | `cov` | WebSocket `/ws`. |
+| Synth+power pane | `phys` | WebSocket `/ws`. |
 | `rb wave` bridge | `wave` | Line-delimited JSON over TCP. |
 | Editor adapter | `src` | Line-delimited JSON over TCP. |
 | `rb hub send` | `cli` | One-shot TCP client. |
 
 The hub permits one client per origin. A second browser tab can take over and disconnect the prior tab; the prior tab stops reconnecting until the user explicitly takes the connection back. The landing page does not register an origin and therefore cannot evict an app.
 
-`rb hub status` shows the live origins. It intentionally reports protocol origin names such as `view` and `graph`, while the browser labels those apps `sch` and `gph`.
+`rb hub status` shows the live origins. It intentionally reports protocol origin names such as `view`, `graph`, and `phys`, while the browser labels those apps `sch`, `gph`, and `phy`.
 
 ## Driving the hub from the CLI
 
@@ -2169,14 +2273,15 @@ rb hub send select demo_top.u_dma
 rb hub send open-source design/dma.sv:84
 rb hub send graph-focus module:dma_engine
 rb hub send cov-focus file:design/dma.sv --line 84
+rb hub send phys-focus module:dma_engine --metric area
 rb hub send wave-add tb.dut.req tb.dut.ready
 rb hub send wave-zoom 1000 2000
 rb hub send capture --out schematic.png --format png
 ```
 
-The command groups cover state broadcasts, waveform control and item management, schematic pan/overlay/capture, source opening, diagnostics, graph or coverage focus, and coordinate resolution. See the [CLI reference](../reference/cli.md#hub-send) for all verbs and arguments.
+The command groups cover state broadcasts, waveform control and item management, schematic pan/overlay/capture, source opening, diagnostics, graph, coverage or physical focus, and coordinate resolution. See the [CLI reference](../reference/cli.md#hub-send) for all verbs and arguments.
 
-The hub caches the latest selection, graph focus, and coverage focus. You can send a focus before its app opens; it is replayed when the peer registers. Surfer-side rejection, an unknown id, or an unavailable target peer returns a real hub error and a non-zero exit.
+The hub caches the latest selection, graph focus, coverage focus, and physical focus. You can send a focus before its app opens; it is replayed when the peer registers. Each cache is one slot, latest writer wins: a late-joining pane opens on the most recent target rather than replaying a backlog. Surfer-side rejection, an unknown id, or an unavailable target peer returns a real hub error and a non-zero exit.
 
 ## Design knowledge graph pane
 
@@ -2207,6 +2312,26 @@ Open `/cov` after a coverage-producing run. `GET /cov.json` uses the same covera
 The pane supports metric filtering, coldest-file ordering, a per-test lens, annotated source, and per-point attribution. Clicking source can send `source_focused` and `open_source`; clicking a module can send `graph_focus`. The hub resolves source locations into schematic selections where possible.
 
 Coverage discovery is cached briefly. Reload after a run finishes if the landing page has not yet updated. See [Coverage](coverage.md) for collection and metric definitions.
+
+## Synth+power pane
+
+Open `/phy` after `rb synth` or `rb power`. `GET /phy.json` uses the same builder as `rb phys summary`, so CLI and browser numbers agree; unlike the CLI it truncates nothing, because the pane sorts and filters the whole model client-side. It returns 404 with a command hint when the project has no `phys-manifest.json`.
+
+`?dir=<project-relative phys_dir>` selects one run; bare `/phy.json` serves the newest manifest. The value is validated against the project root before anything is read: outside it is 403, and a directory with no `phys-manifest.json` is 404 naming `rb phys runs`. Containment is decided on the path as written rather than on its resolved form, so a suite whose `artefacts/` is a symlink to scratch storage — the layout discovery already walks into — stays selectable; a `..` still collapses and is refused. Where the path as written stays inside the project but *resolves* outside it, a link was crossed, and the route admits only the links discovery admits: an `artefacts` component below the project root. A `vendor/` or `$HOME` link is 403, so what the route will read is exactly what the run listing offers.
+
+The body carries the `rb phys runs` listing as a `runs` block, bounded to the 50 newest with the untruncated count beside it, and the pane renders it as a run dropdown in its header. Entries read `run · top · backends · mode (activity) · experiment` and mark the run being shown and the newest separately; the artefact directory, the configuration fingerprint and the timestamp are on the hover. Choosing one re-fetches with `?dir=`; reload re-reads whichever run is shown. The newest entry is the exception: it selects the bare route rather than its own directory, so choosing it keeps the pane following discovery to whatever run finishes next, while choosing any other pins that run. A selection the server refuses keeps the run on screen and reports the refusal in the status line.
+
+The pane switches between `cells`, `area`, `leakage`, `dynamic`, and `total`. `dynamic` is internal plus switching, summed in the browser: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows and flags a disagreement rather than reconciling it, because the two numbers come from different scrapes.
+
+A model with only one half keeps working. The pane names the command that fills the other one — unless that command could not merge with the half already there: a power half taken from a routed database (`netlist-source: pnr`) records no netlist hash, so a later `rb synth` would replace the model rather than complete it, and the banner says to synthesise first and re-run `rb power` on the netlist it writes. `rb hub send phys-focus` still drives whichever half is present.
+
+Reload re-reads the run the pane is showing, and a pane that has selected nothing follows discovery. A reload that lands on the same model keeps your metric, sort, filter, module lens and selected instance; one that lands on a *different* model — another run became the newest, the design was re-topped, the same run was published again over a revision switch — keeps the controls but drops the lens and the selection, which were statements about rows that are gone. A `phys-focus` sent while the pane was loading still applies to whatever model arrives.
+
+An inbound `phys_focus` applies to the run the pane is displaying. The message carries a target and a metric and names no run: a sender addresses the pane, the pane addresses one run at a time, and the reader is the one who chose it, so switching runs is a gesture in the pane rather than something another app can do to it.
+
+Clicking a module sends `graph_focus`; clicking an instance sends `selection_changed`, since an instance path is already the schematic's coordinate. Instance-path separators are levelled onto the wire's dots on the way out. An inbound `selection_changed` highlights the matching instance row.
+
+Physical discovery is cached briefly, like coverage. See [Physical Metrics](phys.md) for the model and the CLI verbs.
 
 ## AXI-perf overlay and notebook spawning
 
@@ -2374,6 +2499,137 @@ The report is `<mut.yaml dir>/artefacts/mut/<campaign>/mut_report.json`. It reco
 With the global `--machine` flag, `mut list` returns `sites`; `mut run` and `mut score` return `report`.
 
 `mut run` exits 0 when any result is scorable and 1 when the score is `n/a`. It does not gate on a score threshold. `mut list` and `mut score` exit 0 on success; configuration, engine, and report errors are fatal.
+
+
+---
+
+<!-- source: concepts/phys -->
+
+---
+description: Query saved synthesis and power artefacts by module and instance with rb phys or the hub's synth+power pane, from the physical model each run writes.
+---
+
+# Physical Metrics
+
+`rb phys` reads the physical model `rb synth` and `rb power` already write and answers per-module and per-instance questions from it. It runs no tools and writes nothing.
+
+## Read the model a run produced
+
+Every synthesis and power run writes `phys-model.json` and `phys-manifest.json` into its artefact directory. Without an override, `rb phys` reads the newest `phys-manifest.json` under the project root.
+
+```bash
+rb phys summary
+rb phys summary --limit 0
+rb phys module sub
+rb phys instance u_sub
+rb phys summary --phys-dir verif/blk/artefacts/nightly
+```
+
+- `summary` reports the run header, the design totals, the heaviest modules by cell count, and the hottest instances by total power. `--limit 0` shows every row.
+- `module` reports one module's cells and area, then the instances of it and the power they burn. The name may be a design module from the synthesis half or a Liberty cell from the power half; see [What the module join can answer](#what-the-module-join-can-answer).
+- `instance` reports one instance's power. A path that names a subtree instead of a leaf lists the leaves under it, hottest by total power first, and rolls them up. Paths are compared level by level, so `u_sub.u_leaf` and `u_sub/u_leaf` name the same instance whichever spelling the tool wrote.
+
+`--phys-dir` selects an artefact directory and `--manifest` names the document directly. An explicit `--manifest` wins over `--phys-dir`, which wins over discovery.
+
+An unknown module or instance exits 2 and reports close candidates. A project with no manifest exits 2 naming `rb synth` and `rb power`.
+
+## List the runs a project holds
+
+A project accumulates one artefact directory per partition, per corner and per power mode. `rb phys runs` lists them, newest first:
+
+```bash
+rb phys runs
+rb phys runs --limit 0
+```
+
+Each row carries the run name and top, the backends that produced it, the power mode and what drove the switching, a fingerprint of the configuration that shaped the netlist, the `rb xplr` experiment id when the run sits under one, and when it was generated. The row marked `*` is the newest — the run the other verbs read without `--phys-dir`. The artefact directories are printed under the table rather than in it, one per run, because that is the value the next command takes:
+
+```bash
+rb phys summary --phys-dir verif/blk/artefacts/nightly
+```
+
+The listing reads one manifest per run and opens no model, so it stays cheap on a project with many. A manifest that cannot be read is listed with its error rather than dropped: discovery found the file, and a menu that omitted it would report fewer runs than the project has. A project with no physical artefacts lists nothing and exits 0, unlike the other three verbs — they were asked about a run, and this one is asking what runs there are.
+
+## Tell two runs apart
+
+Both producers record what *shaped* a run beside what it measured, so two runs of one design are two measurements rather than one document read twice.
+
+`rb power` records its **mode** — `static` or `dynamic` — and a compact **activity** block: the resolved source (`default`, `synthetic`, `saif` or `vcd`), the trace and its sha256, the test whose artefact directory the trace came out of, the scope, and the toggle and duty a synthetic run used. Without them a µW figure carries no statement of what it measures: leakage plus internal and a SAIF-driven total print in the same column. Each detail belongs to the source that consumed it: a `saif` run records no toggle and duty, because a trace is what drove it, and a `default` or `synthetic` run records no trace, hash, test or scope even when its config still carries `activity.saif` and `activity.scope`, because the analysis read neither. The test name is derived from the layout — `verif/demo/artefacts/csr_smoke/dump.saif` was produced by `csr_smoke` — and is absent for a trace kept anywhere else. The sha256 identifies the trace by its bytes: a `dump.saif` is rewritten in place by the next run of the test behind it, so a re-captured trace is a different measurement under an unchanged path. It is part of the run's identity and not of its label — a label is a table cell — so two runs against two versions of one trace read alike in the `activity` column and apart in the block behind it.
+
+Both flows record a **config fingerprint**: the platform, the effort, the constraints file and its sha256, and a short digest of the effective tool options. The digest covers what the backend's generated script actually consumes, and nothing else, so a field the script never reads is left out rather than reporting a difference the netlist cannot have. A **Yosys synthesis** feeds the elaboration settings (frontend, the two correctness-gate modes, and under `slang` the plugin path and `single-unit`), the resolved `synth-args`, the parameters and defines, and the branch it took: a mapped run adds the ABC delay target read out of the SDC and the resolved Liberty list, and drops `abc-args`, which its hard-coded ABC script ignores, while an unmapped run does the reverse. An **OpenROAD synthesis** feeds the same elaboration settings with `synth-args` taken from the effort — that is where its stage-1 script takes it from — the resolved Liberty list, which both its stages read, and from stage 2 the command `strategy` maps to, the sha256 of the effort's `pre-sta-tcl`, and the resolved LEF list. Both library lists are the resolved ones rather than the platform name, because a config's own `lib-paths` and `lef-paths` are appended to the platform's and are the whole of the list when there is no platform. A **power run** feeds the tool, netlist source, the identity of the upstream run it read, the resolved technology its script reads, mode, activity source and register level; its `tool_overrides` is left out because no power backend reads it. The technology is the Liberty and the one or two LEFs the generated Tcl names, in script order, for the reason the synthesis library lists are resolved rather than named by platform: a `cfg-pnr-platforms` entry repointed at another corner is the same name. The upstream identity is what `netlist_source` alone does not say — which synthesis or which place-and-route, not merely which kind: a `netlist-source: synth` run records the sha256 of the netlist it measured and a `netlist-source: pnr` run the project-relative path of the routed database it read. The constraints are the SDC the run actually read: a `netlist-source: pnr` run with no explicit `constraints:` records the router's `<top>.routed.sdc` it was given. The constraints sha256, and the activity trace's, are taken before the tool is launched and re-checked when it returns, because a digest computed at publication would identify a file replaced while the run worked — a routed SDC a concurrent `rb pnr` rewrote, a trace the next run of its test re-captured — and record it as what the run measured. A file that moved underneath the run records `null` and logs a warning. It is taken over the *effective values*, rendered as canonical JSON, not over the files they came from, so two configs that spell one setting differently and resolve to the same options are one experiment. As a summary it reads `nangate45 · timing-opt · sdc a1b2c3d4 · opts 5655beea1f20`.
+
+A manifest under `artefacts/xplr/<exp-id>/` carries that **experiment id** in every payload's run header and in the run listing. The id comes from the path, so it is there before the experiment's `record.json` exists; the record is read only for the experiment's `hypothesis`, which becomes the entry's label. A malformed record costs the label and nothing else. A run inside a materialized checkout is labelled too: `rb xplr materialize` puts the worktree at `artefacts/xplr/worktrees/<exp-id>/`, so the id is one level further down and the reproducible runs — the ones checked out at a pinned sha — are exactly the ones that must not lose it. The `worktrees/` directory is not itself an experiment, and a worktree sidecar naming another location says this checkout is not that experiment's.
+
+None of this gates the merge. The netlist sha256 both producers record is what decides whether two halves describe one design, and it is the stronger test in both directions: the same options can produce two netlists, and two option sets can produce one. That gate is also what keeps same-top experiments from cross-pollinating a merged model — a power half only pairs with the synthesis whose bytes it measured.
+
+The keys are additive. A document written by an earlier rtl-buddy carries none of them, and every reader reports them as not recorded rather than refusing the document.
+
+## Read a model with only one half
+
+A synthesis fills the model's `modules` half and a power run fills its `instances` half. A run of both into the same artefact directory, for the same top, produces a complete model in either order; see [Synthesis](synthesis.md#inspect-artefacts) and [Power Analysis](power.md#inspect-artefacts).
+
+With one half absent, every verb still answers from the half that is present and says which command produces the other — unless that command could not merge with what is already here. The merge is gated on the netlist hash both producers record, so a power half taken from a routed database (`netlist-source: pnr`, which has no netlist to hash) cannot be paired with: a later `rb synth` into that directory would *replace* the model rather than complete it. The note says so, and names what does work — synthesise, then re-run `rb power` on the netlist the synthesis wrote, so both halves measure the same one. `rb phys instance` is the exception: instance rows exist only in the power half, so it exits 2 pointing at `rb power`.
+
+## What the module join can answer
+
+The two halves spell `module` in two namespaces. In the synthesis half it is an RTL module name, as Yosys' `stat` saw it. In the power half it is the Liberty cell each leaf instance is an instance of — `DFF_X1`, `NAND2_X1` — because a mapped netlist's leaves are cells, not RTL modules.
+
+So `rb phys module` answers Liberty-cell questions: `rb phys module DFF_X1` reports every flop instance and the power they burn together.
+
+It does not attribute power to an RTL module, and flattening the design does not change that. The join matches the power half's `module` field as it stands, and that field holds the cell a leaf is an instance of — so no leaf row carries `u_cpu`'s name, or the top's, and the join finds nothing. When a name resolves out of the synthesis half alone and the power half is populated, the payload's `instance_join` says so in words and the console prints it, so an empty instance list is never mistaken for "this block burns nothing". Ask what a block burns by its instance path instead: `rb phys instance u_cpu` sums the leaf rows under it — see [Roll up a hierarchy](#roll-up-a-hierarchy).
+
+Nothing stops one name from being in both namespaces — a Liberty cell named after a block, or an RTL module called `DFF_X1`. Then the two halves are measuring two different things under one word, and `rb phys module` says so: `namespaces` lists both and `instance_join` carries a collision note the console prints. The row and the instances are still reported, and still not added together; the note is what keeps a module's cells and area beside a cell type's power from reading as one block's totals.
+
+See [Known Issues](../known-issues.md#rb-phys-module-reports-no-power-for-an-rtl-module).
+
+## Roll up a hierarchy
+
+The model records leaf values only, because a subtree sum depends on the hierarchy the consumer projects onto. `rb phys instance <path>` is that consumer: it sums the leaves under the path at query time and leaves the document unchanged.
+
+A path that names a row exactly is answered by that row. `match` reports which question was answered — `exact` or `prefix` — and the rollup answers that question and no other: the named row for an exact match, every leaf under the path for a prefix one. A path that is both a row and a prefix of other rows therefore rolls up to the row alone; the rows below it are still listed and still counted by `child_count`, and the console says they are there for navigation rather than in the total.
+
+The rollup adds the four power columns directly, and reports nothing else. It carries no area: the model has no per-cell area to sum, and the only substitute available — joining each leaf's module to the synthesis half — would add the whole module's area once per leaf, on a name that may belong to the other namespace entirely. Area is reported per RTL module, by `rb phys module`, against the name Yosys counted it for.
+
+## Browse the model in the hub
+
+The hub serves the same model as a page. Start the browser layer and open `/phy`:
+
+```bash
+rb hub start --serve-viewer
+```
+
+`GET /phy.json` is the `rb phys summary` payload with no row limit, so the pane and the CLI cannot disagree about a number. It also carries the `rb phys runs` listing, which the pane renders as a run dropdown in its header: entries read `run · top · backends · mode (activity) · experiment`, mark the run being shown and the newest, and carry the artefact directory and the config fingerprint on the hover. Choosing one re-fetches `GET /phy.json?dir=<phys dir>`; the newest stays the default for a pane nobody has touched, and choosing the newest entry is how you go back to following it rather than pinning the run that happens to be newest today. An inbound `phys-focus` applies to the run the pane is showing — the message names a target and a metric, never a run, so switching runs is a gesture in the pane rather than something another app can do to it. The pane ranks modules by cells or area and instances by leakage, dynamic or total power, tints each ranked column, and filters the instance table to one module when you click it.
+
+The pane holds every row, but renders the instance table 500 at a time with a `show more` / `show all` control under it — a mapped design's power half runs to six figures of leaf instances, and a table that rebuilt all of them on every sort click would freeze the tab. Selecting a row that ranks below the window moves the window to it, keeping the row and its neighbours in the ranking on screen without lifting the bound; the control then says how many rows sit above and below the slice. Sorting, filtering, the tints and the totals are computed over the whole set regardless of what is on screen.
+
+`dynamic` is internal plus switching, summed in the browser rather than stored: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows, and says when they disagree.
+
+Point the pane at a target from anywhere:
+
+```bash
+rb hub send phys-focus module:sub --metric area
+rb hub send phys-focus instance:u_sub/_64_
+```
+
+An inbound focus is always visible: when the search box would hide the row it selects, the pane takes the search off and says so in its status line, and leaves it alone when the target already matches it. An unprefixed target is read as an instance path. The pane resolves exact leaf rows, so an instance target has to name a row: a subtree path — the one `rb phys instance` answers with `match: prefix` — selects nothing, and one of its children is what to send instead. The hub replays the latest focus to the pane when it registers, so sending one before the tab is open works — as does a selection the schematic broadcast before the pane's model had loaded. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. The pane roots the path it sends at the design top, since that is the schematic's coordinate and a model row is always relative to the top; on the way back in it resolves a path against the rows themselves, reading it both as sent and with a leading top level removed, so a design whose top name is also an instance name still selects the right row. The tables keep whatever spelling the model recorded. That top is the physical model's own, and the pane cannot know which view the schematic is displaying: a `/sch` showing a testbench around the DUT, or another design entirely, is sent a path that names no instance there and selects nothing. An instance path only means something inside the hierarchy the model recorded it in, so pair the pane with a schematic of the same design; see [Known Issues](../known-issues.md#phys-pane-and-schematic-selections-cross-only-within-one-hierarchy). See [Hub](hub.md#synthpower-pane) for the routes and the peer contract.
+
+Clicking a module filters the instance table to it. When the name is an RTL module and every leaf carries a Liberty cell name, nothing matches, and the pane says so rather than showing an empty table. When the name is in both namespaces the lens looks complete instead — a cell type's leaves listed under a module's cells and area — so the pane prints the collision note there too, saying which measurement is whose. Both are the calls `rb phys module` makes on its own payload; see [What the module join can answer](#what-the-module-join-can-answer).
+
+## Machine payloads
+
+`--machine` emits the payload the verb built, carrying its own `schema_version`, the project-relative manifest and model paths, the run header, the artefact block, and the verb's data: rankings for `summary`, the module row plus its instances for `module`, and the row or subtree plus its rollup for `instance`.
+
+Every run header also carries the run's identity: `power_mode`, `power_activity` (the recorded block plus a derived `label`), `config` with a `synth` and a `power` fingerprint (each plus a derived `summary`), and `xplr` — `{"id", "label"}` or `null`. Each half's `halves` entry echoes `mode` and `activity`, `null` on the synthesis half where neither exists.
+
+`rb phys runs --machine` emits its own payload: `count`, the applied `limit`, and `runs`, newest first. Each entry carries `phys_dir` and `manifest`, `run`, `top`, `run_command`, `generated_at`, `backends`, `mode` and `activity`, `config`, a derived `fingerprint`, `xplr`, `newest`, and `error` — non-null only for a manifest that could not be read, where the rest of the entry is null and `phys_dir` still selects the run. `phys_dir` is derived from where the manifest was found, not from the document, so it is always relative to the root the listing was taken under.
+
+`--limit` truncates the machine payload as well as the table, so a payload is exactly the rows the flag asked for and `--limit 0` is how an agent asks for all of them. A truncated list says so: `summary` carries `limit` beside its two rankings, `module` carries `limit` and `instance_count`, and `instance` carries `limit` and `child_count` — the counts are how many rows there are, never how many are listed. The figures beside a truncated list are still whole-set figures: `module`'s `power` sums every instance of the module and a prefix `instance`'s `rollup` sums every leaf under the path. The builders themselves default to the complete list, so only a caller that asks for a head gets one.
+
+Each payload also carries `halves` and `missing_halves`, which report which halves the model has and which command fills each one. Each half's entry also carries `netlist_hash`: whether that half's producer recorded the hash of the netlist it measured, which is what the merge is gated on and therefore what a surface needs before advising anyone to run the other command. A `null` value means the run did not measure it; `0` means it measured zero. The `module` payload also carries `namespaces` — `["rtl"]`, `["liberty"]`, or both — and `instance_join`: `null` when the instance list needs no qualification, a sentence naming the Liberty-cell namespace limit when the module matched nothing because of it, and a collision sentence when the name is in both namespaces.
+
+A manifest or model whose JSON root is not an object — an empty file rebuilt by hand, a truncated write, a path pointed at the wrong file — is refused by name, as an unreadable one is, and so is one whose blocks are not the shapes the read dereferences them as: the producer blocks and the totals are objects, the manifest's `model` and `phys_dir` paths strings, the model's two halves arrays of objects. A `null` block is not malformed, since that is what a half-filled run writes. Under `--machine` either arrives as the usual error envelope rather than a traceback.
+
+`rb mcp` exposes the same query builders as `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`. `phys_runs` is where the `phys_dir` the other three take comes from; it needs no arguments and takes the same `limit`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. All three take the same `limit` the flag does, with the same default: the head of the ranking, and `0` for every row. The payload says which it gave you — the applied `limit` sits beside the untruncated `instance_count`/`child_count`, and the `power` and `rollup` sums cover every matching row either way. A `phys_focus` tool mirroring `rb hub send phys-focus` joins them when a live hub is discovered. See [The MCP server](graph.md#the-mcp-server).
 
 
 ---
@@ -2727,6 +2983,16 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | `power.tcl` | Generated OpenROAD script |
 | `power.log` | OpenROAD output |
 | `power.rpt` | Raw `report_power` report |
+| `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
+| `power_instances.rpt` | Raw `report_power -instances` report, one line per leaf instance |
+| `power_instances.cells` | Instance path to Liberty cell, the module column that report lacks |
+| `phys-model.json` | Physical model — per-instance rows plus the design totals |
+| `phys-manifest.json` | Which physical artefacts this run produced, and where |
+| `phys-publish.lock` | Mutex held while that pair is rewritten; empty between publishes |
+
+Query the model with `rb phys`; see [Physical Metrics](phys.md).
+
+The per-instance half is a by-product, never a gate: the design totals are parsed and reported before it is read, and the hierarchy walk that produces it runs inside a Tcl `catch`. An OpenSTA that cannot produce it costs the model its `instances` block — `null`, with a warning — and the run still reports `PASS`. A `rb synth` run writing into the same artefact directory for the same top fills the model's per-module half rather than replacing it. Either half travels only when both runs recorded the same netlist hash: this run keeps the per-module rows already there when the netlist it read is the one they were counted off, and a *later* synthesis keeps these per-instance rows when the netlist it writes hashes equal to the one this run read. The two flows are still not symmetric, but the check is — the ordinary `rb synth` then `rb power` pair passes it because a power run reads exactly what the synthesis wrote, while a rebuild between the two runs fails it in whichever direction publishes second. A `netlist-source: pnr` run reads the routed database rather than a netlist and records no such hash, so it inherits no per-module rows and its own rows are never carried forward by a synthesis. The netlist a `netlist-source: synth` run measures is copied into its own artefact directory as `power_netlist.v` first, and it is that copy OpenROAD reads and that copy the hash identifies. The bytes measured and the bytes named are therefore the same file, which no other command writes: a synthesis landing in the upstream directory mid-analysis is caught rather than recorded as a match. The manifest names that copy alongside the hash, so a result read back from an archive reaches the netlist the numbers were measured over and can re-check the hash against it; a `netlist-source: pnr` run names none. The copy is removed before each run and again if the run fails, like the reports beside it.
 
 An FPGA run and a power run must not share a name within one suite: both own `artefacts/<name>/power.rpt` and the second to run overwrites the first. Ownership cannot be told apart by filename, so rtl_buddy does not try — give them distinct names.
 
@@ -3506,6 +3772,14 @@ Outputs land under `<synth-dir>/artefacts/<run>/`.
 | `synth.log` | Yosys-only | Yosys output |
 | `synth_yosys.log` | OpenROAD | First-stage Yosys output |
 | `synth.tcl`, `synth.log` | OpenROAD | STA script and OpenROAD output |
+| `synth_stat.json` | Both | Yosys `stat -json`: per-module cell count and area |
+| `phys-model.json` | Both | Physical model — per-module rows plus the design totals |
+| `phys-manifest.json` | Both | Which physical artefacts this run produced, and where |
+| `phys-publish.lock` | Both | Mutex held while that pair is rewritten; empty between publishes |
+
+Query the model with `rb phys`; see [Physical Metrics](phys.md).
+
+The physical model is a by-product, never a gate: a run that produced a netlist has passed whether or not Yosys also wrote a readable `stat -json`. When the per-module dump is missing or unreadable, the model still records the design totals and its `modules` block is `null` — a warning says so, and the synthesis still reports `PASS`. A `rb power` run writing into the same artefact directory for the same top fills the model's per-instance half rather than replacing it. A re-synthesis carries those per-instance rows forward only when the netlist it has just written is byte-identical to the one the power run read — both halves record that netlist's hash, and the same check runs in the other direction when it is `rb power` that publishes second. Edit the RTL and re-run `rb synth` and the rows are dropped (`instances: null`, with their totals) rather than left standing against a netlist that no longer exists; re-run `rb power` to measure the new one. A synthesis and a power run publishing into one directory at the same moment take `phys-publish.lock` in turn, so the pair they leave carries both halves whichever finishes first.
 
 Both netlists are deleted at the very start of each run, before the filelist is even generated and before Yosys is looked for at all, so every way a run can fail leaves them absent — there is no missing-tool carve-out here, because `rb pnr` and `rb power` resolve the netlist by path and must never be handed the previous run's. A run that fails publishes nothing. Yosys writes the netlist partway through its script and only then runs the trailing `stat`, so it can crash — or log an `ERROR:` line — with the netlist already on disk; and on the OpenROAD backend the Yosys stage can succeed before the timing stage fails. Every one of those paths removes the netlist again, so a `FAIL` never leaves a design for `rb pnr` or `rb power` to pick up. They are the fixed-path inputs `rb pnr` and `rb power` resolve, so a failed rerun that left the last successful run's netlist in place would have those commands place, route, and power-analyse a design that is no longer what the RTL says. A failed run therefore leaves no netlist at all, and `rb pnr` reports that you need to run `rb synth` first. Copy a netlist you want to compare against out of the artefact directory before rerunning.
 
@@ -3635,7 +3909,7 @@ end else begin
 end
 ```
 
-Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the result is `NA`: it needs review but does not by itself make the shell exit status nonzero. A simulator exit code alone is not a non-UVM verdict.
+Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the outcome is unknown: the result is `NA` and the run exits 1. A simulator exit code alone is not a non-UVM verdict, but a simulator that exits nonzero *and* prints no marker has aborted, and that combination is reported as `FAIL`.
 
 For UVM, configure thresholds and let RTL Buddy parse the UVM Report Summary:
 
@@ -3657,14 +3931,14 @@ Setup hooks, filelist validation, compilation, and simulation timeout can also p
 | `FAIL` | The verdict failed, or setup, filelist, compile, or simulation failed |
 | `XFAIL`, `XPASS` | Remapped by an expected-failure marker |
 | `SKIP` | Excluded by regression-level or flow filtering |
-| `NA` | No real verdict was produced, including a successful early stop |
+| `NA` | No verdict was produced: either a successful early stop (exits 0) or an unknown outcome (exits 1) |
 
 The shell exit code is a coarse run status. Parse `payload.results` under `--machine` for per-test verdicts.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | No real `FAIL`; may include `PASS`, `XFAIL`, `SKIP`, or `NA` |
-| 1 | At least one real test/tool-flow failure, or a strict `XPASS` |
+| 0 | No real `FAIL`; may include `PASS`, `XFAIL`, `SKIP`, or an early-stop `NA` |
+| 1 | At least one real test/tool-flow failure, an unknown `NA`, or a strict `XPASS` |
 | 2 | Fatal configuration or environment error |
 
 A strict unexpected pass counts as a failure. See [Expected Failures](expected-failures.md).
@@ -3677,7 +3951,7 @@ Use the global `-E` or `--early-stop` option with `pre`, `comp`, `sim`, or `post
 rb -E comp test smoke
 ```
 
-A successful stop before a terminal verdict reports `NA` and exits 0. A stage failure still reports `FAIL` and exits 1. Treat `NA` as requiring inspection, not evidence that the DUT passed.
+A successful stop before a terminal verdict reports `NA` and exits 0; its result row carries `early_stop: true` (in `--machine` output too) so tooling can tell it apart. A stage failure still reports `FAIL` and exits 1. An `NA` that was not asked for — no verdict in the transcript — is an unknown outcome, carries no marker, and exits 1. Treat `NA` as requiring inspection, not evidence that the DUT passed.
 
 ## Sharing compiled builds across tests
 
@@ -3704,6 +3978,40 @@ rb test smoke --share-build --rebuild   # compile it again anyway
 The test's `compile.log` records the same breadcrumb, with the command a rebuild would run. `--rebuild` forces one rebuild per build directory per invocation and says nothing about whether builds are shared; dropping `--share-build` does not force one under `--dispatch`, which implies it.
 
 Verilator, VCS, and Icarus support shared builds. An unsupported builder or an absolute `builder-simv` uses the test's own build directory and logs why cross-test sharing was declined. RTL Buddy overrides relative output-location options so the shared directory owns `simv`.
+
+### Persistent build cache
+
+`artefacts/.shared-builds/` lives inside the workspace, so a CI job that wipes the workspace after every run (`deleteDir()`, `git clean -ffdx`) throws the cache away and recompiles inputs that never changed. Point `shared-build-root` at a directory outside the workspace and the cache outlives the run:
+
+```yaml
+cfg-rtl-reg:
+  reg-cfg-path: regression.yaml
+  shared-build-root: /shared/nfs/rb-build-cache
+```
+
+```bash
+rb regression --share-build --shared-build-root /shared/nfs/rb-build-cache
+```
+
+`--shared-build-root` beats `RTL_BUDDY_SHARED_BUILD_ROOT`, which beats the config key; an empty value at either of the first two turns the cache off for that run, and under `--dispatch` that disable is forwarded to the build and simulation jobs so they do not re-enable it from the config. A relative root resolves against the project root — the directory holding `root_config.yaml` — not the working directory, so a dispatched build job and its simulation jobs resolve one path. The root is created on demand and only applies with `--share-build` (which `--dispatch` implies).
+
+Builds land in `<root>/<suite-namespace>/obj_dir_<key>/`, where the namespace is the suite directory relative to the project root with `/` replaced by `__` (`verif/demo_tiny_alu` → `verif__demo_tiny_alu`); a suite outside the project root gets a digest of its absolute path instead. Nothing in the layout names the checkout, which is the point: every checkout on the host shares the cache.
+
+In this mode the compile key changes shape. It is spelled relative to the project root — `run.f` entries and any absolute in-root path in the compile line alike — and it **includes the content hash** of every tracked input. That covers what the compile *line* names as well as what `run.f` does: an absolute in-root `+incdir+` or `-y` directory, a `-v` file, or a bare source path reaching the builder through `builder-opts.compile-time` contributes the same content identity a filelist entry does (a file its hash, a directory the hashes of the files inside it, pruned and filtered by the same rules). A `-f`/`-F` filelist contributes what it *names*, not just its own bytes: the chain is expanded recursively (bounded depth, cycle-safe) and every in-root source, include directory and further list in it is keyed. A chain deeper than the bound fails closed — what was not read enters the key as an absolute path, which makes that suite's key checkout-specific rather than promising inputs nobody looked at, and `compile.cache_key_depth_bound` says so once. The two options are read the way the simulators read them — a relative entry inside a `-f` list resolves against the builder's working directory, one inside a `-F` list against the directory holding that list, and a nested `-f`/`-F` resets the rule for the file it names — so the key hashes the files the build actually opens. One list reached under two bases is therefore read under each, since its relative entries name different files each time, while the same list under the same base is read once. A relative entry whose base is unknown is left as text rather than guessed at. Otherwise two checkouts whose `run.f` matched but whose header under such an `+incdir+` — or whose RTL behind byte-identical nested lists — differed would take one directory and rebuild over each other. (`run.f` itself has no nested lists: RTL Buddy unrolls every `-F` chain when it writes one.)
+
+Only tokens RTL Buddy resolves as a path are relativised. A `+define+NAME=<path>` — on the compile line or in `tests.yaml` `plusdefines`, which reach `run.f` — a `-D`/`-G`/`-pvalue+`, a `+libext+`, or any other `key=value` token keeps its value exactly as written, because a define's value is compiled *into* the model: two checkouts whose builds bake in different absolute paths must get different keys, not one shared binary. An in-root path *embedded* in a larger option is the other way round — it names a directory the build really reads, so it is relativised **and** keyed by its listing. Both spellings count: an absolute one (`-CFLAGS=-I<root>/inc`) is found by its project-root prefix under any option, and a relative one (`-CFLAGS=-I../../inc`, the usual `builder-opts.compile-time` spelling) by the option that introduces it — `-I`, `+incdir+` or `-y` — then resolved against the builder's working directory. A payload that resolves to nothing under the project root stays text, and one directory named twice in the command line is keyed once. A compile-line path *outside* the project root stays part of the key as text; a relative one is resolved against the directory the builder will run in, so `+incdir+inc` is keyed by its contents like any other, and it falls back to text only where that directory is not yet known. An output location such as `-o` is relativised so the key carries no checkout prefix, but is never read. Only `.shared-builds/` and `obj_dir*` *below the project root* are refused outright, so a workspace that itself sits under a dot-directory (`/home/ci/.worktrees/pr`) is keyed like any other; an `+incdir+` into an artefact tree is listed with RTL Buddy's own outputs excluded by name, which is how a `preproc` hook's generated headers are tracked, and a file named directly there is refused only when its own name is one of those outputs.
+
+An input RTL Buddy cannot hash — one above the 64 MB cap, typically a ROM or memory-init image — falls back to its size and modification time rather than to nothing, so two checkouts with different images cannot collide on one directory. Mtimes differ per checkout, so a suite with such an input stops sharing builds across checkouts; it still reuses its own. Inputs outside the project root are unaffected: two checkouts naming one absolute path name the same bytes.
+
+Two checkouts with byte-identical inputs therefore get the same directory and reuse each other's build wherever they sit; two checkouts on different commits get different directories, instead of rebuilding over one another. That makes the directory content-addressed, so a run keeps one directory per distinct input set rather than one per key — a cache to prune rather than a build to rebuild. The stamp is checked on top of the key as usual, and records the project root it was written from so another checkout can re-anchor its entries.
+
+Switching the cache on or off changes every key, so the first run after either compiles once. Nothing prunes the cache; do it between runs, never during one (the build lock lives inside the directory it guards — see [Known issues](../known-issues.md)):
+
+```bash
+find /shared/nfs/rb-build-cache -mindepth 2 -maxdepth 2 -name 'obj_dir_*' -mtime +14 -exec rm -rf {} +
+```
+
+A generated input that is not reproducible byte-for-byte — a `preproc` hook that stamps a timestamp into a header — moves the key rather than only the stamp here, so it strands a directory per run instead of rebuilding in place.
 
 ## Run with randomized seeds
 
@@ -3817,7 +4125,7 @@ Optional tools appear by default. Use `--no-include-optional` to hide them. A to
 
 Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, any optional binaries, and platform-specific install hints.
 
-A tool that declares optional binaries lists them under `Optional binaries (not required; not detected as this tool)`, each with what it buys. They enrich the tool without being part of it: they never satisfy detection, never supply the probed version, and never change a `ok` / `missing` / `outdated` status. Slurm's `scontrol` is the example — `scontrol show config` supplies the cluster's `MaxArraySize` and `SchedulerParameters=max_array_tasks`, so dispatch can split a resource group too large for one job array, and a submit host without it dispatches normally once `cfg-dispatch.max-array-size` — plus `cfg-dispatch.max-array-tasks`, where the cluster caps tasks per array below it — is set. Reading the absence of an optional binary as a missing tool, or its presence as a present one, is exactly the confusion the separate section exists to prevent: a host with `scontrol` but no `sbatch` reports slurm `missing`.
+A tool that declares optional binaries lists them under `Optional binaries (not required; not detected as this tool)`, each with what it buys. They enrich the tool without being part of it: they never satisfy detection, never supply the probed version, and never change a `ok` / `missing` / `outdated` status. Slurm's `scontrol` is the example — `scontrol show config` supplies the cluster's `MaxArraySize` and `SchedulerParameters=max_array_tasks`, so dispatch can split a resource group too large for one job array, and a submit host without it dispatches normally once `cfg-dispatch.max-array-size` — plus `cfg-dispatch.max-array-tasks`, where the cluster caps tasks per array below it — is set. Its second role is `scontrol update JobId=<id> Dependency=`, which starts a compile key's simulation jobs as soon as that key is built; that call is made from the **compute node** running the build job, so this check on the submit host does not prove it is available where it is used, and without it those jobs wait for the whole build job. Reading the absence of an optional binary as a missing tool, or its presence as a present one, is exactly the confusion the separate section exists to prevent: a host with `scontrol` but no `sbatch` reports slurm `missing`.
 
 Aliases are accepted by `--explain` and runtime dependency checks. Output always uses the canonical tool name. For example, `rtl-buddy-sch` resolves to `rtl-buddy-view`; an unknown-name machine response includes the known names and alias mapping.
 
@@ -4827,10 +5135,11 @@ RTL Buddy's wheel provides required Python dependencies. Integrated tools are fi
 | --- | --- | --- |
 | `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
 | `elab`, `elab-regression` | `rtl_buddy[elab]` | Install with `uv add "rtl_buddy[elab]"`; supports pyslang 10.x and 11.x and needs no simulator executable. |
-| Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Requires a Linux submit host and shared filesystem. `sacct` supplies right-sizing telemetry; `scontrol` supplies `MaxArraySize` and `SchedulerParameters=max_array_tasks`, without which a resource group too large for one job array is not split — set `cfg-dispatch.max-array-size`, and `cfg-dispatch.max-array-tasks` too where the cluster caps tasks per array below it, instead. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
+| Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Requires a Linux submit host and shared filesystem. `sacct` supplies right-sizing telemetry; `scontrol` supplies `MaxArraySize` and `SchedulerParameters=max_array_tasks`, without which a resource group too large for one job array is not split — set `cfg-dispatch.max-array-size`, and `cfg-dispatch.max-array-tasks` too where the cluster caps tasks per array below it, instead. `scontrol` also starts a compile key's simulation jobs as soon as that key is built; for that it must be on the PATH of the **compute node** running the build job, not only the submit host, and without it those jobs simply wait for the whole build job. Use `--dispatch local-parallel` for dependency-free parallelism on one host. |
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
 | `synth`, `synth-regression` | [rtl-buddy Yosys fork](https://github.com/rtl-buddy/yosys); OpenROAD for `tool: openroad` | See [Synthesis](concepts/synthesis.md#install-the-tools). |
 | `pnr`, `power` | OpenROAD 25Q1 or newer | KLayout is optional for P&R GDS and PNG output. |
+| `phys` | None | Reads the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; runs no external tool. See [Physical Metrics](concepts/phys.md). |
 | `fpv`, `fpv-regression` | SymbiYosys 0.40 or newer and at least one SMT solver | Yosys is used for COI analysis; yosys-slang is optional. |
 | `wave` | Surfer from the [rtl-buddy fork and branch](https://github.com/rtl-buddy/surfer/tree/rtl-buddy) | Mainline Surfer opens traces but lacks live editor annotation. `rb nvim-install` additionally needs Git and network access. |
 | `hier`, `hier-query` | `uv tool install rtl-buddy-sch` | Graphviz is optional for DOT rendering; pyslang is optional for the slang frontend. |
@@ -4989,7 +5298,7 @@ Shareable builders compile once per compile key. Builders that cannot share comp
 
 The `local-parallel` backend ignores CPU, memory, time, array-throttle, array-size, and right-sizing settings. `max-jobs-per-array` and `max-array-size` describe Slurm job arrays, of which this backend submits none, so neither throttles nor splits anything here. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
 
-`cfg-dispatch.compile.parallel` is the exception: it is not a reservation but concurrency the build job itself honours, and that job occupies one pool slot while fanning out inside it. The real ceiling on the host is therefore `jobs` multiplied by `compile.parallel`, and nothing clamps it. Size the two together.
+The resolved `compile.parallel` (a suite's own `compile:` block where it sets one, otherwise `cfg-dispatch.compile.parallel`) is the exception: it is not a reservation but concurrency the build job itself honours, and that job occupies one pool slot while fanning out inside it. The real ceiling on the host is therefore `jobs` multiplied by `compile.parallel`, and nothing clamps it. Size the two together.
 
 Normal interruption terminates the worker process groups. `SIGKILL` of the head process cannot run cleanup and can orphan `rb _test-job` children; inspect and stop them after a hard CI timeout or `kill -9`.
 
@@ -5005,19 +5314,19 @@ YAML 1.1 parses an unquoted value such as `time: 4:00:00` as an integer. rtl_bud
 
 ## Dispatch build jobs cover the whole suite
 
-One suite build job compiles every unique compile key, and all simulation jobs wait for the complete build. `cfg-dispatch.compile.parallel` compiles that many distinct builds at once inside that job, so `compile.time` must cover the longest batch rather than the serial total, and `compile.mem` must cover that many concurrent elaborations because only `cpus` is scaled for you. Count `compile.start` events to estimate the work.
+One suite build job compiles every unique compile key, and all simulation jobs wait for the complete build. `compile.parallel` — the suite's own `compile:` block where it sets one, otherwise `cfg-dispatch.compile.parallel` — compiles that many distinct builds at once inside that job, so `compile.time` must cover the longest batch rather than the serial total, and `compile.mem` must cover that many concurrent elaborations because only `cpus` is scaled for you. Count `compile.start` events to estimate the work.
 
 The build job's reservation is `compile.cpus` multiplied by `min(parallel, planned tests)`. The cap is planned tests, not distinct compile keys: the head cannot know the keys without writing filelists on the submit host, which is the build job's own work. A suite whose tests share compile keys therefore reserves CPUs for build slots that never run — twenty tests over three keys with `parallel: 8` reserves eight builds' worth of CPUs for three. Set `parallel` to the expected distinct-build count, not to the test count, and confirm it against the `(build job)` row of the reservation advice.
 
 Under dispatch, `sweep` runs once on the head, while `preproc` runs in the build job and again in every simulation job. Make `preproc` idempotent. Write shared generated files atomically to `artifact_dir`; write run-dependent files to `run_artifact_dir`.
 
-`cfg-dispatch.compile.parallel` above 1 adds a second requirement: no config's `preproc` may mutate an input another config compiles. The build job runs every hook before any builder starts, because a config's compile key is only knowable after its own hook ran, so a hook that regenerates a suite-level file overwrites it for configs that have already been fingerprinted. At the default `parallel: 1` the job still runs `preproc` and compile per config in turn, so a generator hook that owns one shared file per config is safe there **between configs with distinct compile keys**. Configs that share a compile key are compiled once and adopt that build, so a hook that rewrites a consumed input per config on one key fails every config after the first with `build_job.group_input_drift` (see below). Simulation jobs make the same demand at any setting, each re-running `preproc` on its own node.
+A resolved `compile.parallel` above 1 — whether from the suite's own `compile:` block or from `cfg-dispatch.compile.parallel` — adds a second requirement: no config's `preproc` may mutate an input another config compiles. The build job runs every hook before any builder starts, because a config's compile key is only knowable after its own hook ran, so a hook that regenerates a suite-level file overwrites it for configs that have already been fingerprinted. At the default `parallel: 1` the job still runs `preproc` and compile per config in turn, so a generator hook that owns one shared file per config is safe there **between configs with distinct compile keys**. Configs that share a compile key are compiled once and adopt that build, so a hook that rewrites a consumed input per config on one key fails every config after the first with `build_job.group_input_drift` (see below). Simulation jobs make the same demand at any setting, each re-running `preproc` on its own node — and under `--dispatch slurm` they now start as soon as *their own* compile key is built, while the build job is still compiling the rest, so a hook that rewrites a suite-level input can reach a key the build job has not compiled yet. The ordering `parallel: 1` preserves is the build job's own; it was never a promise about the fan-out. Keep `preproc` idempotent and per-config at every setting.
 
 Simulation jobs rely on the build stamp to skip recompilation. The stamp records a content hash of every tracked input under the project root, so content decides: a preprocessor that regenerates a filelist source byte-for-byte no longer invalidates anything, while one that changes a source a compile consumes invalidates every stamp. `compile.prebuilt_stamp_invalid` identifies a job that recompiled, and names what drifted. A preprocessor writing files no compile reads, its own program directory under a `+incdir+` for instance, does not. Avoid changing consumed inputs from a per-test preprocessor.
 
-A gated simulation job whose stamp fails against a build the build job recorded as **built** does not recompile. It fails with the stamp check's reason and `compile.build_stamp_rejected` in its log. This is a change from earlier versions, which recompiled: that ran a full elaboration under the simulation reservation, so a large design was killed for memory and the summary reported the kill rather than the drift. If your suite relied on that recovery path, fix what drifts the inputs — usually a `preproc` writing different bytes on the simulation node than on the build node — or give the affected tests a compile key of their own, so their build job compiles them into their own directory. `--dispatch` implies `--share-build`, so there is no per-test opt-out of the shared directory under it; a suite that cannot share compiles locally without `--dispatch`. A build job that crashed or was cancelled leaves no record for the configs it never reached, and those still recompile.
+A gated simulation job whose stamp fails against a build the build job recorded as **built** does not recompile. It fails with the stamp check's reason and `compile.build_stamp_rejected` in its log, and it leaves the shared build directory — the stamp included — exactly as the build job left it, so its same-key siblings still validate that stamp and reuse the same binary. A *missing* stamp is the same outcome as a stale one: the envelope decides, not the absence. So is a compile the build job could not stamp at all — `compile.stamp_write_failed` in the build job's log, `stamp_written: false` beside that config in the build result, and a row here naming the write rather than the stamp; give the shared build directory's filesystem room and permissions and re-run. This is a change from earlier versions, which recompiled: that ran a full elaboration under the simulation reservation, so a large design was killed for memory and the summary reported the kill rather than the drift. If your suite relied on that recovery path, fix what drifts the inputs — usually a `preproc` writing different bytes on the simulation node than on the build node — or give the affected tests a compile key of their own, so their build job compiles them into their own directory. `--dispatch` implies `--share-build`, so there is no per-test opt-out of the shared directory under it; a suite that cannot share compiles locally without `--dispatch`. A build job that crashed or was cancelled leaves no record for the configs it never reached, and those still recompile.
 
-The build job compiles one key once. Configs sharing a key adopt the first one's build after checking the dependencies it reported consuming, so a per-test hook writing beside the sources does not cost a second full compile. A config whose consumed input differs from the leader's is failed with `build_job.group_input_drift` rather than recompiled, because one compile key is one shared directory and recompiling would make the last writer decide what every test on that key simulates.
+The build job compiles one key once. Configs sharing a key adopt the first one's build after checking the dependencies it reported consuming, so a per-test hook writing beside the sources does not cost a second full compile. A config whose consumed input differs from the leader's is failed with `build_job.group_input_drift` rather than recompiled, because one compile key is one shared directory and recompiling would make the last writer decide what every test on that key simulates. Anything else that stops a config adopting is `build_job.group_adoption_declined` with the reason, and a leader whose own stamp never landed is `build_job.group_leader_unstamped`: both mean that key was compiled more than once in this job, which is the number `cfg-dispatch.compile.parallel` is sized against.
 
 A design compile error is reported as `CompileFail`, not `DispatchFail`. Infrastructure failures remain `DispatchFail`. A build the build job recorded as failed with a builder exit code, on the same inputs the simulation job would compile, is not recompiled by its simulation jobs — the summary row carries the build job's error and logs; fix the design or the build reservation, not the simulation one. A simulation job recompiles only when nothing built the config and nothing proved it cannot be built: a build job that crashed or was cancelled before reaching it, a build-side setup failure with no builder exit status, inputs that changed since the failed build, or no readable envelope. That compile runs at simulation size with its transcript in the run's own `compile.retry.log` (under `run-NNNN/` for a fanned-out test), so size the simulation reservation for compilation only when relying on that recovery path.
 
@@ -5053,6 +5362,8 @@ On a cluster with different mount paths per node, a stamp from one node may not 
 
 Because the compile key hashes the text of each `run.f` entry, the first run after upgrading to a release that changed how an entry is spelled recompiles each shared build once. An absolute spelling also makes the key independent of where in the tree the consuming suite sits, so two suites at different depths that share a model now share one build where a relative spelling gave them different keys.
 
+A configured `shared-build-root` changes both halves of this. Keys are spelled relative to the project root and include each input's content hash, so they no longer depend on where a checkout sits; and the stamp's tracked inputs are relative too, re-anchored against the reading checkout's own root, so a stamp one workspace wrote validates in another. Different mount paths per node are still a mismatch for anything *outside* the project root — the toolchain's own includes and binary — so the advice above stands for those. Turning the cache on or off recompiles each shared build once, for the same reason a changed spelling does. In that mode an input the cap excludes from hashing is keyed by its size and modification time instead, so it keeps two checkouts apart at the price of no longer sharing that suite's build between them.
+
 ## Shared-build dependency tracking varies by simulator
 
 Verilator reports consumed headers, library files, its standard includes, and its binary, so changes invalidate the shared-build stamp. Tracked inputs under the project root are compared by content hash, including a filelist source that lives there as a symlink into a tree outside it. Inputs the root does not cover are compared by size and mtime instead of being hashed on every validation: the toolchain's own includes and binary, any single input above 64 MB (`compile.hash_skipped_large` names those), and a reported dependency whose declared path lies outside the root. A dependency is recorded by the path the build used, not its resolved target, so a header symlinked in from a shared tree under a project-relative name is hashed like any other input, and retargeting the link invalidates the stamp even though the directory listing still shows the same name. Stamps written before dependencies were keyed this way rebuild once after upgrading.
@@ -5079,7 +5390,7 @@ Under `--dispatch slurm` a second run of the same suite does not create that con
 
 A build job that stays `PENDING` after `dispatch.build_job_deduped` is usually waiting exactly as intended, so inspect the job ahead of it before cancelling anything: `squeue -j <ids> -O JobID,State,Reason` on the ids that warning names, or `squeue --name=<job name>` to find them (`dispatch.build_submitted` records the name), or `scontrol show job <id>`. `RUNNING`, or `PENDING` with an ordinary capacity reason (`Resources`, `Priority`), means the wait ends when that build does — cancelling it would discard the build this run is about to reuse and kill the simulation jobs gated on it. Only a predecessor that will not finish deserves `scancel`: held (`JobHeldUser`, `JobHeldAdmin`), unschedulable (`PartitionConfig`, `BadConstraints`), or an abandoned run you no longer want. Nothing times such a job out by default.
 
-Unshared builds are covered by neither mechanism. A suite where no planned test can share a build gets no build job at all (`dispatch.build_job_skipped`) and compiles inside each simulation job, into per-test artefact directories that take no build lock. Within one run those have a single writer, but two concurrent runs of such a suite write the same directories with nothing between them: do not run one twice at once. Interrupting a run also still leaves its jobs on the cluster and a re-run does not attach to them — the dedup makes the re-run's build job wait for the orphaned build, but the orphan's simulation jobs run to completion on their own.
+Unshared builds are covered by neither mechanism. A suite where no planned test can share a build gets no build job at all (`dispatch.build_job_skipped`) and compiles inside each simulation job, into per-test artefact directories that take no build lock. Within one run those have a single writer, but two concurrent runs of such a suite write the same directories with nothing between them: do not run one twice at once. Interrupting a run still leaves its jobs on the cluster, but a re-run no longer has to ignore them: it finds them from the run manifest the interrupted head wrote and reports, cancels or adopts them according to `--orphans` — see [interrupted runs](concepts/dispatch.md#interrupted-runs-warn-cancel-adopt).
 
 ## The first run after upgrading recompiles every shared build
 
@@ -5118,6 +5429,14 @@ The scan is a tokenizer with a definedness-only preprocessor, and it is imperfec
 ## Unknown synthesis overrides are ignored after a warning
 
 `synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs `synth_tool_config.unknown_override` and the run uses the default. A non-mapping override block or non-boolean `single_unit` is fatal. See [Synthesis](concepts/synthesis.md).
+
+## `rb phys module` reports no power for an RTL module
+
+The two halves of the physical model spell `module` in two namespaces: the synthesis half holds RTL module names as Yosys' `stat` saw them, and the power half holds the Liberty cell each leaf instance is an instance of, because a mapped netlist's leaves are cells. `rb phys module u_cpu` therefore reports the RTL module's cell count and area with an empty instance list and no power, and flattening the design does not change it. The payload's `instance_join` states the reason and the console prints it. Ask what a block burns by its instance path instead: `rb phys instance u_cpu` sums the leaf rows under it. A name that exists in both namespaces reports both, marked by `namespaces` and a collision note, and the two are never added together. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).
+
+## Phys pane and schematic selections cross only within one hierarchy
+
+Clicking an instance in the `/phy` pane broadcasts the path rooted at the physical model's own top, and an inbound selection is resolved against the pane's own rows. Neither surface can see which design the other is displaying, so a `/sch` showing a testbench wrapped around the DUT — or a different design entirely — is handed a path that names no instance there and selects nothing; a selection broadcast from such a view lands in the pane the same way. Nothing reports it, because a path matching no row is indistinguishable from a click on a row the other surface does not hold. Open the schematic on the design the model was built from — the synthesis `top:`, not a testbench that wraps it — and the two follow each other. See [Physical Metrics](concepts/phys.md#browse-the-model-in-the-hub).
 
 ## FPV COI analysis is best-effort
 
@@ -5408,8 +5727,10 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
 │                    subtree, instances-of, port-connections, source-snippet); JSON on │
 │                    stdout                                                            │
-│ mcp                serve the design knowledge graph and hierarchy queries over the   │
-│                    Model Context Protocol (stdio); needs the 'mcp' extra             │
+│ mcp                serve the design knowledge graph, test status, coverage, physical │
+│                    metrics, hierarchy queries and — with a hub running — the live    │
+│                    session over the Model Context Protocol (stdio); needs the 'mcp'  │
+│                    extra                                                             │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
@@ -5430,6 +5751,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ tool-check         check installed tool dependencies and subcommand readiness        │
 │ graph              build the design knowledge graph                                  │
 │ cov                query coverage artefacts already on disk                          │
+│ phys               query physical artefacts already on disk                          │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
 │ mut                mutation testing                                                  │
@@ -5484,6 +5806,11 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --shared-build-root                    TEXT     persistent directory the shared      │
+│                                                 builds are cached under, so the      │
+│                                                 cache survives a workspace wipe      │
+│                                                 [default: (cfg-rtl-reg               │
+│                                                 shared-build-root, else in-tree)]    │
 │ --rebuild                                       recompile even when a valid build    │
 │                                                 already exists (implies nothing      │
 │                                                 about --share-build)                 │
@@ -5499,6 +5826,11 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 local-parallel                       │
 │                                                 [default: (cfg-dispatch jobs, else   │
 │                                                 min(4, cpu count))]                  │
+│ --orphans                              TEXT     what to do about an interrupted      │
+│                                                 run's jobs that are still queued or  │
+│                                                 running (warn, cancel, adopt)        │
+│                                                 [default: (cfg-dispatch orphans,     │
+│                                                 else warn)]                          │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5515,17 +5847,26 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 │      rnd_cnt        [RND_CNT]  number of random iterations to test [default: 2]      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --test-config  -c      TEXT     test_config.yaml to use [default: tests.yaml]        │
-│ --rnd-rpt      -r      INTEGER  repeat iteration number from previous run            │
-│ --rebuild                       recompile even when a valid build already exists     │
-│                                 (implies nothing about --share-build)                │
-│ --dispatch             TEXT     execution backend for the seed fan-out (local,       │
-│                                 local-parallel, slurm)                               │
-│                                 [default: (cfg-dispatch backend, else local)]        │
-│ --jobs         -j      INTEGER  concurrent jobs for --dispatch local-parallel        │
-│                                 [default: (cfg-dispatch jobs, else min(4, cpu        │
-│                                 count))]                                             │
-│ --help                          Show this message and exit.                          │
+│ --test-config        -c      TEXT     test_config.yaml to use [default: tests.yaml]  │
+│ --rnd-rpt            -r      INTEGER  repeat iteration number from previous run      │
+│ --rebuild                             recompile even when a valid build already      │
+│                                       exists (implies nothing about --share-build)   │
+│ --shared-build-root          TEXT     persistent directory the shared builds are     │
+│                                       cached under, so the cache survives a          │
+│                                       workspace wipe                                 │
+│                                       [default: (cfg-rtl-reg shared-build-root, else │
+│                                       in-tree)]                                      │
+│ --dispatch                   TEXT     execution backend for the seed fan-out (local, │
+│                                       local-parallel, slurm)                         │
+│                                       [default: (cfg-dispatch backend, else local)]  │
+│ --jobs               -j      INTEGER  concurrent jobs for --dispatch local-parallel  │
+│                                       [default: (cfg-dispatch jobs, else min(4, cpu  │
+│                                       count))]                                       │
+│ --orphans                    TEXT     what to do about an interrupted run's jobs     │
+│                                       that are still queued or running (warn,        │
+│                                       cancel, adopt)                                 │
+│                                       [default: (cfg-dispatch orphans, else warn)]   │
+│ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5570,6 +5911,11 @@ Usage: rtl-buddy regression [OPTIONS]
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --shared-build-root                    TEXT     persistent directory the shared      │
+│                                                 builds are cached under, so the      │
+│                                                 cache survives a workspace wipe      │
+│                                                 [default: (cfg-rtl-reg               │
+│                                                 shared-build-root, else in-tree)]    │
 │ --rebuild                                       recompile even when a valid build    │
 │                                                 already exists (implies nothing      │
 │                                                 about --share-build)                 │
@@ -5581,6 +5927,11 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 local-parallel                       │
 │                                                 [default: (cfg-dispatch jobs, else   │
 │                                                 min(4, cpu count))]                  │
+│ --orphans                              TEXT     what to do about an interrupted      │
+│                                                 run's jobs that are still queued or  │
+│                                                 running (warn, cancel, adopt)        │
+│                                                 [default: (cfg-dispatch orphans,     │
+│                                                 else warn)]                          │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5726,7 +6077,8 @@ Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG
 ```text
 Usage: rtl-buddy mcp [OPTIONS]
 
- serve the design knowledge graph and hierarchy queries over the Model Context Protocol
+ serve the design knowledge graph, test status, coverage, physical metrics, hierarchy
+ queries and — with a hub running — the live session over the Model Context Protocol
  (stdio); needs the 'mcp' extra
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
@@ -6317,6 +6669,106 @@ Usage: rtl-buddy cov module [OPTIONS] MODULE
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## phys
+
+```text
+Usage: rtl-buddy phys [OPTIONS] COMMAND [ARGS]...
+
+ query physical artefacts already on disk
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ runs      every run with physical artefacts under the project, newest first          │
+│ summary   the run's totals, its heaviest modules and its hottest instances           │
+│ module    one module's cells and area, and the instances of it with power            │
+│ instance  one instance's power, or the rolled-up subtree under its path              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys runs
+
+```text
+Usage: rtl-buddy phys runs [OPTIONS]
+
+ every run with physical artefacts under the project, newest first
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER RANGE [x>=0]  runs to list, newest first (0 for all);         │
+│                                      truncates the --machine payload too             │
+│                                      [default: 20]                                   │
+│ --help                               Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys summary
+
+```text
+Usage: rtl-buddy phys summary [OPTIONS]
+
+ the run's totals, its heaviest modules and its hottest instances
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest first (0  │
+│                                         for all); truncates the --machine payload    │
+│                                         too                                          │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys module
+
+```text
+Usage: rtl-buddy phys module [OPTIONS] MODULE
+
+ one module's cells and area, and the instances of it with power
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    module      TEXT  module or liberty cell as the model records it [required]     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  instances to list, hottest first (0 for      │
+│                                         all); truncates the --machine payload too    │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys instance
+
+```text
+Usage: rtl-buddy phys instance [OPTIONS] PATH
+
+ one instance's power, or the rolled-up subtree under its path
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  instance path, exact or the root of a subtree [required]        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  hottest children to list (0 for all);        │
+│                                         truncates the --machine payload too          │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## axi-profile
 
 ```text
@@ -6879,6 +7331,13 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                branch/toggle/expression bin or an SVA cover point. The hub caches    │
 │                the focus and replays it to the pane on connect, so sending this      │
 │                before the browser tab is open works.                                 │
+│ phys-focus     Broadcast phys_focus{target} — point the hub's synth+power pane       │
+│                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
+│                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
+│                'module:alu'; an unprefixed string is read as an instance path.       │
+│                --metric foregrounds one physical metric. The hub caches the focus    │
+│                and replays it to the pane on connect, so sending this before the     │
+│                browser tab is open works.                                            │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
 │                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
 │                (clears any cached diagnostics from SOURCE). Use --instance to attach │
@@ -7042,6 +7501,27 @@ Usage: rtl-buddy hub send cov-focus [OPTIONS] TARGET
 │                                       branch/toggle/expression bin name as /cov.json │
 │                                       spells it, or an SVA cover point name.         │
 │ --help                                Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send phys-focus
+
+```text
+Usage: rtl-buddy hub send phys-focus [OPTIONS] TARGET
+
+ Broadcast phys_focus{target} — point the hub's synth+power pane
+ (http://127.0.0.1:<http_port>/phy) at one target of the run's physical model. TARGET
+ is prefixed: 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is read as
+ an instance path. --metric foregrounds one physical metric. The hub caches the focus
+ and replays it to the pane on connect, so sending this before the browser tab is open
+ works.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  physical target, e.g. module:alu or u_cpu/u_alu [required]    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --metric        TEXT  cells|area|leakage|dynamic|total — which metric to foreground. │
+│ --help                Show this message and exit.                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8126,6 +8606,8 @@ cfg-tools:
 
 `cfg-rtl-reg.reg-cfg-path` is the fallback when `regression.yaml` is absent from the current directory. Optional flow fallbacks are `elab-reg-cfg-path`, `synth-reg-cfg-path`, `power-reg-cfg-path`, `fpga-reg-cfg-path`, `cdc-reg-cfg-path`, `fpv-reg-cfg-path`, and `lint-reg-cfg-path`. Relative paths resolve from `root_config.yaml`. A root-local manifest takes precedence over its fallback.
 
+`cfg-rtl-reg.shared-build-root` is optional and is not a manifest: it is the persistent directory shared builds are cached under, replacing the in-tree `artefacts/.shared-builds/` so the cache survives a workspace wipe. Relative paths resolve from the project root; `~` and `$VAR` are expanded. `--shared-build-root` overrides it, and `RTL_BUDDY_SHARED_BUILD_ROOT` sits between the two. It applies only with `--share-build` (which `--dispatch` implies), and enabling or disabling it recompiles each shared build once. See [Persistent build cache](../concepts/tests.md#persistent-build-cache).
+
 ### Parallel dispatch
 
 ```yaml
@@ -8141,6 +8623,7 @@ cfg-dispatch:
   poll-interval: 10
   progress-interval: 60
   max-wait: 7200
+  orphans: warn
   retry:
     attempts: 2
     backoff-sec: 60
@@ -8161,12 +8644,13 @@ cfg-dispatch:
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
 | `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`; an integer from YAML sexagesimal parsing is fatal |
-| `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field. It is the only reservation block that takes `parallel`; the key is meaningless in a per-test or per-testbench `resources:` block, or in a suite-level `compile:`, and is discarded there |
-| `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
+| `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field, `parallel` included. Those two blocks are the only ones that take `parallel`; the key is meaningless in a per-test or per-testbench `resources:` block and is discarded there |
+| `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Overridden by a suite's own `compile.parallel` where that suite sets one. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
 | `sbatch-args` | Empty list; appended verbatim and therefore overrides duplicate generated flags. Any argument here that sets the job's cpu request — `-c`/`--cpus-per-task`, or the task/node counts that raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`) — supersedes the resolved `cpus`, so CPU right-sizing falls back to the scheduler's `ReqCPUS` for that run and its `cpus` advice names this key rather than the masked `resources.cpus` / `compile.cpus`. Within one option the last occurrence wins, as it does for sbatch; distinct options combine instead, and the advice then names them all and leaves the combining rule to sbatch rather than claiming a product. Only a lone `-c`/`--cpus-per-task` is offered the suggested value; the task/node counts are told to be decomposed. A direct `--cpus-per-task` override also disables the compile `cpus` floor, which bounds a reservation sbatch never saw; a task or node count leaves that flag in force, so the floor is kept. The `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and `SBATCH_NODES` environment variables count the same way, since the submit inherits them (command line beats environment, and the environment is never sanitized). A GPU count (`--gpus`/`-G`, `--gpus-per-node`, `--gpus-per-socket`, a gpu `--gres`, or their `SBATCH_*` forms) together with `--ntasks-per-gpu` and no `--ntasks` also counts, since sbatch derives the task count from that pair. Node-selection constraints (`--threads-per-core`, `-B`), placement maxima (`--ntasks-per-core`, `--ntasks-per-socket`, and `--ntasks-per-gpu` on its own), `--exclusive` and `SBATCH_CPUS_PER_TASK` are not overrides — the generated `--cpus-per-task` still states the request; `--cpus-per-gpu` is not either, since Slurm rejects it alongside the `--cpus-per-task` every job carries. Two exceptions to "appended last", both on the build job: its `--dependency` is emitted after these and composes the configured expression with the shared-build dedup, and its `--job-name` is emitted after these because that name is what the dedup serialises on — a `--job-name` / `-J` here therefore does not rename the build job (it still renames simulation jobs) |
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
 | `max-array-size` | Unset; the cluster's Slurm `MaxArraySize`, read from `scontrol show config` when unset. Setting it does not suppress the probe: the probe is the only source of `max-array-tasks`, which still applies. Must be at least 2. Slurm's largest array task index is one **below** it, so `1001` allows 1000 elements per array; a resource group larger than that is split across several arrays instead of being refused by sbatch. Set it where the submit host cannot run `scontrol`, or to split groups more finely |
 | `max-array-tasks` | Unset; the cluster's `SchedulerParameters=max_array_tasks`, read from `scontrol show config` when unset. Must be at least 1. Unlike `max-array-size` it is an inclusive **count** of the tasks one array may hold, so `1000` allows 1000 elements. Set it where the submit host cannot run `scontrol` and the cluster caps tasks-per-array below `MaxArraySize`. Each ceiling layers independently — configured value over probed value — and the slice size is the smaller of whichever are known, so this field alone still splits a group when `MaxArraySize` cannot be resolved |
+| `orphans` | `warn`; values are `warn`, `cancel`, `adopt`. What the next run does about an interrupted run's jobs that are still queued or running, found from the `artefacts/.dispatch/run-<pid>-<token>.json` manifest the interrupted head wrote: name them and submit anyway, `scancel` them first (verified, and fatal if they survive it), or collect them instead of submitting. CLI `--orphans` wins. `adopt` needs exactly one complete matching orphan — same test config, backend, expanded tests in the same order, an identical plan down to plusdefines and the resolved seeds, the same resolved per-job reservation (so a changed `cfg-dispatch.resources` refuses), and the same invocation options (`--builder-mode`, `--builder`, `--extra-sim-timeout`, shared-build root, `--rebuild`) — and is fatal otherwise, including for a record left mid-submission. Only consulted for a scheduler-backed backend; elsewhere the value is ignored with a warning, and an explicit `--orphans adopt` is fatal |
 | `poll-interval` | Positive seconds between backend polls |
 | `progress-interval` | 60; non-negative seconds between console updates; 0 disables console progress |
 | `max-wait` | Unset; positive seconds per collection round. Expiry fails the run and cancels outstanding jobs |
@@ -8317,13 +8801,14 @@ model-configs:
 
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build job.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build job and how many builds it runs at once.
 
 ```yaml
 rtl-buddy-filetype: test_config
 
 compile:
   mem: 48G
+  parallel: 1
 
 testbenches:
   - name: tb_top
@@ -8346,7 +8831,7 @@ Top-level fields:
 | `testbenches` | Required | Testbench definitions |
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
-| `compile` | Optional | This suite's dispatch compile reservation: `cpus`, `mem`, and quoted `time`. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`; an omitted field inherits. Sizes the suite's build job, and the compile half of a simulation job that compiles for itself. `parallel` is not accepted here and is discarded. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
+| `compile` | Optional | This suite's **whole-job** dispatch compile reservation: `cpus`, `mem`, quoted `time`, and `parallel`. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`, and overridden per build by a testbench's own `compile`; an omitted field inherits, and the build job is never reserved below this. Sizes the suite's build job, and the compile half of a simulation job that compiles for itself. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
 
 Testbench fields:
 
@@ -8355,6 +8840,7 @@ Testbench fields:
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
 | `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`; inherited by tests |
+| `compile` | Optional | This testbench's **per-build** dispatch compile reservation: `cpus`, `mem`, and quoted `time`. Layered field by field over the suite's top-level `compile`, which is layered over `cfg-dispatch.compile`; an omitted field inherits. The suite's build job aggregates these over the builds its plan will run — largest `cpus`, summed `mem` over the `parallel` builds that overlap, and a `time` equal to the makespan of a `parallel`-worker queue — then floors the result at the suite-level whole-job value. One reservation per distinct `(testbench, plusdefines, builder, model, assertions)` among the planned tests, and per test for a builder that cannot share a build or a test with a `preproc:` hook; a testbench with no block enters no `cpus`/`time` sum, but once any build states its own `mem` the others contribute the whole-job figure to the memory overlap. Every field must be greater than zero. A simulation job that compiles for itself uses its own testbench's value. `parallel` is rejected here: it is job-wide |
 | `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Passed to the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Not defaulted to `name` |
 | `cocotb.module` | Required for cocotb | Python module name or list passed as `COCOTB_TEST_MODULES` |
 

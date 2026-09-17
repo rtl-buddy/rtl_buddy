@@ -11,7 +11,7 @@ end else begin
 end
 ```
 
-Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the result is `NA`: it needs review but does not by itself make the shell exit status nonzero. A simulator exit code alone is not a non-UVM verdict.
+Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the outcome is unknown: the result is `NA` and the run exits 1. A simulator exit code alone is not a non-UVM verdict, but a simulator that exits nonzero *and* prints no marker has aborted, and that combination is reported as `FAIL`.
 
 For UVM, configure thresholds and let RTL Buddy parse the UVM Report Summary:
 

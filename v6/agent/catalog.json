@@ -287,10 +287,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/dispatch/set-per-test-resources.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#set-per-suite-compile-resources",
-          "slug": "set-per-suite-compile-resources",
-          "title": "Set per-suite compile resources",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/dispatch/set-per-suite-compile-resources.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#set-compile-resources-per-suite-and-testbench",
+          "slug": "set-compile-resources-per-suite-and-testbench",
+          "title": "Set compile resources per suite and testbench",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/dispatch/set-compile-resources-per-suite-and-testbench.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#retry-license-queue-timeouts",
@@ -743,6 +743,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/hub/coverage-pane.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/hub/#synthpower-pane",
+          "slug": "synthpower-pane",
+          "title": "Synth+power pane",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/hub/synthpower-pane.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/hub/#axi-perf-overlay-and-notebook-spawning",
           "slug": "axi-perf-overlay-and-notebook-spawning",
           "title": "AXI-perf overlay and notebook spawning",
@@ -803,6 +809,63 @@
       "slug": "concepts/mut",
       "title": "Mutation testing",
       "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/mut.md"
+    },
+    {
+      "description": "Query saved synthesis and power artefacts by module and instance with rb phys or the hub's synth+power pane, from the physical model each run writes.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#read-the-model-a-run-produced",
+          "slug": "read-the-model-a-run-produced",
+          "title": "Read the model a run produced",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/read-the-model-a-run-produced.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#list-the-runs-a-project-holds",
+          "slug": "list-the-runs-a-project-holds",
+          "title": "List the runs a project holds",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/list-the-runs-a-project-holds.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#tell-two-runs-apart",
+          "slug": "tell-two-runs-apart",
+          "title": "Tell two runs apart",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/tell-two-runs-apart.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#read-a-model-with-only-one-half",
+          "slug": "read-a-model-with-only-one-half",
+          "title": "Read a model with only one half",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/read-a-model-with-only-one-half.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#what-the-module-join-can-answer",
+          "slug": "what-the-module-join-can-answer",
+          "title": "What the module join can answer",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/what-the-module-join-can-answer.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#roll-up-a-hierarchy",
+          "slug": "roll-up-a-hierarchy",
+          "title": "Roll up a hierarchy",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/roll-up-a-hierarchy.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#browse-the-model-in-the-hub",
+          "slug": "browse-the-model-in-the-hub",
+          "title": "Browse the model in the hub",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/browse-the-model-in-the-hub.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/phys/#machine-payloads",
+          "slug": "machine-payloads",
+          "title": "Machine payloads",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/phys/machine-payloads.md"
+        }
+      ],
+      "slug": "concepts/phys",
+      "title": "Physical Metrics",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/phys.md"
     },
     {
       "description": "Configure sweep and preprocessing hooks in tests.yaml, including their inputs, paths, output ownership, and failure behavior.",
@@ -2003,6 +2066,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/unknown-synthesis-overrides-are-ignored-after-a-warning.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#rb-phys-module-reports-no-power-for-an-rtl-module",
+          "slug": "rb-phys-module-reports-no-power-for-an-rtl-module",
+          "title": "`rb phys module` reports no power for an RTL module",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/rb-phys-module-reports-no-power-for-an-rtl-module.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#phys-pane-and-schematic-selections-cross-only-within-one-hierarchy",
+          "slug": "phys-pane-and-schematic-selections-cross-only-within-one-hierarchy",
+          "title": "Phys pane and schematic selections cross only within one hierarchy",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/phys-pane-and-schematic-selections-cross-only-within-one-hierarchy.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#fpv-coi-analysis-is-best-effort",
           "slug": "fpv-coi-analysis-is-best-effort",
           "title": "FPV COI analysis is best-effort",
@@ -2354,6 +2429,36 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/cov-module.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#phys",
+          "slug": "phys",
+          "title": "phys",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/phys.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#phys-runs",
+          "slug": "phys-runs",
+          "title": "phys runs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/phys-runs.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#phys-summary",
+          "slug": "phys-summary",
+          "title": "phys summary",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/phys-summary.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#phys-module",
+          "slug": "phys-module",
+          "title": "phys module",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/phys-module.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#phys-instance",
+          "slug": "phys-instance",
+          "title": "phys instance",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/phys-instance.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#axi-profile",
           "slug": "axi-profile",
           "title": "axi-profile",
@@ -2544,6 +2649,12 @@
           "slug": "hub-send-cov-focus",
           "title": "hub send cov-focus",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/hub-send-cov-focus.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#hub-send-phys-focus",
+          "slug": "hub-send-phys-focus",
+          "title": "hub send phys-focus",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/hub-send-phys-focus.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#hub-send-diagnose",
