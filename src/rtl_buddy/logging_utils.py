@@ -417,10 +417,33 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "build_job.pool_configured":
             parallel = fields.get("parallel")
             requested = fields.get("parallel_requested")
-            msg = (
-                f"Compiling {fields.get('groups')} distinct build(s), up to "
-                f"{parallel} at a time"
-            )
+            groups = fields.get("groups")
+            # The configs that reached the pool, and the ones that never got
+            # a compile key at all (a failed PRE or filelist probe).
+            configs = fields.get("configs")
+            unprepared = fields.get("unprepared")
+            msg = f"Compiling {groups} distinct build(s), up to {parallel} at a time"
+            notes = []
+            if (
+                isinstance(configs, int)
+                and isinstance(groups, int)
+                and configs > groups
+            ):
+                # The fewer-builds-than-tests case is the healthy one under
+                # --share-build, and saying only "3 distinct builds" for a
+                # 20-config plan reads as 17 configs having been dropped.
+                # Only the configs that actually joined a group are counted,
+                # so a setup failure is never reported as sharing (#576).
+                notes.append(
+                    f"{configs} configs share {groups} keys; siblings adopt "
+                    "the leader's build"
+                )
+            if isinstance(unprepared, int) and unprepared > 0:
+                # The rest of the drop, said rather than left as a gap
+                # between the plan and this line.
+                notes.append(f"{unprepared} failed preparation")
+            if notes:
+                msg += f" ({'; '.join(notes)})"
             if isinstance(requested, int) and isinstance(parallel, int):
                 if requested > parallel:
                     # The head reserved cpus for `requested` concurrent
@@ -517,18 +540,57 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             reason = fields.get("reason")
             why = "" if not reason else f" ({reason})"
             what = (
-                "from different compile inputs than this job derived"
-                if fields.get("inputs_differ")
-                else "and its stamp still does not validate here"
+                "but could not write its build stamp"
+                if fields.get("stamp_unwritten")
+                else (
+                    "from different compile inputs than this job derived"
+                    if fields.get("inputs_differ")
+                    else "and its stamp still does not validate here"
+                )
+            )
+            fix = (
+                "Give the build directory's filesystem room and permissions "
+                "to hold a stamp, and re-run."
+                if fields.get("stamp_unwritten")
+                else (
+                    "Fix what drifted — a preproc generating different bytes "
+                    "on this node, an edit that landed mid-run — and re-run."
+                )
             )
             return (
                 f"{fields.get('test')}{run_note}: not compiling — the build "
                 f"job built this test {what}{why}. Recompiling would run into "
                 f"{fields.get('build_dir')} under the SIMULATION reservation, "
                 "which the scheduler kills for memory, and that kill would "
-                "hide the reason above. Fix what drifted — a preproc "
-                "generating different bytes on this node, an edit that landed "
-                "mid-run — and re-run."
+                f"hide the reason above. {fix}"
+            )
+        case "compile.stamp_write_failed":
+            return (
+                f"{fields.get('test')}: the compile succeeded but its build "
+                f"stamp {fields.get('stamp')} could not be written "
+                f"({fields.get('error')}). The build in "
+                f"{fields.get('build_dir')} is usable and this compile still "
+                "reports success; with nothing on disk to vouch for it, the "
+                "next run recompiles, and under dispatch the gated "
+                "simulation jobs decline to run rather than recompile it "
+                "under their own reservation. Check the build directory's "
+                "permissions and free space."
+            )
+        case "build_job.group_leader_unstamped":
+            return (
+                f"{fields.get('test')}: compiled {fields.get('group')} but "
+                "left no build stamp, so same-key configs behind it cannot "
+                "adopt that build and each compiles it again. See "
+                "compile.stamp_write_failed above for why the stamp is "
+                "missing."
+            )
+        case "build_job.group_adoption_declined":
+            return (
+                f"{fields.get('test')}: could not adopt the build "
+                f"{fields.get('leader')} made for their shared compile key "
+                f"({fields.get('reason')}), so it compiles the key again. "
+                "One key compiled twice in one build job is what "
+                "cfg-dispatch.compile.parallel is sized against."
             )
         case "compile.build_stamp_refresh_failed":
             return (
