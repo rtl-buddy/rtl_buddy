@@ -1949,7 +1949,9 @@ class SlurmDispatchBackend(DispatchBackend):
             ",".join(base_ids),
         ]
 
-    def _poll_queue(self, base_ids, *, cluster, cwd) -> tuple[list[str], str]:
+    def _poll_queue(
+        self, base_ids, *, cluster, cwd, timeout_s=None
+    ) -> tuple[list[str], str]:
         """One cluster's live jobs: ``(squeue lines, status)``.
 
         ``status`` is one of three ANSWERS, which the caller must keep apart
@@ -1969,17 +1971,41 @@ class SlurmDispatchBackend(DispatchBackend):
         A rejected state name is recovered from rather than fatal, because
         the name is a state the cluster's Slurm does not have — see
         :func:`_rejected_states`.
+
+        ``timeout_s`` bounds each ``squeue`` call. ``None`` — every caller
+        but the cancellation check — waits as long as the controller takes,
+        which is the drain wait's own contract: it has ``max-wait`` above it
+        and nothing to gain from giving up on one poll. A caller that is
+        itself under a deadline passes what is left of it, and a query that
+        runs out of time is an ``"unknown"`` like any other failed one: it
+        says nothing about the jobs (#580 review).
         """
         # Bounded by the filter's own length: each rejection drops the name
         # it named, so the loop cannot outlive the list.
         for _ in range(len(_LIVE_STATES) + 1):
             states = self._wait_states_for(cluster)
-            proc = subprocess.run(
-                self._wait_argv(base_ids, cluster=cluster, states=states),
-                capture_output=True,
-                text=True,
-                cwd=cwd,
-            )
+            try:
+                proc = subprocess.run(
+                    self._wait_argv(base_ids, cluster=cluster, states=states),
+                    capture_output=True,
+                    text=True,
+                    cwd=cwd,
+                    timeout=timeout_s,
+                )
+            except subprocess.TimeoutExpired:
+                # A wedged controller. Reported as "no answer", never as a
+                # drain: the caller that set the deadline is the one that
+                # must not read silence as "those jobs are gone".
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "dispatch.wait_poll_timeout",
+                    backend=self.name,
+                    cluster=cluster,
+                    jobs=len(base_ids),
+                    timeout_sec=timeout_s,
+                )
+                return [], "unknown"
             if proc.returncode == 0:
                 return proc.stdout.splitlines(), "ok"
             if states is None:
@@ -2138,6 +2164,55 @@ class SlurmDispatchBackend(DispatchBackend):
                 return
             progress.observe(states.keys(), states=states, longest=longest)
             time.sleep(self.poll_interval)
+
+    def live_job_ids(
+        self, handles: Sequence[JobHandle | None], *, timeout_s=None
+    ) -> set[str]:
+        """The subset of these ids ``squeue`` still holds (#521).
+
+        Asked about an interrupted run's fleet, read out of its manifest,
+        so the handles are rebuilt rather than submitted here — which is
+        why the query goes through the same per-cluster grouping every
+        other command about a job uses: an id means nothing on a cluster
+        that did not issue it (#509).
+
+        A poll that FAILED reports those ids live, not gone. The three
+        answers :meth:`_poll_queue` distinguishes matter more here than
+        anywhere else: "drained" and an empty "ok" both mean the run is
+        over and its manifest can be retired, while "unknown" says nothing
+        at all about the jobs — and reading that as "gone" would submit a
+        second fleet beside a first one still occupying the cluster, or
+        quietly skip the ``scancel`` a user asked for. ``timeout_s`` bounds
+        each query for a caller that is itself on a deadline — a wedged
+        ``squeue`` must not hold the cancellation check open past its own
+        grace period, and running out of time is one more way not to know
+        (#580 review).
+        """
+        live: set[str] = set()
+        cwd = self._cwd_of(handles)
+        for cluster, base_ids in self._base_ids_by_cluster(handles).items():
+            if not base_ids:
+                continue
+            # This cluster's handle ids, for expanding a squeue row that
+            # names a whole array (`1235` or `1235_[1-40]`) back into the
+            # elements the manifest recorded.
+            ids_here = [
+                h.job_id
+                for h in handles
+                if h is not None and getattr(h, "cluster", None) == cluster
+            ]
+            lines, status = self._poll_queue(
+                base_ids, cluster=cluster, cwd=cwd, timeout_s=timeout_s
+            )
+            if status == "unknown":
+                live.update(ids_here)
+                continue
+            for line in lines:
+                record = _parse_squeue_line(line)
+                if record is None:
+                    continue
+                live.update(_expand_squeue_id(record["id"], ids_here))
+        return live
 
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         if not handles:

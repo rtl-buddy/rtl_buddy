@@ -18,12 +18,38 @@ no live objects cross the process boundary — only the JSON-safe dicts from
 """
 
 import json
+import os
 from pathlib import Path
 
 from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
 
 PLAN_SCHEMA_VERSION = 1
+
+
+def run_token_tag(run_token) -> str:
+    """The short, filesystem-safe half of a run token used in a filename."""
+    tag = "".join(c for c in str(run_token or "") if c.isalnum())[:8]
+    return tag or "notoken"
+
+
+def run_scoped_path(dispatch_root, prefix: str, run_token, suffix=".json") -> Path:
+    """``<dispatch_root>/<prefix>-<pid>-<token>><suffix>`` for a per-run file.
+
+    Every file under ``.dispatch/`` that one head writes and its own jobs
+    read — this plan, the build envelope, the build log, the gates manifest
+    (#548), the array scratch directories, the run manifest (#521) — is
+    named for the head that owns it. The pid alone was that name until an
+    interrupted run became something a later run can find: pids are reused,
+    so after a reboot a new head can carry the pid of a run whose fleet is
+    still queued, and a pid-keyed name would have it write its plan over
+    the one those jobs are still reading. The run token is unique per
+    invocation, so the two runs' files coexist.
+    """
+    return (
+        Path(dispatch_root)
+        / f"{prefix}-{os.getpid()}-{run_token_tag(run_token)}{suffix}"
+    )
 
 
 def write_plan(

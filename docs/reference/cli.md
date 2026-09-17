@@ -161,6 +161,11 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 local-parallel                       │
 │                                                 [default: (cfg-dispatch jobs, else   │
 │                                                 min(4, cpu count))]                  │
+│ --orphans                              TEXT     what to do about an interrupted      │
+│                                                 run's jobs that are still queued or  │
+│                                                 running (warn, cancel, adopt)        │
+│                                                 [default: (cfg-dispatch orphans,     │
+│                                                 else warn)]                          │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -192,6 +197,10 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 │ --jobs               -j      INTEGER  concurrent jobs for --dispatch local-parallel  │
 │                                       [default: (cfg-dispatch jobs, else min(4, cpu  │
 │                                       count))]                                       │
+│ --orphans                    TEXT     what to do about an interrupted run's jobs     │
+│                                       that are still queued or running (warn,        │
+│                                       cancel, adopt)                                 │
+│                                       [default: (cfg-dispatch orphans, else warn)]   │
 │ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -253,6 +262,11 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 local-parallel                       │
 │                                                 [default: (cfg-dispatch jobs, else   │
 │                                                 min(4, cpu count))]                  │
+│ --orphans                              TEXT     what to do about an interrupted      │
+│                                                 run's jobs that are still queued or  │
+│                                                 running (warn, cancel, adopt)        │
+│                                                 [default: (cfg-dispatch orphans,     │
+│                                                 else warn)]                          │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

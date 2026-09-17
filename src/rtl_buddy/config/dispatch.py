@@ -27,6 +27,8 @@ execution backend for regression test runs:
       poll-interval: 10        # seconds between queue polls while collecting
       progress-interval: 60    # seconds between console progress lines (0 = quiet)
       max-wait: 7200           # seconds the head waits before failing loudly
+      orphans: warn            # what an interrupted run's surviving jobs get
+                               # on the next invocation: warn, cancel, adopt
       max-jobs-per-array: 200  # %N throttle on EACH submitted Slurm array
       max-array-size: 1001     # the cluster's Slurm MaxArraySize; omit it to
                                # read the value from `scontrol show config`
@@ -98,6 +100,15 @@ logger = logging.getLogger(__name__)
 # else sets one.
 DEFAULT_JOB_TIME = "01:00:00"
 DEFAULT_JOB_CPUS = 1
+
+# What an interrupted run's surviving jobs get on the next invocation
+# (#521). `warn` keeps every release before this one's behaviour: the
+# orphans are named and a fresh fleet goes out beside them. It is the
+# default because the other two act on jobs the user has not looked at
+# yet — `cancel` destroys a fleet that may be minutes from finishing,
+# and `adopt` binds this run's verdict to results it did not submit.
+ORPHANS_POLICIES = ("warn", "cancel", "adopt")
+ORPHANS_DEFAULT = "warn"
 
 # Accept the Slurm --time spellings we pass through verbatim:
 # minutes, MM:SS, HH:MM:SS, DD-HH, DD-HH:MM, DD-HH:MM:SS.
@@ -509,6 +520,14 @@ class DispatchConfigFile:
     # queue becomes a diagnosable failure naming the outstanding job ids,
     # instead of a head that blocks forever and silently.
     max_wait: float | None = field(rename="max-wait", default=None)
+    # What the next invocation does about a previous run's jobs that
+    # outlived their head — a Ctrl-C too late to cancel, a killed session
+    # (#521). `warn` (the default) names them and submits a fresh fleet,
+    # exactly as every release before this one did; `cancel` scancels them
+    # first; `adopt` collects them instead of submitting anything. Only
+    # ever consulted for a scheduler-backed backend: a local-parallel
+    # pool's jobs are the head's own children and die with it.
+    orphans: str = ORPHANS_DEFAULT
     # Cap on concurrently *running* elements PER submitted array
     # (sbatch --array=1-N%cap). Peak concurrency across a run is roughly
     # this times the number of arrays (resource groups x suites).
@@ -607,6 +626,11 @@ class DispatchConfigFile:
                 "COUNT of the tasks one array may hold, so 1 is the smallest "
                 "value that still permits an array."
             )
+        if self.orphans not in ORPHANS_POLICIES:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch orphans must be one of "
+                f"{', '.join(ORPHANS_POLICIES)} (got {self.orphans!r})."
+            )
         if self.jobs is not None and self.jobs < 1:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch jobs must be >= 1 (got {self.jobs}); a pool of "
@@ -626,6 +650,7 @@ class DispatchConfigFile:
             poll_interval=self.poll_interval,
             progress_interval=self.progress_interval,
             max_wait=self.max_wait,
+            orphans=self.orphans,
             max_jobs_per_array=self.max_jobs_per_array,
             max_array_size=self.max_array_size,
             max_array_tasks=self.max_array_tasks,
@@ -646,6 +671,7 @@ class DispatchConfig:
     poll_interval: float = 10.0
     progress_interval: float = 60.0
     max_wait: float | None = None
+    orphans: str = ORPHANS_DEFAULT
     max_jobs_per_array: int = 200
     max_array_size: int | None = None
     max_array_tasks: int | None = None

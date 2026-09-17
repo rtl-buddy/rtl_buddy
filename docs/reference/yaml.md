@@ -233,6 +233,7 @@ cfg-dispatch:
   poll-interval: 10
   progress-interval: 60
   max-wait: 7200
+  orphans: warn
   retry:
     attempts: 2
     backoff-sec: 60
@@ -259,6 +260,7 @@ cfg-dispatch:
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
 | `max-array-size` | Unset; the cluster's Slurm `MaxArraySize`, read from `scontrol show config` when unset. Setting it does not suppress the probe: the probe is the only source of `max-array-tasks`, which still applies. Must be at least 2. Slurm's largest array task index is one **below** it, so `1001` allows 1000 elements per array; a resource group larger than that is split across several arrays instead of being refused by sbatch. Set it where the submit host cannot run `scontrol`, or to split groups more finely |
 | `max-array-tasks` | Unset; the cluster's `SchedulerParameters=max_array_tasks`, read from `scontrol show config` when unset. Must be at least 1. Unlike `max-array-size` it is an inclusive **count** of the tasks one array may hold, so `1000` allows 1000 elements. Set it where the submit host cannot run `scontrol` and the cluster caps tasks-per-array below `MaxArraySize`. Each ceiling layers independently — configured value over probed value — and the slice size is the smaller of whichever are known, so this field alone still splits a group when `MaxArraySize` cannot be resolved |
+| `orphans` | `warn`; values are `warn`, `cancel`, `adopt`. What the next run does about an interrupted run's jobs that are still queued or running, found from the `artefacts/.dispatch/run-<pid>-<token>.json` manifest the interrupted head wrote: name them and submit anyway, `scancel` them first (verified, and fatal if they survive it), or collect them instead of submitting. CLI `--orphans` wins. `adopt` needs exactly one complete matching orphan — same test config, backend, expanded tests in the same order, an identical plan down to plusdefines and the resolved seeds, the same resolved per-job reservation (so a changed `cfg-dispatch.resources` refuses), and the same invocation options (`--builder-mode`, `--builder`, `--extra-sim-timeout`, shared-build root, `--rebuild`) — and is fatal otherwise, including for a record left mid-submission. Only consulted for a scheduler-backed backend; elsewhere the value is ignored with a warning, and an explicit `--orphans adopt` is fatal |
 | `poll-interval` | Positive seconds between backend polls |
 | `progress-interval` | 60; non-negative seconds between console updates; 0 disables console progress |
 | `max-wait` | Unset; positive seconds per collection round. Expiry fails the run and cancels outstanding jobs |

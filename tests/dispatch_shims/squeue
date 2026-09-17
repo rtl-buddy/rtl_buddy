@@ -7,4 +7,32 @@ if [ -n "${RB_SHIM_DEFER_DIR:-}" ] && [[ " $* " == *" --jobs "* ]]; then
     rm "$queue_file"
   done
 fi
+# Opt-in orphan probe (#521). RB_SHIM_LIVE is a comma-separated list of job
+# ids this squeue reports as still queued, in _SQUEUE_FORMAT order
+# (%i|%r|%T|%M|%j). It answers exactly ONE --jobs query — the stamp file
+# beside the job db records that it has — because that is the sequence an
+# adoption needs: the orphan probe must see the fleet, and the wait that
+# immediately follows must see it drain. Unset, which is every other test
+# here, the answer is byte-identical to before: no rows, exit 0.
+db="${RB_SHIM_DB:-$PWD/.rb_shim_jobs}"
+stamp="$db.live-answered"
+if [ -n "${RB_SHIM_LIVE:-}" ] && [ ! -e "$stamp" ] && [[ " $* " == *" --jobs "* ]]; then
+  wanted=""
+  prev=""
+  for a in "$@"; do [ "$prev" = "--jobs" ] && wanted="$a"; prev="$a"; done
+  IFS=',' read -ra live <<< "$RB_SHIM_LIVE"
+  for jid in "${live[@]}"; do
+    [ -z "$jid" ] && continue
+    # squeue is asked for base ids; an array element answers under its own.
+    base="${jid%%_*}"
+    if [ -n "$wanted" ]; then
+      found=""
+      IFS=',' read -ra ws <<< "$wanted"
+      for w in "${ws[@]}"; do [ "$base" = "$w" ] && found=1; done
+      [ -n "$found" ] || continue
+    fi
+    printf '%s|None|RUNNING|0:05|rb:shim\n' "$jid"
+  done
+  : > "$stamp"
+fi
 exit 0
