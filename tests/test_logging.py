@@ -324,6 +324,65 @@ def test_root_callback_accepts_print_failures_only(minimal_project):
     assert logging_utils.print_failures_only()
 
 
+def test_render_summary_escapes_user_data_in_the_rich_table(
+    tmp_path, monkeypatch, capsys
+):
+    """Data is data, not Rich markup (#520).
+
+    A rightsize edit hint reads `tests[name=alpha].resources.cpus`, and Rich
+    parses `[name=alpha]` as a style tag and drops it — the human table then
+    hides which test the hint names while `--machine` shows it in full.
+    """
+    monkeypatch.setenv("COLUMNS", "400")  # keep the row on one line
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
+
+    render_summary(
+        title="Reservation Advice [reserved vs used]",
+        columns=[("field", "Field"), ("test", "Test")],
+        rows=[{"field": "tests[name=alpha].resources.cpus", "test": "t[0]"}],
+        logger=logger,
+        metadata=["apply by editing tests[name=alpha]"],
+    )
+
+    stderr = capsys.readouterr().err
+    assert "tests[name=alpha].resources.cpus" in stderr
+    assert "t[0]" in stderr
+    assert "Reservation Advice [reserved vs used]" in stderr
+    assert "apply by editing tests[name=alpha]" in stderr
+    # The escape is Rich's own: it must not leak into what the user reads.
+    assert "\\[" not in stderr
+
+
+def test_render_summary_keeps_brackets_on_the_machine_console(tmp_path, capsys):
+    """The machine path echoes plain lines through Rich too (#520).
+
+    The JSON event carries the raw strings; the console echo beside it must
+    not quietly disagree with them, and must not carry escape backslashes.
+    """
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests.machine")
+
+    render_summary(
+        title="Reservation Advice",
+        columns=[("field", "Field")],
+        rows=[{"field": "tests[name=alpha].resources.cpus"}],
+        logger=logger,
+    )
+
+    stderr = capsys.readouterr().err
+    assert "tests[name=alpha].resources.cpus" in stderr
+    assert "\\[" not in stderr
+
+    events = [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
+    summary = [e for e in events if e.get("event") == "summary"]
+    assert summary[0]["rows"] == [{"field": "tests[name=alpha].resources.cpus"}]
+
+
 def test_display_path_prefers_relative_shorter_path():
     rb = RtlBuddy(name="rtl_buddy")
     base_dir = "/tmp/work"

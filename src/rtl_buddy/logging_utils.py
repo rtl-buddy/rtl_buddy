@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.markup import escape as rich_escape
 from rich.table import Table
 
 
@@ -2040,12 +2041,17 @@ def render_summary(
             rows=rows,
             counts=counts or None,
         )
+        # markup=False for the same reason the table cells below are
+        # escaped: these lines carry user-derived strings (a rightsize edit
+        # hint reads `tests[name=alpha].resources.cpus`) and Rich would eat
+        # the brackets as a style tag (#520).
         emit_console_text(
             "\n".join(
                 _plain_summary_lines(
                     title, cols, console_rows, metadata=metadata, footer=footer
                 )
-            )
+            ),
+            markup=False,
         )
         return
 
@@ -2056,17 +2062,23 @@ def render_summary(
         )
     )
 
+    # Everything below is data, not markup: no caller builds a cell, title
+    # or caption out of Rich style tags, but plenty of them interpolate
+    # user strings that contain square brackets — a rightsize edit-hint
+    # path, a test name, a graph query. Rich parses `[name=alpha]` as a
+    # style tag and drops it, silently hiding which test a hint names, so
+    # escape the data and let the table own its own styling (#520).
     caption = list(metadata or []) + footer
-    table = Table(title=title)
+    table = Table(title=rich_escape(title))
     if caption:
-        table.caption = "\n".join(caption)
+        table.caption = rich_escape("\n".join(caption))
 
     for key, label in cols:
         justify = "right" if key in {"run_id"} else "left"
         no_wrap = key in {"result", "run_id"}
-        table.add_column(label, justify=justify, no_wrap=no_wrap)
+        table.add_column(rich_escape(label), justify=justify, no_wrap=no_wrap)
 
     for row in console_rows:
-        table.add_row(*(str(row.get(key, "")) for key, _label in cols))
+        table.add_row(*(rich_escape(str(row.get(key, ""))) for key, _label in cols))
 
     get_stderr_console().print(table)
