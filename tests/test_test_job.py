@@ -830,6 +830,163 @@ def test_build_job_never_runs_two_builders_in_one_directory(
         if record.get("event") == "build_job.pool_configured"
     ]
     assert (pool["groups"], pool["parallel"], pool["parallel_requested"]) == (1, 1, 4)
+    # Nothing in this suite's tests.yaml set `compile.parallel`, so the
+    # budget it could not spend belongs to cfg-dispatch (#547).
+    assert pool["parallel_origin"] == "cfg-dispatch.compile.parallel"
+
+
+def test_the_pool_line_names_a_suite_that_owns_the_parallel_key(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The origin is the layer that governs, not always cfg-dispatch (#547).
+
+    A suite whose own `compile:` block sets `parallel` is not moved by
+    editing the root config, so a line that named the root key would send
+    the reader to a value with no effect on this job.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    tests_yaml = minimal_project / "tests.yaml"
+    marker = "rtl-buddy-filetype: test_config\n"
+    body = tests_yaml.read_text()
+    assert body.startswith(marker)
+    tests_yaml.write_text(marker + "compile:\n  parallel: 4\n" + body[len(marker) :])
+
+    stub_runner.group_of = lambda _name: "one-shared-build-dir"
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "4"],
+    )
+    assert result.exit_code == 0, result.output
+
+    records = _records(minimal_project / "rtl_buddy.log")
+    (pool,) = [r for r in records if r.get("event") == "build_job.pool_configured"]
+    assert pool["parallel_origin"] == "tests.yaml compile.parallel"
+    (done,) = [r for r in records if r.get("event") == "build_job.done"]
+    assert done["parallel_origin"] == "tests.yaml compile.parallel"
+
+
+def test_a_plan_capped_pool_line_reports_the_configured_parallel(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """`--parallel-configured` carries the pre-cap value into the job (#547
+    review).
+
+    The head hands a two-config plan `--parallel 2` however large
+    `compile.parallel` is, so without this the job's own line would report
+    the suite's key as 2 while the file says 4.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    tests_yaml = minimal_project / "tests.yaml"
+    marker = "rtl-buddy-filetype: test_config\n"
+    body = tests_yaml.read_text()
+    assert body.startswith(marker)
+    tests_yaml.write_text(marker + "compile:\n  parallel: 4\n" + body[len(marker) :])
+
+    stub_runner.group_of = lambda _name: "one-shared-build-dir"
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--parallel",
+            "2",
+            "--parallel-configured",
+            "4",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    records = _records(minimal_project / "rtl_buddy.log")
+    (pool,) = [r for r in records if r.get("event") == "build_job.pool_configured"]
+    assert (pool["parallel"], pool["parallel_requested"]) == (1, 2)
+    assert pool["parallel_configured"] == 4
+    assert pool["parallel_origin"] == "tests.yaml compile.parallel"
+    (done,) = [r for r in records if r.get("event") == "build_job.done"]
+    assert done["parallel_configured"] == 4
+
+
+def test_a_build_job_without_the_configured_flag_reads_it_as_the_parallel(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Absent, or below `--parallel`, means "the config value IS --parallel".
+
+    Diagnostics must never fail a build job: a value describing no run this
+    job could be in is dropped rather than raised, because a fatal here
+    cancels the whole afterok fan-out over a log line (#547 review).
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.group_of = lambda _name: "one-shared-build-dir"
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--parallel",
+            "4",
+            "--parallel-configured",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    records = _records(minimal_project / "rtl_buddy.log")
+    (pool,) = [r for r in records if r.get("event") == "build_job.pool_configured"]
+    assert (pool["parallel_requested"], pool["parallel_configured"]) == (4, 4)
+
+
+def test_the_pool_line_names_the_suite_file_that_owns_the_parallel_key(
+    minimal_project, stub_runner
+):
+    """Devin review on rtl_buddy#575: a suite file with a custom name must be
+    named as itself, not as `tests.yaml`, or the line sends the reader to
+    the wrong file."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    tests_yaml = minimal_project / "tests.yaml"
+    marker = "rtl-buddy-filetype: test_config\n"
+    body = tests_yaml.read_text()
+    assert body.startswith(marker)
+    custom = minimal_project / "blk_suite.yaml"
+    custom.write_text(marker + "compile:\n  parallel: 4\n" + body[len(marker) :])
+
+    stub_runner.group_of = lambda _name: "one-shared-build-dir"
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "blk_suite.yaml",
+            "-l",
+            "5",
+            "--parallel",
+            "4",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    records = _records(minimal_project / "rtl_buddy.log")
+    (pool,) = [r for r in records if r.get("event") == "build_job.pool_configured"]
+    assert pool["parallel_origin"] == "blk_suite.yaml compile.parallel"
 
 
 def test_the_default_build_job_announces_no_pool(
@@ -1371,6 +1528,53 @@ def test_pool_configured_has_a_dedicated_human_message():
     )
     assert "cfg-dispatch.compile.parallel is 4" in over
     assert "effective parallelism here is 1" in over
+    # ...naming whichever layer actually governs the key (#547), and
+    # falling back to the root spelling for a job log written before the
+    # field existed (the `over` case above).
+    suite_owned = _human_message(
+        "build_job.pool_configured",
+        {
+            "groups": 1,
+            "parallel": 1,
+            "parallel_requested": 4,
+            "parallel_origin": "tests.yaml compile.parallel",
+        },
+    )
+    assert "tests.yaml compile.parallel is 4" in suite_owned
+    assert "cfg-dispatch" not in suite_owned
+    # The head caps the configured value by the suite's planned configs
+    # before the job sees it, so the line must quote what the FILE says and
+    # then explain the cap — "compile.parallel is 2" beside a tests.yaml
+    # holding 4 contradicts the key it sends the reader to edit (#547
+    # review).
+    capped = _human_message(
+        "build_job.pool_configured",
+        {
+            "groups": 1,
+            "parallel": 1,
+            "parallel_requested": 2,
+            "parallel_configured": 4,
+            "parallel_origin": "tests.yaml compile.parallel",
+        },
+    )
+    assert "tests.yaml compile.parallel is 4" in capped
+    assert "capped to 2 by the 2 planned configs" in capped
+    assert "reservation is sized for 2" in capped
+    assert "effective parallelism here is 1" in capped
+    # An uncapped job says exactly what it said before: no cap, nothing to
+    # explain, and the configured value IS the requested one.
+    uncapped = _human_message(
+        "build_job.pool_configured",
+        {
+            "groups": 1,
+            "parallel": 1,
+            "parallel_requested": 4,
+            "parallel_configured": 4,
+            "parallel_origin": "tests.yaml compile.parallel",
+        },
+    )
+    assert uncapped == suite_owned
+    assert "capped" not in uncapped
     # No surplus, no explanation to give.
     assert "effective parallelism" not in _human_message(
         "build_job.pool_configured",

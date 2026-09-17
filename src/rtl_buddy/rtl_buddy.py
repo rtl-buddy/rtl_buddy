@@ -86,6 +86,7 @@ from .config.dispatch import (
     JobResources,
     combine_for_in_job_compile,
     compile_parallel,
+    compile_parallel_origin,
     compile_resource_origins,
     resolve_compile_resources,
     resolve_resources,
@@ -2403,6 +2404,14 @@ class RtlBuddy:
                 "(grouped by compile key)",
             ),
         ] = 1,
+        parallel_configured: Annotated[
+            int,
+            typer.Option(
+                "--parallel-configured",
+                help="what compile.parallel says, when --parallel is the "
+                "head's plan-capped value (diagnostics only)",
+            ),
+        ] = None,
     ):
         """
         internal: compile a suite's runnable tests on a compute node (#351)
@@ -2437,6 +2446,14 @@ class RtlBuddy:
                 f"--parallel must be >= 1 (got {parallel}); a build job "
                 "allowed zero concurrent builds would compile nothing."
             )
+        # Diagnostics only, so a nonsensical value is dropped rather than
+        # raised (#547 review): the head's cap only ever lowers, so a
+        # configured value below `--parallel` describes no run this job
+        # could be in, and failing the job over a log line would cancel the
+        # whole afterok fan-out behind it. Absent means "the config value IS
+        # --parallel", which is what every uncapped submission means.
+        if parallel_configured is None or parallel_configured < parallel:
+            parallel_configured = parallel
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2456,6 +2473,18 @@ class RtlBuddy:
         )
         suite_cfg = SuiteConfig(path=str(ctx.primary_config))
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        # Which config layer owns `compile.parallel` for THIS suite — the
+        # key a reader would edit, not where this invocation's `--parallel`
+        # number came from (the head caps the resolved value by the planned
+        # configs, and that cap is reported separately as
+        # `parallel_requested`). Read from the same suite block the head
+        # resolved against, so the two provably agree, rather than plumbed
+        # through argv to restate a fact already on disk beside the job
+        # (#547).
+        parallel_origin = compile_parallel_origin(
+            getattr(suite_cfg.get_compile(), "parallel", None) is not None,
+            suite_cfg.get_path(),
+        )
         log_event(
             logger,
             logging.INFO,
@@ -2466,6 +2495,8 @@ class RtlBuddy:
             start_level=start_level,
             plan=plan,
             parallel=parallel,
+            parallel_configured=parallel_configured,
+            parallel_origin=parallel_origin,
         )
 
         if plan is not None:
@@ -2729,6 +2760,14 @@ class RtlBuddy:
                 groups=len(groups),
                 parallel=pool_size,
                 parallel_requested=parallel,
+                # What the config says, which is `parallel_requested` unless
+                # the head's plan cap lowered it — the line must quote the
+                # number the named key actually holds (#547 review).
+                parallel_configured=parallel_configured,
+                # So the line names the key a reader would edit: a suite
+                # that set `compile.parallel` is not moved by cfg-dispatch
+                # (#547).
+                parallel_origin=parallel_origin,
             )
 
         # Nothing left to do in the streaming shape: every group was compiled
@@ -2905,6 +2944,8 @@ class RtlBuddy:
             # the gap between them, so neither can stand in for the other.
             parallel=pool_size,
             parallel_requested=parallel,
+            parallel_configured=parallel_configured,
+            parallel_origin=parallel_origin,
             groups=len(groups),
         )
         if result_json_path is not None:
@@ -4050,25 +4091,34 @@ class RtlBuddy:
         """Submit the suite's compile as a Slurm build job (compute node).
 
         ``suite_compile`` is the suite's own ``compile:`` block (#497),
-        layered over ``cfg-dispatch.compile`` field by field. Passed in
-        rather than re-read from ``suite_cfg`` so this job's reservation and
-        the in-job-compile combination in the caller are provably the same
-        resolution.
+        layered over ``cfg-dispatch.compile`` field by field — ``parallel``
+        included (#547). Passed in rather than re-read from ``suite_cfg`` so
+        this job's reservation and the in-job-compile combination in the
+        caller are provably the same resolution.
 
         ``planned`` is how many configs the plan holds. It caps the
-        configured ``cfg-dispatch.compile.parallel``: a suite with two
-        planned configs cannot keep four build slots busy, and reserving
-        cpus for slots that will idle is the failure mode the scaling below
-        would otherwise introduce. Planned configs, not distinct compile
+        resolved ``compile.parallel``: a suite with two planned configs
+        cannot keep four build slots busy, and reserving cpus for slots
+        that will idle is the failure mode the scaling below would
+        otherwise introduce. Planned configs, not distinct compile
         keys — the head cannot know the keys without writing filelists on
         the submit host, which is the build job's job (#458), so the cap is
-        an upper bound on the concurrency, never a promise of it.
+        an upper bound on the concurrency, never a promise of it. The
+        pre-cap value travels beside it as ``parallel_configured``, because
+        it is the only one of the two a reader can find in a config file —
+        the job's own console line quotes that and reports the cap
+        separately (#547 review).
         """
         dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
-        parallel = max(1, min(compile_parallel(dispatch_cfg), planned))
-        # `parallel` stays a cfg-dispatch knob: it sizes the build job's
-        # concurrency against the partition, which no suite knows about.
+        configured_parallel = compile_parallel(dispatch_cfg, suite_compile)
+        parallel = max(1, min(configured_parallel, planned))
+        # `parallel` layers exactly like the reservation fields beside it
+        # (#547): this job belongs to this suite alone, so a suite with one
+        # compile key says `parallel: 1` and reserves `cpus` rather than
+        # `cpus x` a cluster-wide value sized for the repo's widest suite.
+        # Sizing against the partition's widest node remains the writer's
+        # obligation at either level — see the scaling note below.
         resources = resolve_compile_resources(dispatch_cfg, suite_compile)
         if parallel > 1:
             # Scale ONLY this job's reservation, and only here: the very
@@ -4099,6 +4149,10 @@ class RtlBuddy:
             test_config_path=str(suite_cfg.get_path()),
             resources=resources,
             parallel=parallel,
+            # ...and what the config asked for before the cap, so the job's
+            # console line can name the value a reader will find in the file
+            # rather than the capped one it was handed (#547 review).
+            parallel_configured=configured_parallel,
             # Always, when the run asked for it: the build job is the single
             # writer of the shared directory, so this is the one place a
             # forced recompile costs one compile instead of one per element
@@ -4958,9 +5012,28 @@ class RtlBuddy:
             )
         compile_rows = [f for f in findings if f.phase == "compile"]
         if compile_rows:
+            # Name the key that governs these rows, not the root one by
+            # default: a suite whose own `compile:` block sets `parallel` is
+            # not moved by editing cfg-dispatch (#547 review). One regression
+            # can table several suites, and they need not agree — where they
+            # differ the footnote states the rule instead of picking a side,
+            # since each row's own file is already in the Field column.
+            parallel_keys = {
+                f.parallel_origin for f in compile_rows if f.parallel_origin
+            }
+            if len(parallel_keys) == 1:
+                parallel_key = parallel_keys.pop()
+            elif parallel_keys:
+                parallel_key = (
+                    "the resolved compile.parallel (suite block or cfg-dispatch)"
+                )
+            else:
+                # Nothing said: findings from a caller that does not carry
+                # the origin keep the wording they always had.
+                parallel_key = "cfg-dispatch.compile.parallel"
             note = (
                 "the compile row is the suite's build job: one allocation "
-                "running up to cfg-dispatch.compile.parallel builds at once"
+                f"running up to {parallel_key} builds at once"
             )
             # The cpus row is gated independently (efficiency threshold, and
             # a reduce needs evidence a compile ran), so a table whose only

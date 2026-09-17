@@ -53,6 +53,14 @@ class BuildJobSpec:
     # already folded in the min() against how many configs it planned, so a
     # backend may size the reservation by this number without re-capping it.
     parallel: int = 1
+    # What the CONFIG asked for, before that min() (#547 review). `parallel`
+    # is what this job gets; when the plan capped it, the two differ and
+    # only this one names a number the reader can find in a file. Carried so
+    # the job's own console line can say "compile.parallel is 4, capped to 2"
+    # instead of attributing the capped 2 to a key that says 4. `None` means
+    # "not stated" — read it as equal to `parallel`, which is what every
+    # caller that does not set it means.
+    parallel_configured: int | None = None
     # `--rebuild`: compile even where a stamp validates (#494). The build
     # job is where the head puts it — it is the single writer of the shared
     # directory, and its per-process memo turns one user request into
