@@ -104,12 +104,21 @@ from ..fs_walk import (
 #: Bumped when the manifest's shape changes incompatibly.
 MANIFEST_SCHEMA_VERSION = 1
 
-#: Filename inside the producing run's artefact directory.
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+#: Filename inside the producing run's artefact directory, and the path
+#: rules a manifest's contents keep.
+# All defined in `tools.artifact_paths` — the bottom of the import graph:
+# the filename because that is where the artefact-clearing helpers protect
+# it from a co-named run's suffix clear (#469), and the path helpers
+# (`project_relative`, `project_root_or_none`, `joins_back`) because the
+# coverage manifest keeps the same rules and had a resolve-both copy of
+# `project_relative` that broke on a symlinked `artefacts/`
+# (rtl-buddy/rtl_buddy#564). Re-exported here, where consumers already
+# look.
 from ..tools.artifact_paths import (  # noqa: E402
     PHYS_MANIFEST_NAME as MANIFEST_FILENAME,
+    joins_back,
+    project_relative,
+    project_root_or_none,
 )
 
 # The model's pairing of each half with the totals it owns. Imported so
@@ -166,45 +175,6 @@ def _generator() -> str:
         return "rtl-buddy"
 
 
-def project_relative(path, project_root) -> str | None:
-    """POSIX path relative to the project root, or the path unchanged.
-
-    A path outside the project (an artefact directory on a scratch
-    filesystem, say) is kept verbatim rather than turned into a ``../..``
-    chain nothing can join on.
-
-    The comparison is made on the *logical* paths first — absolute-ised
-    but with no symlink resolved — and only falls back to the resolved
-    pair. A suite whose ``artefacts/`` is a link to scratch storage is an
-    ordinary setup, the same one :func:`discover_manifests` follows and
-    the filelist writer is pinned against, and resolving both operands
-    would put the scratch path on both sides of the ``relative_to``,
-    match nothing, and write the manifest full of absolute host paths.
-    The project-relative rule is about the tree the project is read
-    through, not about where the bytes live. Resolving is still worth a
-    second try, for the reverse arrangement: a path handed in through a
-    link that the project root is *not* reached through.
-    """
-    if path is None:
-        return None
-    logical = Path(os.path.abspath(path))
-    logical_root = Path(os.path.abspath(project_root))
-    try:
-        return logical.relative_to(logical_root).as_posix()
-    except ValueError:
-        pass
-    try:
-        return Path(path).resolve().relative_to(Path(project_root).resolve()).as_posix()
-    except ValueError:
-        return str(path)
-
-
-#: What marks a project root, walking up from an artefact directory. Same
-#: two markers :func:`rtl_buddy.config.root.discover_project_root` uses,
-#: in the same order.
-_ROOT_MARKERS = ("root_config.yaml", ".git")
-
-
 def project_root_for_dir(artefact_dir) -> str:
     """The project root an artefact directory's paths should hang off.
 
@@ -238,21 +208,6 @@ def project_root_for_dir(artefact_dir) -> str:
     return project_root_or_none(artefact_dir) or str(
         Path(os.path.abspath(artefact_dir))
     )
-
-
-def project_root_or_none(artefact_dir) -> str | None:
-    """The project root above ``artefact_dir``, or ``None`` if it is in none.
-
-    The marker walk :func:`project_root_for_dir` is built on, without its
-    fallback. Both spellings are tried, logical first, for the reason
-    that function gives.
-    """
-    logical = Path(os.path.abspath(artefact_dir))
-    for start in (logical, Path(artefact_dir).resolve()):
-        for candidate in (start, *start.parents):
-            if any((candidate / marker).exists() for marker in _ROOT_MARKERS):
-                return str(candidate)
-    return None
 
 
 def build_manifest(
@@ -438,18 +393,6 @@ def resolve(manifest_path, relative_path) -> str | None:
     return str(Path(root) / relative_path)
 
 
-def _joins_back(root, phys_dir: str, phys_dir_abs) -> bool:
-    """Whether ``root / phys_dir`` is the directory the manifest is in.
-
-    The check that turns :func:`project_root_for`'s component count into
-    an answer that can be wrong out loud rather than quietly. Compared on
-    the *resolved* paths, because the whole point is that the two
-    spellings may differ by a link.
-    """
-    joined = os.path.join(str(root), phys_dir)
-    return os.path.realpath(joined) == os.path.realpath(phys_dir_abs)
-
-
 def project_root_for(manifest_path) -> str | None:
     """Infer the project root a manifest's relative paths hang off.
 
@@ -490,10 +433,10 @@ def project_root_for(manifest_path) -> str | None:
     counted = manifest_path.parent
     for _ in Path(phys_dir).parts:
         counted = counted.parent
-    if _joins_back(counted, phys_dir, manifest_path.parent):
+    if joins_back(counted, phys_dir, manifest_path.parent):
         return str(counted)
     walked = project_root_for_dir(manifest_path.parent)
-    if _joins_back(walked, phys_dir, manifest_path.parent):
+    if joins_back(walked, phys_dir, manifest_path.parent):
         return walked
     return str(counted)
 

@@ -58,12 +58,19 @@ from ..fs_walk import artefact_layout_boundary, walk_unique
 #: Bumped when the manifest's shape changes incompatibly.
 MANIFEST_SCHEMA_VERSION = 1
 
-#: Filename inside ``cov_dir``.
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+#: Filename inside ``cov_dir``, and the path rules its contents keep.
+# All defined in `tools.artifact_paths` — the bottom of the import graph:
+# the filename because that is where the artefact-clearing helpers protect
+# it from a co-named run's suffix clear (#469), and the path helpers
+# because the physical manifest keeps the same rules and this module kept
+# a resolve-both copy of `project_relative` that broke on a symlinked
+# `artefacts/` (rtl-buddy/rtl_buddy#564). Re-exported here, where
+# consumers already look.
 from ..tools.artifact_paths import (  # noqa: E402
     COV_MANIFEST_NAME as MANIFEST_FILENAME,
+    joins_back,
+    project_relative,
+    project_root_or_none,
 )
 
 #: Name of the coverage artefact directory a run writes.
@@ -78,21 +85,6 @@ def _generator() -> str:
         return f"rtl-buddy {version('rtl-buddy')}"
     except PackageNotFoundError:  # pragma: no cover - source checkout only
         return "rtl-buddy"
-
-
-def project_relative(path, project_root) -> str | None:
-    """POSIX path relative to the project root, or the path unchanged.
-
-    A path outside the project (an absolute artefact directory on a
-    scratch filesystem, say) is kept verbatim rather than turned into a
-    ``../..`` chain nothing can join on.
-    """
-    if path is None:
-        return None
-    try:
-        return Path(path).resolve().relative_to(Path(project_root).resolve()).as_posix()
-    except ValueError:
-        return str(path)
 
 
 def build_manifest(
@@ -196,8 +188,32 @@ def resolve(manifest_path, relative_path) -> str | None:
 
 
 def project_root_for(manifest_path) -> str | None:
-    """Infer the project root a manifest's relative paths hang off."""
-    manifest_path = Path(manifest_path).resolve()
+    """Infer the project root a manifest's relative paths hang off.
+
+    Counted back up the *logical* path, not the resolved one, for the
+    reason :func:`~rtl_buddy.tools.artifact_paths.project_relative`
+    spells out: the ``cov_dir`` the count consumes is relative to the
+    project root as the writer saw it, and a ``cov_dir`` behind an
+    ``artefacts/`` symlinked to scratch resolves to a path with none of
+    those components above it. Counting them off *that* path climbs out
+    of scratch entirely and returns a root no manifest path joins onto —
+    `rb cov` then reporting a missing model that is sitting right there.
+
+    The count alone is only right when the manifest is *read* through the
+    same route it was written through, and one ordinary layout breaks
+    that: an ``artefacts/`` link whose target is itself inside the
+    project. :func:`discover_manifests` admits each directory once by its
+    real path, so whichever of the two routes the walk reaches first wins
+    — and when that is the target the count climbs off the wrong stem.
+    So the count is *checked* against the directory the manifest actually
+    sits in (:func:`~rtl_buddy.tools.artifact_paths.joins_back`), and the
+    marker walk gets a second try when it fails. Failing both, the
+    counted root stands: it is no worse than before, and a manifest read
+    from outside any project has no better answer available. The same
+    rule, and the same two helpers, as the physical manifest's
+    :func:`rtl_buddy.phys.manifest.project_root_for`.
+    """
+    manifest_path = Path(os.path.abspath(manifest_path))
     try:
         manifest = load_manifest(manifest_path)
     except (OSError, ValueError):
@@ -205,10 +221,15 @@ def project_root_for(manifest_path) -> str | None:
     cov_dir = manifest.get("cov_dir")
     if not cov_dir or os.path.isabs(cov_dir):
         return str(manifest_path.parent)
-    root = manifest_path.parent
+    counted = manifest_path.parent
     for _ in Path(cov_dir).parts:
-        root = root.parent
-    return str(root)
+        counted = counted.parent
+    if joins_back(counted, cov_dir, manifest_path.parent):
+        return str(counted)
+    walked = project_root_or_none(manifest_path.parent)
+    if walked is not None and joins_back(walked, cov_dir, manifest_path.parent):
+        return walked
+    return str(counted)
 
 
 def discover_manifests(project_root) -> list[str]:
@@ -222,15 +243,21 @@ def discover_manifests(project_root) -> list[str]:
     **Symlinked directories are followed only inside the artefact
     layout**, the boundary the physical walk draws and for the same
     reasons (:func:`~rtl_buddy.fs_walk.may_follow_link`). A ``cov_dir``
-    lives under ``artefacts/``, so a suite whose ``artefacts/`` is a link
-    onto scratch storage keeps its coverage behind that link and a walk
-    stopping there answered "no coverage found" for a run sitting right
-    in front of it (rtl-buddy/rtl_buddy#564). Following *every* link is
-    the other error: a ``vendor/`` link, or one to ``$HOME``, drags an
-    unrelated tree into the walk and reports someone else's coverage as
-    this project's. Each directory is also admitted once by its real
-    path, so a cycle terminates and a ``cov_dir`` reachable two ways is
-    reported once.
+    defaults to ``artefacts/cov_dir``, so a suite whose ``artefacts/`` is
+    a link onto scratch storage keeps its coverage behind that link and a
+    walk stopping there answered "no coverage found" for a run sitting
+    right in front of it (rtl-buddy/rtl_buddy#564). Following *every*
+    link is the other error: a ``vendor/`` link, or one to ``$HOME``,
+    drags an unrelated tree into the walk and reports someone else's
+    coverage as this project's. ``cov_dir`` is configurable, though, so
+    the boundary is a real limit and not only a safety rail: a
+    ``cov_dir`` pointed somewhere else and reached *only* through a link
+    with no ``artefacts`` component on its path below the root is not
+    discovered. Name it with ``--cov-dir`` (or ``--manifest``) and it is
+    read directly, discovery unneeded.
+
+    Each directory is also admitted once by its real path, so a cycle
+    terminates and a ``cov_dir`` reachable two ways is reported once.
     """
     root = Path(project_root)
     found: list[tuple[float, str]] = []

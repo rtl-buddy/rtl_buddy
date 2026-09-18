@@ -28,6 +28,7 @@ from rtl_buddy.cov.model import (
     load_model,
     write_model,
 )
+from rtl_buddy.cov.query import artefacts_block, load_context
 
 
 def _dat_record(*, file, line, type_, name, module="blk", col=1, hits=1):
@@ -291,22 +292,89 @@ def _bare_manifest(cov_dir, project_root):
     )
 
 
+def _project_with_symlinked_artefacts(tmp_path):
+    """A project whose ``artefacts/`` is a link onto scratch storage.
+
+    Returns the root and the suite directory *as the project reaches
+    them* — the paths every producer holds, and the ones the manifest's
+    own paths have to be expressed in.
+    """
+    root = tmp_path / "repo"
+    suite = root / "verif" / "blk"
+    suite.mkdir(parents=True)
+    src = root / "design" / "blk.sv"
+    src.parent.mkdir(parents=True)
+    src.write_text("module blk;\n  logic q;\nendmodule\n")
+    physical = tmp_path / "scratch" / "artefacts"
+    (physical / "basic").mkdir(parents=True)
+    _symlink_or_skip(suite / "artefacts", physical)
+    return root, suite
+
+
 def test_discovery_reaches_a_cov_dir_behind_a_symlinked_artefact_dir(tmp_path):
     """``artefacts/`` linked onto scratch storage is an ordinary, documented
     setup, and the default ``cov_dir`` lives inside it — so a walk that did
     not follow the link reported "no coverage found" for a run sitting right
     there (rtl-buddy/rtl_buddy#564)."""
-    root = tmp_path / "repo"
-    suite = root / "verif" / "blk"
-    suite.mkdir(parents=True)
-    physical = tmp_path / "scratch" / "artefacts"
-    (physical / "cov_dir").mkdir(parents=True)
-    _symlink_or_skip(suite / "artefacts", physical)
+    root, suite = _project_with_symlinked_artefacts(tmp_path)
     _bare_manifest(suite / "artefacts" / "cov_dir", root)
 
     assert discover_manifests(root) == [
         str(suite / "artefacts" / "cov_dir" / MANIFEST_FILENAME)
     ]
+
+
+def test_manifest_round_trips_through_a_symlinked_artefacts_dir(tmp_path):
+    """The other end of what discovery now reaches. Resolving both operands
+    put the scratch path on both sides of the comparison, so every path came
+    out absolute and host-specific; `project_root_for` then took its
+    ``isabs`` branch and answered with the scratch ``cov_dir`` itself, and
+    `rb cov` reported its own manifest as a bare ``manifest.json`` — which no
+    consumer can join back onto the project, and the MCP ``manifest``
+    override cannot round-trip."""
+    root, suite = _project_with_symlinked_artefacts(tmp_path)
+    run_dir = suite / "artefacts" / "basic"
+    raw = _write_dat(
+        run_dir / "coverage.dat",
+        [_dat_record(file="../../../design/blk.sv", line=1, type_="line", name="")],
+    )
+    cov_dir = suite / "artefacts" / "cov_dir"
+    model_path = write_model(
+        build_model(
+            [
+                TestArtefacts(
+                    name="basic",
+                    raw=raw,
+                    suite="verif/blk/tests.yaml",
+                    source_roots=(str(run_dir), str(suite)),
+                )
+            ],
+            project_root=root,
+            simulator="verilator",
+        ),
+        cov_dir,
+    )
+    manifest_path = write_manifest(
+        build_manifest(
+            project_root=root,
+            cov_dir=cov_dir,
+            command="test",
+            model_path=model_path,
+        ),
+        cov_dir,
+    )
+
+    manifest = load_manifest(manifest_path)
+    assert manifest["cov_dir"] == "verif/blk/artefacts/cov_dir"
+    assert manifest["model"] == "verif/blk/artefacts/cov_dir/coverage-model.json"
+    assert project_root_for(manifest_path) == str(root)
+    assert os.path.samefile(resolve(manifest_path, manifest["model"]), model_path)
+    # And what `rb cov --machine` / the MCP tools hand a consumer: paths
+    # relative to the project, not to the scratch directory they live in.
+    block = artefacts_block(load_context(root))
+    assert block["manifest"] == "verif/blk/artefacts/cov_dir/manifest.json"
+    assert block["cov_dir"] == "verif/blk/artefacts/cov_dir"
+    assert block["model"] == "verif/blk/artefacts/cov_dir/coverage-model.json"
 
 
 def test_discovery_terminates_on_a_symlink_loop(tmp_path):
@@ -322,22 +390,60 @@ def test_discovery_terminates_on_a_symlink_loop(tmp_path):
     assert discover_manifests(root) == [manifest_path]
 
 
-def test_discovery_reports_a_cov_dir_reachable_two_ways_once(tmp_path):
-    """An ``artefacts/`` link whose target is itself inside the project puts
-    one ``cov_dir`` on two paths. Admitting a directory once by its real path
-    keeps the same run from being reported — and reported on — twice."""
+def _project_with_in_project_artefact_link(tmp_path):
+    """A project whose ``artefacts/`` links to storage *inside* the project.
+
+    The awkward middle case: both routes to the same ``cov_dir`` are under
+    the project root, so discovery can legitimately report either, and the
+    manifest's ``cov_dir`` describes only one of them. Returns the root
+    and the two routes, the link's target first.
+    """
     root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
     store = root / "scratch_artefacts"
     (store / "cov_dir").mkdir(parents=True)
     suite = root / "verif" / "blk"
     suite.mkdir(parents=True)
     _symlink_or_skip(suite / "artefacts", store)
-    _bare_manifest(store / "cov_dir", root)
+    return root, store / "cov_dir", suite / "artefacts" / "cov_dir"
+
+
+def test_discovery_reports_a_cov_dir_reachable_two_ways_once(tmp_path):
+    """An ``artefacts/`` link whose target is itself inside the project puts
+    one ``cov_dir`` on two paths. Admitting a directory once by its real path
+    keeps the same run from being reported — and reported on — twice, and
+    whichever of the two routes the walk happens to reach first has to
+    resolve back onto its own artefacts: that invariant must not depend on
+    the order a directory is read in."""
+    root, target_route, logical_route = _project_with_in_project_artefact_link(tmp_path)
+    _bare_manifest(logical_route, root)
 
     found = discover_manifests(root)
 
     assert len(found) == 1
-    assert os.path.samefile(found[0], store / "cov_dir" / MANIFEST_FILENAME)
+    assert os.path.samefile(found[0], target_route / MANIFEST_FILENAME)
+    assert project_root_for(found[0]) == str(root)
+    assert os.path.samefile(
+        resolve(found[0], load_manifest(found[0])["cov_dir"]), logical_route
+    )
+
+
+def test_project_root_survives_a_manifest_read_through_the_link_target(tmp_path):
+    """The physical walk's #561 finding, which the coverage walk inherits the
+    moment it follows links. Counting ``cov_dir``'s components back off the
+    *target* route climbs two levels above the project, and every artefact
+    the manifest names then resolves to nothing — `rb cov` reporting a
+    missing model that is sitting right there, on nothing but directory-order
+    luck. So the counted root is checked against the directory the manifest
+    is in, and the marker walk gets the second try."""
+    root, target_route, logical_route = _project_with_in_project_artefact_link(tmp_path)
+    _bare_manifest(logical_route, root)
+
+    assert project_root_for(target_route / MANIFEST_FILENAME) == str(root)
+    assert os.path.samefile(
+        resolve(target_route / MANIFEST_FILENAME, "verif/blk/artefacts/cov_dir"),
+        logical_route,
+    )
 
 
 def test_discovery_does_not_enter_a_symlink_outside_the_artefact_layout(tmp_path):
