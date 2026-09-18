@@ -19,6 +19,7 @@ class PnrPlatformConfigFile:
     pdk: str
     sta_corner: str = field(rename="corner", default="")
     cts_buffer: str = field(rename="cts-buffer", default="")
+    cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
     routing_layers: PnrRoutingLayersFile = field(
         rename="routing-layers", default_factory=PnrRoutingLayersFile
     )
@@ -44,6 +45,7 @@ class PnrPlatformConfig:
                 f"available: {self._pdk.get_corners()}"
             )
         self._cts_buffer = cfg.cts_buffer
+        self._cts_sink_clustering = cfg.cts_sink_clustering
         self._signal_layers = cfg.routing_layers.signal
         self._clock_layers = cfg.routing_layers.clock
 
@@ -64,6 +66,9 @@ class PnrPlatformConfig:
 
     def get_cts_buffer(self) -> str:
         return self._cts_buffer
+
+    def get_cts_sink_clustering(self) -> bool:
+        return self._cts_sink_clustering
 
     def get_signal_layers(self) -> str:
         return self._signal_layers

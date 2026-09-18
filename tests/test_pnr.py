@@ -66,6 +66,19 @@ def test_pdk_exposes_site_tie_and_fill(tmp_path):
     assert pdk.get_tie_hi() == "LOGIC1_X1/Z"
     assert pdk.get_tie_lo() == "LOGIC0_X1/Z"
     assert pdk.get_fill_cells() == ["FILLCELL_X1", "FILLCELL_X2"]
+    assert pdk.get_pin_layer_horizontal() == "metal3"
+    assert pdk.get_pin_layer_vertical() == "metal2"
+
+
+def test_pdk_exposes_configured_pin_layers(tmp_path):
+    from rtl_buddy.config.pdk import PdkPinLayersFile
+
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        pin_layers=PdkPinLayersFile(horizontal="met3", vertical="met2"),
+    )
+    assert pdk.get_pin_layer_horizontal() == "met3"
+    assert pdk.get_pin_layer_vertical() == "met2"
 
 
 # ---------------------------------------------------------------------------
@@ -337,9 +350,44 @@ def test_openroad_pnr_template_substitutes_all_placeholders(tmp_path):
     assert "set CORE_UTIL_PCT   55.00" in text
     assert "set TIEHI_CELL_PORT LOGIC1_X1/Z" in text
     assert "set CTS_BUF         BUF_X4" in text
+    assert "-sink_clustering_enable" in text
+    assert "set PIN_LAYER_H     metal3" in text
+    assert "set PIN_LAYER_V     metal2" in text
+    assert "place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V" in text
     # No leftover placeholders
     assert "{{" not in text
     assert "}}" not in text
+
+
+def test_openroad_pnr_can_disable_cts_sink_clustering(tmp_path):
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    pdk = _make_pdk_cfg(tmp_path)
+    platform = PnrPlatformConfig(
+        PnrPlatformConfigFile(
+            name="nangate45_typ",
+            pdk="nangate45",
+            cts_buffer="BUF_X4",
+            cts_sink_clustering=False,
+        ),
+        lambda _name: pdk,
+    )
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    resolved_synth = MagicMock()
+    resolved_synth.get_top.return_value = "demo_top"
+    resolved_synth.get_name.return_value = "demo_synth"
+    pnr_cfg.resolve_synth_cfg = MagicMock(return_value=resolved_synth)
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=pnr_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+    )
+
+    text = Path(backend._write_script(platform, pnr_cfg.get_floorplan())).read_text()
+
+    assert "-sink_clustering_enable" not in text
+    assert "{{" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +723,19 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     # rather than as a router mystery.
     last_dp = len(pre_route) - 1 - pre_route[::-1].index("detailed_placement")
     assert "check_placement" in pre_route[last_dp + 1 :]
+
+
+def test_pnr_template_places_multiple_macros_on_a_grid():
+    from importlib.resources import files
+
+    template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
+    assert "set macro_count [llength $macros]" in template
+    assert "for {set candidate_cols 1}" in template
+    assert "$max_macro_w <= $core_w / $candidate_cols" in template
+    assert "macros do not fit any rectangular grid" in template
+    assert "$col * $slot_w" in template
+    assert "$row * $slot_h" in template
+    assert "does not fit its floorplan grid slot" in template
 
 
 def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):

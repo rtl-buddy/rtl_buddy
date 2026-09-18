@@ -9,6 +9,12 @@ logger = logging.getLogger(__name__)
 
 
 @serde
+class PdkPinLayersFile:
+    horizontal: str = "metal3"
+    vertical: str = "metal2"
+
+
+@serde
 class PdkConfigFile:
     name: str
     site: str = ""
@@ -21,6 +27,9 @@ class PdkConfigFile:
     tie_hi: str = field(rename="tie-hi", default="")
     tie_lo: str = field(rename="tie-lo", default="")
     fill_cells: list[str] = field(rename="fill-cells", default_factory=list)
+    pin_layers: PdkPinLayersFile = field(
+        rename="pin-layers", default_factory=PdkPinLayersFile
+    )
 
 
 class PdkConfig:
@@ -41,6 +50,8 @@ class PdkConfig:
         self._tie_hi = cfg.tie_hi
         self._tie_lo = cfg.tie_lo
         self._fill_cells = list(cfg.fill_cells)
+        self._pin_layer_horizontal = cfg.pin_layers.horizontal
+        self._pin_layer_vertical = cfg.pin_layers.vertical
 
     def get_name(self) -> str:
         return self._name
@@ -88,3 +99,9 @@ class PdkConfig:
 
     def get_fill_cells(self) -> list[str]:
         return list(self._fill_cells)
+
+    def get_pin_layer_horizontal(self) -> str:
+        return self._pin_layer_horizontal
+
+    def get_pin_layer_vertical(self) -> str:
+        return self._pin_layer_vertical

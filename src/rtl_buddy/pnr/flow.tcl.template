@@ -23,6 +23,8 @@ set TIELO_CELL_PORT {{ tie_lo }}
 set CTS_BUF         {{ cts_buf }}
 set SIGNAL_LAYERS   {{ signal_layers }}
 set CLOCK_LAYERS    {{ clock_layers }}
+set PIN_LAYER_H     {{ pin_layer_horizontal }}
+set PIN_LAYER_V     {{ pin_layer_vertical }}
 
 set FILL_CELLS      [list {{ fill_cells }}]
 
@@ -51,38 +53,66 @@ initialize_floorplan \
 make_tracks
 
 puts ">>> IO pin placement"
-place_pins -hor_layers metal3 -ver_layers metal2
+place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 
 puts ">>> Tie cells"
 if {[string length $TIEHI_CELL_PORT] > 0} { insert_tiecells $TIEHI_CELL_PORT }
 if {[string length $TIELO_CELL_PORT] > 0} { insert_tiecells $TIELO_CELL_PORT }
 
-puts ">>> Macro placement (snap to row pitch)"
-# Hard macros must be placed + legalized on row boundaries before the
-# standard-cell global_placement run. Without this, global_placement
-# positions macros in continuous coordinates and detail-route fails
-# with off-grid pin shapes. Walk the block's instances, find any
-# whose master is CLASS BLOCK (i.e., a hard macro), and snap its
-# origin to the manufacturing grid + row pitch using a fixed origin
-# near the die's bottom-left corner. For multi-macro designs the
-# manual placement would need real planning; for the common
-# single-macro case (this project's vxp_cor) one corner placement is
-# fine.
+puts ">>> Macro placement"
 set block [ord::get_db_block]
 set manuf_grid_dbu [expr {int([ord::microns_to_dbu 0.005])}]
-set row_pitch_dbu  [expr {int([ord::microns_to_dbu 1.4])}]
-set macro_x_dbu [expr {[ord::microns_to_dbu 10.0]}]
-set macro_y_dbu [expr {[ord::microns_to_dbu 8.4]}] ; # 6 × 1.4 µm rows
-set macro_idx 0
+set macros {}
 foreach inst [$block getInsts] {
-  set master [$inst getMaster]
-  if {[$master isBlock]} {
-    incr macro_idx
-    set off_y [expr {$macro_idx * $row_pitch_dbu * 4}]
-    set y_pos [expr {$macro_y_dbu + $off_y}]
-    $inst setLocation $macro_x_dbu $y_pos
+  if {[[$inst getMaster] isBlock]} { lappend macros $inst }
+}
+set macro_count [llength $macros]
+if {$macro_count > 0} {
+  set core [$block getCoreArea]
+  set core_w [expr {double([$core xMax] - [$core xMin])}]
+  set core_h [expr {double([$core yMax] - [$core yMin])}]
+  set max_macro_w 0
+  set max_macro_h 0
+  foreach inst $macros {
+    set master [$inst getMaster]
+    set max_macro_w [expr {max($max_macro_w, [$master getWidth])}]
+    set max_macro_h [expr {max($max_macro_h, [$master getHeight])}]
+  }
+  set ideal_cols [expr {sqrt(double($macro_count))}]
+  set best_score [expr {double($macro_count + 1)}]
+  set cols 0
+  for {set candidate_cols 1} {$candidate_cols <= $macro_count} {incr candidate_cols} {
+    set candidate_rows [expr {int(ceil(double($macro_count) / $candidate_cols))}]
+    if {$max_macro_w <= $core_w / $candidate_cols &&
+        $max_macro_h <= $core_h / $candidate_rows} {
+      set score [expr {abs($candidate_cols - $ideal_cols)}]
+      if {$score < $best_score} {
+        set cols $candidate_cols
+        set best_score $score
+      }
+    }
+  }
+  if {$cols == 0} {
+    error "macros do not fit any rectangular grid in the floorplan core"
+  }
+  set rows [expr {int(ceil(double($macro_count) / $cols))}]
+  set slot_w [expr {$core_w / $cols}]
+  set slot_h [expr {$core_h / $rows}]
+  for {set i 0} {$i < $macro_count} {incr i} {
+    set inst [lindex $macros $i]
+    set master [$inst getMaster]
+    set col [expr {$i % $cols}]
+    set row [expr {$i / $cols}]
+    if {[$master getWidth] > $slot_w || [$master getHeight] > $slot_h} {
+      error "macro [$inst getName] does not fit its floorplan grid slot"
+    }
+    set x [expr {[$core xMin] + $col * $slot_w + ($slot_w - [$master getWidth]) / 2.0}]
+    set y [expr {[$core yMin] + $row * $slot_h + ($slot_h - [$master getHeight]) / 2.0}]
+    set x [expr {int($x / $manuf_grid_dbu) * $manuf_grid_dbu}]
+    set y [expr {int($y / $manuf_grid_dbu) * $manuf_grid_dbu}]
+    $inst setLocation $x $y
     $inst setPlacementStatus FIRM
-    puts ">>>   placed [$inst getName] at ($macro_x_dbu, $y_pos) DBU"
+    puts ">>>   placed [$inst getName] at ($x, $y) DBU"
   }
 }
 
@@ -101,7 +131,7 @@ set_propagated_clock [all_clocks]
 clock_tree_synthesis \
     -root_buf $CTS_BUF \
     -buf_list $CTS_BUF \
-    -sink_clustering_enable
+    {{ cts_clustering_option }}
 
 puts ">>> Detail placement (post-CTS)"
 detailed_placement
