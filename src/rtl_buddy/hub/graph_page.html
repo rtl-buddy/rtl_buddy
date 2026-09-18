@@ -54,6 +54,19 @@
       --tint-s:   70%;
       --cov-l:    82%;
       --cov-none: #e5e7eb;
+      /* Heat ramp, shared with the /phy pane: the continuous fill is
+         hsl(var(--heat-h), var(--heat-s),
+             calc(--heat-l0 + (--heat-l1 - --heat-l0) * --f)),
+         so these are the tokens the module tints cannot render without
+         — a missing sheet would otherwise paint every module node
+         black. They live in the SHEET, beside the coverage ramp, and
+         never in a pane: one ramp in two places is how the cov pane's
+         saturation drifted. */
+      --heat-h:      18;
+      --heat-s:      85%;
+      --heat-l0:     96%;
+      --heat-l1:     66%;
+      --heat-none:   #e5e7eb;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --fs-base:  13px;
@@ -149,6 +162,27 @@
       background: hsl(var(--h), var(--tint-s), var(--cov-l));
     }
     .cov-swatch.none { background: var(--cov-none); }
+    /* Physical heat (rtl-buddy/rtl_buddy#596). One rule, both themes,
+       driven by --f — the same ramp the /phy pane tints its table cells
+       with, so a module that reads hot there reads hot here. Both
+       endpoints are sheet tokens; the script only ever sets the 0..1
+       fraction. `fill` rather than `background` because a node is an
+       SVG circle, which is the only reason this is not the phys pane's
+       own rule verbatim. */
+    .node circle.body.heat {
+      --f: 0;
+      fill: hsl(var(--heat-h), var(--heat-s),
+        calc(var(--heat-l0) + (var(--heat-l1) - var(--heat-l0)) * var(--f)));
+    }
+    .node circle.body.heat.none { fill: var(--heat-none); }
+    .heat-swatch {
+      --f: 0;
+      width: .7rem; height: .7rem; border-radius: 2px; flex: none;
+      display: inline-block; border: 1px solid var(--line-strong);
+      background: hsl(var(--heat-h), var(--heat-s),
+        calc(var(--heat-l0) + (var(--heat-l1) - var(--heat-l0)) * var(--f)));
+    }
+    .heat-swatch.none { background: var(--heat-none); }
     .node text {
       fill: var(--fg); font-size: 11px; paint-order: stroke;
       stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
@@ -241,6 +275,18 @@
       title="Fill design nodes with their line-coverage ratio instead of their column colour, badge each test with the coverage it produced, and ring each spec coverage item by whether the run exercised it. Needs `rb graph results` after a coverage run.">
       <input type="checkbox" id="opt-cov"> coverage
     </label>
+    <label class="chk" id="opt-heat-wrap"
+      title="Fill module nodes with the physical model's heat ramp. Cells and area are the module definition's, from the synthesis half; power is summed over every instantiation of the module, from the leaf rows inside each one. Needs `rb synth` / `rb power`; the numbers are the ones the /phy pane shows.">
+      <input type="checkbox" id="opt-heat"> heat
+    </label>
+    <label class="chk" id="heat-metric-wrap" hidden
+      title="Which physical metric the module tints rank on. `cells` and `area` are the module definition's, from the synthesis half; `leakage`, `dynamic` and `total` are summed here over every instantiation of the module. Same five metrics, same order, as the /phy pane.">
+      metric <select id="heat-metric"></select>
+    </label>
+    <label class="chk" id="heat-run-wrap" hidden
+      title="Which physical run the tints come from — a project holds one artefact directory per partition, per corner and per power mode. The entry marked `newest — follows` keeps following whatever finished last; the /phy pane's own selector offers the same runs.">
+      run <select id="heat-run"></select>
+    </label>
     <label class="chk" title="How far the highlight reaches from the selected or hovered node: 1 = direct neighbours only, higher values follow the edges outward N hops.">
       hops <select id="opt-hops">
         <option>1</option><option>2</option><option>3</option>
@@ -291,6 +337,36 @@
   'use strict';
 
   var GRAPH_URL = window.__RTL_BUDDY_GRAPH_URL__ || '/graph.json';
+
+  // The physical model's data route, injected by
+  // rtl_buddy.hub.graph_page.render_graph_html off the same manifest
+  // probe the landing page's phys card uses
+  // (rtl-buddy/rtl_buddy#596). `null` — the global left out — means no
+  // run under this project left a manifest, so the heat control is
+  // muted rather than pointed at a route that would 404.
+  //
+  // Decided at page render, so a `rb synth` that lands AFTER this tab
+  // opened needs the tab reloaded before the control lights up. Same
+  // caveat as the landing card, and the same fix.
+  var PHY_URL = window.__RTL_BUDDY_PHY_URL__ || null;
+
+  // The metric switcher, left to right: `hub.metrics` off the payload is
+  // authoritative, and this is the fallback for a body from an older
+  // hub. It is the /phy pane's list and the `phys_focus.metric` enum,
+  // verbatim — one vocabulary, three surfaces.
+  var HEAT_METRICS = ['cells', 'area', 'leakage', 'dynamic', 'total'];
+
+  // Which command fills each half — the map rtl_buddy/phys/query.py
+  // keys HALF_PRODUCER on, so this pane's hints and the CLI's say the
+  // same thing.
+  var HEAT_HALF_PRODUCER = { modules: 'rb synth', instances: 'rb power' };
+
+  // The muted control's wording, and it is the LANDING CARD's
+  // (hub/landing_page.py, the phys card's note) rather than a second
+  // sentence about the same absence. The reload hint is this pane's
+  // own: the presence probe ran when the document was rendered.
+  var HEAT_ABSENT =
+    'no physical model — run `rb synth` or `rb power` first, then reload this tab';
 
   // Left-to-right column order. Columns are NOT tiers: the spec on the
   // left, the design in the middle, one column per verification flow on
@@ -354,6 +430,12 @@
     optHops: document.getElementById('opt-hops'),
     optCov: document.getElementById('opt-cov'),
     optCovWrap: document.getElementById('opt-cov-wrap'),
+    optHeat: document.getElementById('opt-heat'),
+    optHeatWrap: document.getElementById('opt-heat-wrap'),
+    heatMetric: document.getElementById('heat-metric'),
+    heatMetricWrap: document.getElementById('heat-metric-wrap'),
+    heatRun: document.getElementById('heat-run'),
+    heatRunWrap: document.getElementById('heat-run-wrap'),
     fixView: document.getElementById('fix-view')
   };
 
@@ -362,6 +444,13 @@
     out: Object.create(null), inc: Object.create(null),
     hiddenCols: Object.create(null), filter: '',
     selected: null, hovered: null, coverage: null, categories: {},
+    // The physical half: the `/phy.json` body, the join computed off it
+    // (`joinPhys`), the metric the tints rank on, and which run the body
+    // came from (`null` = whichever is newest, the bare route).
+    phys: null, heat: null, heatMetric: null, physDir: null,
+    // Extra nodes an inbound `phys_focus` highlighted beside the
+    // selection (one RTL module exported under several ids).
+    focusIds: null,
     view: { x: 0, y: 0, k: 1 }, ticks: 0, raf: 0
   };
 
@@ -430,6 +519,455 @@
   }
   function coverageOn() {
     return !!(state.coverage && els.optCov.checked);
+  }
+  // ---- physical heat (rtl-buddy/rtl_buddy#596) -------------------
+  // The physical model's numbers, painted onto `module:` nodes. The
+  // model is the one `/phy` reads (rtl_buddy/phys/model.py): a
+  // `modules` half of per-RTL-module rows (`cell_count`, `area_um2`)
+  // and an `instances` half of per-leaf power rows.
+  //
+  // Everything between the markers below is pure — no DOM, no page
+  // state — so `tests/test_hub_graph_page.py` can slice it out and run
+  // the join in bare `node`. The join is the only part of this pane
+  // that can be silently, numerically wrong, so it is the part that is
+  // tested away from the browser.
+
+  // >>> heat-join
+  // Which half answers each metric, and how its number reads. `dynamic`
+  // has no column anywhere: it is internal + switching, summed in the
+  // browser because no producer writes it down (rtl_buddy/phys/query.py
+  // POWER_COLUMNS), which is exactly what the /phy pane does with it.
+  var HEAT_METRIC_DEFS = {
+    cells:   { half: 'modules',   unit: '',    kind: 'count' },
+    area:    { half: 'modules',   unit: 'µm²', kind: 'real' },
+    leakage: { half: 'instances', unit: 'µW', kind: 'real' },
+    dynamic: { half: 'instances', unit: 'µW', kind: 'real' },
+    total:   { half: 'instances', unit: 'µW', kind: 'real' }
+  };
+
+
+  // The instance-path separator is the TOOL's choice: OpenSTA prints
+  // `/` for a netlist it read from Verilog, while every RTL-side
+  // consumer — view.json, the schematic, the graph's own `inst:` ids —
+  // spells the same path with `.`. The graph's vocabulary is dots, so
+  // a model row is levelled on the way in and nothing is rewritten.
+  //
+  // Not inside an ESCAPED IDENTIFIER, though: a name that is not a
+  // legal bare identifier is written `\gen[0].u_x` and terminated by
+  // whitespace, and both a `/` and a `.` in there are part of the NAME
+  // — rewriting one would split a single leaf into two levels and
+  // attribute its power to a module that does not contain it. So a
+  // backslash that OPENS a segment runs atomically to the whitespace
+  // that ends it, and the terminator is dropped so the two spellings
+  // compare equal.
+  //
+  // This is `level_path` in rtl_buddy/phys/query.py and `toWirePath` in
+  // hub/phys_page.html, in the graph's separator. The three are
+  // separate copies on either side of the wire and must not drift: a
+  // change here needs the same change there.
+  function levelPath(path) {
+    var text = String(path == null ? '' : path), out = '', at = true, i = 0;
+    while (i < text.length) {
+      var ch = text.charAt(i);
+      if (at && ch === '\\') {
+        var end = i;
+        while (end < text.length && !/\s/.test(text.charAt(end))) { end++; }
+        out += text.slice(i, end);
+        while (end < text.length && /\s/.test(text.charAt(end))) { end++; }
+        i = end; at = false;
+        continue;
+      }
+      if (ch === '/' || ch === '.') { out += '.'; at = true; }
+      else { out += ch; at = false; }
+      i++;
+    }
+    return out;
+  }
+
+  // The suite qualifier off the end of an id.
+  //
+  // `rb graph build` appends `@<suite>` to the WHOLE id of anything two
+  // files claimed (graph.build.QUALIFIER_SEP) and reads it back off the
+  // LAST `@` (`rpartition` in its `_collision_label_index`), so that is
+  // the rule here too. Splitting on the FIRST `@`, or per path level,
+  // is wrong for a suite path that contains a dot:
+  // `inst:blk/blk.u_sub@verif/fifo.v2` split per component keeps `v2`
+  // as a level and keys the index on `u_sub.v2`, a coordinate no model
+  // row can answer to — and the module that owns those leaves then
+  // paints as unmeasured.
+  function stripQualifier(text) {
+    var value = String(text == null ? '' : text);
+    var at = value.lastIndexOf('@');
+    return at < 0 ? value : value.slice(0, at);
+  }
+
+  // An `inst:` id read as `{root, path}`, where `path` is ROOTLESS.
+  //
+  // A design-tier instance id is `inst:<root>/<dot.path>` and the dot
+  // path starts AT that root (`inst:X/X` is X's own root scope), while
+  // a model row is relative to the design top and carries no root at
+  // all (`u_sub/_64_`). So the first level comes off, and the empty
+  // string is the top's own scope — which is a real answer, not a
+  // missing one: a leaf instantiated directly in the top module is
+  // owned by the top module.
+  //
+  // The suite qualifier comes off the WHOLE id first, before the path
+  // is levelled: it disambiguates an id and is not part of any
+  // instance's name, and its own value can contain the separator the
+  // levelling splits on (see `stripQualifier`).
+  function instanceCoord(id) {
+    var text = String(id == null ? '' : id);
+    if (text.indexOf('inst:') !== 0) { return null; }
+    var rest = stripQualifier(text).slice('inst:'.length);
+    var slash = rest.indexOf('/');
+    if (slash < 0) { return null; }
+    var levels = rest.slice(slash + 1).split('.');
+    if (!levels[0]) { return null; }
+    return { root: levels[0], path: levels.slice(1).join('.') };
+  }
+
+  // Rootless instance path -> the module that instance is of, for the
+  // ONE elaboration rooted at the physical model's top.
+  //
+  // Restricted to that root on purpose. `rb graph build` exports the
+  // design tier once per model and once per testbench (#377), so the
+  // same rootless path means two different coordinates in two
+  // elaborations: `u_dut.u_sub` under a testbench root and `u_sub`
+  // under the DUT root are the same instance reached two ways, and
+  // attributing the model's rows through the testbench copy would file
+  // the DUT's power under whatever the testbench wraps it in. The
+  // model's rows are rootless *relative to its own top*, so the only
+  // elaboration that can answer them is the one rooted there.
+  //
+  // `rooted: false` says the graph has no elaboration under that top —
+  // a graph built with `--model` for something else, or a synthesis run
+  // on a wrapper the graph does not carry. Then nothing is attributed
+  // and the pane says so, rather than borrowing another root's paths.
+  //
+  // First link wins on a repeated path — link order, the same tie-break
+  // `shallowestInstancePath` takes.
+  function instanceModuleIndex(links, top) {
+    var wanted = String(top == null ? '' : top);
+    var index = Object.create(null);
+    var rooted = false;
+    if (!wanted) { return { index: index, rooted: rooted }; }
+    (links || []).forEach(function (l) {
+      if (!l || l.type !== 'instance_of') { return; }
+      var target = String(l.target == null ? '' : l.target);
+      if (target.indexOf('module:') !== 0) { return; }
+      var name = stripQualifier(target).slice('module:'.length);
+      var coord = instanceCoord(l.source);
+      if (!name || !coord || coord.root !== wanted) { return; }
+      rooted = true;
+      if (index[coord.path] == null) { index[coord.path] = name; }
+    });
+    return { index: index, rooted: rooted };
+  }
+
+  // Which module PAYS for a leaf row: the module of the deepest
+  // instance node that properly contains it.
+  //
+  // The power half cannot be joined by name. Its `module` column is the
+  // LIBERTY CELL each leaf is an instance of — `DFF_X1`, `NAND2_X1` —
+  // because a mapped netlist's leaves are cells and not RTL modules
+  // (docs/concepts/phys.md, "What the module join can answer"). A
+  // name-join between that column and RTL module names is precisely
+  // what the rtl-buddy/rtl_buddy#558 review removed: on any collision
+  // — an RTL module called `DFF_X1`, a cell named after a block — a
+  // module's whole total was added once per leaf. So the join here is
+  // by PATH, consumer-side, which is the same thing `rb phys instance
+  // <path>` does when it sums a subtree at query time.
+  //
+  // A PROPER ancestor, never the row's own path. A leaf that also has
+  // an instance node of its own — an explicitly instantiated macro, a
+  // black box — is still instantiated in its PARENT's body, and
+  // attributing it to itself would move its power out of the module
+  // that pays for it and into the module it is.
+  //
+  // The walk is longest-prefix-first and ends at the root scope, so a
+  // design tier missing an intermediate level attributes to the
+  // deepest level it does carry rather than dropping the row.
+  //
+  // The answer carries the instance PATH it was found at, not only the
+  // module: two leaves owned by `u_a` and by `u_b` are two
+  // instantiations of one module, and the roll-up has to be able to say
+  // so — its sum is over instantiations, while the synthesis half's
+  // cells and area are the module definition's.
+  function ownerEntryOfPath(index, path) {
+    var levels = String(path == null ? '' : path).split('.');
+    for (var i = levels.length - 1; i >= 0; i--) {
+      var key = levels.slice(0, i).join('.');
+      if (index[key] != null) { return { key: key, module: index[key] }; }
+    }
+    return null;
+  }
+
+  function ownerOfPath(index, path) {
+    var found = ownerEntryOfPath(index, path);
+    return found ? found.module : null;
+  }
+
+  // The same walk, stopping one level short of the ROOT scope.
+  //
+  // Only the inbound-focus path needs this. Every path is inside the
+  // top, so the root scope answers every reading of one — which means
+  // an answer that fell through to it says nothing about whether that
+  // reading was the one the sender meant. A reading that lands on a
+  // real enclosing INSTANCE is therefore preferred, and the root scope
+  // is the last resort across all readings rather than the first
+  // reading's own. (For the roll-up there is nothing to disambiguate: a
+  // model row is rootless by construction, and a leaf in the top's own
+  // body is genuinely the top module's.)
+  function ownerOfPathBelowRoot(index, path) {
+    var levels = String(path == null ? '' : path).split('.');
+    for (var i = levels.length - 1; i >= 1; i--) {
+      var key = levels.slice(0, i).join('.');
+      if (index[key] != null) { return index[key]; }
+    }
+    return null;
+  }
+
+  // `null` is not zero, everywhere below. A column no producer measured
+  // — Yosys writes no `area_um2` without a Liberty — must not read as
+  // "this module is free"; it reads as "nobody said".
+  function heatNum(value) {
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }
+
+  // Sum, with those semantics: null + null stays null, and one measured
+  // half of a pair is still a partial answer worth showing.
+  function heatAdd(total, value) {
+    var add = heatNum(value);
+    if (add === null) { return total; }
+    return (total === null ? 0 : total) + add;
+  }
+
+  // The power half, rolled up per module. Own-module only, and NOT
+  // hierarchical: a submodule's leaves are that submodule's power, the
+  // same way `cell_count` counts a module's own cells. (`area_um2` is
+  // the exception, and it is the synthesis half's own choice — Yosys
+  // rolls submodule area up, so a module's area already includes its
+  // children's and its cells do not.)
+  //
+  // **The two halves do not count over the same thing, and every
+  // surface has to say so.** A module's cells and area are its
+  // DEFINITION's, counted once however many times it is instantiated;
+  // this sum is over every INSTANTIATION of it, because every leaf
+  // inside every one of them burns real power. A design with eight
+  // FIFOs has one FIFO row in the synthesis half and eight FIFOs' worth
+  // of leakage here. That sum is the right number for a heat map —
+  // "which module is this design spending its power on" — and the wrong
+  // number to divide by the area, so the entry carries `instances` (how
+  // many instantiations contributed) beside `leaves` (how many rows were
+  // summed), and the inspector prints both with the caveat.
+  function rollUpPower(rows, index) {
+    var byModule = Object.create(null);
+    var seen = Object.create(null);
+    var attributed = 0, unattributed = 0;
+    (rows || []).forEach(function (row) {
+      if (!row) { return; }
+      var owner = ownerEntryOfPath(index, levelPath(row.instance_path));
+      if (owner === null) { unattributed++; return; }
+      var acc = byModule[owner.module];
+      if (!acc) {
+        acc = byModule[owner.module] = {
+          leakage: null, internal: null, switching: null, total: null,
+          instances: 0, leaves: 0
+        };
+      }
+      // Distinct owning instance PATHS, not rows: `u_a/_1_` and
+      // `u_a/_2_` are two leaves of one instantiation.
+      var owners = seen[owner.module] ||
+        (seen[owner.module] = Object.create(null));
+      if (!owners[owner.key]) { owners[owner.key] = true; acc.instances++; }
+      acc.leaves++;
+      acc.leakage = heatAdd(acc.leakage, row.leakage_uw);
+      acc.internal = heatAdd(acc.internal, row.internal_uw);
+      acc.switching = heatAdd(acc.switching, row.switching_uw);
+      acc.total = heatAdd(acc.total, row.total_uw);
+      attributed++;
+    });
+    return {
+      byModule: byModule, attributed: attributed, unattributed: unattributed
+    };
+  }
+
+  // The whole join, module name -> one entry, out of a `/phy.json` body
+  // and the graph's links.
+  //
+  // Two different joins, because the two halves are two namespaces:
+  //
+  //   * the synthesis half joins BY NAME, which is sound in that
+  //     direction only — its `module` column IS an RTL module name, as
+  //     Yosys' `stat` saw it, and a graph `module:` node carries the
+  //     same source-level name;
+  //   * the power half joins BY PATH, rolled up through the instance
+  //     nodes (`rollUpPower` above).
+  //
+  // A name that only the power roll-up reaches still gets an entry: a
+  // module the graph knows and the synthesis half does not count (an
+  // unmapped run, a module Yosys inlined) can still be the enclosing
+  // module of leaves that burn power.
+  function joinPhys(links, payload) {
+    var top = String((payload && payload.top) || '');
+    var index = instanceModuleIndex(links, top);
+    var power = rollUpPower(payload && payload.instances, index.index);
+    var modules = Object.create(null);
+    var entry = function (name) {
+      var found = modules[name];
+      if (!found) {
+        found = modules[name] = {
+          // `cells`/`area` are the module DEFINITION's;
+          // `instances`/`leaves` say what the power sum ran over.
+          cells: null, area: null, leakage: null, internal: null,
+          switching: null, total: null, instances: 0, leaves: 0
+        };
+      }
+      return found;
+    };
+    ((payload && payload.modules) || []).forEach(function (row) {
+      if (!row || row.module == null) { return; }
+      var found = entry(String(row.module));
+      found.cells = heatNum(row.cell_count);
+      found.area = heatNum(row.area_um2);
+    });
+    Object.keys(power.byModule).forEach(function (name) {
+      var acc = power.byModule[name], found = entry(name);
+      found.leakage = acc.leakage;
+      found.internal = acc.internal;
+      found.switching = acc.switching;
+      found.total = acc.total;
+      found.instances = acc.instances;
+      found.leaves = acc.leaves;
+    });
+    return {
+      modules: modules, top: top, rooted: index.rooted, index: index.index,
+      attributed: power.attributed, unattributed: power.unattributed,
+      // Row counts per half, not the payload's own `halves` block:
+      // what the switcher needs to know is whether there is anything to
+      // rank, and a half that is `present` with no rows ranks nothing.
+      rows: {
+        modules: ((payload && payload.modules) || []).length,
+        instances: ((payload && payload.instances) || []).length
+      }
+    };
+  }
+
+  // One entry's value for one metric, with `dynamic` resolved. The
+  // single place a metric name becomes a number, so the tints, the
+  // badges, the legend and the inspector cannot disagree about what a
+  // metric means.
+  function heatValueOf(found, metric) {
+    if (!found) { return null; }
+    if (metric === 'cells') { return found.cells; }
+    if (metric === 'area') { return found.area; }
+    if (metric === 'leakage') { return found.leakage; }
+    if (metric === 'total') { return found.total; }
+    if (metric === 'dynamic') {
+      if (found.internal === null && found.switching === null) { return null; }
+      return (found.internal || 0) + (found.switching || 0);
+    }
+    return null;
+  }
+
+  // The ramp's top end: the largest value among the module names the
+  // GRAPH carries, not among the model's rows. The tint answers "how
+  // does this module compare with the worst one on screen", and a
+  // maximum taken over rows the picture does not show would flatten
+  // every visible node against a module nobody can see.
+  function heatMaxOf(names, join, metric) {
+    var max = null;
+    (names || []).forEach(function (name) {
+      var value = heatValueOf(join && join.modules[name], metric);
+      if (typeof value === 'number' && (max === null || value > max)) { max = value; }
+    });
+    return max;
+  }
+
+  // The metric the overlay opens on. Total power is what a person
+  // ticking this control is usually chasing, but a run with no power
+  // half would then open on an empty column and read as broken — so a
+  // model with only a synthesis half opens on `cells`, which every
+  // synthesis records (`area_um2` is null for an unmapped run).
+  function initialHeatMetric(payload) {
+    return ((payload && payload.instances) || []).length ? 'total' : 'cells';
+  }
+
+  // A number, at a precision that keeps a badge scannable: a leakage
+  // figure of 0.079 µW and a total of 41822 µW are the same metric, and
+  // neither may render as `8e-2` or as fifteen digits. The /phy pane's
+  // `fmt`, which is where these rules were settled.
+  function heatFmt(value, metric) {
+    if (typeof value !== 'number' || !isFinite(value)) { return '—'; }
+    var def = HEAT_METRIC_DEFS[metric] || {};
+    var text, group = false;
+    if (def.kind === 'count') {
+      text = String(Math.round(value)); group = true;
+    } else {
+      var abs = Math.abs(value);
+      if (abs >= 1000) { text = value.toFixed(0); group = true; }
+      else { text = abs >= 1 ? value.toFixed(2)
+        : abs === 0 ? '0' : value.toPrecision(3); }
+    }
+    // Thousands separators on the INTEGER spellings only: the regex
+    // groups every run of three digits, so a `0.0790` would come back
+    // as `0.0,790`.
+    if (group) { text = text.replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    return def.unit ? text + ' ' + def.unit : text;
+  }
+  // <<< heat-join
+
+  function heatOn() {
+    return !!(state.heat && els.optHeat.checked);
+  }
+
+  // The tint for one module node: the entry's value over the largest on
+  // screen. Linear, and against the MAXIMUM rather than the total,
+  // because the question a tint answers is "how does this compare with
+  // the worst offender" — a share-of-total ramp on a design with a
+  // thousand modules is a thousand nodes of the palest tint. The same
+  // rule, and the same reason, as the /phy pane's `heatCell`.
+  function heatTint(el, value, max) {
+    if (typeof value !== 'number' || max === null || max <= 0) {
+      el.classList.add('none');
+      return el;
+    }
+    el.classList.remove('none');
+    el.style.setProperty('--f', String(Math.max(0, Math.min(1, value / max))));
+    return el;
+  }
+
+  // The module NAME a node joins the model on: `moduleNameFor` minus
+  // the suite qualifier (`@<suite>`, graph.build.QUALIFIER_SEP), which
+  // is appended to an id two files claimed and is not part of the
+  // module's name. Yosys counted its rows for `fifo`, so a
+  // `module:fifo@verif/fifo` node has to ask about `fifo` — the same
+  // strip `activeModelRoots` and the instance index apply to their own
+  // halves of the same identity.
+  function heatModuleName(n, out) {
+    var name = moduleNameFor(n, out);
+    return name ? (stripQualifier(name) || null) : null;
+  }
+
+  // One module's numbers as one line, for the node's native tooltip.
+  // Every metric, not only the selected one: the tint answers one
+  // question, and the hover is where the rest of the row lives.
+  //
+  // The counts are spelled out rather than implied, because the two
+  // halves do not count over the same thing: cells and area are the
+  // module definition's, and the power is summed over every
+  // instantiation of it (`rollUpPower`).
+  function heatTooltip(name, found) {
+    var parts = [name];
+    HEAT_METRICS.forEach(function (metric) {
+      parts.push(metric + ' ' + heatFmt(heatValueOf(found, metric), metric));
+    });
+    if (found && found.instances) {
+      parts.push('power over ' + found.instances + ' instantiation' +
+        (found.instances === 1 ? '' : 's') + ' (' + found.leaves +
+        ' leaf row' + (found.leaves === 1 ? '' : 's') + ')');
+    }
+    return parts.join('  ·  ');
   }
   function labelOf(node) {
     return node.label || String(node.id).replace(/^[a-z_]+:/, '');
@@ -612,6 +1150,14 @@
         var ip = env.payload && env.payload.instance_path;
         if (Array.isArray(ip)) { ip = ip[0]; }
         focusByInstancePath(ip);
+        break;
+      case 'phys_focus':
+        // A coordinate in the PHYSICAL model — `rb hub send phys-focus`,
+        // or a click in the /phy pane. This pane answers it with the
+        // node that coordinate belongs to and emits nothing back
+        // (rtl-buddy/rtl_buddy#596).
+        if (env.origin === 'graph') { break; }
+        applyPhysFocus(env.payload);
         break;
       default:
         break;
@@ -842,6 +1388,373 @@
     note('');
   }
 
+  // ---------------------------------------------------------------
+  // the physical model: /phy.json, its run selector, its muted state
+  // ---------------------------------------------------------------
+
+  // The label the markup gives the heat control, kept so the muted
+  // state can borrow the title and give it back.
+  var heatTitle = els.optHeatWrap.title;
+  var heatRunTitle = els.heatRunWrap.title;
+
+  // >>> heat-run-url
+  // The run selector, as pure rules: which run to ask for as a URL,
+  // what a selector value means, how one entry reads, and which entries
+  // the control offers.
+  //
+  // `null` — which is what an empty selector value becomes — is the
+  // newest manifest under the project: the bare `/phy.json` the route
+  // has always served. A pane nobody has touched therefore paints with
+  // the run that finished last, and a reader who picks the entry marked
+  // `newest` is choosing to keep doing that rather than pinning the
+  // directory that happens to be newest today. Both halves of that rule
+  // are the /phy pane's (`requestedDir` and `runValue` there): one
+  // `?dir=` coordinate, two panes, so a run chosen in either is the
+  // same run.
+  function heatPhyUrl(base, dir) {
+    if (!dir) { return base; }
+    return base + (base.indexOf('?') >= 0 ? '&' : '?') +
+           'dir=' + encodeURIComponent(dir);
+  }
+
+  // The run this TAB opened on, off its own query string: `/gph?dir=<phys
+  // dir>` pins one, so a link out of another tool — or a duplicated tab
+  // — keeps painting with the run its author meant. With no parameter
+  // the selector starts where /phy starts, on the newest.
+  function openedDir(search) {
+    var found = /[?&]dir=([^&]*)/.exec(String(search == null ? '' : search));
+    return found ? decodeURIComponent(found[1].replace(/\+/g, ' ')) : null;
+  }
+
+  // `run · top · mode (activity)`, with every part the producers did
+  // not record left out. A compact form of the /phy pane's entry: that
+  // pane is where a run is chosen from its full sentence, while this is
+  // one control among six in a header — so the artefact directory and
+  // the configuration fingerprint ride on the hover instead.
+  //
+  // Both marks are shown, because they are different facts and either
+  // can be the surprising one: which run the tints are OF, and which
+  // one a reload with nothing selected would follow.
+  function heatRunLabel(entry, shownManifest) {
+    var parts = [(entry && entry.run) || (entry && entry.phys_dir) || '(unnamed)'];
+    var mode = entry && entry.mode;
+    var activity = entry && entry.activity && entry.activity.label;
+    [entry && entry.top, mode && activity ? mode + ' (' + activity + ')' : mode]
+      .forEach(function (part) { if (part) { parts.push(part); } });
+    var marks = [];
+    if (shownManifest && entry && entry.manifest === shownManifest) {
+      marks.push('shown');
+    }
+    if (entry && entry.newest) { marks.push('newest — follows'); }
+    return parts.join(' · ') + (marks.length ? ' [' + marks.join(', ') + ']' : '');
+  }
+
+  // The run being SHOWN, as a selector entry, synthesised from the
+  // payload's own header.
+  //
+  // The listing is headed (`phys_page.RUNS_LIMIT`), so the run on
+  // screen can legitimately be off the end of it: a reader switches to
+  // an older run and then a batch of newer ones lands. Putting it back
+  // keeps the control showing what the picture shows; the alternative
+  // is a selector whose value silently disagrees with the tints under
+  // it. (phys_page.html's `shownEntry`, same reason.)
+  function shownRunEntry(payload) {
+    if (!payload) { return null; }
+    return {
+      run: payload.run, top: payload.top,
+      phys_dir: (payload.artefacts || {}).phys_dir,
+      manifest: payload.manifest,
+      mode: payload.power_mode, activity: payload.power_activity,
+      fingerprint: null, newest: false, error: null
+    };
+  }
+
+  function heatRunEntries(payload, block) {
+    var entries = ((block && block.runs) || []).slice();
+    var shown = (payload || {}).manifest || null;
+    var listed = entries.some(function (entry) {
+      return !!entry && entry.manifest === shown;
+    });
+    if (!listed) {
+      var current = shownRunEntry(payload);
+      if (current) { entries.unshift(current); }
+    }
+    return entries;
+  }
+
+  // What an entry selects with, which is not always its directory: the
+  // newest selects with the EMPTY value, because pinning its directory
+  // would end the following at the moment a reader chose it.
+  function heatRunValue(entry) {
+    return entry && entry.newest ? '' : String((entry && entry.phys_dir) || '');
+  }
+  // <<< heat-run-url
+
+  // >>> heat-load-step
+  // What one finished `/phy.json` fetch does to the pane, as a pure
+  // decision. `shown` is what the pane is holding —
+  // `{phys: <payload|null>, dir: <selected run|null>}` — and `result`
+  // is `{ok, requested, body, message}`.
+  //
+  // The rule the whole state machine exists for: **a refused run switch
+  // is a refusal of the SWITCH, not of the model on screen.** The
+  // selected run is therefore committed only when a body arrives, and a
+  // failure with a payload in hand keeps that payload, keeps the run it
+  // came from and keeps the overlay painting — the reader is still
+  // looking at the run they had, and the one control that could pick a
+  // different one must not be the control that just switched itself
+  // off. This is the /phy pane's `load` / `loadFailed` pair (it commits
+  // `state.dir` inside the success branch for the same reason), and the
+  // two panes must not disagree about what a 403 or a 404 on `?dir=`
+  // means.
+  //
+  // With nothing ever loaded there are two cases, and they are not the
+  // same refusal. A `?dir=` the TAB WAS OPENED WITH can be a typo, or a
+  // run pruned since the link was made: the model the project does have
+  // is one fetch away, so the answer is `refetch` — ask for the newest
+  // and say the requested run was not found — rather than a pane with
+  // no heat at all and no way to ask for any. With no run requested
+  // there is nothing left to try, and that is the muted control.
+  function physLoadStep(shown, result) {
+    var held = shown && shown.phys;
+    if (result && result.ok) {
+      return {
+        phys: result.body, dir: (result.requested || null),
+        refetch: false, message: null, level: 'info'
+      };
+    }
+    var message = (result && result.message) || null;
+    if (held) {
+      return {
+        phys: held, dir: (shown.dir || null), refetch: false,
+        message: message || 'could not read that run', level: 'error'
+      };
+    }
+    if (result && result.requested) {
+      return {
+        phys: null, dir: null, refetch: true,
+        message: 'physical run ' + result.requested + ' could not be read' +
+          (message ? ' (' + message + ')' : '') + ' — showing the newest run',
+        level: 'warn'
+      };
+    }
+    return { phys: null, dir: null, refetch: false, message: message, level: 'warn' };
+  }
+  // <<< heat-load-step
+
+  // Which fetch is current. A response from a request a later one has
+  // superseded — two run switches in quick succession — says nothing
+  // about the run now selected and must not commit its own.
+  var physGeneration = 0;
+
+  // A one-shot status line for the NEXT successful ingest. The fallback
+  // above refetches immediately, so a warning written before that fetch
+  // would be overwritten by its own `loading…` line before anyone read
+  // it.
+  var physPendingNote = null;
+
+  function loadPhys(requested) {
+    if (!PHY_URL) { mutePhys(HEAT_ABSENT); return; }
+    // The run this FETCH is for, which is not yet the run the pane is
+    // showing: `state.physDir` moves in `applyPhysLoad`, on success only.
+    var dir = arguments.length ? (requested || null) : state.physDir;
+    var url = heatPhyUrl(PHY_URL, dir);
+    var generation = ++physGeneration;
+    note('loading ' + url + '…');
+    fetch(url, { cache: 'no-store' }).then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    }).then(function (res) {
+      applyPhysLoad(generation, {
+        ok: res.ok, requested: dir, body: res.body,
+        message: (res.body && res.body.error) || null
+      });
+    }).catch(function (e) {
+      applyPhysLoad(generation, {
+        ok: false, requested: dir, body: null,
+        message: 'could not read ' + url + ': ' + e
+      });
+    });
+  }
+
+  function applyPhysLoad(generation, result) {
+    if (generation !== physGeneration) { return; }
+    var next = physLoadStep({ phys: state.phys, dir: state.physDir }, result);
+    state.phys = next.phys;
+    state.physDir = next.dir;
+    if (next.refetch) {
+      state.heat = null;
+      physPendingNote = next.message;
+      loadPhys(null);
+      return;
+    }
+    if (result.ok) { ingestPhys(next.phys); return; }
+    if (next.phys) {
+      // The model on screen is untouched, so only the picker moves —
+      // back onto the run the pane is still showing.
+      renderHeatControls();
+      note(next.message, next.level);
+      return;
+    }
+    mutePhys(next.message);
+  }
+
+  // No model to paint with AT ALL — no manifest under the project, or a
+  // first load that had nothing left to fall back to. The control
+  // carries the reason (the 404's own body when the server sent one,
+  // since that message already names the two commands that produce a
+  // model) and the tints come off.
+  //
+  // A refused SWITCH never reaches here: `physLoadStep` keeps the
+  // payload, and with it the live control.
+  //
+  // The controls alone. Split out because START-UP mutes them without
+  // a status line: the graph's own load is about to write there, and
+  // "no physical model" is not what a pane opens by saying.
+  function mutePhysControl(message) {
+    els.optHeat.checked = false;
+    els.optHeat.disabled = true;
+    els.optHeatWrap.classList.add('muted');
+    els.optHeatWrap.title = message || HEAT_ABSENT;
+    els.heatMetricWrap.hidden = true;
+    els.heatRunWrap.hidden = true;
+  }
+
+  function mutePhys(message) {
+    mutePhysControl(message);
+    state.phys = null;
+    state.heat = null;
+    physPendingNote = null;
+    renderLegend(state.categories);
+    render();
+    renderInspector(state.selected ? state.byId[state.selected] : null);
+    note(message || HEAT_ABSENT, 'warn');
+    // A focus held for a model that is not coming still has an answer
+    // when its target is a `module:` the graph carries — see
+    // `drainPhysFocus`.
+    drainPhysFocus();
+  }
+
+  function ingestPhys(payload) {
+    state.phys = payload || null;
+    var hub = (payload && payload.hub) || {};
+    // The switcher's order is the payload's when it carries one; the
+    // built-in list is the fallback for a body from an older hub.
+    if (Array.isArray(hub.metrics) && hub.metrics.length) { HEAT_METRICS = hub.metrics; }
+    state.heat = joinPhys(state.links, state.phys);
+    // A first load has to land on a metric this model can answer; a
+    // metric the reader has since chosen is theirs and is kept.
+    if (!state.heatMetric || HEAT_METRICS.indexOf(state.heatMetric) < 0) {
+      state.heatMetric = initialHeatMetric(payload);
+    }
+    els.optHeat.disabled = false;
+    els.optHeatWrap.classList.remove('muted');
+    els.optHeatWrap.title = heatTitle;
+    renderHeatControls();
+    renderLegend(state.categories);
+    render();
+    renderInspector(state.selected ? state.byId[state.selected] : null);
+    noteHeat();
+    if (physPendingNote) { note(physPendingNote, 'warn'); physPendingNote = null; }
+    // A focus that arrived before the model did is answered now.
+    drainPhysFocus();
+  }
+
+  // What the join actually managed, said out loud. A tint that is
+  // silently empty is indistinguishable from a design that burns
+  // nothing, and the two reasons it can be empty — no synthesis half,
+  // and no elaboration the rows can be attributed through — are
+  // different problems with different fixes.
+  function noteHeat() {
+    var join = state.heat;
+    if (!join || !els.optHeat.checked) { return; }
+    var parts = ['heat: ' + state.heatMetric];
+    if (join.rows.instances) {
+      parts.push(join.attributed + '/' +
+        (join.attributed + join.unattributed) + ' instance rows rolled up');
+    }
+    if (join.rows.instances && !join.rooted) {
+      note(parts.join('  ·  ') + ' — no elaboration rooted at ' +
+        (join.top || '(unknown top)') +
+        ' in this graph, so no leaf power could be attributed', 'warn');
+      return;
+    }
+    if (join.unattributed) {
+      parts.push(join.unattributed + ' outside the design tier');
+    }
+    note(parts.join('  ·  '));
+  }
+
+  // The overlay's two selects come and go with the overlay itself: a
+  // metric switcher for tints nobody is showing is a control that does
+  // nothing, and neither can be populated before the payload lands.
+  function renderHeatControls() {
+    if (!state.phys || !els.optHeat.checked) {
+      els.heatMetricWrap.hidden = true;
+      els.heatRunWrap.hidden = true;
+      return;
+    }
+    renderHeatMetrics();
+    renderHeatRuns();
+  }
+
+  function renderHeatMetrics() {
+    var rows = (state.heat && state.heat.rows) || { modules: 0, instances: 0 };
+    while (els.heatMetric.firstChild) {
+      els.heatMetric.removeChild(els.heatMetric.firstChild);
+    }
+    HEAT_METRICS.forEach(function (metric) {
+      var def = HEAT_METRIC_DEFS[metric] || {};
+      var opt = document.createElement('option');
+      opt.value = metric;
+      // A metric whose half this run did not produce is kept rather
+      // than dropped — the absence is the information — and says which
+      // command would fill it, exactly as the /phy pane's switcher does.
+      opt.textContent = (def.half && !rows[def.half])
+        ? metric + ' (run ' + (HEAT_HALF_PRODUCER[def.half] || '?') + ')'
+        : metric;
+      els.heatMetric.appendChild(opt);
+    });
+    els.heatMetric.value = state.heatMetric;
+    els.heatMetricWrap.hidden = !els.optHeat.checked;
+  }
+
+  function renderHeatRuns() {
+    var block = (state.phys && state.phys.runs) || {};
+    var shown = (state.phys || {}).manifest || null;
+    var entries = heatRunEntries(state.phys, block);
+    while (els.heatRun.firstChild) { els.heatRun.removeChild(els.heatRun.firstChild); }
+    // RESET, never append: this runs on every render — every load, every
+    // tick of the control — and appending grew the hover one sentence
+    // per render.
+    els.heatRunWrap.title = heatRunTitle;
+    entries.forEach(function (entry) {
+      var opt = document.createElement('option');
+      opt.value = heatRunValue(entry);
+      opt.textContent = heatRunLabel(entry, shown);
+      opt.title = [entry.phys_dir, entry.fingerprint, entry.error]
+        .filter(function (part) { return !!part; }).join(' · ');
+      els.heatRun.appendChild(opt);
+      if (entry.manifest === shown) { els.heatRun.value = opt.value; }
+    });
+    if (typeof block.count === 'number' && block.count > entries.length) {
+      els.heatRunWrap.title = heatRunTitle + ' Showing the newest ' +
+        entries.length + ' of ' + block.count + ' runs; `rb phys runs` lists them all.';
+    }
+    // One run is not a choice, and the /phy pane hides its own selector
+    // on the same test.
+    els.heatRunWrap.hidden = !els.optHeat.checked || entries.length < 2;
+  }
+
+  function setHeatMetric(metric) {
+    if (HEAT_METRICS.indexOf(metric) < 0) { return; }
+    state.heatMetric = metric;
+    els.heatMetric.value = metric;
+    renderLegend(state.categories);
+    render();
+    renderInspector(state.selected ? state.byId[state.selected] : null);
+    noteHeat();
+  }
+
   function ingest(payload) {
     els.empty.classList.remove('show');
     state.nodes = (payload.nodes || []).filter(function (n) { return n && n.id; });
@@ -874,6 +1787,19 @@
     // coverage is the reason the pane was opened.
     els.optCovWrap.hidden = !state.coverage;
     if (state.coverage && !els.optCov.dataset.touched) { els.optCov.checked = true; }
+    // The physical join is over BOTH documents, and this one just
+    // moved: a rebuilt graph renames, adds and drops the very instance
+    // nodes the power roll-up walks, so the join is recomputed here
+    // rather than left pointing at the elaboration of a graph that has
+    // been replaced. The model itself is not re-fetched — `reload`
+    // does that, and only while the overlay is on.
+    if (state.phys) {
+      state.heat = joinPhys(state.links, state.phys);
+      // The switcher's per-half annotations and the picker's marks are
+      // rendered off the join, so they follow it rather than staying at
+      // the previous graph's answer.
+      renderHeatControls();
+    }
     renderHeader(hub);
     state.categories = hub.categories || {};
     renderLegend(state.categories);
@@ -933,6 +1859,7 @@
       label.appendChild(document.createTextNode(col + ' ' + count));
       els.legend.appendChild(label);
     });
+    renderHeatLegend();
     if (!coverageOn()) { return; }
     var ramp = document.createElement('span');
     ramp.className = 'legend';
@@ -949,6 +1876,48 @@
       ramp.appendChild(wrap);
     });
     els.legend.appendChild(ramp);
+  }
+
+  // The heat ramp's own legend: the same three stops plus "not
+  // measured", labelled with the VALUES they stand for rather than with
+  // fractions, because a tint is only readable against the number at
+  // the top of the ramp.
+  function renderHeatLegend() {
+    if (!heatOn()) { return; }
+    var max = heatMaxOf(moduleNamesInGraph(), state.heat, state.heatMetric);
+    var ramp = document.createElement('span');
+    ramp.className = 'legend';
+    ramp.title = 'Module nodes are filled by ' + state.heatMetric +
+      ', against the largest module in this graph. Cells and area are the ' +
+      'module definition’s, from the synthesis half; power is summed ' +
+      'over every instantiation of the module.';
+    ramp.appendChild(document.createTextNode(state.heatMetric));
+    [[0, 0], [0.5, 0.5], [1, 1], [null, null]].forEach(function (stop) {
+      var sw = document.createElement('span');
+      sw.className = 'heat-swatch';
+      var value = stop[0] === null || max === null ? null : stop[0] * max;
+      heatTint(sw, value, max);
+      var wrap = document.createElement('span');
+      wrap.className = 'chk';
+      wrap.appendChild(sw);
+      wrap.appendChild(document.createTextNode(
+        stop[0] === null ? 'not measured' : heatFmt(value, state.heatMetric)));
+      ramp.appendChild(wrap);
+    });
+    els.legend.appendChild(ramp);
+  }
+
+  // Every module name the GRAPH carries, which is what the ramp is
+  // scaled over (`heatMaxOf`) — a model row for a module this graph
+  // does not contain cannot be the node that looks pale.
+  function moduleNamesInGraph() {
+    var names = [];
+    state.nodes.forEach(function (n) {
+      if (n.type !== 'module' || n.dangling) { return; }
+      var name = heatModuleName(n, state.out[n.id]);
+      if (name) { names.push(name); }
+    });
+    return names;
   }
 
   // ---------------------------------------------------------------
@@ -1100,6 +2069,12 @@
     });
 
     var cov = coverageOn();
+    // The heat overlay's scale is graph-wide, so it is taken once per
+    // render rather than per node — a maximum recomputed inside the
+    // loop is the same answer O(modules) times.
+    var heat = heatOn();
+    var heatMax = heat
+      ? heatMaxOf(moduleNamesInGraph(), state.heat, state.heatMetric) : null;
     state.nodes.forEach(function (n) {
       var g = el('g', { class: 'node' });
       var r = radiusOf(n);
@@ -1118,14 +2093,35 @@
       // column bands behind the nodes still carry the column identity,
       // so nothing is lost by borrowing the fill.
       var tinted = cov && categoryOf(n) === 'design' && !n.dangling;
+      // The heat overlay borrows the same fill, and only on `module:`
+      // nodes: a module is the coordinate the physical model's two
+      // halves can both be read at (its synthesis row by name, its
+      // leaves' power by path), and an instance node would need a
+      // second, different join to say anything. The two overlays are
+      // mutually exclusive at the checkbox, so there is one fill and
+      // one meaning on screen at a time.
+      var heatName = heat && n.type === 'module' && !n.dangling
+        ? heatModuleName(n, state.out[n.id]) : null;
+      var heatValue = heatName
+        ? heatValueOf(state.heat.modules[heatName], state.heatMetric) : null;
       var body = el('circle', {
-        class: (n.dangling ? 'body dangling' : 'body') + (tinted ? ' cov' : ''), r: r,
-        fill: (n.dangling || tinted)
+        class: (n.dangling ? 'body dangling' : 'body') +
+          (tinted ? ' cov' : '') + (heatName ? ' heat' : ''), r: r,
+        fill: (n.dangling || tinted || heatName)
           ? null
           : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)')
       });
       if (tinted) { tintHue(body, designRatio(n)); }
+      if (heatName) { heatTint(body, heatValue, heatMax); }
       g.appendChild(body);
+      // The numbers themselves, on the hover: a tint ranks, it does not
+      // quantify, and the whole point of this overlay is that the graph
+      // can answer "how much" without leaving the picture.
+      if (heatName) {
+        var tip = el('title');
+        tip.textContent = heatTooltip(heatName, state.heat.modules[heatName]);
+        g.appendChild(tip);
+      }
       var label = el('text', { x: r + 5, y: 4 });
       label.textContent = labelOf(n);
       g.appendChild(label);
@@ -1136,6 +2132,11 @@
         var bt = el('text', { class: 'badge', x: r + 5, y: 15 });
         bt.textContent = pct(ratio);
         g.appendChild(bt);
+      }
+      if (typeof heatValue === 'number') {
+        var hb = el('text', { class: 'badge', x: r + 5, y: 15 });
+        hb.textContent = heatFmt(heatValue, state.heatMetric);
+        g.appendChild(hb);
       }
       g.addEventListener('click', function (ev) {
         ev.stopPropagation();
@@ -1205,8 +2206,13 @@
       var n = state.byId[id];
       var g = gfx.nodes[id].g;
       var hidden = state.hiddenCols[categoryOf(n)];
-      var dim = hidden || !matches(n) || (near && !near[id]);
-      g.setAttribute('class', 'node' + (dim ? ' dim' : '') + (id === state.selected ? ' sel' : ''));
+      // A node an inbound `phys_focus` named: selected-looking, and not
+      // dimmed for being outside the hop ball around the one node that
+      // holds the selection proper.
+      var also = !!(state.focusIds && state.focusIds.indexOf(id) >= 0);
+      var dim = hidden || !matches(n) || (near && !near[id] && !also);
+      g.setAttribute('class', 'node' + (dim ? ' dim' : '') +
+        (id === state.selected || also ? ' sel' : ''));
       g.style.display = hidden && !state.filter ? 'none' : '';
       // Labels are noise at a distance; show them for the nodes that
       // matter right now plus the big structural ones.
@@ -1793,6 +2799,9 @@
 
   function activate(n, opts) {
     opts = opts || {};
+    // Any activation is a single selection: a multi-node highlight
+    // belongs to the `phys_focus` that set it and to nothing after.
+    state.focusIds = null;
     state.selected = n.id;
     renderInspector(n);
     applyClasses();
@@ -2007,6 +3016,7 @@
     }
 
     renderCoverage(n);
+    renderPhysical(n);
 
     var edges = (state.out[n.id] || []).map(function (l) { return { dir: '→', l: l, peer: l.target }; })
       .concat((state.inc[n.id] || []).map(function (l) { return { dir: '←', l: l, peer: l.source }; }));
@@ -2098,6 +3108,244 @@
     els.inspector.appendChild(dl);
   }
 
+  // The physical half of a selected module: the synthesis row's own
+  // numbers, and the power of every leaf instance the roll-up put
+  // inside this module. Only for a `module:` node, and only while the
+  // overlay is on — a section that appeared on every click would be a
+  // section about a document the reader did not ask to see.
+  //
+  // The two halves are labelled apart on purpose. `cells` is the
+  // module's OWN cells and `area` already includes its submodules'
+  // (Yosys' `stat` rolls area up and cell counts not at all), and the
+  // power lines are the leaves inside this module and no deeper
+  // module's. Adding them up is the one thing a reader must not do, so
+  // the note says which is which rather than reconciling them.
+  function renderPhysical(n) {
+    if (!heatOn() || !n || n.type !== 'module' || n.dangling) { return; }
+    var name = heatModuleName(n, state.out[n.id]);
+    if (!name) { return; }
+    var found = state.heat.modules[name];
+    els.inspector.appendChild(document.createElement('hr'));
+    var h = document.createElement('h2');
+    h.textContent = 'physical';
+    els.inspector.appendChild(h);
+    var dl = document.createElement('dl'); dl.className = 'kv';
+    row(dl, 'module', name);
+    if (!found) {
+      row(dl, 'model', 'no synthesis row, and no leaf instance inside any ' +
+        'instantiation of this module');
+      els.inspector.appendChild(dl);
+      return;
+    }
+    row(dl, 'cells', heatFmt(found.cells, 'cells'));
+    row(dl, 'area', heatFmt(found.area, 'area'));
+    row(dl, 'total', heatFmt(heatValueOf(found, 'total'), 'total'));
+    row(dl, 'dynamic', heatFmt(heatValueOf(found, 'dynamic'), 'dynamic'));
+    row(dl, 'internal', heatFmt(found.internal, 'dynamic'));
+    row(dl, 'switching', heatFmt(found.switching, 'dynamic'));
+    row(dl, 'leakage', heatFmt(found.leakage, 'leakage'));
+    // What the power sum ran over, beside the power: the two halves do
+    // not count over the same thing, and a reader comparing a module's
+    // power with its area has to be told which is which.
+    row(dl, 'instances', found.instances);
+    row(dl, 'leaf rows', found.leaves);
+    var hint = document.createElement('span');
+    hint.className = 'muted';
+    hint.textContent = 'power is summed over ' + found.instances +
+      ' instantiation' + (found.instances === 1 ? '' : 's') +
+      ' of this module (' + found.leaves + ' leaf row' +
+      (found.leaves === 1 ? '' : 's') + '); cells and area are the ' +
+      'module definition’s, counted once (area includes submodules’)';
+    row(dl, 'read as', hint);
+    els.inspector.appendChild(dl);
+  }
+
+  // >>> phys-focus
+  // An inbound `phys_focus`, read as a graph coordinate.
+  //
+  // The wire's targets are the physical model's: `module:<name>` or
+  // `instance:<rootless path>`, with a bare string read as an instance
+  // path (schemas/hub-protocol-v1.json). A module is a node here, so it
+  // lands directly. An instance is a NETLIST LEAF — a Liberty cell
+  // instance, which no RTL graph contains — so the instance node it
+  // names is tried first (a path that does happen to be an RTL
+  // instance, and the case a sender copying out of `rb phys instance`
+  // hits) and the module whose body contains the leaf is the fallback,
+  // through the same roll-up index the heat join uses.
+  //
+  // `rooted` paths: the /phy pane sends the path rooted at the design
+  // top, because that is the schematic's coordinate, while `rb hub send
+  // phys-focus` carries the model's own rootless spelling. Both
+  // readings are tried and the graph decides which one names a node —
+  // the same rule the /phy pane's `inboundCandidates` applies in the
+  // other direction.
+  //
+  // Pure: the page's own state is passed in, and what comes back is an
+  // id or null. Nothing is emitted for a focus — this pane's own
+  // envelopes are unchanged by the physical overlay, and answering a
+  // broadcast with a broadcast is a loop.
+  // Which instance NODE a rootless path names, or null. The id is
+  // composed when the elaboration is known (`inst:<root>/<root>.<path>`
+  // — a design-tier id embeds the root it was reached through), and the
+  // ids are asked directly otherwise: before the model has been read
+  // there is no top to compose with, and a suite-qualified id
+  // (`@<suite>`, appended to the whole id) defeats an exact lookup even
+  // when there is.
+  function instanceNodeId(byId, path, root) {
+    var direct = root
+      ? 'inst:' + root + '/' + (path ? root + '.' + path : root) : null;
+    if (direct && byId[direct]) { return direct; }
+    var keys = Object.keys(byId || {});
+    for (var i = 0; i < keys.length; i++) {
+      var coord = instanceCoord(keys[i]);
+      if (!coord || coord.path !== path) { continue; }
+      if (!root || coord.root === root) { return keys[i]; }
+    }
+    return null;
+  }
+
+  // Every node whose DE-QUALIFIED module name is this one.
+  //
+  // A suite qualifier disambiguates an ID, not a module:
+  // `module:sub@verif/fifo` and `module:sub@verif/dma` are two exports
+  // of one RTL module, the synthesis half has ONE row for it, and the
+  // join reads them both under the bare name (`heatModuleName`). So a
+  // `module:sub` target belongs to all of them, and all of them are
+  // returned — picking one by key order would highlight an arbitrary
+  // export and leave its twins looking unrelated to the message.
+  function moduleNodesNamed(byId, name) {
+    var wanted = String(name == null ? '' : name);
+    var found = [];
+    if (!wanted) { return found; }
+    var keys = Object.keys(byId || {});
+    for (var i = 0; i < keys.length; i++) {
+      var id = keys[i];
+      if (id.indexOf('module:') !== 0) { continue; }
+      if (stripQualifier(id).slice('module:'.length) === wanted) { found.push(id); }
+    }
+    return found;
+  }
+
+  function physFocusNodes(target, byId, index, top) {
+    var text = String(target == null ? '' : target);
+    if (!text) { return []; }
+    if (text.indexOf('module:') === 0) {
+      return moduleNodesNamed(byId, text.slice('module:'.length));
+    }
+    var path = levelPath(text.indexOf('instance:') === 0
+      ? text.slice('instance:'.length) : text);
+    if (!path) { return []; }
+    var root = levelPath(top == null ? '' : top);
+    // The model's own rootless spelling first, then the same path with
+    // one leading top level removed: a sender is a convention and the
+    // graph is a fact, so both readings are offered and the nodes
+    // decide. (Under a top named `blk`, the rootless row `blk.u_x` is a
+    // `blk` instance inside the top and a prefix test alone would read
+    // it as already rooted.)
+    var readings = [path];
+    if (root && path.indexOf(root + '.') === 0) {
+      readings.push(path.slice(root.length + 1));
+    }
+    for (var i = 0; i < readings.length; i++) {
+      var id = instanceNodeId(byId, readings[i], root);
+      if (id) { return [id]; }
+    }
+    // No instance node for either reading — the ordinary case, since a
+    // model row is a Liberty cell instance and the RTL graph has no
+    // node for one. The module whose body contains the leaf is the
+    // answer a person wanted anyway.
+    //
+    // A real enclosing instance first, for EVERY reading, before the
+    // root scope is allowed to answer: the root contains every path, so
+    // letting it answer the first reading would decide the ambiguity by
+    // provenance rather than by the graph.
+    var table = index || Object.create(null);
+    // The owning module comes out of the index de-qualified, so it is
+    // resolved back to nodes the same way a `module:` target is: every
+    // export of it, not the first one an id lookup happens to hit.
+    var answer = function (owner) {
+      var nodes = owner ? moduleNodesNamed(byId, owner) : [];
+      return nodes.length ? nodes : null;
+    };
+    for (var j = 0; j < readings.length; j++) {
+      var below = answer(ownerOfPathBelowRoot(table, readings[j]));
+      if (below) { return below; }
+    }
+    for (var k = 0; k < readings.length; k++) {
+      var any = answer(ownerOfPath(table, readings[k]));
+      if (any) { return any; }
+    }
+    return [];
+  }
+  // <<< phys-focus
+
+  // A `phys_focus` held for a model that had not arrived yet.
+  var physPendingFocus = null;
+
+  // Drained by the ingest that answers it — and ALSO when the load
+  // fails, because a `module:` target names a node this graph carries
+  // whether or not the model could be read, and dropping the message
+  // silently would be the pane answering it by forgetting it.
+  // (phys_page.html drains its own pending focus in `loadFailed` for
+  // the same reason.)
+  function drainPhysFocus() {
+    var held = physPendingFocus;
+    if (!held) { return; }
+    physPendingFocus = null;
+    applyPhysFocus(held, true);
+  }
+
+  function applyPhysFocus(payload, deferred) {
+    // A `phys_focus` is a HEAT request: it names a coordinate in the
+    // physical model and carries the metric to foreground. An instance
+    // target cannot be resolved at all without the model — a leaf row
+    // is a Liberty cell instance, and only the roll-up index knows
+    // which module's body holds it — so when there is a model to read
+    // and it has not been read yet, the overlay is turned on, the model
+    // is fetched, and the focus is applied when the body lands. The
+    // /phy pane holds a focus that beats its own fetch the same way
+    // (`state.pending` there).
+    //
+    // `deferred` is the second pass, after that load settled either
+    // way: it never defers again, so a failed load cannot loop.
+    if (!deferred && PHY_URL && !state.phys) {
+      physPendingFocus = payload;
+      if (!els.optHeat.checked) {
+        els.optHeat.checked = true;
+        // One fill, one meaning — the same exchange the checkbox makes.
+        els.optCov.checked = false;
+        els.optCov.dataset.touched = '1';
+      }
+      loadPhys();
+      return;
+    }
+    var metric = payload && payload.metric;
+    // The metric hint is applied even when the target misses: it is a
+    // statement about the view, not about the row, which is how the
+    // /phy pane reads it too.
+    if (metric) { setHeatMetric(String(metric)); }
+    var target = payload && payload.target;
+    var ids = physFocusNodes(
+      target, state.byId, (state.heat || {}).index, (state.heat || {}).top);
+    if (!ids.length) {
+      note('phys-focus: nothing in this graph answers ' + target +
+        (state.heat ? '' : ' (no physical model read)'), 'warn');
+      return;
+    }
+    // The first is the selection — it gets the inspector and the
+    // centring — and the rest are highlighted beside it: a
+    // suite-qualified module is several nodes of one RTL module, and
+    // the message is about the module.
+    focusById(ids[0], { emit: false, announce: false });
+    if (ids.length > 1) {
+      // Set AFTER the focus lands: `activate` clears the set, because a
+      // click on a node is a new, single selection.
+      state.focusIds = ids;
+      applyClasses();
+    }
+    note('phys-focus ' + target + ' → ' + ids.join(', '));
+  }
+
   // ---------------------------------------------------------------
   // wiring
   // ---------------------------------------------------------------
@@ -2111,9 +3359,45 @@
     // Remembered so a payload refresh does not re-tick a box the
     // person just unticked. Not persisted: a new tab starts ticked.
     els.optCov.dataset.touched = '1';
+    // One fill, one meaning: coverage and heat both repaint the node
+    // body, and two ramps on one circle would be a colour nobody can
+    // read back to a number. Ticking either unticks the other.
+    if (els.optCov.checked) { els.optHeat.checked = false; }
+    renderHeatControls();
     renderLegend(state.categories);
     render();
     renderInspector(state.selected ? state.byId[state.selected] : null);
+  });
+  els.optHeat.addEventListener('change', function () {
+    if (els.optHeat.checked) {
+      els.optCov.checked = false;
+      // Remembered for the same reason the cov box remembers: a graph
+      // reload must not re-tick the coverage overlay over the heat one.
+      els.optCov.dataset.touched = '1';
+    }
+    renderHeatControls();
+    // Fetched on the first tick rather than on load: a real design's
+    // power half is megabytes of leaf rows, and a pane opened to look
+    // at the graph should not pay for a document nobody asked for.
+    if (els.optHeat.checked && !state.phys) { loadPhys(); return; }
+    renderLegend(state.categories);
+    render();
+    renderInspector(state.selected ? state.byId[state.selected] : null);
+    noteHeat();
+  });
+  els.heatMetric.addEventListener('change', function () {
+    setHeatMetric(els.heatMetric.value);
+  });
+  els.heatRun.addEventListener('change', function () {
+    // The value is the run's project-relative artefact directory, and
+    // the empty one means "follow discovery" — `heatPhyUrl` turns both
+    // into the same route the /phy pane asks for.
+    //
+    // Passed to the fetch rather than written into `state.physDir`: the
+    // pane is still showing the run it had until a body arrives, and a
+    // refused switch must leave that run — and this control's value —
+    // where they were (`physLoadStep`).
+    loadPhys(els.heatRun.value || null);
   });
   els.search.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Enter') { return; }
@@ -2121,7 +3405,15 @@
       if (matches(state.nodes[i])) { focusById(state.nodes[i].id, { emit: true }); return; }
     }
   });
-  document.getElementById('reload').addEventListener('click', load);
+  document.getElementById('reload').addEventListener('click', function () {
+    load();
+    // The physical model is a second document, re-read only when the
+    // overlay that shows it is on: `reload` is the button that answers
+    // "another rb synth / rb power has finished", and a heat overlay
+    // left pointing at the previous run would be the one stale thing
+    // on the page.
+    if (els.optHeat.checked) { loadPhys(); }
+  });
   window.addEventListener('resize', applyClasses);
   // The strip's status word doubles as the take-back control while this
   // tab is superseded; `takeBack` no-ops in every other state, so the
@@ -2134,6 +3426,11 @@
   relabelSwitcher();
   connect();
   load();
+  // The physical overlay's own two pieces of start-up state: which run
+  // this tab was opened on, and — with no manifest under the project —
+  // the muted control that names the commands that make one.
+  state.physDir = openedDir(location.search);
+  if (!PHY_URL) { mutePhysControl(HEAT_ABSENT); }
 })();
 </script>
 </body>
