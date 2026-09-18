@@ -326,6 +326,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/elaboration/run-a-model.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/elaboration/#raise-the-parser-nesting-limit",
+          "slug": "raise-the-parser-nesting-limit",
+          "title": "Raise the parser nesting limit",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/elaboration/raise-the-parser-nesting-limit.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/elaboration/#run-a-regression",
           "slug": "run-a-regression",
           "title": "Run a regression",
@@ -1932,6 +1938,12 @@
           "slug": "hook-scripts-are-not-normal-standalone-scripts",
           "title": "Hook scripts are not normal standalone scripts",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/hook-scripts-are-not-normal-standalone-scripts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
+          "slug": "deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
+          "title": "Deeply nested expressions can exhaust the elaboration stack on macOS",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#compilation-unit-bind-requires-the-slang-frontend",

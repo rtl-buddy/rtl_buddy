@@ -1184,6 +1184,28 @@ Profile source and include paths resolve from `models.yaml`. Warning controls
 contain only the text after `-W`; they can suppress warnings but cannot disable
 hard parse, type, or elaboration errors.
 
+## Raise the parser nesting limit
+
+Set a profile's `max_parse_depth` when a run fails with `language constructs are
+too deeply nested`. slang stops recursive descent after 1024 nesting levels, and
+generated RTL can exceed that inside a single expression — a long chain of
+conditional expressions or concatenations is the usual cause. It is unset by
+default and moves the limit only for the profile that declares it:
+
+```yaml
+    elaborations:
+      - name: parse
+        max_parse_depth: 8192
+```
+
+It lifts a depth guard, not a correctness one: malformed sources still fail with
+the same diagnostics. Raise it to what the generated source needs rather than to
+the accepted maximum — the guard turns runaway recursion into a diagnostic, and
+past it the passes after the parser can exhaust the C stack and kill the worker
+with no diagnostic at all. See [YAML Formats](../reference/yaml.md#elaboration-profiles)
+for the accepted range and [Quirks & Known Issues](../known-issues.md) for the
+platform limit on nesting depth.
+
 ## Run a regression
 
 An elaboration regression deliberately selects `models.yaml` files through a
@@ -1218,10 +1240,11 @@ artefacts/elab/<model>/<base-or-profile>/
 
 `elab.f` has unrolled includes and absolute path-valued entries. `result.json` records
 the selected top, explicit and parsed source counts, error and warning counts,
-elapsed time, peak worker memory, and pyslang version. A profile whose
-`prepend_sources`, `append_sources`, or `include_dirs` entry is missing produces
-a `FAIL` result at stage `filelist` instead of aborting the command, so a
-regression continues with its remaining profiles. Machine mode returns the
+the configured `max_parse_depth` (`null` when unset), elapsed time, peak worker
+memory, and pyslang version. A profile whose `prepend_sources`,
+`append_sources`, or `include_dirs` entry is missing produces a `FAIL` result at
+stage `filelist` instead of aborting the command, so a regression continues with
+its remaining profiles. Machine mode returns the
 same result payload and writes JSONL events to `rtl_buddy.log`.
 
 `rb elab` dispatch is opt-in with `--dispatch`. `rb elab-regression` also honors
@@ -5329,6 +5352,10 @@ Warnings for fallback paths and unresolved variables are emitted once per proces
 
 rtl_buddy captures Python-level `print()` output as `hook.stdout` events. The capture has no `.buffer` or file descriptor, and child-process output bypasses it. Capture child output explicitly and print the text you want logged. For a generator that can write only relative to CWD, temporarily change to `suite_dir` and restore the previous directory. See [Plugins](concepts/plugins.md).
 
+## Deeply nested expressions can exhaust the elaboration stack on macOS
+
+`max_parse_depth` lifts slang's parser nesting limit, but the passes after the parser still recurse over the same expression, and `rb elab`'s analysis pass runs on a slang thread pool whose threads take the platform default stack — 512 KiB on macOS against 8 MiB on Linux. On macOS a chain of roughly 400 nested conditional expressions therefore kills the worker with no diagnostic, and the run reports `elaboration worker did not produce a result`; the identical source elaborates on Linux. Gate generated RTL that deep on Linux, or reduce the generated nesting. Nesting that costs less per level, such as parentheses, is unaffected. See [Model Elaboration](concepts/elaboration.md).
+
 ## Compilation-unit bind requires the slang frontend
 
 Yosys's native `verilog` frontend does not resolve a top-level `bind`, so no formal cells elaborate. rtl_buddy fails a property-based proof that would otherwise pass vacuously. Set `frontend: slang` and configure the yosys-slang plugin. Inline assertions do not need this guard. See [Formal Property Verification](concepts/fpv.md).
@@ -8892,6 +8919,7 @@ A profile is a delta on its containing model, not another model reference. Paths
 | `single_unit` | false; parses primary sources as one compilation unit |
 | `libraries_inherit_macros` | false; requires `single_unit: true` and shares primary-unit macros with library sources |
 | `timescale` | Unset; command-line timescale such as `1ns/1ps` |
+| `max_parse_depth` | Unset, so slang's own 1024-level parser nesting limit applies; an integer from 1 to 65536. Raise it for generated RTL whose single expression nests deeper than the default, such as a long conditional or concatenation chain |
 | `ignored_directives` | Empty; directive names for slang to ignore |
 | `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. These cannot suppress hard compilation errors |
 | `resources` | Inherits `cfg-dispatch.resources` field by field; `cpus` must be positive and also controls pyslang worker threads |
