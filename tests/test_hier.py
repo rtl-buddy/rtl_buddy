@@ -11,7 +11,9 @@ to the downstream viewer (``--top``, ``--filelist``, ``--format``,
 from __future__ import annotations
 
 import json
+import shlex
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,13 @@ from typer.testing import CliRunner
 from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyView
+
+# The stub tools below run a here-doc Python snippet, so they need an
+# interpreter that actually exists: a bare ``python`` is absent from a
+# stock macOS PATH. Capture the real interpreter at import time -- one
+# test monkeypatches ``sys.executable`` to probe PATH-less resolution,
+# and the stubs must not inherit that fake path.
+_PYTHON = shlex.quote(sys.executable)
 
 
 def _make_fake_view(
@@ -30,7 +39,7 @@ def _make_fake_view(
     script = tmp_path / name
     script.write_text(
         "#!/usr/bin/env bash\n"
-        f'python - "$@" <<PY\n'
+        f'{_PYTHON} - "$@" <<PY\n'
         "import json, sys\n"
         f'open({json.dumps(str(record))}, "w").write(json.dumps(sys.argv[1:]))\n'
         "PY\n"
