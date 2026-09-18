@@ -6,7 +6,7 @@ RTL Buddy uses three anchors:
 | --- | --- |
 | `invocation_cwd` | The shell directory where `rb` was invoked |
 | `command_root` | The directory containing the command's primary config |
-| `artifact_root` | `<command_root>/artefacts/` |
+| `artifact_root` | `<command_root>/artefacts/`, or `<command_root>/artefacts/.runs/<tag>/` under `--run-tag` |
 
 Generated artefacts, builder scratch, and `rtl_buddy.log` use the command root. Explicit CLI input and output paths use normal shell semantics and are resolved from `invocation_cwd`.
 

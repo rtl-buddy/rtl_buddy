@@ -166,6 +166,17 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 running (warn, cancel, adopt)        │
 │                                                 [default: (cfg-dispatch orphans,     │
 │                                                 else warn)]                          │
+│ --plusarg                              TEXT     add or override one runtime plusarg  │
+│                                                 for this run (KEY=VALUE, or bare KEY │
+│                                                 for a valueless +KEY); repeatable,   │
+│                                                 wins over the test's plusargs: and,  │
+│                                                 among repeats, the last one wins     │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suite     │
+│                                                 gets its own tree, its own tree lock │
+│                                                 and its own log; shared builds stay  │
+│                                                 shared                               │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -201,6 +212,11 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 │                                       that are still queued or running (warn,        │
 │                                       cancel, adopt)                                 │
 │                                       [default: (cfg-dispatch orphans, else warn)]   │
+│ --run-tag                    TEXT     namespace this run's artefact tree under       │
+│                                       artefacts/.runs/<tag>/ so a concurrent run of  │
+│                                       the same suite gets its own tree, its own tree │
+│                                       lock and its own log; shared builds stay       │
+│                                       shared                                         │
 │ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -267,6 +283,12 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 running (warn, cancel, adopt)        │
 │                                                 [default: (cfg-dispatch orphans,     │
 │                                                 else warn)]                          │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suites    │
+│                                                 gets its own trees, its own tree     │
+│                                                 locks and its own logs; shared       │
+│                                                 builds stay shared                   │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -860,6 +882,10 @@ Usage: rtl-buddy graph results [OPTIONS]
 │                               newest cov_dir/ under the project)                     │
 │ --cov-manifest          TEXT  coverage manifest.json to join from, instead of        │
 │                               discovery                                              │
+│ --run-tag               TEXT  convert one --run-tag run's results: scan              │
+│                               artefacts/.runs/<tag>/ in every suite and write that   │
+│                               run's overlay under artefacts/.runs/<tag>/graph/       │
+│                               (graph.json is still read from artefacts/graph/)       │
 │ --help                        Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1670,9 +1696,11 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
 │                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
 │                'module:alu'; an unprefixed string is read as an instance path.       │
-│                --metric foregrounds one physical metric. The hub caches the focus    │
-│                and replays it to the pane on connect, so sending this before the     │
-│                browser tab is open works.                                            │
+│                --metric foregrounds one physical metric. The graph pane (/gph)       │
+│                follows the same message: it turns its heat overlay on and highlights │
+│                the module the target belongs to. The hub caches the focus and        │
+│                replays it to both on connect, so sending this before the browser     │
+│                tabs are open works.                                                  │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
 │                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
 │                (clears any cached diagnostics from SOURCE). Use --instance to attach │
@@ -1847,9 +1875,10 @@ Usage: rtl-buddy hub send phys-focus [OPTIONS] TARGET
  Broadcast phys_focus{target} — point the hub's synth+power pane
  (http://127.0.0.1:<http_port>/phy) at one target of the run's physical model. TARGET
  is prefixed: 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is read as
- an instance path. --metric foregrounds one physical metric. The hub caches the focus
- and replays it to the pane on connect, so sending this before the browser tab is open
- works.
+ an instance path. --metric foregrounds one physical metric. The graph pane (/gph)
+ follows the same message: it turns its heat overlay on and highlights the module the
+ target belongs to. The hub caches the focus and replays it to both on connect, so
+ sending this before the browser tabs are open works.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    target      TEXT  physical target, e.g. module:alu or u_cpu/u_alu [required]    │

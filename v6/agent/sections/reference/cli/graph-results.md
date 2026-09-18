@@ -25,6 +25,10 @@ Usage: rtl-buddy graph results [OPTIONS]
 │                               newest cov_dir/ under the project)                     │
 │ --cov-manifest          TEXT  coverage manifest.json to join from, instead of        │
 │                               discovery                                              │
+│ --run-tag               TEXT  convert one --run-tag run's results: scan              │
+│                               artefacts/.runs/<tag>/ in every suite and write that   │
+│                               run's overlay under artefacts/.runs/<tag>/graph/       │
+│                               (graph.json is still read from artefacts/graph/)       │
 │ --help                        Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

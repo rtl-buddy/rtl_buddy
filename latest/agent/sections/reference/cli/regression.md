@@ -60,6 +60,12 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 running (warn, cancel, adopt)        │
 │                                                 [default: (cfg-dispatch orphans,     │
 │                                                 else warn)]                          │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suites    │
+│                                                 gets its own trees, its own tree     │
+│                                                 locks and its own logs; shared       │
+│                                                 builds stay shared                   │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

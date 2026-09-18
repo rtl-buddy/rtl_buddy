@@ -36,6 +36,10 @@ Warnings for fallback paths and unresolved variables are emitted once per proces
 
 rtl_buddy captures Python-level `print()` output as `hook.stdout` events. The capture has no `.buffer` or file descriptor, and child-process output bypasses it. Capture child output explicitly and print the text you want logged. For a generator that can write only relative to CWD, temporarily change to `suite_dir` and restore the previous directory. See [Plugins](concepts/plugins.md).
 
+## Deeply nested expressions can exhaust the elaboration stack on macOS
+
+`max_parse_depth` lifts slang's parser nesting limit, but the passes after the parser still recurse over the same expression, and `rb elab`'s analysis pass runs on a slang thread pool whose threads take the platform default stack — 512 KiB on macOS against 8 MiB on Linux. On macOS a chain of roughly 400 nested conditional expressions therefore kills the worker with no diagnostic, and the run reports `elaboration worker did not produce a result`; the identical source elaborates on Linux. Gate generated RTL that deep on Linux, or reduce the generated nesting. Nesting that costs less per level, such as parentheses, is unaffected. See [Model Elaboration](concepts/elaboration.md).
+
 ## Compilation-unit bind requires the slang frontend
 
 Yosys's native `verilog` frontend does not resolve a top-level `bind`, so no formal cells elaborate. rtl_buddy fails a property-based proof that would otherwise pass vacuously. Set `frontend: slang` and configure the yosys-slang plugin. Inline assertions do not need this guard. See [Formal Property Verification](concepts/fpv.md).
@@ -77,6 +81,17 @@ When `sim_timeout` expires, the simulator may be terminated before flushing outp
 Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immediately on same-host contention. The file remains after release; kernel lock state, not file presence, determines whether the tree is locked.
 
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
+
+Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#namespace-concurrent-runs) so each locks its own tree. Two runs naming the same tag still contend, and the lock stays host-local.
+
+## `--run-tag` covers the test flows, not every reader
+
+`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, the dispatch job commands, and `rb graph results`. Three consequences to plan around:
+
+- `rb wave`, `rb cov`, `rb phys`, and the other flow commands resolve the flat `artefacts/<test>/`. Open a tagged run's trace by its path, `artefacts/.runs/<tag>/<test>/dump.fst`.
+- The hub, the MCP server, and `rb graph query` read the untagged `artefacts/graph/results-overlay.json`. Publish one tagged run there with `rb graph results --run-tag <name> -o artefacts/graph`.
+- Two tagged Slurm runs of one suite serialise their build jobs. The `--dependency=singleton` rendezvous is keyed on the suite directory, which owns the shared build tree; the simulation fan-outs still overlap.
+- Merged coverage is not namespaced. `--coverage-merge*` writes `<command_root>/cov_dir/` whatever the tag, so two concurrent tagged runs that both merge would write one directory. Merge in one run only, or merge afterwards from each run's per-test `coverage.dat`.
 
 ## Tool flows delete their previous outputs before running
 
@@ -247,6 +262,10 @@ The two halves of the physical model spell `module` in two namespaces: the synth
 ## Phys pane and schematic selections cross only within one hierarchy
 
 Clicking an instance in the `/phy` pane broadcasts the path rooted at the physical model's own top, and an inbound selection is resolved against the pane's own rows. Neither surface can see which design the other is displaying, so a `/sch` showing a testbench wrapped around the DUT — or a different design entirely — is handed a path that names no instance there and selects nothing; a selection broadcast from such a view lands in the pane the same way. Nothing reports it, because a path matching no row is indistinguishable from a click on a row the other surface does not hold. Open the schematic on the design the model was built from — the synthesis `top:`, not a testbench that wraps it — and the two follow each other. See [Physical Metrics](concepts/phys.md#browse-the-model-in-the-hub).
+
+## Graph-pane heat attributes a leaf to the nearest instance the graph knows
+
+The `/gph` pane's heat overlay rolls per-instance power up to the enclosing RTL module by resolving each model row's rootless path to the deepest instance node that properly contains it, so the attribution is only as fine as the design tier is complete. Two consequences follow. A run whose `top:` is a wrapper the graph was not built for — or a graph narrowed with `rb graph build --model` — has no elaboration rooted at the model's top, and then no leaf power is attributable at all: the pane says so in its status line and paints cells and area only, because borrowing a testbench export's paths would file the DUT's power under whatever wraps it. And a row whose path runs through a level the graph does not carry is attributed to the deepest level it does, up to the design top itself, which over-attributes that module rather than dropping the row. The figures also do not count over the same thing: a module's cells and area are its definition's, counted once (and its area already includes its submodules', because that is how the synthesis reports it), while its power is summed over every instantiation of it — the pane prints how many instantiations and how many leaf rows each figure covers. `rb phys instance <path>` answers the same question against the hierarchy the model recorded. See [Design Knowledge Graph](concepts/graph.md#physical-heat-on-the-graph).
 
 ## FPV COI analysis is best-effort
 

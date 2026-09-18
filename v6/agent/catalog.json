@@ -326,6 +326,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/elaboration/run-a-model.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/elaboration/#raise-the-parser-nesting-limit",
+          "slug": "raise-the-parser-nesting-limit",
+          "title": "Raise the parser nesting limit",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/elaboration/raise-the-parser-nesting-limit.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/elaboration/#run-a-regression",
           "slug": "run-a-regression",
           "title": "Run a regression",
@@ -371,6 +377,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/execution-context/write-hook-outputs-safely.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/#namespace-concurrent-runs",
+          "slug": "namespace-concurrent-runs",
+          "title": "Namespace concurrent runs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/execution-context/namespace-concurrent-runs.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/#handle-an-artefact-lock",
           "slug": "handle-an-artefact-lock",
           "title": "Handle an artefact lock",
@@ -388,7 +400,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/execution-context.md"
     },
     {
-      "description": "Mark known failures and choose whether an unexpected pass should fail a test, formal, synthesis, P&R, or power run.",
+      "description": "Mark known failures, choose whether an unexpected pass should fail a run, and know which failures a marker never covers.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/",
       "sections": [
         {
@@ -398,10 +410,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/expected-failures/choose-strictness.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/#interpret-failures-carefully",
-          "slug": "interpret-failures-carefully",
-          "title": "Interpret failures carefully",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/expected-failures/interpret-failures-carefully.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/#what-the-marker-covers",
+          "slug": "what-the-marker-covers",
+          "title": "What the marker covers",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/expected-failures/what-the-marker-covers.md"
         }
       ],
       "slug": "concepts/expected-failures",
@@ -585,6 +597,12 @@
           "slug": "coverage-on-the-graph",
           "title": "Coverage on the Graph",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/graph/coverage-on-the-graph.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/graph/#physical-heat-on-the-graph",
+          "slug": "physical-heat-on-the-graph",
+          "title": "Physical Heat on the Graph",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/graph/physical-heat-on-the-graph.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/graph/#graph-data-model",
@@ -1055,6 +1073,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/regressions/run-in-parallel.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/regressions/#run-two-tiers-at-once",
+          "slug": "run-two-tiers-at-once",
+          "title": "Run two tiers at once",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/regressions/run-two-tiers-at-once.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/regressions/#read-the-results-summary",
           "slug": "read-the-results-summary",
           "title": "Read the results summary",
@@ -1290,6 +1314,12 @@
           "slug": "run-tests",
           "title": "Run tests",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/tests/run-tests.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tests/#override-a-plusarg-for-one-run",
+          "slug": "override-a-plusarg-for-one-run",
+          "title": "Override a plusarg for one run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/tests/override-a-plusarg-for-one-run.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tests/#filter-by-regression-level",
@@ -1928,6 +1958,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/hook-scripts-are-not-normal-standalone-scripts.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
+          "slug": "deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
+          "title": "Deeply nested expressions can exhaust the elaboration stack on macOS",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#compilation-unit-bind-requires-the-slang-frontend",
           "slug": "compilation-unit-bind-requires-the-slang-frontend",
           "title": "Compilation-unit bind requires the slang frontend",
@@ -1974,6 +2010,12 @@
           "slug": "artifact-locking-is-per-tree-and-per-host",
           "title": "Artifact locking is per tree and per host",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/artifact-locking-is-per-tree-and-per-host.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#run-tag-covers-the-test-flows-not-every-reader",
+          "slug": "run-tag-covers-the-test-flows-not-every-reader",
+          "title": "`--run-tag` covers the test flows, not every reader",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/run-tag-covers-the-test-flows-not-every-reader.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#tool-flows-delete-their-previous-outputs-before-running",
@@ -2082,6 +2124,12 @@
           "slug": "phys-pane-and-schematic-selections-cross-only-within-one-hierarchy",
           "title": "Phys pane and schematic selections cross only within one hierarchy",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/phys-pane-and-schematic-selections-cross-only-within-one-hierarchy.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows",
+          "slug": "graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows",
+          "title": "Graph-pane heat attributes a leaf to the nearest instance the graph knows",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#fpv-coi-analysis-is-best-effort",

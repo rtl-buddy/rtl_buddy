@@ -102,6 +102,8 @@ Entries are keyed by `test:<suite dir>#<test name>` and contain the latest resul
 
 An entry also carries an optional `compile` block with `duration_sec`, `builder`, and `reused` when the run's result envelope records one. A local run records its own. A dispatched run produces two envelopes that disagree on purpose: the simulation job writes `artefacts/<test>/result.json` with its own `compile` block, which says `reused: true` and near-zero duration because the shared build already produced the `simv`, and at collect the head overwrites the `compile` block in `artefacts/<test>/dispatch/result-<tag>.json` with the build job's record. The overlay takes the newest envelope, which is the head's, so a dispatched run reports the shared build's compile — the one that did the work. The exception is a simulation job that had to rebuild because the build job left no record for its config, so its own stamp check had nothing to reuse (`compile.prebuilt_stamp_invalid`): the overlay still reports the build job's record, not the recompile that actually produced that run's `simv`. Its values are read from the envelope, never measured at overlay time, and the block is absent when the envelope says nothing about the compile, so byte-stability holds for a refresh with nothing rerun.
 
+Point the refresh at one run's tree with `--run-tag <name>`, matching the tag its `rb regression` used. The scan then reads `<suite>/artefacts/.runs/<tag>/` and the overlay is written to `artefacts/.runs/<tag>/graph/results-overlay.json`, so two concurrent regressions each convert their own results. `graph.json` is structural, not per-run, and is still read from `artefacts/graph/`. Consumers that resolve the overlay implicitly — the hub, the MCP server, `rb graph query` — read the untagged one; publish a tagged run's results there with `rb graph results --run-tag <name> -o artefacts/graph`.
+
 Result status comes from each run's `result.json`, not from log parsing. A test directory with artefacts but no result envelope is retained as `UNKNOWN`. Random-test iterations remain available under `runs`; the newest iteration supplies the entry's top-level status.
 
 When cross-checking against `graph.json`:
@@ -131,6 +133,20 @@ Name correlation prefers exact, case-insensitive, normalized, then `cov`/`cvr`/`
 LCOV lacks module and per-test identity. It joins design coverage by resolved file and still uses any available per-test databases for test badges and coverage-item verdicts. Unresolved, re-anchored, or unmatched paths are reported rather than guessed.
 
 See [Coverage](coverage.md) for metric semantics and coverage collection.
+
+## Physical Heat on the Graph
+
+The `/gph` pane can fill its module nodes with the physical model `rb synth` and `rb power` write, read from the hub's `GET /phy.json` — the same body and the same numbers the [`/phy` pane](phys.md#browse-the-model-in-the-hub) shows. Tick `heat` in the header: the model is fetched on the first tick, not on load, because a mapped design's power half is megabytes of leaf rows. The `metric` switcher offers the same five metrics in the same order as `/phy` (`cells`, `area`, `leakage`, `dynamic`, `total`), the `run` dropdown selects which artefact directory the numbers come from, and `/gph?dir=<phys dir>` opens the pane on one run. A run the server refuses — a directory with no manifest, a run outside the project — leaves the model on screen alone and reports the refusal in the status line; a bad `?dir=` on a tab that has loaded nothing yet falls back to the newest run and says so. The ramp is the shared heat ramp in `/hub/theme.css`, scaled against the largest module in the graph; the value rides in a badge beside each node, every metric in its tooltip, and the whole row in the inspector.
+
+The two halves are joined two different ways, because they are two namespaces. The synthesis half joins **by module name** — its `module` column is an RTL module name, as Yosys' `stat` saw it — and gives each node its cells and area. The power half joins **by path**: a leaf row's `module` is the Liberty cell it is an instance of, so each row's rootless instance path is resolved to the enclosing RTL instance and its power is added to that instance's module.
+
+The two halves therefore do not count over the same thing, and the pane says which is which. A module's **cells and area are its definition's**, counted once however many times it is instantiated, and its area already includes its submodules' because that is how the synthesis reports it. Its **power is summed over every instantiation** of it, because every leaf inside every one of them burns power: a design with eight FIFOs has one FIFO row in the synthesis half and eight FIFOs' worth of leakage here. That sum is the right number for a heat map — which module is this design spending its power on — and the wrong number to divide by the area, so the inspector prints `instances` (how many instantiations contributed) and `leaf rows` (how many rows were summed) beside the figures and the tooltip repeats them. Do not add the two halves together, and see [Known Issues](../known-issues.md#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows) for what an incomplete design tier does to the roll-up.
+
+Coverage and heat share the node fill, so ticking either releases the other. An inbound `phys_focus` **turns the overlay on**: it is a message about the physical model and it carries the metric to foreground, so a pane that has not read the model yet ticks `heat`, fetches it, and applies the focus when the body lands. It then highlights the node the target belongs to — a module by name, an instance path by the module whose body holds the leaf — and every export of that module when a suite qualifier split it into several nodes. Clicking a node still emits only the pane's own `selection_changed` and `open_source`:
+
+```bash
+rb hub send phys-focus module:dma_engine --metric area
+```
 
 ## Graph data model
 
@@ -208,6 +224,8 @@ artefacts/graph/
 
 `graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, skipped items, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
 
+A `--run-tag` run keeps the same shape one level down, under `artefacts/.runs/<tag>/graph/`, and holds only `results-overlay.json`: the design graph is shared.
+
 Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
 
 ## Looking at the Graph
@@ -220,7 +238,7 @@ rb graph results
 rb hub start --serve-viewer
 ```
 
-Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage.
+Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage or module nodes with the physical model's area and power (see [Physical Heat on the Graph](#physical-heat-on-the-graph)).
 
 Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:
 

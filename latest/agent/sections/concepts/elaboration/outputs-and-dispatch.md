@@ -11,10 +11,11 @@ artefacts/elab/<model>/<base-or-profile>/
 
 `elab.f` has unrolled includes and absolute path-valued entries. `result.json` records
 the selected top, explicit and parsed source counts, error and warning counts,
-elapsed time, peak worker memory, and pyslang version. A profile whose
-`prepend_sources`, `append_sources`, or `include_dirs` entry is missing produces
-a `FAIL` result at stage `filelist` instead of aborting the command, so a
-regression continues with its remaining profiles. Machine mode returns the
+the configured `max_parse_depth` (`null` when unset), elapsed time, peak worker
+memory, and pyslang version. A profile whose `prepend_sources`,
+`append_sources`, or `include_dirs` entry is missing produces a `FAIL` result at
+stage `filelist` instead of aborting the command, so a regression continues with
+its remaining profiles. Machine mode returns the
 same result payload and writes JSONL events to `rtl_buddy.log`.
 
 `rb elab` dispatch is opt-in with `--dispatch`. `rb elab-regression` also honors

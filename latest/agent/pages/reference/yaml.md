@@ -10,7 +10,7 @@ Unless stated otherwise:
 
 - Relative paths resolve from the YAML file that contains them. See [Execution Context](../concepts/execution-context.md).
 - `reglvl` defaults to 0. It may be an integer or a per-tool/per-builder map with `default` fallback. A run is selected when its level is at most the CLI regression level.
-- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. See [Expected failures](../concepts/expected-failures.md).
+- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict — a setup or compile failure, a sim timeout, a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
 
 ## root_config.yaml
@@ -392,6 +392,7 @@ A profile is a delta on its containing model, not another model reference. Paths
 | `single_unit` | false; parses primary sources as one compilation unit |
 | `libraries_inherit_macros` | false; requires `single_unit: true` and shares primary-unit macros with library sources |
 | `timescale` | Unset; command-line timescale such as `1ns/1ps` |
+| `max_parse_depth` | Unset, so slang's own 1024-level parser nesting limit applies; an integer from 1 to 65536. Raise it for generated RTL whose single expression nests deeper than the default, such as a long conditional or concatenation chain |
 | `ignored_directives` | Empty; directive names for slang to ignore |
 | `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. These cannot suppress hard compilation errors |
 | `resources` | Inherits `cfg-dispatch.resources` field by field; `cpus` must be positive and also controls pyslang worker threads |
