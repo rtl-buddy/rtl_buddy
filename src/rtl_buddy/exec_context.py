@@ -13,6 +13,10 @@ outputs land and how relative arguments are resolved:
   trees live. Defaults to ``command_root / "artefacts"``; a future
   ``--artifact-root`` flag can redirect this onto a separate disk without
   affecting any downstream consumer.
+- ``run_tag`` — the optional ``--run-tag`` namespace (#541). When set, the
+  artifact root moves to ``command_root / "artefacts" / ".runs" / <tag>``,
+  which is what lets two runs of one suite hold different tree locks and
+  write disjoint paths. Unset is today's layout exactly.
 
 See ``docs/concepts/execution-context.md`` for the user-facing description
 and ``docs/development/guidelines.md`` for the policy these fields encode.
@@ -23,7 +27,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .tools.artifact_paths import sanitize_artifact_component
+from .logging_utils import DEFAULT_FILE_LOG
+from .tools.artifact_paths import (
+    RUNS_DIRNAME,
+    run_artifact_root,
+    sanitize_artifact_component,
+    validate_run_tag,
+)
+
+
+def _tagged_artifact_root(
+    command_root: Path, artifact_root: Path | None, run_tag: str | None
+) -> Path:
+    """The artefact root for one invocation, tag applied (#541).
+
+    An explicit ``artifact_root`` is resolved and then namespaced too: the
+    tag says "this invocation's tree", which has to mean the same thing
+    wherever the tree was redirected to, or a future ``--artifact-root``
+    would quietly switch concurrent runs back onto one lock.
+    """
+    if artifact_root is None:
+        return run_artifact_root(command_root, run_tag)
+    resolved = Path(artifact_root).resolve()
+    if run_tag is None:
+        return resolved
+    return resolved / RUNS_DIRNAME / validate_run_tag(run_tag)
 
 
 @dataclass(frozen=True)
@@ -39,6 +67,7 @@ class ExecutionContext:
     command_root: Path
     artifact_root: Path
     primary_config: Path | None = None
+    run_tag: str | None = None
 
     @classmethod
     def for_command(
@@ -47,6 +76,7 @@ class ExecutionContext:
         primary_config: Path,
         *,
         artifact_root: Path | None = None,
+        run_tag: str | None = None,
     ) -> "ExecutionContext":
         """Build an :class:`ExecutionContext` for a command.
 
@@ -57,6 +87,9 @@ class ExecutionContext:
 
         ``artifact_root`` is reserved for a future override flag; pass
         ``None`` for the default ``command_root/artefacts`` layout.
+
+        ``run_tag`` namespaces that layout (#541); pass ``None`` for the
+        flat tree every untagged run keeps.
         """
         invocation_cwd = Path(invocation_cwd).resolve()
         primary_config = Path(primary_config)
@@ -64,15 +97,13 @@ class ExecutionContext:
             primary_config = invocation_cwd / primary_config
         primary_config = primary_config.resolve()
         command_root = primary_config.parent
-        if artifact_root is None:
-            artifact_root = command_root / "artefacts"
-        else:
-            artifact_root = Path(artifact_root).resolve()
+        artifact_root = _tagged_artifact_root(command_root, artifact_root, run_tag)
         return cls(
             invocation_cwd=invocation_cwd,
             command_root=command_root,
             artifact_root=artifact_root,
             primary_config=primary_config,
+            run_tag=run_tag,
         )
 
     @classmethod
@@ -82,6 +113,7 @@ class ExecutionContext:
         command_root: Path,
         *,
         artifact_root: Path | None = None,
+        run_tag: str | None = None,
     ) -> "ExecutionContext":
         """Build an :class:`ExecutionContext` from a directory, not a config file.
 
@@ -90,14 +122,12 @@ class ExecutionContext:
         """
         invocation_cwd = Path(invocation_cwd).resolve()
         command_root = Path(command_root).resolve()
-        if artifact_root is None:
-            artifact_root = command_root / "artefacts"
-        else:
-            artifact_root = Path(artifact_root).resolve()
+        artifact_root = _tagged_artifact_root(command_root, artifact_root, run_tag)
         return cls(
             invocation_cwd=invocation_cwd,
             command_root=command_root,
             artifact_root=artifact_root,
+            run_tag=run_tag,
         )
 
     def artifact_dir(self, *parts: str) -> Path:
@@ -123,5 +153,16 @@ class ExecutionContext:
 
     @property
     def log_path(self) -> Path:
-        """Where ``rtl_buddy.log`` should be written for this command."""
-        return self.command_root / "rtl_buddy.log"
+        """Where ``rtl_buddy.log`` should be written for this command.
+
+        Beside the command's config, as it always has been — except under
+        a ``--run-tag``, where it moves into the tagged artefact root. A
+        file log is opened for *writing* and the first open truncates it,
+        so two concurrent runs of one suite sharing
+        ``<suite>/rtl_buddy.log`` would erase each other's record: the same
+        failure #437 fixed for dispatched jobs, reached by a second route.
+        A tagged run's log therefore belongs to its own tree.
+        """
+        if self.run_tag is None:
+            return self.command_root / DEFAULT_FILE_LOG
+        return self.artifact_root / DEFAULT_FILE_LOG

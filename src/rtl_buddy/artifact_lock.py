@@ -8,6 +8,13 @@ corruption afterwards, each command takes an exclusive non-blocking
 execution context and raises :class:`FatalRtlBuddyError` immediately if
 another process already holds it.
 
+The scope is one *artefact root*, which is where ``--run-tag`` comes in
+(#541): a tagged run's root is ``<command_root>/artefacts/.runs/<tag>/``,
+so two tagged runs of one suite lock different files and no longer
+serialise on each other. Nothing here knows about the tag — the root
+arrives already namespaced, from
+:class:`~rtl_buddy.exec_context.ExecutionContext`.
+
 The lock is advisory and kernel-managed: it disappears when the holding
 process exits for any reason, so crashes cannot leave stale locks. The
 lock *file* persists and carries holder metadata (pid, command, start

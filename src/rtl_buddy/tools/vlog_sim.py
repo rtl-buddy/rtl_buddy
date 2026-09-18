@@ -41,6 +41,7 @@ from .artifact_paths import (
     DISPATCH_OUTPUT_PATTERNS,
     RESULT_JSON_NAME,
     SHARED_BUILDS_DIRNAME,
+    run_artifact_root,
     shared_build_dir,
     shared_build_namespace,
     test_artifact_dir,
@@ -1531,6 +1532,7 @@ class VlogSim:
         rebuild=False,
         build_result_json=None,
         build_phase=BUILD_PHASE_FULL,
+        run_tag=None,
     ):
         """
         compile and execute sim for given test
@@ -1674,8 +1676,19 @@ class VlogSim:
             if suite_dir is not None
             else os.path.abspath(os.getcwd())
         )
+        # The `--run-tag` namespace this run's artefacts hang under (#541).
+        # Threaded from the head rather than re-derived: a dispatched job
+        # that resolved a different tag would write beside the head's tree
+        # instead of into it. `None` is the flat layout every untagged run
+        # keeps. Note what it does NOT reach: the shared build directory is
+        # keyed on the compile fingerprint and stays shared across tags.
+        self.run_tag = run_tag
         # Where the head writes its own log (ExecutionContext.log_path), the
         # one path a directory listing skips by location rather than name.
+        # Left at the suite spelling under a `--run-tag`: that run's log is
+        # inside `artefacts/`, which every listing walk prunes wholesale, so
+        # only the flat path can ever reach a listing and only it needs
+        # naming here (#541).
         self._suite_log_path = os.path.realpath(
             os.path.join(self.suite_work_dir, DEFAULT_FILE_LOG)
         )
@@ -1742,7 +1755,7 @@ class VlogSim:
                 ),
             )
 
-        output_dir = Path(self.suite_work_dir) / "artefacts"
+        output_dir = run_artifact_root(self.suite_work_dir, self.run_tag)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         self.output_dir = str(output_dir)
@@ -1826,7 +1839,12 @@ class VlogSim:
 
     def _get_artifact_dir(self, run_id=None):
         return str(
-            test_artifact_dir(self.suite_work_dir, self.test_name, run_id=run_id)
+            test_artifact_dir(
+                self.suite_work_dir,
+                self.test_name,
+                run_id=run_id,
+                run_tag=self.run_tag,
+            )
         )
 
     def _ensure_artifact_dir(self, run_id=None):

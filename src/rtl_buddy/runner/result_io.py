@@ -131,7 +131,9 @@ def build_compile_fail_desc(
     return desc
 
 
-def write_result_json(path, *, test_name, run_id, results, run_token=None):
+def write_result_json(
+    path, *, test_name, run_id, results, run_token=None, run_tag=None
+):
     """Atomically write one run's result envelope to ``path``.
 
     The write goes through a sibling ``.tmp`` file and ``os.replace`` so
@@ -143,6 +145,13 @@ def write_result_json(path, *, test_name, run_id, results, run_token=None):
     plan). Stamping it here lets the head reject a stale envelope from an
     earlier run by identity, so it need not pre-unlink the path — see
     :func:`load_result_json` and #362.
+
+    ``run_tag`` is the ``--run-tag`` artefact namespace this run wrote into
+    (#541), so a consumer holding an envelope can say which tree it came
+    from without re-deriving it from the path. Present only when a tag was
+    named: an untagged run's envelope stays byte-identical to a pre-#541
+    one, which is what keeps every existing reader and every recorded
+    fixture valid.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -155,6 +164,8 @@ def write_result_json(path, *, test_name, run_id, results, run_token=None):
         "run_id": run_id,
         "result": results.to_json_dict(),
     }
+    if run_tag is not None:
+        envelope["run_tag"] = run_tag
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(envelope, ensure_ascii=True, indent=2) + "\n")
     os.replace(tmp, path)

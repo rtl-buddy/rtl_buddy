@@ -80,6 +80,7 @@ CONFIG_TIER = "config"
 from ..tools.artifact_paths import (  # noqa: E402
     GRAPH_JSON_NAME as GRAPH_JSON_NAME,
     GRAPH_META_NAME as GRAPH_META_NAME,
+    run_artifact_root,
 )
 
 #: Confidence tag for links. The config tier is pure config readback, so
@@ -332,9 +333,17 @@ def _rel(project_root: Path, path: str | os.PathLike) -> str:
         return resolved.as_posix()
 
 
-def default_graph_dir(project_root: str | os.PathLike) -> Path:
-    """``<project root>/artefacts/graph`` — the contracted output dir."""
-    return Path(project_root) / "artefacts" / "graph"
+def default_graph_dir(
+    project_root: str | os.PathLike, run_tag: str | None = None
+) -> Path:
+    """``<project root>/artefacts/graph`` — the contracted output dir.
+
+    ``run_tag`` moves it into that run's namespace (#541), where a
+    concurrent regression writes its own ``results-overlay.json``.
+    ``graph.json`` itself is NOT per-run — it describes the design, not a
+    run — so a tagged caller keeps reading the untagged directory for it.
+    """
+    return run_artifact_root(project_root, run_tag) / "graph"
 
 
 # ---------------------------------------------------------------------------

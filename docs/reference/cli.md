@@ -171,6 +171,12 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 for a valueless +KEY); repeatable,   │
 │                                                 wins over the test's plusargs: and,  │
 │                                                 among repeats, the last one wins     │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suite     │
+│                                                 gets its own tree, its own tree lock │
+│                                                 and its own log; shared builds stay  │
+│                                                 shared                               │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -206,6 +212,11 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 │                                       that are still queued or running (warn,        │
 │                                       cancel, adopt)                                 │
 │                                       [default: (cfg-dispatch orphans, else warn)]   │
+│ --run-tag                    TEXT     namespace this run's artefact tree under       │
+│                                       artefacts/.runs/<tag>/ so a concurrent run of  │
+│                                       the same suite gets its own tree, its own tree │
+│                                       lock and its own log; shared builds stay       │
+│                                       shared                                         │
 │ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -272,6 +283,12 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 running (warn, cancel, adopt)        │
 │                                                 [default: (cfg-dispatch orphans,     │
 │                                                 else warn)]                          │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suites    │
+│                                                 gets its own trees, its own tree     │
+│                                                 locks and its own logs; shared       │
+│                                                 builds stay shared                   │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -865,6 +882,10 @@ Usage: rtl-buddy graph results [OPTIONS]
 │                               newest cov_dir/ under the project)                     │
 │ --cov-manifest          TEXT  coverage manifest.json to join from, instead of        │
 │                               discovery                                              │
+│ --run-tag               TEXT  convert one --run-tag run's results: scan              │
+│                               artefacts/.runs/<tag>/ in every suite and write that   │
+│                               run's overlay under artefacts/.runs/<tag>/graph/       │
+│                               (graph.json is still read from artefacts/graph/)       │
 │ --help                        Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

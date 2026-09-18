@@ -82,6 +82,17 @@ Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immedi
 
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
 
+Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#namespace-concurrent-runs) so each locks its own tree. Two runs naming the same tag still contend, and the lock stays host-local.
+
+## `--run-tag` covers the test flows, not every reader
+
+`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, the dispatch job commands, and `rb graph results`. Three consequences to plan around:
+
+- `rb wave`, `rb cov`, `rb phys`, and the other flow commands resolve the flat `artefacts/<test>/`. Open a tagged run's trace by its path, `artefacts/.runs/<tag>/<test>/dump.fst`.
+- The hub, the MCP server, and `rb graph query` read the untagged `artefacts/graph/results-overlay.json`. Publish one tagged run there with `rb graph results --run-tag <name> -o artefacts/graph`.
+- Two tagged Slurm runs of one suite serialise their build jobs. The `--dependency=singleton` rendezvous is keyed on the suite directory, which owns the shared build tree; the simulation fan-outs still overlap.
+- Merged coverage is not namespaced. `--coverage-merge*` writes `<command_root>/cov_dir/` whatever the tag, so two concurrent tagged runs that both merge would write one directory. Merge in one run only, or merge afterwards from each run's per-test `coverage.dat`.
+
 ## Tool flows delete their previous outputs before running
 
 `rb cdc`, `rb synth`, `rb fpga`, `rb pnr`, and `rb power` remove the outputs they are about to write — reports, domain maps, synthesis netlists, DEF/ODB, GDS/PNG, bitstream — from the run's artifact directory before invoking the tool. `rb hub` does the same for the `view.json` and domain map it caches under `.rtl-buddy/cache/`, which outlive the build that filled them. An exit code cannot distinguish "produced nothing to report" from "crashed before writing" (rtl-buddy-cdc's exit 1 means rule violations were found), so a report left by an earlier run would otherwise be parsed and its counts reported as the current result. Clearing first makes an absent report absent, and the flow then says so and names its log.

@@ -25,6 +25,8 @@ Use explicit contexts, never ambient `os.getcwd()`:
 
 Config-driven commands use their primary config's directory as `command_root`. Managed outputs go below it, external tools run from their artifact directory, and explicit CLI paths resolve from `invocation_cwd`.
 
+`--run-tag <name>` namespaces one invocation's artefact root to `<command_root>/artefacts/.runs/<name>/`. It is accepted by `test`, `randtest`, `regression`, the dispatch job commands, and `graph results`; every per-run path in the table below moves below it, and so does the command's `rtl_buddy.log`. Shared builds (`artefacts/.shared-builds/`, keyed on the compile fingerprint) and `graph.json` are shared and must not be namespaced. A new path builder under `artefacts/` therefore has to be classified: per-run paths go through `run_artifact_root()` / `test_artifact_dir(..., run_tag=...)`, shared ones do not. Unset keeps today's flat layout byte for byte.
+
 ## Command Roots
 
 Use these roots unless a command documents a narrower exception:
@@ -72,9 +74,11 @@ Pass absolute paths to external tools unless a value is intentionally artifact-r
 
 ## Artifact Layout
 
-Write generated outputs under `artefacts/<name>/`. Keep compile outputs (`run.f`, `compile.log`, builder output) in the test root and randomized simulation output in `run-NNNN/`. Latest-run symlinks are conveniences, not durable storage.
+Write generated outputs under `artefacts/<name>/`, or `artefacts/.runs/<tag>/<name>/` under `--run-tag`. Keep compile outputs (`run.f`, `compile.log`, builder output) in the test root and randomized simulation output in `run-NNNN/`. Latest-run symlinks are conveniences, not durable storage.
 
-Every run writes `result.json` beside its durable output. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
+A reserved directory under `artefacts/` is dot-prefixed (`.shared-builds`, `.dispatch`, `.runs`) so it can never collide with a run named after it and so every scan that classifies directories by name keeps skipping it.
+
+Every run writes `result.json` beside its durable output. A tagged run's envelope also carries `run_tag`; an untagged run's does not, so its bytes are unchanged. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
 
 ## Subprocesses
 

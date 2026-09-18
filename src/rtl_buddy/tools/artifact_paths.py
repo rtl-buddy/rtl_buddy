@@ -19,6 +19,34 @@ ARTIFACT_DIRNAME = "artefacts"
 #: :data:`ARTIFACT_DIRNAME`.
 SHARED_BUILDS_DIRNAME = ".shared-builds"
 
+#: Holds one subdirectory per ``--run-tag``, under :data:`ARTIFACT_DIRNAME`
+#: (#541). A tagged run's whole artefact tree — its per-test directories,
+#: its tree lock, its dispatch outputs and its results overlay — moves below
+#: ``artefacts/.runs/<tag>/``, so two runs of one suite that name different
+#: tags take different locks and never meet in a path.
+#:
+#: A *dot* directory, and one level of indirection rather than
+#: ``artefacts/<tag>/`` directly, because the artefact tree's own readers
+#: already agree on what a dot name means: ``_is_test_dir`` in
+#: :mod:`rtl_buddy.graph.results` skips them, :func:`clear_managed_outputs`
+#: never descends into one, and the ``+incdir+`` walk prunes the tree
+#: wholesale. Put a tag beside the per-test directories and a suite with a
+#: test named after the tag has one directory meaning two things — and an
+#: untagged ``rb graph results`` would report the tag as a test that ran.
+RUNS_DIRNAME = ".runs"
+
+#: What a ``--run-tag`` may contain: one safe path segment. The character
+#: class alone forbids ``/``, ``\`` and every other separator, so no
+#: accepted tag can address anything outside :data:`RUNS_DIRNAME`; the
+#: explicit checks in :func:`validate_run_tag` cover the values that are
+#: *inside* the class and still not a directory anyone means.
+RUN_TAG_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+
+#: Longest accepted tag. A namespace, not a sentence — and a component that
+#: fits well inside every filesystem's per-name limit with the per-test and
+#: ``run-NNNN`` components that nest below it.
+RUN_TAG_MAX_LEN = 64
+
 #: Every simulator build directory rtl_buddy names starts with this, both
 #: the per-test ``obj_dir_<test>`` and the shared ``obj_dir_<key>``.
 BUILD_DIR_PREFIX = "obj_dir"
@@ -354,14 +382,71 @@ def sanitize_artifact_component(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
 
 
+def validate_run_tag(run_tag: str | None) -> str | None:
+    """Return ``run_tag`` unchanged, or raise; ``None`` passes through (#541).
+
+    A tag names a *directory*, so it is validated rather than sanitized:
+    two tags that differ only in a rejected character would otherwise map
+    to one tree, which is precisely the collision ``--run-tag`` exists to
+    prevent. The caller that typed the tag is the one that can fix it.
+
+    Validated once, at the CLI boundary, and then threaded — a head and the
+    jobs it dispatches must agree on the tree, and a value re-checked (or
+    re-spelled) at every use is a value that can drift.
+    """
+    if run_tag is None:
+        return None
+    tag = str(run_tag)
+    if not tag:
+        raise FatalRtlBuddyError("--run-tag cannot be empty")
+    if len(tag) > RUN_TAG_MAX_LEN:
+        raise FatalRtlBuddyError(
+            f"--run-tag {tag!r} is longer than {RUN_TAG_MAX_LEN} characters"
+        )
+    if not RUN_TAG_PATTERN.fullmatch(tag):
+        raise FatalRtlBuddyError(
+            f"--run-tag {tag!r} is not a safe path segment: use only "
+            "letters, digits, '.', '_' and '-'"
+        )
+    if set(tag) == {"."}:
+        # Inside the character class and still not a directory anyone means:
+        # '.' and '..' address the parent tree rather than a namespace under
+        # it, and '...' is a name no one typed on purpose.
+        raise FatalRtlBuddyError(f"--run-tag {tag!r} is not a directory name")
+    return tag
+
+
+def run_artifact_root(suite_dir: str | Path, run_tag: str | None = None) -> Path:
+    """The artefact tree one invocation writes into (#541).
+
+    ``<suite>/artefacts`` without a tag — today's layout, byte for byte —
+    and ``<suite>/artefacts/.runs/<tag>`` with one. Everything that is
+    per-run hangs off this: the per-test directories, the tree lock, the
+    head's dispatch outputs, the results overlay.
+
+    Deliberately NOT where :func:`shared_build_dir` lives. A shared build is
+    keyed on the compile fingerprint (toolchain included), so two tagged
+    runs that compile the same thing *should* share one ``obj_dir`` and two
+    that do not already key apart; duplicating the build tree per tag would
+    turn the namespace into a recompile.
+    """
+    root = Path(suite_dir) / ARTIFACT_DIRNAME
+    if run_tag is None:
+        return root
+    return root / RUNS_DIRNAME / validate_run_tag(run_tag)
+
+
 def test_artifact_dir(
-    suite_dir: str | Path, test_name: str, run_id: int | None = None
+    suite_dir: str | Path,
+    test_name: str,
+    run_id: int | None = None,
+    run_tag: str | None = None,
 ) -> Path:
     """
     Return the per-test artifact directory rooted under the suite directory.
     """
-    artifact_dir = (
-        Path(suite_dir) / ARTIFACT_DIRNAME / sanitize_artifact_component(test_name)
+    artifact_dir = run_artifact_root(suite_dir, run_tag) / sanitize_artifact_component(
+        test_name
     )
     if run_id is not None:
         artifact_dir /= f"run-{run_id:04d}"

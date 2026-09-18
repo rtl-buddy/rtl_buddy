@@ -109,6 +109,12 @@ class BuildJobSpec:
     # travels with no ``--phase`` flag at all, so an unsplit suite's argv is
     # byte-identical to a pre-#593 head's.
     phase: str = BUILD_PHASE_FULL
+    # The head's `--run-tag` artefact namespace (#541), or None for the
+    # flat tree. Carried rather than re-derived for the same reason
+    # `shared_build_root` above is: the head decided which tree this fleet
+    # belongs to, and a job that resolved a different one would write beside
+    # the head's artefacts instead of into them.
+    run_tag: str | None = None
 
 
 @dataclass
@@ -171,6 +177,12 @@ class TestJobSpec:
     # `plusargs` is what determines the simulation, and that is compared
     # entry by entry already (see `_adopt_plan_difference`).
     plusarg_overrides: dict = field(default_factory=dict)
+    # The head's `--run-tag` artefact namespace (#541), or None for the
+    # flat tree. Carried rather than re-derived for the same reason
+    # `shared_build_root` above is: the head decided which tree this fleet
+    # belongs to, and a job that resolved a different one would write beside
+    # the head's artefacts instead of into them.
+    run_tag: str | None = None
 
     def display_name(self) -> str:
         if self.run_id is None:
