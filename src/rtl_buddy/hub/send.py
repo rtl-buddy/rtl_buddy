@@ -315,9 +315,11 @@ def cmd_cov_focus(
         "(http://127.0.0.1:<http_port>/phy) at one target of the run's "
         "physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or "
         "'module:alu'; an unprefixed string is read as an instance path. "
-        "--metric foregrounds one physical metric. The hub caches the "
-        "focus and replays it to the pane on connect, so sending this "
-        "before the browser tab is open works."
+        "--metric foregrounds one physical metric. The graph pane "
+        "(/gph) follows the same message: it turns its heat overlay on "
+        "and highlights the module the target belongs to. The hub caches "
+        "the focus and replays it to both on connect, so sending this "
+        "before the browser tabs are open works."
     ),
 )
 def cmd_phys_focus(

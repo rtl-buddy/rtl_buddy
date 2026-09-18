@@ -2273,7 +2273,10 @@ def test_no_manifest_mutes_the_heat_control_with_the_landing_wording():
     # Muted, not hidden: a control that vanished would leave nothing to
     # explain why there is no heat.
     assert "if (!PHY_URL) { mutePhysControl(HEAT_ABSENT); }" in body
-    assert "els.optHeat.disabled = !everLoaded;" in body
+    assert "els.optHeat.disabled = true;" in body
+    # …and muting is only ever "there is nothing to show": a refused run
+    # switch is handled by `physLoadStep`, which never reaches here.
+    assert "function physLoadStep(shown, result) {" in body
 
 
 def test_the_metric_switcher_mirrors_the_phys_pane():
@@ -2378,11 +2381,11 @@ def test_power_rolls_up_to_the_enclosing_module():
     # another way and must not become a second key.
     assert got["index"] == {"": "blk", "u_sub": "sub", "u_sub.u_leaf": "tiny"}
     assert got["sub"]["total"] == 2.42
-    assert got["sub"]["instances"] == 1
+    assert (got["sub"]["instances"], got["sub"]["leaves"]) == (1, 1)
     assert got["tiny"]["total"] == 0.751
     # The top's own body: one leaf, and nothing from below it.
     assert got["blk"]["total"] == 1.01
-    assert got["blk"]["instances"] == 1
+    assert (got["blk"]["instances"], got["blk"]["leaves"]) == (1, 1)
 
 
 def test_the_power_half_is_never_joined_by_module_name():
@@ -2424,6 +2427,8 @@ def test_the_power_half_is_never_joined_by_module_name():
     assert got["DFF_X1"]["cells"] == 9
     assert got["DFF_X1"]["area"] == 12.5
     assert got["DFF_X1"]["total"] == 3
+    # Two leaf rows, one instantiation.
+    assert (got["DFF_X1"]["instances"], got["DFF_X1"]["leaves"]) == (1, 2)
     assert got["blk"]["total"] == 4
     assert got["blk"]["cells"] is None
 
@@ -2601,28 +2606,28 @@ def test_an_inbound_phys_focus_lands_on_the_node_that_owns_it():
           'instance:u_sub', 'blk.u_sub/_64_', '_7_', ''
         ];
         console.log(JSON.stringify(targets.map(function (t) {
-          return physFocusNode(t, byId, join.index, join.top);
+          return physFocusNodes(t, byId, join.index, join.top);
         })));
         """
     )
     assert json.loads(out) == [
-        "module:sub",
+        ["module:sub"],
         # A soft miss, like `graph_focus`: the pane reports it and keeps
         # its focus.
-        None,
+        [],
         # The leaf's owner, both prefixed and bare (an unprefixed target
         # is an instance path).
-        "module:sub",
-        "module:sub",
+        ["module:sub"],
+        ["module:sub"],
         # A path that IS an instance node selects the node itself.
-        "inst:blk/blk.u_sub",
+        ["inst:blk/blk.u_sub"],
         # Rooted at the top, which is how the /phy pane broadcasts a
         # path: the reading that names a real enclosing instance wins
         # over the one that falls through to the top.
-        "module:sub",
+        ["module:sub"],
         # A leaf in the top's own body.
-        "module:blk",
-        None,
+        ["module:blk"],
+        [],
     ]
 
 
@@ -2634,14 +2639,361 @@ def test_the_focus_handler_emits_nothing_and_keeps_the_metric_hint():
 
     js = _page_js()
     assert "case 'phys_focus':" in js
-    handler = js.split("function applyPhysFocus(payload) {")[1].split("\n  }")[0]
+    handler = js.split("function applyPhysFocus(payload, deferred) {")[1].split(
+        "\n  }"
+    )[0]
     assert "if (metric) { setHeatMetric(String(metric)); }" in handler
-    assert handler.index("setHeatMetric") < handler.index("physFocusNode")
-    assert "focusById(id, { emit: false, announce: true });" in handler
+    assert handler.index("setHeatMetric") < handler.index("physFocusNodes")
+    assert "focusById(ids[0], { emit: false, announce: false });" in handler
     assert "emit(" not in handler
     # The overlay is a fill and a switcher; it adds nothing to what the
     # pane says on the wire.
     assert js.count("emit('selection_changed'") == 1
+
+
+def test_the_roll_up_counts_instantiations_and_rows_apart():
+    """The labelling the review asked for: cells and area are the module
+    DEFINITION's, counted once however many times it is instantiated,
+    while the power sum runs over every INSTANTIATION of it.
+
+    Both numbers ride on the entry, because the sum is the right figure
+    for a heat map and the wrong one to divide by the area — so the
+    surfaces have to be able to say which is which.
+    """
+
+    out = _node_eval(
+        _heat_js()
+        + """
+        var links = [
+          { type: 'instance_of', source: 'inst:blk/blk', target: 'module:blk' },
+          { type: 'instance_of', source: 'inst:blk/blk.u_a', target: 'module:fifo' },
+          { type: 'instance_of', source: 'inst:blk/blk.u_b', target: 'module:fifo' },
+          { type: 'instance_of', source: 'inst:blk/blk.u_c', target: 'module:fifo' }
+        ];
+        var payload = {
+          top: 'blk',
+          modules: [{ module: 'fifo', cell_count: 40, area_um2: 96 }],
+          instances: [
+            { instance_path: 'u_a/_1_', module: 'DFF_X1', total_uw: 1 },
+            { instance_path: 'u_a/_2_', module: 'DFF_X1', total_uw: 1 },
+            { instance_path: 'u_b/_1_', module: 'DFF_X1', total_uw: 1 },
+            { instance_path: 'u_c/_1_', module: 'DFF_X1', total_uw: 1 }
+          ]
+        };
+        var join = joinPhys(links, payload);
+        console.log(JSON.stringify(join.modules.fifo));
+        """
+    )
+    got = json.loads(out)
+    # One definition's cells and area…
+    assert (got["cells"], got["area"]) == (40, 96)
+    # …and three instantiations' power, off four leaf rows.
+    assert got["total"] == 4
+    assert (got["instances"], got["leaves"]) == (3, 4)
+
+
+def test_a_dotted_suite_qualifier_does_not_become_a_path_level():
+    """``rb graph build`` appends ``@<suite>`` to the WHOLE id and reads
+    it back off the LAST ``@`` (``rpartition`` in
+    ``_collision_label_index``), so a suite path with a dot in it —
+    ``verif/fifo.v2`` — is one qualifier and not a path level.
+
+    Splitting per level kept ``v2`` as a level, keyed the index on
+    ``u_sub.v2``, and the module owning those leaves then painted as
+    unmeasured while its power went nowhere.
+    """
+
+    out = _node_eval(
+        _heat_js()
+        + """
+        console.log(JSON.stringify([
+          instanceCoord('inst:blk/blk.u_sub@verif/fifo.v2'),
+          instanceCoord('inst:blk/blk@verif/fifo.v2'),
+          instanceCoord('inst:blk/blk.u_sub@verif/fifo'),
+          instanceCoord('inst:blk/blk.u_sub')
+        ]));
+        console.log(JSON.stringify([
+          stripQualifier('module:sub@verif/fifo.v2'),
+          stripQualifier('module:sub'),
+          stripQualifier(null)
+        ]));
+        """
+    )
+    coords, stripped = out.strip().splitlines()
+    assert json.loads(coords) == [
+        {"root": "blk", "path": "u_sub"},
+        {"root": "blk", "path": ""},
+        {"root": "blk", "path": "u_sub"},
+        {"root": "blk", "path": "u_sub"},
+    ]
+    assert json.loads(stripped) == ["module:sub", "module:sub", ""]
+
+
+def test_a_suite_qualified_module_is_one_module_everywhere():
+    """A qualifier disambiguates an ID, not a module: two exports of one
+    RTL module are one row in the model, so the join reads them under
+    the bare name and an inbound focus highlights every one of them.
+
+    Picking one by key order would light an arbitrary export and leave
+    its twins looking unrelated to the message.
+    """
+
+    out = _node_eval(
+        _heat_focus_js()
+        + """
+        var links = [
+          { type: 'instance_of', source: 'inst:blk/blk@verif/a',
+            target: 'module:blk@verif/a' },
+          { type: 'instance_of', source: 'inst:blk/blk.u_sub@verif/a',
+            target: 'module:sub@verif/a' }
+        ];
+        var payload = {
+          top: 'blk',
+          modules: [{ module: 'sub', cell_count: 40, area_um2: 96 }],
+          instances: [{ instance_path: 'u_sub/_1_', module: 'DFF_X1', total_uw: 7 }]
+        };
+        var join = joinPhys(links, payload);
+        console.log(JSON.stringify({ index: join.index, sub: join.modules.sub }));
+        var byId = {
+          'module:sub@verif/a': 1, 'module:sub@verif/b': 1, 'module:blk@verif/a': 1
+        };
+        console.log(JSON.stringify([
+          physFocusNodes('module:sub', byId, join.index, join.top),
+          physFocusNodes('u_sub/_1_', byId, join.index, join.top)
+        ]));
+        """
+    )
+    joined, focused = out.strip().splitlines()
+    got = json.loads(joined)
+    # The qualifier is off both halves of the identity, so the row and
+    # the roll-up meet under the name Yosys counted.
+    assert got["index"] == {"": "blk", "u_sub": "sub"}
+    assert (got["sub"]["cells"], got["sub"]["total"]) == (40, 7)
+    # Every export of the module, for a module target and for the
+    # owning-module fallback of an instance target alike.
+    assert json.loads(focused) == [
+        ["module:sub@verif/a", "module:sub@verif/b"],
+        ["module:sub@verif/a", "module:sub@verif/b"],
+    ]
+
+
+# --- the load state machine ------------------------------------------------
+
+
+def _heat_load_js() -> str:
+    return _marked_js("heat-load-step")
+
+
+def test_a_refused_run_switch_keeps_the_model_on_screen():
+    """The review finding: a `?dir=` the server refuses — a directory
+    with no manifest, a run outside the project — was muting the control
+    and throwing the model away, so the one control that could pick a
+    different run was the control that had just switched itself off.
+
+    A refusal of the SWITCH is not a refusal of the model on screen. The
+    selected run is therefore committed only when a body arrives, and a
+    failure with a payload in hand keeps the payload, keeps the run it
+    came from and keeps the overlay painting — the /phy pane's
+    `load` / `loadFailed` rule.
+    """
+
+    out = _node_eval(
+        _heat_load_js()
+        + """
+        // A → refused B → the reader ticks the overlay again.
+        var shown = { phys: null, dir: null };
+        var trace = [];
+        var step = function (result) {
+          var next = physLoadStep(shown, result);
+          shown = { phys: next.phys, dir: next.dir };
+          trace.push({
+            phys: next.phys, dir: next.dir, refetch: next.refetch,
+            level: next.level, message: next.message
+          });
+        };
+        step({ ok: true, requested: 'art/a', body: { top: 'A' } });
+        step({ ok: false, requested: 'art/b', body: null,
+               message: 'phys: no phys-manifest.json in art/b' });
+        console.log(JSON.stringify(trace));
+        """
+    )
+    first, refused = json.loads(out)
+    assert first["phys"] == {"top": "A"}
+    assert first["dir"] == "art/a"
+    # The refusal: same payload, same run, nothing to refetch, and the
+    # reason in the status line as an error.
+    assert refused["phys"] == {"top": "A"}
+    assert refused["dir"] == "art/a"
+    assert refused["refetch"] is False
+    assert refused["level"] == "error"
+    assert "art/b" in refused["message"]
+
+    # The applying half, which is DOM-coupled: the run is committed
+    # inside the success branch only, the picker is re-rendered onto the
+    # run still shown, and nothing is muted.
+    js = _page_js()
+    apply = js.split("function applyPhysLoad(generation, result) {")[1].split("\n  }")[
+        0
+    ]
+    assert "state.phys = next.phys;" in apply
+    assert "if (result.ok) { ingestPhys(next.phys); return; }" in apply
+    assert "renderHeatControls();" in apply
+    # A stale response from a superseded fetch commits nothing.
+    assert "if (generation !== physGeneration) { return; }" in apply
+    # And re-ticking the control re-paints rather than re-fetching,
+    # because the payload never left.
+    assert "if (els.optHeat.checked && !state.phys) { loadPhys(); return; }" in js
+    # The picker hands its value to the FETCH and never to the state: a
+    # switch that is refused leaves the selected run where it was.
+    assert "loadPhys(els.heatRun.value || null);" in js
+    assert "state.physDir = els.heatRun.value" not in js
+
+
+def test_a_bad_dir_on_the_first_load_falls_back_to_the_newest_run():
+    """A `/gph?dir=` typo, or a link to a run since pruned: the model the
+    project does have is one fetch away, so the pane asks for the newest
+    and says the requested run was not found. Muting there would leave a
+    reader with no heat at all and no way to ask for any.
+
+    With no run requested there is nothing left to try, and that is the
+    muted control.
+    """
+
+    out = _node_eval(
+        _heat_load_js()
+        + """
+        console.log(JSON.stringify([
+          physLoadStep({ phys: null, dir: null },
+            { ok: false, requested: 'art/gone', body: null,
+              message: 'phys: no phys-manifest.json in art/gone' }),
+          physLoadStep({ phys: null, dir: null },
+            { ok: false, requested: null, body: null,
+              message: 'phys: no physical artefacts; run `rb synth`' })
+        ]));
+        """
+    )
+    pinned, nothing = json.loads(out)
+    assert pinned["refetch"] is True
+    assert pinned["phys"] is None and pinned["dir"] is None
+    assert "art/gone" in pinned["message"] and "newest" in pinned["message"]
+    assert pinned["level"] == "warn"
+    # Nothing requested, nothing held: the muted control, with the
+    # server's own wording.
+    assert nothing["refetch"] is False
+    assert nothing["phys"] is None
+    assert "rb synth" in nothing["message"]
+
+    js = _page_js()
+    apply = js.split("function applyPhysLoad(generation, result) {")[1].split("\n  }")[
+        0
+    ]
+    assert "physPendingNote = next.message;" in apply
+    assert "loadPhys(null);" in apply
+    assert "mutePhys(next.message);" in apply
+    # The fallback's warning is said by the ingest that follows it: a
+    # note written before that fetch is overwritten by its own
+    # "loading…" line.
+    assert (
+        "if (physPendingNote) { note(physPendingNote, 'warn'); physPendingNote = null; }"
+        in js
+    )
+
+
+def test_a_focus_that_beats_the_model_turns_the_overlay_on():
+    """An inbound ``phys_focus`` is a heat request: it names a
+    coordinate in the physical model and carries the metric to
+    foreground. An instance target cannot be resolved without the model
+    at all, so a pane that has not read it ticks the overlay, fetches,
+    and applies the focus when the body lands.
+
+    The second pass never defers again, so a load that fails cannot
+    loop — and the held focus is still drained there, because a
+    ``module:`` target names a node this graph carries whether or not
+    the model could be read.
+    """
+
+    js = _page_js()
+    handler = js.split("function applyPhysFocus(payload, deferred) {")[1].split(
+        "\n  }"
+    )[0]
+    assert "if (!deferred && PHY_URL && !state.phys) {" in handler
+    assert "physPendingFocus = payload;" in handler
+    assert "els.optHeat.checked = true;" in handler
+    assert "loadPhys();" in handler
+    # Drained on the ingest that answers it, and on the failure that
+    # does not.
+    drain = js.split("function drainPhysFocus() {")[1].split("\n  }")[0]
+    assert "applyPhysFocus(held, true);" in drain
+    assert "physPendingFocus = null;" in drain
+    ingest = js.split("function ingestPhys(payload) {")[1].split("\n  }")[0]
+    assert "drainPhysFocus();" in ingest
+    mute = js.split("function mutePhys(message) {")[1].split("\n  }")[0]
+    assert "drainPhysFocus();" in mute
+    # Several nodes for one module are highlighted together, and any
+    # later activation clears the set.
+    assert "state.focusIds = ids;" in handler
+    activate = js.split("function activate(n, opts) {")[1].split("\n  }")[0]
+    assert "state.focusIds = null;" in activate
+    classes = js.split("function applyClasses() {")[1].split("\n  }")[0]
+    assert "var dim = hidden || !matches(n) || (near && !near[id] && !also);" in classes
+
+
+def test_the_run_being_shown_is_offered_even_when_the_listing_headed_it_off():
+    """The listing is headed at ``phys_page.RUNS_LIMIT``, so the run on
+    screen can be off the end of it — a reader picks an older run and a
+    batch of newer ones lands. Its entry is synthesised from the
+    payload's own header and put back at the top, or the selector's
+    value silently disagrees with the tints under it."""
+
+    out = _node_eval(
+        _marked_js("heat-run-url")
+        + """
+        var payload = {
+          run: 'older', top: 'blk', manifest: 'verif/blk/artefacts/older/m.json',
+          artefacts: { phys_dir: 'verif/blk/artefacts/older' },
+          power_mode: 'dynamic', power_activity: { label: 'saif csr_smoke' }
+        };
+        var block = { count: 9, runs: [
+          { run: 'newest', top: 'blk', phys_dir: 'verif/blk/artefacts/newest',
+            manifest: 'verif/blk/artefacts/newest/m.json', newest: true }
+        ] };
+        var entries = heatRunEntries(payload, block);
+        console.log(JSON.stringify(entries.map(function (e) {
+          return [heatRunValue(e), heatRunLabel(e, payload.manifest)];
+        })));
+        // A listing that already carries the shown run is left alone.
+        var listed = heatRunEntries(payload, { count: 1, runs: [
+          { run: 'older', phys_dir: 'verif/blk/artefacts/older',
+            manifest: payload.manifest }
+        ] });
+        console.log(JSON.stringify(listed.length));
+        """
+    )
+    entries, listed = out.strip().splitlines()
+    assert json.loads(entries) == [
+        # The synthesised entry, first, marked as the one being shown…
+        [
+            "verif/blk/artefacts/older",
+            "older · blk · dynamic (saif csr_smoke) [shown]",
+        ],
+        # …and the newest, which still selects the bare route so a
+        # reload goes on following discovery.
+        ["", "newest · blk [newest — follows]"],
+    ]
+    assert json.loads(listed) == 1
+
+    # The hover is rebuilt, not extended: this runs on every render.
+    js = _page_js()
+    picker = js.split("function renderHeatRuns() {")[1].split("\n  }")[0]
+    assert "els.heatRunWrap.title = heatRunTitle;" in picker
+    assert picker.index("els.heatRunWrap.title = heatRunTitle;") < picker.index(
+        "entries.forEach"
+    )
+    # A graph reload recomputes the join, so the controls it labels
+    # follow it.
+    reloaded = js.split("if (state.phys) {")[1].split("\n    }")[0]
+    assert "state.heat = joinPhys(state.links, state.phys);" in reloaded
+    assert "renderHeatControls();" in reloaded
 
 
 # --- the route, over HTTP --------------------------------------------------
