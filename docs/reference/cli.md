@@ -166,6 +166,11 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 running (warn, cancel, adopt)        │
 │                                                 [default: (cfg-dispatch orphans,     │
 │                                                 else warn)]                          │
+│ --plusarg                              TEXT     add or override one runtime plusarg  │
+│                                                 for this run (KEY=VALUE, or bare KEY │
+│                                                 for a valueless +KEY); repeatable,   │
+│                                                 wins over the test's plusargs: and,  │
+│                                                 among repeats, the last one wins     │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

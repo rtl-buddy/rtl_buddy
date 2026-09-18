@@ -4,7 +4,7 @@
 #
 
 # Re-export config classes
-from .test import TestConfig, TestbenchConfig
+from .test import TestConfig, TestbenchConfig, parse_plusarg_overrides
 from .suite import SuiteConfig
 from .reg import RegConfig
 from .root import RootConfig
@@ -31,6 +31,7 @@ from .pnr import PnrConfig, PnrSuiteConfig
 __all__ = [
     "TestConfig",
     "TestbenchConfig",
+    "parse_plusarg_overrides",
     "SuiteConfig",
     "RegConfig",
     "RootConfig",

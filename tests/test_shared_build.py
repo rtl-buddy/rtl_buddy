@@ -150,11 +150,12 @@ class DummyTestbenchCfg:
 
 
 class DummyTestCfg:
-    def __init__(self, name, model_cfg, pd=None):
+    def __init__(self, name, model_cfg, pd=None, pa=None):
         self.name = name
         self.model = model_cfg
         self.tb = DummyTestbenchCfg()
         self.pd = pd
+        self.pa = pa
         self.uvm = None
 
     def get_name(self):
@@ -170,7 +171,7 @@ class DummyTestCfg:
         return self.tb
 
     def get_plusargs(self):
-        return None
+        return None if self.pa is None else dict(self.pa)
 
     def get_plusdefines(self):
         return dict(self.pd or {})
@@ -197,6 +198,7 @@ def _make_sim(
     share_build=True,
     shared_build_root=None,
     pd=None,
+    pa=None,
     exe="verilator",
     family="verilator",
     simv="simv",
@@ -216,7 +218,7 @@ def _make_sim(
     model_cfg = DummyModelCfg(
         model_path or (tmp_path / "models.yaml"), filelist=filelist or ["src/top.sv"]
     )
-    test_cfg = DummyTestCfg(test_name, model_cfg, pd=pd)
+    test_cfg = DummyTestCfg(test_name, model_cfg, pd=pd, pa=pa)
     return vlog_sim_module.VlogSim(
         name="rtl_buddy/vlog_sim",
         root_cfg=DummyRootCfg(builder_cfg, project_root=project_root),
@@ -410,6 +412,28 @@ def test_share_build_recompiles_when_plusdefines_differ(tmp_path, monkeypatch):
     assert sim_b.compile() == 0
     assert len(calls) == 2
     assert sim_a._get_simv_path() != sim_b._get_simv_path()
+
+
+def test_a_plusarg_override_never_moves_the_compile_key(tmp_path, monkeypatch):
+    """`rb test --plusarg` must not cost a rebuild (#552).
+
+    Plusargs are runtime-only — they reach the simulator on the RUN command
+    line, never the compile one — which is the whole reason the issue asks
+    for them and not for a `--plusdefine`. The counterpart above
+    (`...recompiles_when_plusdefines_differ`) is what a compile-time
+    override would look like.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b", pa={"mutate": "1"})
+
+    assert sim_a.compile() == 0
+    assert sim_b.compile() == 0
+    assert len(calls) == 1  # one compile: the key did not move
+    assert sim_a._get_simv_path() == sim_b._get_simv_path()
 
 
 def test_share_build_recompiles_in_place_when_source_changes(tmp_path, monkeypatch):

@@ -87,6 +87,13 @@ class DummySweepTest:
     def get_xfail_strict(self):
         return False
 
+    def with_plusarg_overrides(self, overrides):
+        # `_iter_suite_runnables` merges a `--plusarg` override into every
+        # config it yields (#552); this double carries no plusargs, and the
+        # tests using it pass no override, so it is its own merged view.
+        assert not overrides
+        return self
+
 
 class _ResolvingBuilderCfg:
     def get_name(self):

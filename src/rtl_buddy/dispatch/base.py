@@ -161,6 +161,16 @@ class TestJobSpec:
     # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
     # from it instead of re-running the suite's sweep hook. See BuildJobSpec.
     plan_path: Path | None = None
+    # The head's one-off `--plusarg` overrides, already merged into the plan
+    # this job reads (#552). Forwarded anyway for the two things the plan
+    # cannot do: cover the fallback expansion a name missing from the plan
+    # takes, and tell the job what to record as this run's overrides in its
+    # result envelope — the head never sees a dispatched run's results.
+    # Empty for every run without the flag, so their argv is unchanged.
+    # Not part of the adoption spec comparison: the plan's own merged
+    # `plusargs` is what determines the simulation, and that is compared
+    # entry by entry already (see `_adopt_plan_difference`).
+    plusarg_overrides: dict = field(default_factory=dict)
 
     def display_name(self) -> str:
         if self.run_id is None:

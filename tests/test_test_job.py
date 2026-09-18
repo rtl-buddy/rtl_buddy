@@ -2662,6 +2662,139 @@ def test_rebuild_reaches_the_test_runner_of_an_undispatched_rb_test(
     assert stub_runner.last_init["rebuild"] is True
 
 
+def test_a_plusarg_override_reaches_a_sim_jobs_test_runner(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The head forwards its `--plusarg` overrides in the job's argv (#552),
+    and the job's own parse has to reach the config it runs."""
+    from rtl_buddy.runner.test_results import TestPassResults
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "_test-job",
+            "basic",
+            "--result-json",
+            "res.json",
+            "--plusarg",
+            "mutate=1",
+            "--plusarg",
+            "trace",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert stub_runner.last_init["test_cfg"].get_plusargs() == {
+        "mutate": "1",
+        "trace": None,
+    }
+    # ...and the job is the only writer of a dispatched run's envelope, so
+    # it is where the overrides have to be recorded.
+    envelope = load_result_json(minimal_project / "res.json")
+    assert envelope["result"].results["plusarg_overrides"] == {
+        "mutate": "1",
+        "trace": None,
+    }
+
+
+def test_a_plan_merged_plusarg_survives_the_jobs_own_merge(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The head merges its overrides into the plan AND forwards them, so the
+    job applies them twice; that has to be the same run either way (#552)."""
+    from rtl_buddy.dispatch.plan import write_plan
+    from rtl_buddy.runner.test_results import TestPassResults
+
+    suite_cfg = SuiteConfig(path="tests.yaml")
+    merged = [
+        cfg.with_plusarg_overrides({"mutate": "1"}) for cfg in suite_cfg.get_tests()
+    ]
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", merged, "tok")
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "_test-job",
+            "basic",
+            "--result-json",
+            "res.json",
+            "--plan",
+            str(plan),
+            "--plusarg",
+            "mutate=1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert stub_runner.last_init["test_cfg"].get_plusargs() == {"mutate": "1"}
+
+
+def test_a_plusarg_override_does_not_disturb_a_planned_seed(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The job merges the overrides into the plan's config, and that config
+    already carries the head's resolved seed — the copy must keep it (#552)."""
+    from rtl_buddy.dispatch.plan import write_plan
+    from rtl_buddy.runner.test_results import TestPassResults
+
+    suite_cfg = SuiteConfig(path="tests.yaml")
+    cfg = suite_cfg.get_tests("basic")[0]
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+    resolution = cfg.resolve_runtime_seed(
+        master_seed=20260918, suite_identity="tests.yaml", run_id=None
+    )
+    plan = write_plan(
+        minimal_project / "plan.json",
+        "tests.yaml",
+        [cfg.with_plusarg_overrides({"mutate": "1"})],
+        "tok",
+        master_seed=20260918,
+    )
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "_test-job",
+            "basic",
+            "--result-json",
+            "res.json",
+            "--plan",
+            str(plan),
+            "--seed-mode",
+            "master",
+            "--master-seed",
+            "20260918",
+            "--resolved-seed",
+            str(resolution.seed),
+            "--plusarg",
+            "mutate=1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    run_cfg = stub_runner.last_init["test_cfg"]
+    assert run_cfg.get_resolved_seed() == resolution.seed
+    assert run_cfg.get_plusarg("stimulus_seed") == resolution.seed
+    assert run_cfg.get_plusarg("mutate") == "1"
+
+
+def test_a_sim_job_without_the_flag_keeps_the_configured_plusargs(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.runner.test_results import TestPassResults
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["_test-job", "basic", "--result-json", "res.json"])
+    assert result.exit_code == 0, result.output
+    assert stub_runner.last_init["test_cfg"].get_plusargs() is None
+    envelope = load_result_json(minimal_project / "res.json")
+    assert "plusarg_overrides" not in envelope["result"].results
+
+
 # ------------------------------ per-key release from the build job (#548)
 
 

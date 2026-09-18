@@ -178,6 +178,12 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
         argv += ["--master-seed", str(spec.master_seed)]
     if spec.resolved_seed is not None:
         argv += ["--resolved-seed", str(spec.resolved_seed)]
+    for key, value in (spec.plusarg_overrides or {}).items():
+        # Re-spelled the way the head parsed it, valueless key included, so
+        # the job's own parse produces the same dict (#552). The build job
+        # needs no counterpart: it only ever compiles the plan's configs,
+        # whose plusargs the head already merged.
+        argv += ["--plusarg", key if value is None else f"{key}={value}"]
     return argv
 
 

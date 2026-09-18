@@ -16,6 +16,10 @@ syntax and schemas, use `rb test --help`, `rb randtest --help`, and
 - Pass `-c path/to/tests.yaml` to make the suite explicit. Inspect
   `rb test --help`: use multi-select when available, otherwise loop exact names.
 - Config-relative paths and outputs anchor on `dirname(tests.yaml)`.
+- `rb test --plusarg KEY=VALUE` (repeatable; bare `KEY` for `+KEY`) adds or
+  replaces one runtime plusarg for a single run instead of editing `tests.yaml`.
+  It reaches `preproc` and the simulator, survives `--dispatch`, never rebuilds,
+  and is recorded as `plusarg_overrides`.
 - A regression anchors each suite on its `tests.yaml`; its orchestration output
   anchors on `dirname(regression.yaml)`.
 - Test artefacts are under `artefacts/<test>/`; randtest iterations use
