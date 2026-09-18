@@ -430,12 +430,13 @@ class Toolset:
         Re-read per call, like the graph: an agent that runs a coverage
         regression in one turn asks about it in the next, and the
         alternative is answering from a run that no longer exists. A
-        relative ``cov_dir``/``manifest`` is rooted by :meth:`_rooted`.
+        relative ``cov_dir``/``manifest`` is rooted by :meth:`_rooted`,
+        and refused by :meth:`_path_arg` if it is not a path at all.
         """
         return cov_query.load_context(
             self.project_root,
-            cov_dir=self._rooted(args.get("cov_dir")),
-            manifest=self._rooted(args.get("manifest")),
+            cov_dir=self._rooted(self._path_arg(args, "cov_dir")),
+            manifest=self._rooted(self._path_arg(args, "manifest")),
         )
 
     def _h_cov_summary(self, args: dict) -> dict:
@@ -466,8 +467,8 @@ class Toolset:
         """
         return phys_query.load_context(
             self.project_root,
-            phys_dir=self._rooted(self._phys_path_arg(args, "phys_dir")),
-            manifest=self._rooted(self._phys_path_arg(args, "manifest")),
+            phys_dir=self._rooted(self._path_arg(args, "phys_dir")),
+            manifest=self._rooted(self._path_arg(args, "manifest")),
         )
 
     def _h_phys_runs(self, args: dict) -> dict:
@@ -508,14 +509,17 @@ class Toolset:
         )
 
     @staticmethod
-    def _phys_path_arg(args: dict, key: str) -> str | None:
+    def _path_arg(args: dict, key: str) -> str | None:
         """A discovery override, read as a path or refused as one.
 
-        The path half of what :meth:`_phys_limit` does for the row cap,
-        and it exists for the same reason: the server forwards a host's
+        Shared by every tool that takes one — ``cov_dir``/``manifest``
+        on the coverage tools, ``phys_dir``/``manifest`` on the physical
+        ones — because the hole is the same on all of them. It is the
+        path half of what :meth:`_phys_limit` does for the row cap, and
+        it exists for the same reason: the server forwards a host's
         arguments to the handler exactly as they arrived, so an
         ``inputSchema`` saying ``"type": "string"`` is documentation
-        until a handler checks it. ``{"phys_dir": 3}`` or
+        until a handler checks it. ``{"cov_dir": 3}`` or
         ``{"manifest": []}`` reached :meth:`_rooted` and died inside
         :class:`~pathlib.Path` with a ``TypeError`` that
         :meth:`Toolset.call` does not catch -- a protocol-level failure
@@ -523,12 +527,12 @@ class Toolset:
         ``ok: false`` envelope, and no sentence anywhere telling the
         agent which constraint it broke.
 
-        Absent stays absent: these two are optional, and ``None`` is how
-        :meth:`_rooted` and
-        :func:`~rtl_buddy.phys.query.resolve_manifest_path` already
-        spell "no override, discover the newest run". A host that sends
-        an explicit ``null`` means the same thing and is read the same
-        way. Everything that is not a string is the mistake.
+        Absent stays absent: these overrides are optional, and ``None``
+        is how :meth:`_rooted` and the ``resolve_manifest_path`` of
+        either query module already spell "no override, discover the
+        newest run". A host that sends an explicit ``null`` means the
+        same thing and is read the same way. Everything that is not a
+        string is the mistake.
         """
         value = args.get(key)
         if value is None:
@@ -889,7 +893,7 @@ def _focus_target(tool: str, args: dict) -> str:
     ``target`` is the whole of what these two tools do, and the server
     forwards a host's arguments to the handler exactly as they arrived —
     so an ``inputSchema`` saying ``"type": "string"`` is documentation
-    until a handler checks it, the same gap :meth:`_phys_path_arg` and
+    until a handler checks it, the same gap :meth:`_path_arg` and
     :meth:`_phys_limit` close on the reads.
 
     :func:`str` is a renderer, not a validator: it answers ``false`` with

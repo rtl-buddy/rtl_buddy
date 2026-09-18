@@ -555,6 +555,64 @@ def test_cov_reads_a_relative_manifest_against_the_project_root(
     assert envelope["payload"]["tests"] == ["t_basic"]
 
 
+# Every coverage tool that takes the discovery overrides, with the rest of
+# its arguments — the guarantees below belong to the shared helper, not to
+# one handler, so each of them is asserted for all of these.
+_COV_TOOL_CALLS = (
+    ("cov_summary", {}),
+    ("cov_module", {"module": "blk_a"}),
+)
+
+
+@pytest.mark.parametrize(("tool", "args"), _COV_TOOL_CALLS)
+def test_a_cov_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
+    cov_project: Path, tool: str, args: dict
+):
+    """rtl-buddy/rtl_buddy#572: the hole the physical tools closed, still
+    open on the coverage ones. A host's arguments reach the handler as they
+    arrived — the adapter does not check them against ``inputSchema`` — so
+    ``cov_dir`` can be a number and ``manifest`` a list; ``Path()`` answers
+    those with a ``TypeError`` that ``Toolset.call`` does not catch, so a
+    bad argument surfaced as a protocol-level failure rather than the
+    ``ok: false`` envelope, and the agent got a traceback instead of the
+    constraint it broke."""
+    ts = _toolset(cov_project)
+
+    for key, bad, shown in (
+        ("cov_dir", 3, "3"),
+        ("cov_dir", [], "[]"),
+        ("cov_dir", True, "True"),
+        ("manifest", [], "[]"),
+        ("manifest", {"path": "x"}, "{'path': 'x'}"),
+    ):
+        refused = ts.call(tool, dict(args, **{key: bad}))
+
+        assert refused["ok"] is False, (tool, key, bad)
+        # The value it could not read is quoted back, as the physical
+        # refusal quotes its own.
+        assert f"{key} must be a path string, not {shown}" in refused["error"]
+        assert "omit it to read the newest run" in refused["error"]
+        assert "payload" not in refused
+
+    # And a path that *is* a string still answers, so the check refuses
+    # only the mistake it was added for.
+    answered = ts.call(tool, dict(args, cov_dir="verif/blk_a/cov_dir"))
+    assert answered["ok"] is True, answered.get("error")
+
+
+@pytest.mark.parametrize(("tool", "args"), _COV_TOOL_CALLS)
+def test_an_absent_cov_path_override_still_means_discover_the_newest_run(
+    cov_project: Path, tool: str, args: dict
+):
+    """Both overrides are optional, so ``None`` has to keep meaning "no
+    override" — an explicit ``null`` from a host included — or the check
+    would refuse the ordinary call it was added to protect."""
+    ts = _toolset(cov_project)
+
+    assert ts.call(tool, dict(args))["ok"] is True
+    assert ts.call(tool, dict(args, cov_dir=None, manifest=None))["ok"] is True
+
+
 def test_a_project_with_no_coverage_run_names_the_command_that_makes_one(
     empty_project: Path,
 ):
