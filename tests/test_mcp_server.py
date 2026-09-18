@@ -613,6 +613,86 @@ def test_an_absent_cov_path_override_still_means_discover_the_newest_run(
     assert ts.call(tool, dict(args, cov_dir=None, manifest=None))["ok"] is True
 
 
+@pytest.mark.parametrize(
+    ("bad", "shown"),
+    (
+        (None, "None"),
+        ("ten", "'ten'"),
+        ([], "[]"),
+        (False, "False"),
+        (True, "True"),
+        (2.7, "2.7"),
+        (-0.5, "-0.5"),
+    ),
+)
+def test_a_cov_summary_limit_that_is_not_a_whole_count_is_refused(
+    cov_project: Path, bad, shown: str
+):
+    """rtl-buddy/rtl_buddy#572 review: the same finding as #563 round-16, on
+    the coverage summary. ``int()`` is a coercion, not a validator, and it
+    never saw a value it could not answer with a number the caller did not
+    ask for: ``false`` is an ``int`` subclass and comes back as ``0``, this
+    input's spelling of *every file in the run*; ``2.7`` truncates; and
+    ``null``/``"ten"``/``[]`` raise past ``Toolset.call``, which catches
+    neither ``TypeError`` nor ``ValueError`` — a protocol-level failure for
+    a bad argument, where every other bad question gets ``ok: false``."""
+    ts = _toolset(cov_project)
+
+    refused = ts.call("cov_summary", {"limit": bad})
+
+    assert refused["ok"] is False
+    # The value it could not read is quoted back, so the caller can see
+    # what it actually sent.
+    assert f"limit must be an integer, not {shown}" in refused["error"]
+    assert "0 lists every row" in refused["error"]
+    assert "payload" not in refused
+
+
+def test_a_negative_cov_summary_limit_is_refused_rather_than_read_as_all(
+    cov_project: Path,
+):
+    """``minimum: 0`` in a schema is documentation until a handler checks
+    it, and below the floor the cap does not clamp: ``coldest_first`` reads
+    anything ``<= 0`` as "no cap at all", so ``limit: -1`` used to ask for
+    one file fewer than none and be answered with all of them."""
+    ts = _toolset(cov_project)
+
+    refused = ts.call("cov_summary", {"limit": -1})
+
+    assert refused["ok"] is False
+    assert "limit must be 0 or greater, not -1" in refused["error"]
+    assert "0 lists every row" in refused["error"]
+    assert "payload" not in refused
+
+    # 0 is untouched -- it is the documented way to ask for all of them.
+    everything = ts.call("cov_summary", {"limit": 0})
+    assert everything["ok"] is True
+    assert len(everything["payload"]["files"]) == 2
+
+
+def test_a_whole_cov_summary_limit_still_heads_the_file_list(cov_project: Path):
+    """The refusals above may not cost the ordinary call anything. A count
+    still heads the list, and JSON has one number type — ``1.0`` is how
+    some hosts spell ``1``, and a decimal string converts as it always
+    has — while an absent ``limit`` is the CLI's default, not no cap."""
+    from rtl_buddy.cov.query import DEFAULT_FILE_LIMIT
+
+    ts = _toolset(cov_project)
+
+    for good in (1, 1.0, "1"):
+        answered = ts.call("cov_summary", {"limit": good})
+        assert answered["ok"] is True, good
+        assert len(answered["payload"]["files"]) == 1, good
+
+    # Absent means the documented default, which this run is smaller than.
+    default = ts.call("cov_summary", {})
+    assert default["ok"] is True
+    assert (
+        default["payload"]
+        == ts.call("cov_summary", {"limit": DEFAULT_FILE_LIMIT})["payload"]
+    )
+
+
 def test_a_project_with_no_coverage_run_names_the_command_that_makes_one(
     empty_project: Path,
 ):

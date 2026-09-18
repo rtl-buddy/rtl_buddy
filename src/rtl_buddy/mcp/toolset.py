@@ -442,7 +442,12 @@ class Toolset:
     def _h_cov_summary(self, args: dict) -> dict:
         return cov_query.summary_payload(
             self._cov_context(args),
-            limit=int(args.get("limit", cov_query.DEFAULT_FILE_LIMIT)),
+            # Validated by the shared helper, with this tool's own
+            # default: a bare `int()` here read `false` as 0 and let
+            # `limit: -1` through `coldest_first`'s "no cap at all"
+            # reading, answering a request for a head with every file in
+            # the run -- the very failure the helper exists to refuse.
+            limit=self._limit_arg(args, cov_query.DEFAULT_FILE_LIMIT),
         )
 
     def _h_cov_module(self, args: dict) -> dict:
@@ -485,27 +490,27 @@ class Toolset:
             # `limit: -1` through `truncate`'s "no head at all" reading and
             # answered a listing request with every run in the project --
             # the very failure the helper exists to refuse.
-            limit=self._phys_limit(args, phys_query.DEFAULT_RUNS_LIMIT),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RUNS_LIMIT),
         )
 
     def _h_phys_summary(self, args: dict) -> dict:
         return phys_query.summary_payload(
             self._phys_context(args),
-            limit=self._phys_limit(args),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT),
         )
 
     def _h_phys_module(self, args: dict) -> dict:
         return phys_query.module_payload(
             self._phys_context(args),
             str(_req(args, "module")),
-            limit=self._phys_limit(args),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT),
         )
 
     def _h_phys_instance(self, args: dict) -> dict:
         return phys_query.instance_payload(
             self._phys_context(args),
             str(_req(args, "path")),
-            limit=self._phys_limit(args),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT),
         )
 
     @staticmethod
@@ -515,7 +520,7 @@ class Toolset:
         Shared by every tool that takes one — ``cov_dir``/``manifest``
         on the coverage tools, ``phys_dir``/``manifest`` on the physical
         ones — because the hole is the same on all of them. It is the
-        path half of what :meth:`_phys_limit` does for the row cap, and
+        path half of what :meth:`_limit_arg` does for the row cap, and
         it exists for the same reason: the server forwards a host's
         arguments to the handler exactly as they arrived, so an
         ``inputSchema`` saying ``"type": "string"`` is documentation
@@ -545,26 +550,34 @@ class Toolset:
         return value
 
     @staticmethod
-    def _phys_limit(args: dict, default: int = phys_query.DEFAULT_RANK_LIMIT) -> int:
-        """The row cap a physical tool applies, defaulting like the CLI.
+    def _limit_arg(args: dict, default: int) -> int:
+        """The row cap a read tool applies, defaulting like its CLI verb.
+
+        Shared by every tool that takes a ``limit`` — the coverage
+        summary as well as the physical ones — because the input means
+        the same thing on all of them and so do the mistakes.
 
         ``default`` is the caller's, because the tools do not share one:
         a ranking of instances heads at
-        :data:`~rtl_buddy.phys.query.DEFAULT_RANK_LIMIT` and a listing of
-        runs at :data:`~rtl_buddy.phys.query.DEFAULT_RUNS_LIMIT`. Only the
-        default differs — every tool that takes a ``limit`` comes through
-        here, so the refusals below hold for all of them.
+        :data:`~rtl_buddy.phys.query.DEFAULT_RANK_LIMIT`, a listing of
+        runs at :data:`~rtl_buddy.phys.query.DEFAULT_RUNS_LIMIT` and the
+        coldest files at
+        :data:`~rtl_buddy.cov.query.DEFAULT_FILE_LIMIT`. Only the default
+        differs — every tool that takes a ``limit`` comes through here,
+        so the refusals below hold for all of them.
 
         A HEAD by default, not the complete list. These lists are as long
         as the design: every instance of a Liberty cell on a mapped run
         is six figures of rows, and a tool that returns all of them by
         default spends a context window on the tail of a ranking nobody
         asked for. The payloads say what happened — the applied ``limit``
-        rides on every one of them next to the untruncated
-        ``instance_count``/``child_count``, and the sums (``power``,
-        ``rollup``) cover every matching row, listed or not — so a
-        truncated answer is never mistaken for the whole one, and an
-        agent that wants the whole one passes ``0``.
+        rides on every physical one next to the untruncated
+        ``instance_count``/``child_count``, the sums (``power``,
+        ``rollup``) cover every matching row, listed or not, and the
+        coverage summary's ``totals``/``counts`` are the run's rather
+        than the listed files' — so a truncated answer is never mistaken
+        for the whole one, and an agent that wants the whole one passes
+        ``0``.
 
         **A limit that is not a number is refused, not raised past the
         envelope.** The server forwards a host's arguments to the handler
@@ -595,13 +608,13 @@ class Toolset:
         ``minimum: 0`` and nothing enforces it: the server hands the
         arguments an MCP host sent straight to the handler, so a schema
         constraint is documentation until a handler checks it. Below the
-        floor the cap does not merely clamp -- :func:`truncate` reads
-        anything ``<= 0`` as "no head at all" -- so ``limit: -1`` asks
-        for one row fewer than none and is answered with every row in
-        the design, which is both the opposite of what the caller wrote
-        and the one answer this default exists to prevent. ``0`` still
-        means all of them, because that is what the input's description
-        promises.
+        floor the cap does not merely clamp -- :func:`truncate` and
+        :func:`~rtl_buddy.cov.query.coldest_first` both read anything
+        ``<= 0`` as "no head at all" -- so ``limit: -1`` asks for one row
+        fewer than none and is answered with every row in the design,
+        which is both the opposite of what the caller wrote and the one
+        answer this default exists to prevent. ``0`` still means all of
+        them, because that is what the input's description promises.
         """
         raw = args.get("limit", default)
 
@@ -894,7 +907,7 @@ def _focus_target(tool: str, args: dict) -> str:
     forwards a host's arguments to the handler exactly as they arrived —
     so an ``inputSchema`` saying ``"type": "string"`` is documentation
     until a handler checks it, the same gap :meth:`_path_arg` and
-    :meth:`_phys_limit` close on the reads.
+    :meth:`_limit_arg` close on the reads.
 
     :func:`str` is a renderer, not a validator: it answers ``false`` with
     ``"False"``, ``[]`` with ``"[]"`` and ``{}`` with ``"{}"``. Each of
