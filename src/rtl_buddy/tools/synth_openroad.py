@@ -16,6 +16,8 @@ from .synth_yosys import (
     emit_frontend_read_cmds,
     find_conflicting_driver_warnings,
     lifetime_scan_inputs,
+    parse_area_um2,
+    parse_gate_count,
     slang_handles_params,
     validate_frontend,
 )
@@ -286,15 +288,11 @@ class OpenRoadSynth:
             f.write(script)
         return script_path
 
-    def _parse_area_um2(self, log_text: str) -> float | None:
-        m = re.search(r"Chip area for module[^:]*:\s*([\d.]+)", log_text)
-        return float(m.group(1)) if m else None
+    def _parse_area_um2(self, log_text: str, top: str | None = None) -> float | None:
+        return parse_area_um2(log_text, top)
 
-    def _parse_gate_count(self, log_text: str) -> int | None:
-        matches = re.findall(
-            r"^\s+(\d+)\s+(?:[\d.]+(?:[Ee][+-]?\d+)?\s+)?cells$", log_text, re.MULTILINE
-        )
-        return int(matches[-1]) if matches else None
+    def _parse_gate_count(self, log_text: str, top: str | None = None) -> int | None:
+        return parse_gate_count(log_text, top)
 
     def _run_yosys_stage(self, fl_path: str) -> tuple[int | None, bool, str | None]:
         """Run Yosys stage. Returns (gate_count, success, failure description).
@@ -413,7 +411,7 @@ class OpenRoadSynth:
                 ),
             )
 
-        return self._parse_gate_count(log_text), True, None
+        return self._parse_gate_count(log_text, self.synth_cfg.get_top()), True, None
 
     # ------------------------------------------------------------------
     # Stage 2: OpenROAD — timing analysis with native multi-clock SDC
