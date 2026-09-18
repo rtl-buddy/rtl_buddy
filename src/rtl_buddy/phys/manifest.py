@@ -92,6 +92,15 @@ from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+# `may_follow_link` lives in `fs_walk` with the walk that asks it, and is
+# re-exported here: it was this module's own rule first, and the hub's
+# `?dir=` route reads it off `phys.manifest` (see `hub.phys_page`).
+from ..fs_walk import (
+    artefact_layout_boundary,
+    may_follow_link,  # noqa: F401 - re-export, see above
+    walk_unique,
+)
+
 #: Bumped when the manifest's shape changes incompatibly.
 MANIFEST_SCHEMA_VERSION = 1
 
@@ -100,7 +109,6 @@ MANIFEST_SCHEMA_VERSION = 1
 # where the artefact-clearing helpers protect it from a co-named run's
 # suffix clear (#469). Re-exported here, where consumers already look.
 from ..tools.artifact_paths import (  # noqa: E402
-    ARTIFACT_DIRNAME,
     PHYS_MANIFEST_NAME as MANIFEST_FILENAME,
 )
 
@@ -490,29 +498,6 @@ def project_root_for(manifest_path) -> str | None:
     return str(counted)
 
 
-def may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:
-    """Whether a symlinked directory is part of the artefact layout.
-
-    The boundary :func:`discover_manifests` documents, factored out
-    because it is the whole of the rule and reads better named.
-
-    ``link`` is the link itself, ``rel_parts`` the components of its path
-    below the project root (its own basename last), ``root_real`` the
-    resolved project root.
-
-    Public because the hub's ``?dir=`` route decides the same question
-    about the same tree (:func:`rtl_buddy.hub.phys_page
-    .contained_phys_dir`). A run the walk refused to enter is a run the
-    route must refuse to read: two spellings of one boundary would
-    eventually disagree, and the disagreement anyone finds first is the
-    one where the route is the looser of the two.
-    """
-    if ARTIFACT_DIRNAME not in rel_parts:
-        return False
-    link_real = os.path.realpath(link)
-    return not (root_real == link_real or root_real.startswith(link_real + os.sep))
-
-
 def discover_manifests(project_root) -> list[str]:
     """Every ``phys-manifest.json`` under a project, newest first.
 
@@ -543,30 +528,20 @@ def discover_manifests(project_root) -> list[str]:
     root or an ancestor of it is refused outright, so no admitted link
     can circle back over the whole tree (or over ``/``). And each
     directory is admitted once by its real path, so a run reachable by
-    two paths is listed once and any remaining cycle terminates.
+    two paths is listed once and any remaining cycle terminates. Both the
+    rule and the guards are :func:`~rtl_buddy.fs_walk.may_follow_link`
+    and :func:`~rtl_buddy.fs_walk.walk_unique`, shared with the coverage
+    walk, which has the same layout and the same exposure to it.
     """
     root = Path(project_root)
-    root_real = os.path.realpath(root)
     found: list[tuple[float, str]] = []
-    seen: set[str] = set()
     skip = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache"}
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
-        real = os.path.realpath(dirpath)
-        if real in seen:
-            dirnames[:] = []
-            continue
-        seen.add(real)
-        kept: list[str] = []
-        for d in dirnames:
-            if d in skip or d.startswith("obj_dir"):
-                continue
-            child = os.path.join(dirpath, d)
-            if os.path.islink(child) and not may_follow_link(
-                child, Path(os.path.relpath(child, root)).parts, root_real
-            ):
-                continue
-            kept.append(d)
-        dirnames[:] = kept
+    for dirpath, dirnames, filenames in walk_unique(
+        root, may_follow=artefact_layout_boundary(root)
+    ):
+        dirnames[:] = [
+            d for d in dirnames if d not in skip and not d.startswith("obj_dir")
+        ]
         if MANIFEST_FILENAME not in filenames:
             continue
         path = os.path.join(dirpath, MANIFEST_FILENAME)

@@ -53,6 +53,8 @@ from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from ..fs_walk import artefact_layout_boundary, walk_unique
+
 #: Bumped when the manifest's shape changes incompatibly.
 MANIFEST_SCHEMA_VERSION = 1
 
@@ -216,11 +218,26 @@ def discover_manifests(project_root) -> list[str]:
     bounded walk rather than one fixed path. Version-control and build
     directories are skipped; ties break on the path so the order is
     deterministic on a tree with identical timestamps.
+
+    **Symlinked directories are followed only inside the artefact
+    layout**, the boundary the physical walk draws and for the same
+    reasons (:func:`~rtl_buddy.fs_walk.may_follow_link`). A ``cov_dir``
+    lives under ``artefacts/``, so a suite whose ``artefacts/`` is a link
+    onto scratch storage keeps its coverage behind that link and a walk
+    stopping there answered "no coverage found" for a run sitting right
+    in front of it (rtl-buddy/rtl_buddy#564). Following *every* link is
+    the other error: a ``vendor/`` link, or one to ``$HOME``, drags an
+    unrelated tree into the walk and reports someone else's coverage as
+    this project's. Each directory is also admitted once by its real
+    path, so a cycle terminates and a ``cov_dir`` reachable two ways is
+    reported once.
     """
     root = Path(project_root)
     found: list[tuple[float, str]] = []
     skip = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache"}
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_unique(
+        root, may_follow=artefact_layout_boundary(root)
+    ):
         dirnames[:] = [
             d for d in dirnames if d not in skip and not d.startswith("obj_dir")
         ]

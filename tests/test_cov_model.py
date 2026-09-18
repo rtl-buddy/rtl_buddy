@@ -7,6 +7,9 @@ are readable in the test that needs them.
 """
 
 import json
+import os
+
+import pytest
 
 from rtl_buddy.cov.manifest import (
     MANIFEST_FILENAME,
@@ -265,3 +268,92 @@ def test_manifest_discovery_and_project_root_inference(tmp_path):
     )
     assert load_manifest(manifest_path)["schema_version"] == 1
     assert json.loads((cov_dir / MANIFEST_FILENAME).read_text())["command"] == "test"
+
+
+def _symlink_or_skip(link, target):
+    """Link ``link`` at directory ``target``, or skip where it cannot.
+
+    The link is the whole subject of the tests below, so a platform that
+    refuses to make one has nothing to assert rather than a failure to
+    report.
+    """
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):  # pragma: no cover - POSIX CI
+        pytest.skip("platform does not support directory symlinks")
+
+
+def _bare_manifest(cov_dir, project_root):
+    """A manifest with nothing in it but the two paths discovery reads."""
+    return write_manifest(
+        build_manifest(project_root=project_root, cov_dir=cov_dir, command="test"),
+        cov_dir,
+    )
+
+
+def test_discovery_reaches_a_cov_dir_behind_a_symlinked_artefact_dir(tmp_path):
+    """``artefacts/`` linked onto scratch storage is an ordinary, documented
+    setup, and the default ``cov_dir`` lives inside it — so a walk that did
+    not follow the link reported "no coverage found" for a run sitting right
+    there (rtl-buddy/rtl_buddy#564)."""
+    root = tmp_path / "repo"
+    suite = root / "verif" / "blk"
+    suite.mkdir(parents=True)
+    physical = tmp_path / "scratch" / "artefacts"
+    (physical / "cov_dir").mkdir(parents=True)
+    _symlink_or_skip(suite / "artefacts", physical)
+    _bare_manifest(suite / "artefacts" / "cov_dir", root)
+
+    assert discover_manifests(root) == [
+        str(suite / "artefacts" / "cov_dir" / MANIFEST_FILENAME)
+    ]
+
+
+def test_discovery_terminates_on_a_symlink_loop(tmp_path):
+    """Following links costs a loop risk, and either guard alone stops this
+    one: the boundary refuses a link whose realpath is an ancestor of the
+    project, and behind it a directory is admitted once by its real path. The
+    run the link circles is still reported exactly once."""
+    root, suite = _project(tmp_path)
+    cov_dir = suite / "artefacts" / "cov_dir"
+    manifest_path = _bare_manifest(cov_dir, root)
+    _symlink_or_skip(cov_dir / "loop", root)
+
+    assert discover_manifests(root) == [manifest_path]
+
+
+def test_discovery_reports_a_cov_dir_reachable_two_ways_once(tmp_path):
+    """An ``artefacts/`` link whose target is itself inside the project puts
+    one ``cov_dir`` on two paths. Admitting a directory once by its real path
+    keeps the same run from being reported — and reported on — twice."""
+    root = tmp_path / "repo"
+    store = root / "scratch_artefacts"
+    (store / "cov_dir").mkdir(parents=True)
+    suite = root / "verif" / "blk"
+    suite.mkdir(parents=True)
+    _symlink_or_skip(suite / "artefacts", store)
+    _bare_manifest(store / "cov_dir", root)
+
+    found = discover_manifests(root)
+
+    assert len(found) == 1
+    assert os.path.samefile(found[0], store / "cov_dir" / MANIFEST_FILENAME)
+
+
+def test_discovery_does_not_enter_a_symlink_outside_the_artefact_layout(tmp_path):
+    """The other half of the boundary, and the reason the coverage walk asks
+    the same question the physical one does (its #560 round-10 review finding):
+    following *every* link made a ``vendor/`` link — or one to ``$HOME`` — part
+    of the project's walk, so an unrelated tree was scanned and its coverage
+    reported as this project's own run."""
+    root, suite = _project(tmp_path)
+    manifest_path = _bare_manifest(suite / "artefacts" / "cov_dir", root)
+    unrelated = tmp_path / "elsewhere"
+    (unrelated / "verif" / "blk" / "artefacts").mkdir(parents=True)
+    _bare_manifest(unrelated / "cov_dir", unrelated)
+    _bare_manifest(unrelated / "verif" / "blk" / "artefacts" / "cov_dir", unrelated)
+    _symlink_or_skip(root / "vendor", unrelated)
+
+    # Neither the manifest at the link's top nor the one buried inside it:
+    # the link is not entered at all, so nothing under it is even scanned.
+    assert discover_manifests(root) == [manifest_path]
