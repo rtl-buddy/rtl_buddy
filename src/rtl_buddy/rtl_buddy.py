@@ -23,7 +23,13 @@ from importlib.metadata import version
 from typing_extensions import Annotated
 import click
 
-from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
+from .config import (
+    RegConfig,
+    RootConfig,
+    SuiteConfig,
+    TestConfig,
+    parse_plusarg_overrides,
+)
 from .config.env_file import apply_env_file
 from .config.root import (
     REG_CFG_PATH_KEYS,
@@ -895,6 +901,11 @@ class RtlBuddy:
         self.expect_prebuilt = False
         # `--rebuild`: distrust the build stamps and compile anyway (#494).
         self.rebuild = False
+        # `--plusarg KEY=VALUE`: this invocation's one-off runtime plusargs,
+        # merged over each selected test's `plusargs:` as the suite is
+        # expanded (#552). Empty for every command that does not offer the
+        # flag, so `_iter_suite_runnables` is unchanged for them.
+        self._plusarg_overrides: dict = {}
         # `--orphans`: what this invocation does about a previous run's jobs
         # that outlived their head (#521). `None` defers to
         # `cfg-dispatch.orphans`, which defaults to `warn`; `_orphans_policy`
@@ -1677,6 +1688,17 @@ class RtlBuddy:
                 show_default="cfg-dispatch orphans, else warn",
             ),
         ] = None,
+        plusarg: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--plusarg",
+                help="add or override one runtime plusarg for this run "
+                "(KEY=VALUE, or bare KEY for a valueless +KEY); repeatable, "
+                "wins over the test's plusargs: and, among repeats, the last "
+                "one wins",
+                show_default=False,
+            ),
+        ] = None,
     ):
         """
         run a simple test
@@ -1684,6 +1706,9 @@ class RtlBuddy:
         # Recorded before anything resolves a backend: the policy is
         # validated against the selected backend there (#521).
         self._orphans = orphans
+        # Parsed before anything runs, so a malformed value is a usage error
+        # rather than a plusarg the bench silently never sees (#552).
+        self._plusarg_overrides = parse_plusarg_overrides(plusarg)
         master_seed = self._checked_master_seed(master_seed)
         if master_seed is not None and (rnd_new or rnd_last):
             raise FatalRtlBuddyError(
@@ -1715,6 +1740,12 @@ class RtlBuddy:
             raise FatalRtlBuddyError(
                 "--list cannot be combined with --filter: --list prints every "
                 "configured test name and runs nothing."
+            )
+        if list_tests and self._plusarg_overrides:
+            raise FatalRtlBuddyError(
+                "--list cannot be combined with --plusarg: --list prints the "
+                "suite's test names and runs no simulation, so the override "
+                "would have nothing to apply to."
             )
         if test_names and test_filter is not None:
             raise FatalRtlBuddyError("test names and --filter are mutually exclusive")
@@ -1788,6 +1819,10 @@ class RtlBuddy:
             test="all" if test_selection is None else ", ".join(test_selection),
             test_config=test_config,
             master_seed=master_seed,
+            # What this invocation is running that tests.yaml does not say
+            # (#552); None rather than an empty dict, so the field reads the
+            # same way `master_seed` does when it was never asked for.
+            plusarg_overrides=self._plusarg_overrides or None,
         )
 
         seed_mode: SeedMode = SeedMode.DEFAULT
@@ -1897,6 +1932,17 @@ class RtlBuddy:
         metadata = [self._builder_metadata_line(self.suite_cfg, test_selection)]
         if master_seed is not None:
             metadata.append(f"Master Seed: {master_seed}")
+        if self._plusarg_overrides:
+            # Named in the footer for the same reason the master seed is: the
+            # table is otherwise indistinguishable from a run of the
+            # configured entry (#552). Spelled as the simulator receives it.
+            metadata.append(
+                "Plusarg Overrides: "
+                + " ".join(
+                    f"+{key}" if value is None else f"+{key}={value}"
+                    for key, value in self._plusarg_overrides.items()
+                )
+            )
         cov_metadata, coverage_payload = self.coverage.build_metadata(
             suite_results,
             outdir=str(ctx.command_root),
@@ -2310,11 +2356,20 @@ class RtlBuddy:
                 "records as failed is reported without recompiling here",
             ),
         ] = None,
+        plusarg: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--plusarg",
+                help="one-off runtime plusarg override the dispatching "
+                "command applied (KEY=VALUE or bare KEY); repeatable",
+            ),
+        ] = None,
     ):
         """
         internal: run one (test, run_id) and write its result JSON (#351)
         """
         master_seed = self._checked_master_seed(master_seed)
+        self._plusarg_overrides = parse_plusarg_overrides(plusarg)
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2371,6 +2426,15 @@ class RtlBuddy:
         test_cfg, setup_error = self._resolve_job_test_cfg(
             suite_cfg, test_name, suite_dir, plan_path=plan
         )
+        if test_cfg is not None:
+            # The head already merged its `--plusarg` overrides into the plan
+            # it wrote, so this is a no-op for the config that came from
+            # there — and the whole of the override for the one that did not
+            # (a name absent from the plan falls back to hook expansion,
+            # which re-reads tests.yaml and knows nothing about them). Also
+            # what puts the overrides into this job's result envelope, since
+            # the head never sees a dispatched run's results (#552).
+            test_cfg = test_cfg.with_plusarg_overrides(self._plusarg_overrides)
         if plan is not None:
             plan_master_seed = self._checked_master_seed(
                 read_plan_master_seed(self._abs_invocation_path(plan))
@@ -3779,6 +3843,15 @@ class RtlBuddy:
             # each result with its own launch; that is kept.
             for res in results:
                 res.results.setdefault("build_stamp", dict(build_stamp))
+        if self._plusarg_overrides:
+            # What THIS invocation added on the command line (#552). Recorded
+            # so a durable result tells a one-off `--plusarg` run apart from
+            # the tests.yaml entry it is otherwise indistinguishable from —
+            # the effective plusargs are that entry's plus this key, so only
+            # the overrides need carrying. Absent entirely without the flag,
+            # leaving every existing envelope's keys unchanged.
+            for res in results:
+                res.results["plusarg_overrides"] = dict(self._plusarg_overrides)
         self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
 
@@ -3915,6 +3988,10 @@ class RtlBuddy:
         # that discriminator, not the human `desc` (#546).
         if res.get(EARLY_STOP_KEY):
             row["early_stop"] = True
+        # The `rb test --plusarg` overrides this run applied (#552). Present
+        # only when there were any, so an ordinary row is the row it was.
+        if res.get("plusarg_overrides"):
+            row["plusarg_overrides"] = res["plusarg_overrides"]
         cov = self._machine_coverage(test_results)
         if cov is not None:
             row["coverage"] = cov
@@ -4021,6 +4098,15 @@ class RtlBuddy:
         SKIP / SetupFail rows are appended to ``suite_results`` in test
         order, so callers only decide how to *execute* runnable configs
         (in-process or dispatched).
+
+        This is also where a ``--plusarg`` override is merged in (#552).
+        Both execution paths funnel through here — the in-process runner and
+        the dispatch planner, whose plan the build job and every sim job
+        rebuild their configs from — so one merge covers them all. It
+        happens AFTER sweep expansion on purpose: a sweep hook that rewrites
+        ``plusargs`` wholesale would otherwise silently drop the override
+        the user typed, and the flag's contract is that it wins over
+        whatever the configuration produced.
         """
         tests = suite_cfg.get_tests(test_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
@@ -4083,7 +4169,8 @@ class RtlBuddy:
                 )
                 continue
 
-            yield from expanded_tests
+            for expanded in expanded_tests:
+                yield expanded.with_plusarg_overrides(self._plusarg_overrides)
 
     def _dispatch_backend_name(self, dispatch):
         """The selected backend name: CLI ``--dispatch`` over ``cfg-dispatch``."""
@@ -5765,6 +5852,10 @@ class RtlBuddy:
                     # redirected stdout.
                     log_path=dispatch_dir / f"{backend.name}-{run_tag}.log",
                     plan_path=plan_path,
+                    # Already merged into the plan above; carried so the job
+                    # records them as this run's overrides and so a plan miss
+                    # still applies them (#552).
+                    plusarg_overrides=dict(self._plusarg_overrides),
                 )
                 # Resources alone: every group now takes the same dependency,
                 # so a self-compiling test that happens to resolve to the

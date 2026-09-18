@@ -327,3 +327,29 @@ def test_the_verilate_jobs_envelope_and_log_are_named_for_it():
     assert job_log_path("/p/artefacts/.dispatch/build-result-77-abc.json") == Path(
         "/p/artefacts/.dispatch/build-rtl_buddy-77-abc.log"
     )
+
+
+def test_plusarg_overrides_are_forwarded_to_a_sim_job():
+    """The head merged them into the plan, but a job also has to RECORD them
+    as this run's overrides, and a name missing from the plan falls back to
+    re-reading tests.yaml — so they travel in the argv too (#552)."""
+    argv = sim_job_argv(
+        _test_spec(plusarg_overrides={"mutate": "1", "trace": None, "path": "/a=b"})
+    )
+    flags = [argv[i + 1] for i, tok in enumerate(argv) if tok == "--plusarg"]
+    # A valueless override is re-spelled bare, so the job's own parse of it
+    # produces None again rather than an empty string.
+    assert flags == ["mutate=1", "trace", "path=/a=b"]
+    assert argv.index("--plusarg") > argv.index("_test-job")
+
+
+def test_plusarg_overrides_are_absent_when_none_were_given():
+    """Byte-parity for every run that did not ask (#552)."""
+    assert "--plusarg" not in sim_job_argv(_test_spec())
+    assert "--plusarg" not in sim_job_argv(_test_spec(plusarg_overrides={}))
+
+
+def test_plusarg_is_not_a_build_job_flag():
+    """The build job only ever compiles the plan's configs, whose plusargs
+    the head already merged, so it needs no counterpart (#552)."""
+    assert "--plusarg" not in build_job_argv(_build_spec())

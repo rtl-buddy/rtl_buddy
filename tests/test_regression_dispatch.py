@@ -7974,3 +7974,52 @@ def test_a_cancelled_fan_out_names_the_verilate_jobs_log(
 
     (verilate,) = backend.verilate_submitted
     assert str(verilate.log_path) in result.output.replace("\n", "")
+
+
+def test_a_plusarg_override_reaches_the_plan_and_every_sim_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test --plusarg` has to survive dispatch (#552).
+
+    The head expands once and writes the plan its jobs rebuild their configs
+    from, so the merged plusargs must be IN that plan — and the spec carries
+    them as well, both so the job records this run's overrides in its own
+    envelope and so a name missing from the plan still applies them.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "test",
+            "basic",
+            "-c",
+            "tests.yaml",
+            "--dispatch",
+            "slurm",
+            "--plusarg",
+            "mutate=1",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    spec = fake_backend.submitted[0]
+    assert spec.plusarg_overrides == {"mutate": "1"}
+    planned = read_plan_config(spec.plan_path, "basic")
+    assert planned.get_plusargs() == {"mutate": "1"}
+    # The build job compiles the plan's configs, so its PRE hook sees the
+    # same merged view without a flag of its own.
+    assert fake_backend.build_submitted[0].plan_path == spec.plan_path
+
+
+def test_a_dispatched_run_without_the_flag_plans_no_overrides(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", "-c", "tests.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted[0].plusarg_overrides == {}
+    assert (
+        read_plan_config(fake_backend.submitted[0].plan_path, "basic").get_plusargs()
+        is None
+    )

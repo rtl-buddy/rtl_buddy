@@ -1,3 +1,4 @@
+import copy
 import logging
 from dataclasses import dataclass
 from typing import Literal
@@ -330,6 +331,65 @@ class TestConfig:
         if self.pa is None:
             self.pa = {}
         self.pa.update(new_args)
+
+    def with_plusarg_overrides(self, overrides):
+        """Return this config with ``overrides`` merged over its ``plusargs:``.
+
+        The one place a ``rb test --plusarg`` override is applied (#552), so
+        every consumer — the preprocessor hook that reads
+        :meth:`get_plusarg`, the simulator command line built from
+        :meth:`get_plusargs`, and the dispatch plan the jobs rebuild their
+        configs from — sees one merged view rather than each re-deriving it.
+
+        ``overrides`` wins over the configured value, matching the "later
+        wins" rule the repeated CLI flag already follows among its own
+        entries. A ``preproc`` hook still runs afterwards and may overwrite
+        one deliberately; hooks are the last word, as they are for every
+        other field.
+
+        Empty or ``None`` overrides return ``self`` unchanged — not a copy —
+        so a run without the flag is byte-for-byte the run it always was.
+        Otherwise a shallow copy carrying a *fresh* ``plusargs`` dict is
+        returned, leaving the suite's own loaded config untouched. Only that
+        dict is copied: everything else (the testbench, the model, the
+        plusdefines dict) stays shared, exactly as it is today when a hook
+        mutates the config the suite loaded.
+
+        Overriding the plusarg a test's ``sim-rand-seed-plusarg`` manages is
+        a fatal error, not a merge — see the raise below.
+
+        Args:
+          overrides (dict | None): Plusarg overrides; a ``None`` value means
+            a valueless ``+KEY``, exactly as in ``plusargs:``.
+
+        Returns:
+          TestConfig: This config, or a copy with the overrides merged in.
+
+        Raises:
+          FatalRtlBuddyError: When an override names this test's
+            ``sim-rand-seed-plusarg``.
+        """
+        if not overrides:
+            return self
+        if (
+            self.sim_rand_seed_plusarg is not None
+            and self.sim_rand_seed_plusarg in overrides
+        ):
+            # Refused rather than merged: rtl_buddy re-writes this plusarg
+            # from the resolved seed after the preprocessor runs
+            # (:meth:`ensure_resolved_seed_plusarg`), so the override would
+            # reach neither the hook's second read nor the simulator. A
+            # silently dropped value is the worse answer.
+            raise FatalRtlBuddyError(
+                f"test {self.name!r}: --plusarg {self.sim_rand_seed_plusarg} "
+                "names the plusarg its sim-rand-seed-plusarg manages, and "
+                "rtl_buddy restores the resolved seed there — the override "
+                "would be dropped. Choose the seed with --master-seed or a "
+                "test-level sim-rand-seed instead."
+            )
+        merged = copy.copy(self)
+        merged.pa = {**(self.pa or {}), **overrides}
+        return merged
 
     def resolve_runtime_seed(
         self, *, master_seed: int | None, suite_identity: str, run_id: int | None
@@ -703,6 +763,58 @@ class TestConfigFile:
             sim_rand_seed=self.sim_rand_seed,
             sim_rand_seed_plusarg=self.sim_rand_seed_plusarg,
         )
+
+
+def parse_plusarg_overrides(values) -> dict:
+    """Parse repeated ``--plusarg`` values into a plusargs dict (#552).
+
+    Each value is ``KEY=VALUE`` or a bare ``KEY`` for the valueless
+    ``+KEY`` form ``plusargs:`` spells as a null value. The result merges
+    over a test's configured ``plusargs:`` — see
+    :meth:`TestConfig.with_plusarg_overrides` — and a key repeated on the
+    command line keeps its LAST value, so the rule is "later wins" whether
+    the earlier value came from the YAML or from an earlier flag.
+
+    Rejected, because the simulator would never see what the user typed: an
+    empty key, a key carrying the ``+`` that introduces a plusarg (the
+    value keeps any ``+`` it contains), and whitespace anywhere in the key
+    — the argv token splits the plusarg list, so a space in a key is a
+    second plusarg the bench will not recognise.
+
+    Args:
+      values (list[str] | None): Raw ``--plusarg`` values, in CLI order.
+
+    Returns:
+      dict: ``{key: value}``, with ``None`` for a valueless plusarg.
+
+    Raises:
+      FatalRtlBuddyError: On a malformed value.
+    """
+    overrides: dict = {}
+    for raw in values or []:
+        key, sep, value = raw.partition("=")
+        # `strip("+")` so a name that is nothing but the prefix ("+", "++")
+        # is reported as the missing name it is, rather than falling into
+        # the '+' branch below and suggesting an empty replacement.
+        if not key.strip("+"):
+            raise FatalRtlBuddyError(
+                f"--plusarg {raw!r} has no name; write --plusarg KEY=VALUE "
+                "(or --plusarg KEY for a valueless plusarg)"
+            )
+        if "+" in key:
+            raise FatalRtlBuddyError(
+                f"--plusarg {raw!r}: the name must not contain '+' — rtl_buddy "
+                f"adds it, so write --plusarg {key.lstrip('+')}"
+                f"{'=' + value if sep else ''}"
+            )
+        if any(c.isspace() for c in key):
+            raise FatalRtlBuddyError(
+                f"--plusarg {raw!r}: the name must not contain whitespace; a "
+                "space would split it into a second plusarg on the simulator "
+                "command line"
+            )
+        overrides[key] = value if sep else None
+    return overrides
 
 
 def _resolve_hook_path(path: str | None, config_dir: str) -> str | None:
