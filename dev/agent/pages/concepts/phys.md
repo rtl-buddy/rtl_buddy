@@ -95,7 +95,7 @@ rb hub start --serve-viewer
 
 The pane holds every row, but renders the instance table 500 at a time with a `show more` / `show all` control under it — a mapped design's power half runs to six figures of leaf instances, and a table that rebuilt all of them on every sort click would freeze the tab. Selecting a row that ranks below the window moves the window to it, keeping the row and its neighbours in the ranking on screen without lifting the bound; the control then says how many rows sit above and below the slice. Sorting, filtering, the tints and the totals are computed over the whole set regardless of what is on screen.
 
-`dynamic` is internal plus switching, summed in the browser rather than stored: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows, and says when they disagree. The synthesis scrape is anchored to the top module, so a disagreement is a real difference between the two measurements rather than a submodule's area standing in for the design's (rtl-buddy/rtl_buddy#559).
+`dynamic` is internal plus switching, summed in the browser rather than stored: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows, and says when they disagree.
 
 Point the pane at a target from anywhere:
 
