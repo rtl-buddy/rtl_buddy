@@ -105,6 +105,20 @@ ELAB_WARNING_RE = re.compile(
 )
 ELAB_BASE_ARTIFACT_NAME = "base"
 
+#: Upper bound accepted for an elaboration profile's ``max_parse_depth``.
+#:
+#: slang's own default is 1024 nesting levels, and that limit exists to turn
+#: runaway recursive descent into a diagnostic instead of a stack overflow.
+#: Raising it hands the guard back, and the passes after the parser recurse
+#: over the same expression on a C stack nobody can grow from here: measured
+#: against pyslang 10, a nested expression exhausts it after a few hundred
+#: levels on macOS (512 KiB analysis threads) and a few thousand on Linux
+#: (8 MiB), killing the worker with no diagnostic at all. A value far above
+#: that cannot make a deeper source elaborate — it only trades a clean error
+#: for a crash — so the field is bounded at 64x slang's default: ample headroom
+#: for generated RTL, while an absurd or mistyped value stays a load-time error.
+ELAB_MAX_PARSE_DEPTH_LIMIT = 65536
+
 
 def validate_top(
     top: str,
@@ -232,6 +246,7 @@ class ElaborationProfile:
     single_unit: bool = False
     libraries_inherit_macros: bool = False
     timescale: str | None = None
+    max_parse_depth: int | None = None
     ignored_directives: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     resources: DispatchResourcesFile | None = None
@@ -278,6 +293,17 @@ def _validate_elaboration_profile(
         ):
             raise FatalRtlBuddyError(
                 f"{prefix} timescale {profile.timescale!r} must look like '1ns/1ps'"
+            )
+    if profile.max_parse_depth is not None:
+        depth = profile.max_parse_depth
+        if (
+            not isinstance(depth, int)
+            or isinstance(depth, bool)
+            or not 1 <= depth <= ELAB_MAX_PARSE_DEPTH_LIMIT
+        ):
+            raise FatalRtlBuddyError(
+                f"{prefix} max_parse_depth {depth!r} must be an integer between "
+                f"1 and {ELAB_MAX_PARSE_DEPTH_LIMIT}"
             )
     for option in ("prepend_sources", "append_sources", "include_dirs"):
         values = getattr(profile, option)

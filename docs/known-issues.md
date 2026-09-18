@@ -36,6 +36,10 @@ Warnings for fallback paths and unresolved variables are emitted once per proces
 
 rtl_buddy captures Python-level `print()` output as `hook.stdout` events. The capture has no `.buffer` or file descriptor, and child-process output bypasses it. Capture child output explicitly and print the text you want logged. For a generator that can write only relative to CWD, temporarily change to `suite_dir` and restore the previous directory. See [Plugins](concepts/plugins.md).
 
+## Deeply nested expressions can exhaust the elaboration stack on macOS
+
+`max_parse_depth` lifts slang's parser nesting limit, but the passes after the parser still recurse over the same expression, and `rb elab`'s analysis pass runs on a slang thread pool whose threads take the platform default stack — 512 KiB on macOS against 8 MiB on Linux. On macOS a chain of roughly 400 nested conditional expressions therefore kills the worker with no diagnostic, and the run reports `elaboration worker did not produce a result`; the identical source elaborates on Linux. Gate generated RTL that deep on Linux, or reduce the generated nesting. Nesting that costs less per level, such as parentheses, is unaffected. See [Model Elaboration](concepts/elaboration.md).
+
 ## Compilation-unit bind requires the slang frontend
 
 Yosys's native `verilog` frontend does not resolve a top-level `bind`, so no formal cells elaborate. rtl_buddy fails a property-based proof that would otherwise pass vacuously. Set `frontend: slang` and configure the yosys-slang plugin. Inline assertions do not need this guard. See [Formal Property Verification](concepts/fpv.md).

@@ -83,6 +83,12 @@ models:
         ("name: smoke\n        defines: {FEATURE: 'one two'}", "define.*value"),
         ("name: smoke\n        defines: {FEATURE: 'one+two'}", "define.*value"),
         ("name: smoke\n        resources: {cpus: 0}", "resources.cpus"),
+        ("name: smoke\n        max_parse_depth: 0", "max_parse_depth"),
+        ("name: smoke\n        max_parse_depth: -1", "max_parse_depth"),
+        ("name: smoke\n        max_parse_depth: 65537", "max_parse_depth"),
+        ("name: smoke\n        max_parse_depth: true", "max_parse_depth"),
+        ("name: smoke\n        max_parse_depth: deep", "failed to load"),
+        ("name: smoke\n        max_parse_depth: 1.5", "failed to load"),
         ("name: base", "reserved name"),
         ("name: BASE", "reserved name"),
     ],
@@ -323,6 +329,111 @@ models:
     )
     result = _cli("elab", "core", "--profile", "smoke", "-c", "models.yaml")
     assert result.exit_code == 0, result.output
+
+
+def _write_deeply_nested_expression(project: Path, levels: int) -> None:
+    """Write generated RTL whose single expression nests ``levels`` deep.
+
+    Parentheses rather than the issue's conditional chain: both trip the
+    parser's nesting limit identically, and a parenthesized expression binds
+    to its operand, so the deep source still reaches ``rb elab``'s analysis
+    pass on every platform. See the elaboration section of
+    ``docs/known-issues.md``.
+    """
+    (project / "src" / "nested.sv").write_text(
+        "module nested(input logic [15:0] x, output logic y);\n"
+        f"assign y = {'(' * levels}x[0]{')' * levels};\n"
+        "endmodule\n"
+    )
+
+
+def _write_nested_models(project: Path, profile_extra: str = "") -> None:
+    _write_models(
+        project,
+        f"""\
+rtl-buddy-filetype: model_config
+models:
+  - name: nested
+    filelist: [src/nested.sv]
+    elaborations:
+      - name: parse
+        warnings: [none]{profile_extra}
+""",
+    )
+
+
+def test_deep_generated_expression_fails_at_the_default_parse_depth(
+    minimal_project: Path,
+):
+    _write_deeply_nested_expression(minimal_project, 1024)
+    _write_nested_models(minimal_project)
+
+    result = _cli("elab", "nested", "--profile", "parse", "-c", "models.yaml")
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(
+        (
+            minimal_project / "artefacts" / "elab" / "nested" / "parse" / "result.json"
+        ).read_text()
+    )["result"]
+    assert payload["result"] == "FAIL"
+    assert payload["diagnostics"]["errors"] > 0
+    assert payload["max_parse_depth"] is None
+
+
+def test_max_parse_depth_elaborates_the_same_deep_expression(minimal_project: Path):
+    _write_deeply_nested_expression(minimal_project, 1024)
+    _write_nested_models(minimal_project, "\n        max_parse_depth: 8192")
+
+    result = _cli("elab", "nested", "--profile", "parse", "-c", "models.yaml")
+
+    assert result.exit_code == 0, result.output
+    artifact = minimal_project / "artefacts" / "elab" / "nested" / "parse"
+    assert "--max-parse-depth=8192" in (artifact / "elab.log").read_text()
+    payload = json.loads((artifact / "result.json").read_text())["result"]
+    assert payload["result"] == "PASS"
+    assert payload["diagnostics"] == {"errors": 0, "warnings": 0}
+    assert payload["max_parse_depth"] == 8192
+
+
+def test_max_parse_depth_does_not_excuse_a_malformed_source(minimal_project: Path):
+    # Deep enough to need the raised limit, and one closing parenthesis short.
+    (minimal_project / "src" / "nested.sv").write_text(
+        "module nested(input logic [15:0] x, output logic y);\n"
+        f"assign y = {'(' * 1024}x[0]{')' * 1023};\n"
+        "endmodule\n"
+    )
+    _write_nested_models(minimal_project, "\n        max_parse_depth: 8192")
+
+    result = _cli("elab", "nested", "--profile", "parse", "-c", "models.yaml")
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(
+        (
+            minimal_project / "artefacts" / "elab" / "nested" / "parse" / "result.json"
+        ).read_text()
+    )["result"]
+    assert payload["result"] == "FAIL"
+    assert payload["diagnostics"]["errors"] > 0
+    assert payload["max_parse_depth"] == 8192
+
+
+def test_max_parse_depth_is_forwarded_only_when_configured(minimal_project: Path):
+    _write_nested_models(minimal_project, "\n        max_parse_depth: 2048")
+    loader = ModelConfigLoader(str(minimal_project / "models.yaml"))
+    model = loader.get_model("nested")
+
+    with_depth = ElabRunner(
+        root_cfg=None,
+        elab_cfg=ElabConfig(model, model.get_elaboration("parse")),
+        resources=JobResources(),
+    )._slang_args()
+    without_depth = ElabRunner(
+        root_cfg=None, elab_cfg=ElabConfig(model), resources=JobResources()
+    )._slang_args()
+
+    assert "--max-parse-depth=2048" in with_depth
+    assert not any(arg.startswith("--max-parse-depth") for arg in without_depth)
 
 
 def test_list_does_not_require_root_or_pyslang(minimal_project: Path):
