@@ -1,22 +1,3 @@
----
-description: Mark known failures, choose whether an unexpected pass should fail a run, and know which failures a marker never covers.
----
-
-# Expected Failures
-
-Use an expected-failure marker only for a known, understood failure that should remain visible in a suite. The fields are available on runs in `tests.yaml`, `fpv.yaml`, `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `lint.yaml`.
-
-## Choose strictness
-
-| Marker | Actual failure | Unexpected pass | Use when |
-| --- | --- | --- | --- |
-| `xfail: true` | `XFAIL`, counts as pass | `XPASS`, counts as pass | Either outcome is acceptable |
-| `xfail_strict: true` | `XFAIL`, counts as pass | `XPASS`, counts as fail | A pass means the marker is stale |
-
-If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged, so a marker does not cover an unknown `NA`: that outcome still exits 1.
-
-Prefer `xfail_strict: true` for a known bug or intentionally failing teaching case so the regression reports when the underlying behavior changes.
-
 ## What the marker covers
 
 A marker excuses only a verdict the flow's own tool reported at its own end: a simulation that ran and printed `FAIL`, a property sby disproved, a violation count, a gate the tool evaluated. A failure that happened *instead of* a verdict is graded `FAIL` however the marker is spelled, because the run never reached the behavior the marker is about:
@@ -38,4 +19,4 @@ The result carries a `fail_stage` key naming the stage (`setup`, `compile`, `sim
 
 A tool-reported failure in `synth`, `pnr`, `power`, and `fpga` is that flow's verdict — those flows have no later verdict stage — so a marker still covers a synthesis the tool rejected.
 
-See [YAML Formats](../reference/yaml.md) for the field on each configuration type.
+See [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/) for the field on each configuration type.

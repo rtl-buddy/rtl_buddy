@@ -8,7 +8,7 @@ rb graph results
 rb hub start --serve-viewer
 ```
 
-Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage.
+Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage or module nodes with the physical model's area and power (see [Physical Heat on the Graph](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#physical-heat-on-the-graph)).
 
 Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:
 

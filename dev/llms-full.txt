@@ -1326,12 +1326,12 @@ The log belongs to the flow that wrote it. A file log is opened for writing and 
 <!-- source: concepts/expected-failures -->
 
 ---
-description: Mark known failures and choose whether an unexpected pass should fail a test, formal, synthesis, P&R, or power run.
+description: Mark known failures, choose whether an unexpected pass should fail a run, and know which failures a marker never covers.
 ---
 
 # Expected Failures
 
-Use an expected-failure marker only for a known, understood failure that should remain visible in a suite. The fields are available on runs in `tests.yaml`, `fpv.yaml`, `synth.yaml`, `pnr.yaml`, and `power.yaml`.
+Use an expected-failure marker only for a known, understood failure that should remain visible in a suite. The fields are available on runs in `tests.yaml`, `fpv.yaml`, `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `lint.yaml`.
 
 ## Choose strictness
 
@@ -1344,9 +1344,26 @@ If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged, so 
 
 Prefer `xfail_strict: true` for a known bug or intentionally failing teaching case so the regression reports when the underlying behavior changes.
 
-## Interpret failures carefully
+## What the marker covers
 
-The marker remaps any `FAIL`; it does not distinguish the expected design failure from a compile, tool, or environment failure. Confirm the failure reason before accepting `XFAIL`.
+A marker excuses only a verdict the flow's own tool reported at its own end: a simulation that ran and printed `FAIL`, a property sby disproved, a violation count, a gate the tool evaluated. A failure that happened *instead of* a verdict is graded `FAIL` however the marker is spelled, because the run never reached the behavior the marker is about:
+
+| Flow | Graded `FAIL` under a marker |
+| --- | --- |
+| `test` | preproc, sweep, and filelist setup failures; compile failures; a sim killed at `sim_timeout`; a simulator that exited without a verdict; a dispatched job the scheduler lost |
+| `fpv` | sby reporting `UNKNOWN`, a solver timeout, or an error instead of `PASS`/`FAIL` |
+| `cdc`, `lint` | the analyzer failing before it produced a count |
+| `synth`, `pnr`, `power`, `fpga` | setup failures — a missing tool, an unresolvable platform or PDK, a filelist or script-generation error |
+
+A run graded this way says why, so the reason is in the summary table and in `result.json`:
+
+```
+<suite>  <test>  FAIL  xfail not applied (sim timeout): Sim hit timeout
+```
+
+The result carries a `fail_stage` key naming the stage (`setup`, `compile`, `sim_timeout`, `sim`, `dispatch`, `tool`), and the `*_suite.xfail` event carries `excused: false` with the same reason for machine consumers. A negative control that stopped compiling, or that was killed on a busy node before reaching the mismatch it exists to catch, therefore fails the run rather than reporting green.
+
+A tool-reported failure in `synth`, `pnr`, `power`, and `fpga` is that flow's verdict — those flows have no later verdict stage — so a marker still covers a synthesis the tool rejected.
 
 See [YAML Formats](../reference/yaml.md) for the field on each configuration type.
 
@@ -1917,6 +1934,20 @@ LCOV lacks module and per-test identity. It joins design coverage by resolved fi
 
 See [Coverage](coverage.md) for metric semantics and coverage collection.
 
+## Physical Heat on the Graph
+
+The `/gph` pane can fill its module nodes with the physical model `rb synth` and `rb power` write, read from the hub's `GET /phy.json` — the same body and the same numbers the [`/phy` pane](phys.md#browse-the-model-in-the-hub) shows. Tick `heat` in the header: the model is fetched on the first tick, not on load, because a mapped design's power half is megabytes of leaf rows. The `metric` switcher offers the same five metrics in the same order as `/phy` (`cells`, `area`, `leakage`, `dynamic`, `total`), the `run` dropdown selects which artefact directory the numbers come from, and `/gph?dir=<phys dir>` opens the pane on one run. A run the server refuses — a directory with no manifest, a run outside the project — leaves the model on screen alone and reports the refusal in the status line; a bad `?dir=` on a tab that has loaded nothing yet falls back to the newest run and says so. The ramp is the shared heat ramp in `/hub/theme.css`, scaled against the largest module in the graph; the value rides in a badge beside each node, every metric in its tooltip, and the whole row in the inspector.
+
+The two halves are joined two different ways, because they are two namespaces. The synthesis half joins **by module name** — its `module` column is an RTL module name, as Yosys' `stat` saw it — and gives each node its cells and area. The power half joins **by path**: a leaf row's `module` is the Liberty cell it is an instance of, so each row's rootless instance path is resolved to the enclosing RTL instance and its power is added to that instance's module.
+
+The two halves therefore do not count over the same thing, and the pane says which is which. A module's **cells and area are its definition's**, counted once however many times it is instantiated, and its area already includes its submodules' because that is how the synthesis reports it. Its **power is summed over every instantiation** of it, because every leaf inside every one of them burns power: a design with eight FIFOs has one FIFO row in the synthesis half and eight FIFOs' worth of leakage here. That sum is the right number for a heat map — which module is this design spending its power on — and the wrong number to divide by the area, so the inspector prints `instances` (how many instantiations contributed) and `leaf rows` (how many rows were summed) beside the figures and the tooltip repeats them. Do not add the two halves together, and see [Known Issues](../known-issues.md#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows) for what an incomplete design tier does to the roll-up.
+
+Coverage and heat share the node fill, so ticking either releases the other. An inbound `phys_focus` **turns the overlay on**: it is a message about the physical model and it carries the metric to foreground, so a pane that has not read the model yet ticks `heat`, fetches it, and applies the focus when the body lands. It then highlights the node the target belongs to — a module by name, an instance path by the module whose body holds the leaf — and every export of that module when a suite qualifier split it into several nodes. Clicking a node still emits only the pane's own `selection_changed` and `open_source`:
+
+```bash
+rb hub send phys-focus module:dma_engine --metric area
+```
+
 ## Graph data model
 
 `graph.json` is directed, multigraph [NetworkX node-link JSON](https://networkx.org/documentation/stable/reference/readwrite/json_graph.html). Every node has `id`, `type`, `label`, and `tier`; source-backed nodes also carry a project-relative `file`. Every edge has `type` and `confidence`.
@@ -2005,7 +2036,7 @@ rb graph results
 rb hub start --serve-viewer
 ```
 
-Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage.
+Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage or module nodes with the physical model's area and power (see [Physical Heat on the Graph](#physical-heat-on-the-graph)).
 
 Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:
 
@@ -2342,6 +2373,8 @@ Clicking graph nodes can:
 
 A model node is placed through its `maps_to` edge, so it lands on the module the model actually roots at even when `models.yaml` sets `top:`. A model that opted out with `graph: false` has no such edge and no design coordinate: its send buttons stay dark and say so, rather than focusing a module id the graph does not contain.
 
+The pane also reads the physical model. Ticking `heat` fetches `GET /phy.json` — on the first tick, not on load — and fills module nodes with the shared heat ramp: cells and area from the synthesis half by module name, counted once for the module definition, and the power of every leaf row inside every instantiation of the module, summed by instance path. The inspector prints how many instantiations and how many rows each figure covers. Its metric switcher and its run dropdown are the `/phy` pane's, over the same `?dir=` coordinate, and `/gph?dir=<phys dir>` opens the pane on one run; a run the route refuses keeps the model on screen and reports the refusal, and a bad `?dir=` before anything has loaded falls back to the newest run. With no `phys-manifest.json` under the project the control is muted and names `rb synth` / `rb power`; the probe runs when the document is rendered, so a model produced after the tab opened needs the tab reloaded. Coverage and heat share the node fill, so ticking either releases the other. An inbound `phys_focus` turns the overlay on — it names a coordinate in the model and carries the metric to foreground, so a pane that has not read the model yet loads it and applies the focus when it lands — and highlights the node its target belongs to, a module by name and an instance path by the module whose body holds the leaf, without adding anything to what the pane emits.
+
 The on-disk graph is never modified by the browser join. See [Design Knowledge Graph](graph.md) for graph semantics.
 
 ## Coverage pane
@@ -2653,6 +2686,8 @@ rb hub send phys-focus instance:u_sub/_64_
 An inbound focus is always visible: when the search box would hide the row it selects, the pane takes the search off and says so in its status line, and leaves it alone when the target already matches it. An unprefixed target is read as an instance path. The pane resolves exact leaf rows, so an instance target has to name a row: a subtree path — the one `rb phys instance` answers with `match: prefix` — selects nothing, and one of its children is what to send instead. The hub replays the latest focus to the pane when it registers, so sending one before the tab is open works — as does a selection the schematic broadcast before the pane's model had loaded. Clicking a module in the pane broadcasts `graph_focus` and clicking an instance broadcasts `selection_changed`, which the schematic follows. The pane roots the path it sends at the design top, since that is the schematic's coordinate and a model row is always relative to the top; on the way back in it resolves a path against the rows themselves, reading it both as sent and with a leading top level removed, so a design whose top name is also an instance name still selects the right row. The tables keep whatever spelling the model recorded. That top is the physical model's own, and the pane cannot know which view the schematic is displaying: a `/sch` showing a testbench around the DUT, or another design entirely, is sent a path that names no instance there and selects nothing. An instance path only means something inside the hierarchy the model recorded it in, so pair the pane with a schematic of the same design; see [Known Issues](../known-issues.md#phys-pane-and-schematic-selections-cross-only-within-one-hierarchy). See [Hub](hub.md#synthpower-pane) for the routes and the peer contract.
 
 Clicking a module filters the instance table to it. When the name is an RTL module and every leaf carries a Liberty cell name, nothing matches, and the pane says so rather than showing an empty table. When the name is in both namespaces the lens looks complete instead — a cell type's leaves listed under a module's cells and area — so the pane prints the collision note there too, saying which measurement is whose. Both are the calls `rb phys module` makes on its own payload; see [What the module join can answer](#what-the-module-join-can-answer).
+
+The same model also paints the design-knowledge-graph pane. Open `/gph`, tick `heat`, and its module nodes are filled with this model's numbers: cells and area joined from the synthesis half by module name — the module definition's, counted once — and the power of every leaf row inside every instantiation of the module, summed, because the power half's `module` column is a Liberty cell and the join has to be by instance path. The pane prints how many instantiations and how many rows went into each figure, since the two halves do not count over the same thing. Its metric switcher and its run dropdown are this pane's, over the same `GET /phy.json?dir=<phys dir>`, so a run chosen in either is the same run, and a `phys-focus` turns that pane's overlay on as well. See [Physical Heat on the Graph](graph.md#physical-heat-on-the-graph).
 
 ## Machine payloads
 
@@ -4007,7 +4042,7 @@ The shell exit code is a coarse run status. Parse `payload.results` under `--mac
 | 1 | At least one real test/tool-flow failure, an unknown `NA`, or a strict `XPASS` |
 | 2 | Fatal configuration or environment error |
 
-A strict unexpected pass counts as a failure. See [Expected Failures](expected-failures.md).
+A strict unexpected pass counts as a failure, and a marker never covers a failure that happened instead of a verdict — a setup or compile failure, a sim killed at `sim_timeout`, a dispatched job the scheduler lost — so those still exit 1. See [Expected Failures](expected-failures.md).
 
 ## Stop after a stage
 
@@ -5505,6 +5540,10 @@ The two halves of the physical model spell `module` in two namespaces: the synth
 ## Phys pane and schematic selections cross only within one hierarchy
 
 Clicking an instance in the `/phy` pane broadcasts the path rooted at the physical model's own top, and an inbound selection is resolved against the pane's own rows. Neither surface can see which design the other is displaying, so a `/sch` showing a testbench wrapped around the DUT — or a different design entirely — is handed a path that names no instance there and selects nothing; a selection broadcast from such a view lands in the pane the same way. Nothing reports it, because a path matching no row is indistinguishable from a click on a row the other surface does not hold. Open the schematic on the design the model was built from — the synthesis `top:`, not a testbench that wraps it — and the two follow each other. See [Physical Metrics](concepts/phys.md#browse-the-model-in-the-hub).
+
+## Graph-pane heat attributes a leaf to the nearest instance the graph knows
+
+The `/gph` pane's heat overlay rolls per-instance power up to the enclosing RTL module by resolving each model row's rootless path to the deepest instance node that properly contains it, so the attribution is only as fine as the design tier is complete. Two consequences follow. A run whose `top:` is a wrapper the graph was not built for — or a graph narrowed with `rb graph build --model` — has no elaboration rooted at the model's top, and then no leaf power is attributable at all: the pane says so in its status line and paints cells and area only, because borrowing a testbench export's paths would file the DUT's power under whatever wraps it. And a row whose path runs through a level the graph does not carry is attributed to the deepest level it does, up to the design top itself, which over-attributes that module rather than dropping the row. The figures also do not count over the same thing: a module's cells and area are its definition's, counted once (and its area already includes its submodules', because that is how the synthesis reports it), while its power is summed over every instantiation of it — the pane prints how many instantiations and how many leaf rows each figure covers. `rb phys instance <path>` answers the same question against the hierarchy the model recorded. See [Design Knowledge Graph](concepts/graph.md#physical-heat-on-the-graph).
 
 ## FPV COI analysis is best-effort
 
@@ -7403,9 +7442,11 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
 │                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
 │                'module:alu'; an unprefixed string is read as an instance path.       │
-│                --metric foregrounds one physical metric. The hub caches the focus    │
-│                and replays it to the pane on connect, so sending this before the     │
-│                browser tab is open works.                                            │
+│                --metric foregrounds one physical metric. The graph pane (/gph)       │
+│                follows the same message: it turns its heat overlay on and highlights │
+│                the module the target belongs to. The hub caches the focus and        │
+│                replays it to both on connect, so sending this before the browser     │
+│                tabs are open works.                                                  │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
 │                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
 │                (clears any cached diagnostics from SOURCE). Use --instance to attach │
@@ -7580,9 +7621,10 @@ Usage: rtl-buddy hub send phys-focus [OPTIONS] TARGET
  Broadcast phys_focus{target} — point the hub's synth+power pane
  (http://127.0.0.1:<http_port>/phy) at one target of the run's physical model. TARGET
  is prefixed: 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is read as
- an instance path. --metric foregrounds one physical metric. The hub caches the focus
- and replays it to the pane on connect, so sending this before the browser tab is open
- works.
+ an instance path. --metric foregrounds one physical metric. The graph pane (/gph)
+ follows the same message: it turns its heat overlay on and highlights the module the
+ target belongs to. The hub caches the focus and replays it to both on connect, so
+ sending this before the browser tabs are open works.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    target      TEXT  physical target, e.g. module:alu or u_cpu/u_alu [required]    │
@@ -8468,7 +8510,7 @@ Unless stated otherwise:
 
 - Relative paths resolve from the YAML file that contains them. See [Execution Context](../concepts/execution-context.md).
 - `reglvl` defaults to 0. It may be an integer or a per-tool/per-builder map with `default` fallback. A run is selected when its level is at most the CLI regression level.
-- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. See [Expected failures](../concepts/expected-failures.md).
+- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict — a setup or compile failure, a sim timeout, a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
 
 ## root_config.yaml
