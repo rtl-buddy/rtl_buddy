@@ -132,6 +132,18 @@ LCOV lacks module and per-test identity. It joins design coverage by resolved fi
 
 See [Coverage](coverage.md) for metric semantics and coverage collection.
 
+## Physical Heat on the Graph
+
+The `/gph` pane can fill its module nodes with the physical model `rb synth` and `rb power` write, read from the hub's `GET /phy.json` — the same body and the same numbers the [`/phy` pane](phys.md#browse-the-model-in-the-hub) shows. Tick `heat` in the header: the model is fetched on the first tick, not on load, because a mapped design's power half is megabytes of leaf rows. The `metric` switcher offers the same five metrics in the same order as `/phy` (`cells`, `area`, `leakage`, `dynamic`, `total`), the `run` dropdown selects which artefact directory the numbers come from, and `/gph?dir=<phys dir>` opens the pane on one run. The ramp is the shared heat ramp in `/hub/theme.css`, scaled against the largest module in the graph; the value rides in a badge beside each node, every metric in its tooltip, and the whole row in the inspector.
+
+The two halves are joined two different ways, because they are two namespaces. The synthesis half joins **by module name** — its `module` column is an RTL module name, as Yosys' `stat` saw it — and gives each node its cells and area. The power half joins **by path**: a leaf row's `module` is the Liberty cell it is an instance of, so each row's rootless instance path is resolved to the enclosing RTL instance and its power is added to that instance's module. Cells and power are a module's own; area already includes its submodules'. Do not add them together, and see [Known Issues](../known-issues.md#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows) for what an incomplete design tier does to the roll-up.
+
+Coverage and heat share the node fill, so ticking either releases the other. An inbound `phys_focus` highlights the node the target belongs to — a module by name, an instance path by the module whose body holds the leaf — and clicking a node still emits only the pane's own `selection_changed` and `open_source`:
+
+```bash
+rb hub send phys-focus module:dma_engine --metric area
+```
+
 ## Graph data model
 
 `graph.json` is directed, multigraph [NetworkX node-link JSON](https://networkx.org/documentation/stable/reference/readwrite/json_graph.html). Every node has `id`, `type`, `label`, and `tier`; source-backed nodes also carry a project-relative `file`. Every edge has `type` and `confidence`.
@@ -220,7 +232,7 @@ rb graph results
 rb hub start --serve-viewer
 ```
 
-Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage.
+Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage or module nodes with the physical model's area and power (see [Physical Heat on the Graph](#physical-heat-on-the-graph)).
 
 Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:
 

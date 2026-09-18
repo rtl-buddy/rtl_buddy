@@ -108,6 +108,8 @@ An inbound focus is always visible: when the search box would hide the row it se
 
 Clicking a module filters the instance table to it. When the name is an RTL module and every leaf carries a Liberty cell name, nothing matches, and the pane says so rather than showing an empty table. When the name is in both namespaces the lens looks complete instead — a cell type's leaves listed under a module's cells and area — so the pane prints the collision note there too, saying which measurement is whose. Both are the calls `rb phys module` makes on its own payload; see [What the module join can answer](#what-the-module-join-can-answer).
 
+The same model also paints the design-knowledge-graph pane. Open `/gph`, tick `heat`, and its module nodes are filled with this model's numbers: cells and area joined from the synthesis half by module name, and the power of every leaf instance inside each module, rolled up by instance path because the power half's `module` column is a Liberty cell. Its metric switcher and its run dropdown are this pane's, over the same `GET /phy.json?dir=<phys dir>`, so a run chosen in either is the same run. See [Physical Heat on the Graph](graph.md#physical-heat-on-the-graph).
+
 ## Machine payloads
 
 `--machine` emits the payload the verb built, carrying its own `schema_version`, the project-relative manifest and model paths, the run header, the artefact block, and the verb's data: rankings for `summary`, the module row plus its instances for `module`, and the row or subtree plus its rollup for `instance`.

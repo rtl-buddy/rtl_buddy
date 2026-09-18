@@ -22,7 +22,12 @@ Six surfaces, in the order a user meets them:
    instance path, which on a project-tier graph is every node. Its pure
    helper is sliced out of the page between markers and exercised in
    ``node``, the same convention ``tests/test_hub_cov_page.py`` uses.
-6. The version label in the status strip — one wording of "which build
+6. Physical heat — the pane's `module:` nodes painted with the model
+   `GET /phy.json` serves (rtl-buddy/rtl_buddy#596). The join is the
+   part that can be silently wrong, so its pure rules are sliced out
+   and run in ``node``; the wiring and the muted state are asserted on
+   the rendered document and over HTTP.
+7. The version label in the status strip — one wording of "which build
    am I looking at" shared with the coverage pane and the schematic SPA, so
    its cases are asserted identically in all three.
 """
@@ -42,7 +47,7 @@ from typing import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from rtl_buddy.hub import graph_page, theme
+from rtl_buddy.hub import graph_page, phys_page, theme
 from rtl_buddy.hub.protocol import (
     Envelope,
     HubProtocolError,
@@ -54,6 +59,8 @@ from rtl_buddy.hub.protocol import (
 )
 from rtl_buddy.hub.server import HubServer
 from rtl_buddy.hub.viewer_http import ViewerServer, render_index_html
+from rtl_buddy.phys.manifest import build_manifest, write_manifest
+from rtl_buddy.phys.model import build_synth_model, write_model
 
 
 # ---------------------------------------------------------------------------
@@ -2209,3 +2216,501 @@ def test_the_peer_list_is_diffed_identically_in_both_panes():
     graph, cov = code("graph_page.html"), code("cov_page.html")
     assert graph == cov, "the two setPeers copies drifted"
     assert "    var changed = next.join('') !== peers.join('');" in graph
+
+
+# ---------------------------------------------------------------------------
+# physical heat (rtl-buddy/rtl_buddy#596)
+#
+# The pane paints its `module:` nodes with the physical model's own
+# numbers, read off `GET /phy.json` — the same body the /phy pane reads,
+# through the same `?dir=` run selection. Three things can go wrong, and
+# only the first is visible in a screenshot:
+#
+#   * the wiring: the data route has to be advertised off the same
+#     manifest probe the landing card uses, and its absence has to mute
+#     the control rather than leave it pointing at a 404;
+#   * the JOIN, which is the part that can be silently, numerically
+#     wrong. Its rules are pure functions between markers, so they are
+#     exercised in bare `node` rather than inferred from a picture;
+#   * the ramp, which must be the sheet's tokens and not a second
+#     palette (tests/test_hub_theme.py pins the fallback values for
+#     every hub page, this one included).
+#
+# What no test here can see is the painting itself, so the manual check
+# is: in a project that has run `rb graph build` and `rb synth` (and
+# `rb power` for the power metrics), `rb hub start --serve-viewer`, open
+# `/gph`, tick `heat` — module nodes take the ramp, the badge beside each
+# one carries the selected metric's value, the hover carries all five,
+# and the inspector's `physical` block carries the row. Switch the
+# metric and the ramp rescales; switch the run and the numbers change;
+# tick `coverage` and the heat overlay releases the fill. Then
+# `rb hub send phys-focus instance:<a leaf path from rb phys summary>`
+# and the module that owns the leaf is selected and centred.
+# ---------------------------------------------------------------------------
+
+
+def test_the_page_advertises_the_physical_data_route():
+    """Injected the way the landing page injects its own, so one
+    presence probe serves both surfaces."""
+
+    body = graph_page.render_graph_html(
+        hub_addr="127.0.0.1:1", phys_url=phys_page.PHYS_JSON_ROUTE
+    ).decode("utf-8")
+    assert "window.__RTL_BUDDY_PHY_URL__ = '/phy.json'" in body
+    # The run coordinate is the /phy pane's, spelled the same way.
+    assert f"'{phys_page.PHYS_DIR_PARAM}=' + encodeURIComponent(dir)" in body
+
+
+def test_no_manifest_mutes_the_heat_control_with_the_landing_wording():
+    """No injected route at all — not an empty one — and the control
+    says what the landing card's phys note says."""
+
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    # The page still READS the global — it is how an injected route
+    # arrives — so what must be absent is the assignment.
+    assert "window.__RTL_BUDDY_PHY_URL__ = " not in body
+    assert "run `rb synth` or `rb power` first" in body
+    # Muted, not hidden: a control that vanished would leave nothing to
+    # explain why there is no heat.
+    assert "if (!PHY_URL) { mutePhysControl(HEAT_ABSENT); }" in body
+    assert "els.optHeat.disabled = !everLoaded;" in body
+
+
+def test_the_metric_switcher_mirrors_the_phys_pane():
+    """Same five metrics, same order, same `phys_focus.metric` enum —
+    and the order is taken off the payload when it carries one."""
+
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    metrics = ", ".join(f"'{metric}'" for metric in phys_page.METRICS)
+    assert f"var HEAT_METRICS = [{metrics}];" in body
+    assert "if (Array.isArray(hub.metrics) && hub.metrics.length)" in body
+    assert 'metric <select id="heat-metric"></select>' in body
+    assert '<input type="checkbox" id="opt-heat"> heat' in body
+    # The ramp is the shared one: tokens, not a page-local palette.
+    for token in ("--heat-h:", "--heat-s:", "--heat-l0:", "--heat-l1:", "--heat-none:"):
+        assert token in body, token
+    assert (
+        "fill: hsl(var(--heat-h), var(--heat-s),\n"
+        "        calc(var(--heat-l0) + (var(--heat-l1) - var(--heat-l0)) * var(--f)));"
+    ) in body
+
+
+# --- the join, in `node` ---------------------------------------------------
+#
+# `heat-join` carries the rules; `phys-focus` reads a wire coordinate
+# with them, so the second block is evaluated on top of the first.
+
+
+def _heat_js() -> str:
+    return _marked_js("heat-join")
+
+
+def _heat_focus_js() -> str:
+    return _marked_js("heat-join") + _marked_js("phys-focus")
+
+
+#: One design, three levels deep, exported twice — once rooted at the
+#: design top and once through a testbench, which is what `rb graph
+#: build` writes (#377) and what makes "which elaboration" a real
+#: question rather than a defensive one.
+_HEAT_LINKS = """
+var links = [
+  { type: 'instance_of', source: 'inst:blk/blk', target: 'module:blk' },
+  { type: 'instance_of', source: 'inst:blk/blk.u_sub', target: 'module:sub' },
+  { type: 'instance_of', source: 'inst:blk/blk.u_sub.u_leaf', target: 'module:tiny' },
+  { type: 'instance_of', source: 'inst:tb/tb.u_dut', target: 'module:blk' },
+  { type: 'instance_of', source: 'inst:tb/tb.u_dut.u_sub', target: 'module:sub' },
+  { type: 'instantiates', source: 'module:blk', target: 'module:sub' }
+];
+"""
+
+#: The `tests/test_hub_phys_page.py` fixture's rows, so the two panes
+#: are asserted over one model.
+_HEAT_PAYLOAD = """
+var payload = {
+  top: 'blk',
+  modules: [
+    { module: 'blk', cell_count: 120, area_um2: 480.5 },
+    { module: 'sub', cell_count: 40, area_um2: 96.0 },
+    { module: 'tiny', cell_count: 2, area_um2: null }
+  ],
+  instances: [
+    { instance_path: 'u_sub/_64_', module: 'sub',
+      leakage_uw: 0.079, internal_uw: 2.28, switching_uw: 0.0675, total_uw: 2.42 },
+    { instance_path: 'u_sub/u_leaf/_12_', module: 'tiny',
+      leakage_uw: 0.001, internal_uw: 0.5, switching_uw: 0.25, total_uw: 0.751 },
+    { instance_path: '_7_', module: 'DFF_X1',
+      leakage_uw: 0.01, internal_uw: 1.0, switching_uw: null, total_uw: 1.01 }
+  ]
+};
+"""
+
+
+def test_power_rolls_up_to_the_enclosing_module():
+    """The join the issue asks for: a leaf's power belongs to the module
+    whose body instantiates it, found by resolving the row's rootless
+    path to the deepest instance node that properly contains it.
+
+    Own-module, not hierarchical: `u_sub/u_leaf/_12_` is `tiny`'s power
+    and not also `sub`'s, the same way `cell_count` counts a module's
+    own cells. A leaf directly in the top's body is the top module's.
+    """
+
+    out = _node_eval(
+        _heat_js()
+        + _HEAT_LINKS
+        + _HEAT_PAYLOAD
+        + """
+        var join = joinPhys(links, payload);
+        console.log(JSON.stringify({
+          rooted: join.rooted,
+          index: join.index,
+          blk: join.modules.blk,
+          sub: join.modules.sub,
+          tiny: join.modules.tiny
+        }));
+        """
+    )
+    got = json.loads(out)
+    assert got["rooted"] is True
+    # Only the design top's own elaboration answers the rows: the
+    # testbench export's `u_dut.u_sub` is the same instance reached
+    # another way and must not become a second key.
+    assert got["index"] == {"": "blk", "u_sub": "sub", "u_sub.u_leaf": "tiny"}
+    assert got["sub"]["total"] == 2.42
+    assert got["sub"]["instances"] == 1
+    assert got["tiny"]["total"] == 0.751
+    # The top's own body: one leaf, and nothing from below it.
+    assert got["blk"]["total"] == 1.01
+    assert got["blk"]["instances"] == 1
+
+
+def test_the_power_half_is_never_joined_by_module_name():
+    """The regression this replaces (removed in the #558 review): the
+    power half's ``module`` column is the LIBERTY CELL a leaf is an
+    instance of, so name-joining it onto RTL module names multiplied a
+    module's total once per leaf on any collision.
+
+    Here `DFF_X1` is both a Liberty cell (every leaf's `module`) and an
+    RTL module the graph carries. The RTL module gets its synthesis row
+    and no power at all; the power goes to the modules whose bodies hold
+    the leaves.
+    """
+
+    out = _node_eval(
+        _heat_js()
+        + """
+        var links = [
+          { type: 'instance_of', source: 'inst:blk/blk', target: 'module:blk' },
+          { type: 'instance_of', source: 'inst:blk/blk.u_sub', target: 'module:DFF_X1' }
+        ];
+        var payload = {
+          top: 'blk',
+          modules: [{ module: 'DFF_X1', cell_count: 9, area_um2: 12.5 }],
+          instances: [
+            { instance_path: 'u_sub/_1_', module: 'DFF_X1', total_uw: 1 },
+            { instance_path: 'u_sub/_2_', module: 'DFF_X1', total_uw: 2 },
+            { instance_path: '_3_', module: 'DFF_X1', total_uw: 4 }
+          ]
+        };
+        var join = joinPhys(links, payload);
+        console.log(JSON.stringify(join.modules));
+        """
+    )
+    got = json.loads(out)
+    # The RTL module of that name: its own synthesis row, plus only the
+    # power of the leaves inside the instance that IS it — 1 + 2, never
+    # a per-leaf copy of anything.
+    assert got["DFF_X1"]["cells"] == 9
+    assert got["DFF_X1"]["area"] == 12.5
+    assert got["DFF_X1"]["total"] == 3
+    assert got["blk"]["total"] == 4
+    assert got["blk"]["cells"] is None
+
+
+def test_rows_under_a_top_the_graph_does_not_carry_are_not_attributed():
+    """A synthesis run on a wrapper the graph was not built for, or a
+    graph narrowed with ``--model``: nothing is rooted at the model's
+    top, so no leaf power is attributable and the pane says so rather
+    than borrowing a testbench root's paths."""
+
+    out = _node_eval(
+        _heat_js()
+        + """
+        var links = [
+          { type: 'instance_of', source: 'inst:tb/tb.u_dut', target: 'module:blk' }
+        ];
+        var payload = {
+          top: 'blk', modules: [{ module: 'blk', cell_count: 7, area_um2: null }],
+          instances: [{ instance_path: 'u_sub/_1_', module: 'sub', total_uw: 3 }]
+        };
+        var join = joinPhys(links, payload);
+        console.log(JSON.stringify({
+          rooted: join.rooted, index: join.index,
+          unattributed: join.unattributed, attributed: join.attributed,
+          modules: join.modules
+        }));
+        """
+    )
+    got = json.loads(out)
+    assert got["rooted"] is False
+    assert got["index"] == {}
+    assert got["unattributed"] == 1 and got["attributed"] == 0
+    # The synthesis half still joins — it needs no hierarchy at all.
+    assert got["modules"]["blk"]["cells"] == 7
+    assert got["modules"]["blk"]["total"] is None
+
+
+def test_an_unmeasured_metric_is_null_and_not_zero():
+    """``null`` is "nobody said", not "this module is free". Yosys
+    writes no ``area_um2`` for an unmapped run, and `dynamic` is null
+    only when NEITHER half of the sum was measured."""
+
+    out = _node_eval(
+        _heat_js()
+        + """
+        var links = [
+          { type: 'instance_of', source: 'inst:blk/blk', target: 'module:blk' }
+        ];
+        var payload = {
+          top: 'blk', modules: [{ module: 'blk', cell_count: 3, area_um2: null }],
+          instances: [{ instance_path: '_1_', module: 'X', internal_uw: 0.5 }]
+        };
+        var join = joinPhys(links, payload);
+        var found = join.modules.blk;
+        console.log(JSON.stringify(['cells', 'area', 'leakage', 'dynamic', 'total']
+          .map(function (m) { return heatValueOf(found, m); })));
+        console.log(JSON.stringify([
+          heatMaxOf(['blk'], join, 'area'),
+          heatMaxOf(['blk'], join, 'cells'),
+          heatMaxOf(['nowhere'], join, 'cells'),
+          initialHeatMetric(payload),
+          initialHeatMetric({ modules: payload.modules })
+        ]));
+        """
+    )
+    values, scales = out.strip().splitlines()
+    # cells measured, area not, leakage not, dynamic from one half only,
+    # total not.
+    assert json.loads(values) == [3, None, None, 0.5, None]
+    assert json.loads(scales) == [
+        # A ramp over a column nobody measured has no top end, so every
+        # node paints as "not measured" instead of as the maximum.
+        None,
+        3,
+        # A module the graph carries and the model does not: no value,
+        # and it must not become a zero that scales the ramp.
+        None,
+        # Total power is what a reader ticking this is chasing…
+        "total",
+        # …unless the run produced no power half, which would open the
+        # overlay on an empty column and read as broken.
+        "cells",
+    ]
+
+
+def test_a_leaf_that_is_also_an_rtl_instance_pays_its_parent():
+    """A proper ancestor, never the row's own path. An explicitly
+    instantiated macro has an instance node of its own, and it is still
+    instantiated in its PARENT's body — attributing it to itself would
+    move its power out of the module that pays for it."""
+
+    out = _node_eval(
+        _heat_js()
+        + """
+        var links = [
+          { type: 'instance_of', source: 'inst:blk/blk', target: 'module:blk' },
+          { type: 'instance_of', source: 'inst:blk/blk.u_ram', target: 'module:sram' }
+        ];
+        var payload = {
+          top: 'blk', modules: [],
+          instances: [{ instance_path: 'u_ram', module: 'SRAM_1024', total_uw: 9 }]
+        };
+        var join = joinPhys(links, payload);
+        console.log(JSON.stringify(join.modules));
+        """
+    )
+    got = json.loads(out)
+    assert got["blk"]["total"] == 9
+    assert "sram" not in got
+
+
+def test_a_model_row_is_levelled_before_it_is_resolved():
+    """OpenSTA prints `/` and the graph's ids carry `.`, so a row is
+    levelled on the way in — except inside an escaped identifier, where
+    both characters are part of the name and splitting one would
+    attribute a leaf to a module that does not contain it."""
+
+    out = _node_eval(
+        _heat_js()
+        + r"""
+        console.log(JSON.stringify([
+          levelPath('u_sub/u_leaf/_12_'),
+          levelPath('u_sub.u_leaf._12_'),
+          levelPath('\\gen[0].u_x /_64_'),
+          levelPath(null)
+        ]));
+        console.log(JSON.stringify([
+          instanceCoord('inst:blk/blk.u_sub'),
+          instanceCoord('inst:blk/blk'),
+          instanceCoord('inst:tb/tb.u_dut@verif/fifo'),
+          instanceCoord('module:blk')
+        ]));
+        """
+    )
+    paths, coords = out.strip().splitlines()
+    assert json.loads(paths) == [
+        "u_sub.u_leaf._12_",
+        "u_sub.u_leaf._12_",
+        # One level, name intact, and the terminating space dropped so
+        # the two spellings compare equal.
+        "\\gen[0].u_x._64_",
+        "",
+    ]
+    assert json.loads(coords) == [
+        {"root": "blk", "path": "u_sub"},
+        # The root scope's own node: the empty path, which is a real
+        # answer (a leaf in the top's body is the top module's).
+        {"root": "blk", "path": ""},
+        # The suite qualifier disambiguates an id; it is not part of an
+        # instance's name.
+        {"root": "tb", "path": "u_dut"},
+        None,
+    ]
+
+
+def test_an_inbound_phys_focus_lands_on_the_node_that_owns_it():
+    """``phys_focus`` targets are the physical model's coordinates: a
+    module by name, an instance by path. A leaf has no node of its own —
+    it is a Liberty cell instance — so the module whose body contains it
+    is the answer, and an instance node wins when the path names one."""
+
+    out = _node_eval(
+        _heat_focus_js()
+        + _HEAT_LINKS
+        + _HEAT_PAYLOAD
+        + """
+        var join = joinPhys(links, payload);
+        var byId = {
+          'module:blk': 1, 'module:sub': 1, 'module:tiny': 1,
+          'inst:blk/blk': 1, 'inst:blk/blk.u_sub': 1
+        };
+        var targets = [
+          'module:sub', 'module:nothing',
+          'instance:u_sub/_64_', 'u_sub/_64_',
+          'instance:u_sub', 'blk.u_sub/_64_', '_7_', ''
+        ];
+        console.log(JSON.stringify(targets.map(function (t) {
+          return physFocusNode(t, byId, join.index, join.top);
+        })));
+        """
+    )
+    assert json.loads(out) == [
+        "module:sub",
+        # A soft miss, like `graph_focus`: the pane reports it and keeps
+        # its focus.
+        None,
+        # The leaf's owner, both prefixed and bare (an unprefixed target
+        # is an instance path).
+        "module:sub",
+        "module:sub",
+        # A path that IS an instance node selects the node itself.
+        "inst:blk/blk.u_sub",
+        # Rooted at the top, which is how the /phy pane broadcasts a
+        # path: the reading that names a real enclosing instance wins
+        # over the one that falls through to the top.
+        "module:sub",
+        # A leaf in the top's own body.
+        "module:blk",
+        None,
+    ]
+
+
+def test_the_focus_handler_emits_nothing_and_keeps_the_metric_hint():
+    """Selecting a node goes on emitting the graph's own envelopes; an
+    inbound focus adds no wire type and answers with none. The metric
+    hint applies even when the target misses — it is a statement about
+    the view, not about the row."""
+
+    js = _page_js()
+    assert "case 'phys_focus':" in js
+    handler = js.split("function applyPhysFocus(payload) {")[1].split("\n  }")[0]
+    assert "if (metric) { setHeatMetric(String(metric)); }" in handler
+    assert handler.index("setHeatMetric") < handler.index("physFocusNode")
+    assert "focusById(id, { emit: false, announce: true });" in handler
+    assert "emit(" not in handler
+    # The overlay is a fill and a switcher; it adds nothing to what the
+    # pane says on the wire.
+    assert js.count("emit('selection_changed'") == 1
+
+
+# --- the route, over HTTP --------------------------------------------------
+
+
+def _write_phys_run(root: Path) -> Path:
+    """One run's physical artefacts, written with the phase-1 producers.
+
+    The same rule ``tests/test_hub_phys_page.py`` follows: a fixture
+    that invented its own document shape would keep passing after the
+    producers stopped writing that shape.
+    """
+
+    phys_dir = root / "verif" / "blk" / "artefacts" / "both"
+    phys_dir.mkdir(parents=True, exist_ok=True)
+    model = build_synth_model(
+        top="fifo",
+        modules=[{"module": "fifo", "cell_count": 120, "area_um2": 480.5}],
+        area_um2=480.5,
+        gate_count=120,
+        netlist_sha256="0" * 64,
+    )
+    model_path = write_model(model, phys_dir)
+    write_manifest(
+        build_manifest(
+            project_root=root,
+            phys_dir=phys_dir,
+            command="synth",
+            run="both",
+            top="fifo",
+            model_path=model_path,
+            totals=model["totals"],
+            synth={
+                "backend": "yosys",
+                "run": "both",
+                "stats": phys_dir / "synth_stat.json",
+                "netlist": phys_dir / "synth_netlist.v",
+                "log": phys_dir / "synth.log",
+            },
+        ),
+        phys_dir,
+    )
+    return phys_dir
+
+
+@pytest.mark.asyncio
+async def test_http_graph_page_advertises_the_model_it_can_paint_with(
+    hub_and_viewer, built_graph: Path
+):
+    """The wiring, end to end: the pane's phys URL is keyed on the same
+    manifest probe the landing page's phys card is keyed on, so the two
+    cannot disagree about whether there is a model."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}{graph_page.GRAPH_PAGE_ROUTE}"
+    _status, _headers, body = await asyncio.to_thread(_http_get, url)
+    # The fixture project has a graph and no physical artefacts.
+    assert b"window.__RTL_BUDDY_PHY_URL__ = " not in body
+    assert "run `rb synth` or `rb power` first".encode("utf-8") in body
+
+    _write_phys_run(built_graph)
+    phys_page._presence_cache.clear()  # noqa: SLF001 - a 5s TTL, cleared for the assert
+    _status, _headers, body = await asyncio.to_thread(_http_get, url)
+    assert b"window.__RTL_BUDDY_PHY_URL__ = '/phy.json'" in body
+    # And the route it now points at is live.
+    status, _headers, phys_body = await asyncio.to_thread(
+        _http_get, f"http://127.0.0.1:{viewer.http_port}{phys_page.PHYS_JSON_ROUTE}"
+    )
+    assert status == 200
+    payload = json.loads(phys_body)
+    assert payload["hub"]["metrics"] == list(phys_page.METRICS)
+    assert [row["module"] for row in payload["modules"]] == ["fifo"]

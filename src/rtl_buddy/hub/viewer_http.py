@@ -531,7 +531,7 @@ class ViewerServer:
             return _http_response(connection, 200, b"ok\n", content_type="text/plain")
 
         if path == graph_page.GRAPH_PAGE_ROUTE:
-            return self._handle_graph_page(connection)
+            return await self._handle_graph_page(connection)
 
         if path == graph_page.GRAPH_JSON_ROUTE:
             return await self._handle_graph_json(connection)
@@ -702,19 +702,32 @@ class ViewerServer:
     # /graph + /graph.json (issue #382)
     # ------------------------------------------------------------------
 
-    def _handle_graph_page(self, connection: ServerConnection) -> Response:
+    async def _handle_graph_page(self, connection: ServerConnection) -> Response:
         """``GET /graph`` — the interactive design-knowledge-graph pane.
 
         Always 200, even with no graph built: the page's own empty state
         names ``rb graph build``, which is more useful than a 404 body
         the browser renders as a blank tab. The page is static; all the
-        data arrives from ``GET /graph.json``.
+        data arrives from ``GET /graph.json`` — and, for the heat
+        overlay on its module nodes, from ``GET /phy.json``
+        (rtl-buddy/rtl_buddy#596).
+
+        The physical route is advertised off the **same presence probe
+        the landing page uses**, so a card that says there is a model
+        and a pane that says there is none cannot both be right. No
+        manifest means no injected URL, which the pane renders as a
+        muted heat control carrying the landing card's own wording.
         """
 
         return _http_response(
             connection,
             200,
-            graph_page.render_graph_html(hub_addr=self.hub_address),
+            graph_page.render_graph_html(
+                hub_addr=self.hub_address,
+                phys_url=(
+                    phys_page.PHYS_JSON_ROUTE if await self._has_phys_data() else None
+                ),
+            ),
             content_type="text/html; charset=utf-8",
         )
 

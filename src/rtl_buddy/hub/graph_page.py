@@ -456,18 +456,40 @@ def graph_files_present(project_root: str | os.PathLike) -> bool:
     return graph_json_path(project_root).is_file()
 
 
-def render_graph_html(*, hub_addr: str, graph_url: str = GRAPH_JSON_ROUTE) -> bytes:
+def render_graph_html(
+    *,
+    hub_addr: str,
+    graph_url: str = GRAPH_JSON_ROUTE,
+    phys_url: str | None = None,
+) -> bytes:
     """The ``GET /gph`` document, with the hub address injected.
 
     Everything is inline. The page must work on a machine with no route
     off localhost, so there is no CDN reference, no web font and no
     external stylesheet anywhere in it.
+
+    ``phys_url`` is the physical model's data route
+    (:data:`~rtl_buddy.hub.phys_page.PHYS_JSON_ROUTE`) when this project
+    has one, and the pane's heat overlay reads its module rows through
+    it (rtl-buddy/rtl_buddy#596). It is *injected* rather than carried in
+    ``graph.hub`` for two reasons: the landing page already advertises
+    the same route the same way — one presence probe, one spelling, so a
+    pane and a card cannot disagree about whether there is a model — and
+    ``GET /graph.json`` is 404 on a project with no graph, which would
+    make the pointer arrive only where it is least needed.
+
+    ``None`` omits the global entirely, exactly as the landing page
+    omits its own: the page then reads the absence as "no manifest under
+    this root" and mutes the heat control with the landing card's
+    wording rather than fetching a route that is going to 404.
     """
 
     preamble = (
         f"window.__RTL_BUDDY_HUB__ = {hub_addr!r};\n"
         f"window.__RTL_BUDDY_GRAPH_URL__ = {graph_url!r};"
     )
+    if phys_url is not None:
+        preamble += f"\nwindow.__RTL_BUDDY_PHY_URL__ = {phys_url!r};"
     return GRAPH_PAGE_HTML.replace("%HUB_INJECTION%", preamble).encode("utf-8")
 
 
