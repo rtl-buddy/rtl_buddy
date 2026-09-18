@@ -18,6 +18,9 @@ cfg-dispatch:
                          # the head reserves up to cpus x parallel (32 here,
                          # capped at the planned test count) and leaves mem
                          # and time exactly as written
+    split-verilate: true # Verilator suites verilate in their own Slurm job
+    verilate:            # that job's reservation; mem and time inherit the
+      cpus: 2            # compile values above
   sbatch-args:
     - --partition=verif
     - --account=chip

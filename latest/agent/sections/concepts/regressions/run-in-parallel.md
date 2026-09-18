@@ -7,7 +7,7 @@ rb regression --dispatch local-parallel -j 4
 rb regression --dispatch slurm
 ```
 
-Dispatch implies shared builds. RTL Buddy expands each suite, creates one build job per unique compile key, then runs dependent simulation jobs and combines their normal results.
+Dispatch implies shared builds. RTL Buddy expands each suite, creates one build job covering that suite's unique compile keys — two chained jobs where [verilation is split off](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#split-verilation-from-the-c-build) — then runs dependent simulation jobs and combines their normal results.
 
 `local-parallel` uses subprocesses on the current host and needs no scheduler. It cannot enforce `resources:` reservations or collect usage telemetry.
 
