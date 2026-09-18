@@ -430,18 +430,24 @@ class Toolset:
         Re-read per call, like the graph: an agent that runs a coverage
         regression in one turn asks about it in the next, and the
         alternative is answering from a run that no longer exists. A
-        relative ``cov_dir``/``manifest`` is rooted by :meth:`_rooted`.
+        relative ``cov_dir``/``manifest`` is rooted by :meth:`_rooted`,
+        and refused by :meth:`_path_arg` if it is not a path at all.
         """
         return cov_query.load_context(
             self.project_root,
-            cov_dir=self._rooted(args.get("cov_dir")),
-            manifest=self._rooted(args.get("manifest")),
+            cov_dir=self._rooted(self._path_arg(args, "cov_dir")),
+            manifest=self._rooted(self._path_arg(args, "manifest")),
         )
 
     def _h_cov_summary(self, args: dict) -> dict:
         return cov_query.summary_payload(
             self._cov_context(args),
-            limit=int(args.get("limit", cov_query.DEFAULT_FILE_LIMIT)),
+            # Validated by the shared helper, with this tool's own
+            # default: a bare `int()` here read `false` as 0 and let
+            # `limit: -1` through `coldest_first`'s "no cap at all"
+            # reading, answering a request for a head with every file in
+            # the run -- the very failure the helper exists to refuse.
+            limit=self._limit_arg(args, cov_query.DEFAULT_FILE_LIMIT),
         )
 
     def _h_cov_module(self, args: dict) -> dict:
@@ -466,8 +472,8 @@ class Toolset:
         """
         return phys_query.load_context(
             self.project_root,
-            phys_dir=self._rooted(self._phys_path_arg(args, "phys_dir")),
-            manifest=self._rooted(self._phys_path_arg(args, "manifest")),
+            phys_dir=self._rooted(self._path_arg(args, "phys_dir")),
+            manifest=self._rooted(self._path_arg(args, "manifest")),
         )
 
     def _h_phys_runs(self, args: dict) -> dict:
@@ -484,38 +490,41 @@ class Toolset:
             # `limit: -1` through `truncate`'s "no head at all" reading and
             # answered a listing request with every run in the project --
             # the very failure the helper exists to refuse.
-            limit=self._phys_limit(args, phys_query.DEFAULT_RUNS_LIMIT),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RUNS_LIMIT),
         )
 
     def _h_phys_summary(self, args: dict) -> dict:
         return phys_query.summary_payload(
             self._phys_context(args),
-            limit=self._phys_limit(args),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT),
         )
 
     def _h_phys_module(self, args: dict) -> dict:
         return phys_query.module_payload(
             self._phys_context(args),
             str(_req(args, "module")),
-            limit=self._phys_limit(args),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT),
         )
 
     def _h_phys_instance(self, args: dict) -> dict:
         return phys_query.instance_payload(
             self._phys_context(args),
             str(_req(args, "path")),
-            limit=self._phys_limit(args),
+            limit=self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT),
         )
 
     @staticmethod
-    def _phys_path_arg(args: dict, key: str) -> str | None:
+    def _path_arg(args: dict, key: str) -> str | None:
         """A discovery override, read as a path or refused as one.
 
-        The path half of what :meth:`_phys_limit` does for the row cap,
-        and it exists for the same reason: the server forwards a host's
+        Shared by every tool that takes one — ``cov_dir``/``manifest``
+        on the coverage tools, ``phys_dir``/``manifest`` on the physical
+        ones — because the hole is the same on all of them. It is the
+        path half of what :meth:`_limit_arg` does for the row cap, and
+        it exists for the same reason: the server forwards a host's
         arguments to the handler exactly as they arrived, so an
         ``inputSchema`` saying ``"type": "string"`` is documentation
-        until a handler checks it. ``{"phys_dir": 3}`` or
+        until a handler checks it. ``{"cov_dir": 3}`` or
         ``{"manifest": []}`` reached :meth:`_rooted` and died inside
         :class:`~pathlib.Path` with a ``TypeError`` that
         :meth:`Toolset.call` does not catch -- a protocol-level failure
@@ -523,12 +532,12 @@ class Toolset:
         ``ok: false`` envelope, and no sentence anywhere telling the
         agent which constraint it broke.
 
-        Absent stays absent: these two are optional, and ``None`` is how
-        :meth:`_rooted` and
-        :func:`~rtl_buddy.phys.query.resolve_manifest_path` already
-        spell "no override, discover the newest run". A host that sends
-        an explicit ``null`` means the same thing and is read the same
-        way. Everything that is not a string is the mistake.
+        Absent stays absent: these overrides are optional, and ``None``
+        is how :meth:`_rooted` and the ``resolve_manifest_path`` of
+        either query module already spell "no override, discover the
+        newest run". A host that sends an explicit ``null`` means the
+        same thing and is read the same way. Everything that is not a
+        string is the mistake.
         """
         value = args.get(key)
         if value is None:
@@ -541,26 +550,34 @@ class Toolset:
         return value
 
     @staticmethod
-    def _phys_limit(args: dict, default: int = phys_query.DEFAULT_RANK_LIMIT) -> int:
-        """The row cap a physical tool applies, defaulting like the CLI.
+    def _limit_arg(args: dict, default: int) -> int:
+        """The row cap a read tool applies, defaulting like its CLI verb.
+
+        Shared by every tool that takes a ``limit`` — the coverage
+        summary as well as the physical ones — because the input means
+        the same thing on all of them and so do the mistakes.
 
         ``default`` is the caller's, because the tools do not share one:
         a ranking of instances heads at
-        :data:`~rtl_buddy.phys.query.DEFAULT_RANK_LIMIT` and a listing of
-        runs at :data:`~rtl_buddy.phys.query.DEFAULT_RUNS_LIMIT`. Only the
-        default differs — every tool that takes a ``limit`` comes through
-        here, so the refusals below hold for all of them.
+        :data:`~rtl_buddy.phys.query.DEFAULT_RANK_LIMIT`, a listing of
+        runs at :data:`~rtl_buddy.phys.query.DEFAULT_RUNS_LIMIT` and the
+        coldest files at
+        :data:`~rtl_buddy.cov.query.DEFAULT_FILE_LIMIT`. Only the default
+        differs — every tool that takes a ``limit`` comes through here,
+        so the refusals below hold for all of them.
 
         A HEAD by default, not the complete list. These lists are as long
         as the design: every instance of a Liberty cell on a mapped run
         is six figures of rows, and a tool that returns all of them by
         default spends a context window on the tail of a ranking nobody
         asked for. The payloads say what happened — the applied ``limit``
-        rides on every one of them next to the untruncated
-        ``instance_count``/``child_count``, and the sums (``power``,
-        ``rollup``) cover every matching row, listed or not — so a
-        truncated answer is never mistaken for the whole one, and an
-        agent that wants the whole one passes ``0``.
+        rides on every physical one next to the untruncated
+        ``instance_count``/``child_count``, the sums (``power``,
+        ``rollup``) cover every matching row, listed or not, and the
+        coverage summary's ``totals``/``counts`` are the run's rather
+        than the listed files' — so a truncated answer is never mistaken
+        for the whole one, and an agent that wants the whole one passes
+        ``0``.
 
         **A limit that is not a number is refused, not raised past the
         envelope.** The server forwards a host's arguments to the handler
@@ -591,13 +608,13 @@ class Toolset:
         ``minimum: 0`` and nothing enforces it: the server hands the
         arguments an MCP host sent straight to the handler, so a schema
         constraint is documentation until a handler checks it. Below the
-        floor the cap does not merely clamp -- :func:`truncate` reads
-        anything ``<= 0`` as "no head at all" -- so ``limit: -1`` asks
-        for one row fewer than none and is answered with every row in
-        the design, which is both the opposite of what the caller wrote
-        and the one answer this default exists to prevent. ``0`` still
-        means all of them, because that is what the input's description
-        promises.
+        floor the cap does not merely clamp -- :func:`truncate` and
+        :func:`~rtl_buddy.cov.query.coldest_first` both read anything
+        ``<= 0`` as "no head at all" -- so ``limit: -1`` asks for one row
+        fewer than none and is answered with every row in the design,
+        which is both the opposite of what the caller wrote and the one
+        answer this default exists to prevent. ``0`` still means all of
+        them, because that is what the input's description promises.
         """
         raw = args.get("limit", default)
 
@@ -889,8 +906,8 @@ def _focus_target(tool: str, args: dict) -> str:
     ``target`` is the whole of what these two tools do, and the server
     forwards a host's arguments to the handler exactly as they arrived —
     so an ``inputSchema`` saying ``"type": "string"`` is documentation
-    until a handler checks it, the same gap :meth:`_phys_path_arg` and
-    :meth:`_phys_limit` close on the reads.
+    until a handler checks it, the same gap :meth:`_path_arg` and
+    :meth:`_limit_arg` close on the reads.
 
     :func:`str` is a renderer, not a validator: it answers ``false`` with
     ``"False"``, ``[]`` with ``"[]"`` and ``{}`` with ``"{}"``. Each of
