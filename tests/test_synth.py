@@ -1485,6 +1485,138 @@ def test_write_script_lib_flow_with_sdc_adds_D_flag(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Area and cell-count log scrape, anchored to the top module (#559)
+# ---------------------------------------------------------------------------
+
+
+# Verbatim shape of `stat -liberty` on a hierarchical design (yosys 0.64):
+# one section per module in design order — a submodule first here — and then
+# the `=== design hierarchy ===` roll-up, whose counts and whose `Chip area
+# for top module` line are the only ones that include the submodules. Taking
+# the first `Chip area for module` match reported `sub` as the design's area.
+_HIER_STAT_LOG = dedent("""\
+    5. Printing statistics.
+
+    === sub ===
+
+            +----------Local Count, excluding submodules.
+            |        +-Local Area, excluding submodules.
+            9        - wires
+            4        - ports
+            2    5.586 cells
+            1    1.064   AND2_X1
+            1    4.522   DFF_X1
+
+       Chip area for module '\\sub': 5.586000
+         of which used for sequential elements: 4.522000 (80.95%)
+
+    === my_module ===
+
+            +----------Local Count, excluding submodules.
+            |        +-Local Area, excluding submodules.
+           14        - wires
+            6        - ports
+            3    7.182 cells
+            1    4.522   DFF_X1
+            1    1.064   OR2_X1
+            1    1.596   XOR2_X1
+            1        - submodules
+            1        -   sub
+
+       Chip area for module '\\my_module': 7.182000
+         of which used for sequential elements: 4.522000 (62.96%)
+
+    === design hierarchy ===
+
+            +----------Count including submodules.
+            |        +-Area including submodules.
+            5   12.768 my_module
+            2    5.586 sub
+
+            +----------Count including submodules.
+            |        +-Area including submodules.
+           23        - wires
+           10        - ports
+            5   12.768 cells
+            1    1.064   AND2_X1
+            2    9.044   DFF_X1
+            1    1.064   OR2_X1
+            1    1.596   XOR2_X1
+            1    5.586 submodules
+            1    5.586   sub
+
+       Chip area for top module '\\my_module': 12.768000
+         of which used for sequential elements: 9.044000 (70.83%)
+    """)
+
+# The same tool on a flat design: one section, one area line, no roll-up.
+_FLAT_STAT_LOG = dedent("""\
+    5. Printing statistics.
+
+    === my_module ===
+
+            +----------Local Count, excluding submodules.
+            |        +-Local Area, excluding submodules.
+            9        - wires
+            4        - ports
+            2    5.586 cells
+            1    1.064   AND2_X1
+            1    4.522   DFF_X1
+
+       Chip area for module '\\my_module': 5.586000
+         of which used for sequential elements: 4.522000 (80.95%)
+    """)
+
+
+def test_scrape_anchors_the_area_and_cells_to_the_top_module(tmp_path):
+    """The top's roll-up, not whichever module Yosys printed first (#559)."""
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_area_um2(_HIER_STAT_LOG, "my_module") == pytest.approx(12.768)
+    assert ys._parse_gate_count(_HIER_STAT_LOG, "my_module") == 5
+
+
+def test_scrape_without_a_top_falls_back_to_the_last_match(tmp_path):
+    """Yosys prints the whole-design roll-up last, so the last match is the
+    design's even when the caller cannot name the top."""
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_area_um2(_HIER_STAT_LOG) == pytest.approx(12.768)
+    assert ys._parse_gate_count(_HIER_STAT_LOG) == 5
+
+
+def test_scrape_reads_a_flat_designs_single_section(tmp_path):
+    """A flat design has no roll-up: the top's own section is the design."""
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_area_um2(_FLAT_STAT_LOG, "my_module") == pytest.approx(5.586)
+    assert ys._parse_gate_count(_FLAT_STAT_LOG, "my_module") == 2
+    assert ys._parse_area_um2(_FLAT_STAT_LOG) == pytest.approx(5.586)
+    assert ys._parse_gate_count(_FLAT_STAT_LOG) == 2
+
+
+def test_scrape_of_a_top_absent_from_the_log_falls_back(tmp_path):
+    """An anchor that matches nothing — a renamed parameterised top, a log
+    from another design — is the no-top case rather than a missing answer."""
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_area_um2(_HIER_STAT_LOG, "other_top") == pytest.approx(12.768)
+    assert ys._parse_gate_count(_HIER_STAT_LOG, "other_top") == 5
+
+
+def test_scrape_prefers_the_last_stat_report_in_the_log(tmp_path):
+    """`synth` prints a `stat` of its own mid-script, so a flow that flattens
+    leaves a hierarchical report above the flat one the run ends with. What
+    the run wrote out is the last report, not the first."""
+    ys = _make_yosys(tmp_path)
+    log = _HIER_STAT_LOG + _FLAT_STAT_LOG
+    assert ys._parse_area_um2(log, "my_module") == pytest.approx(5.586)
+    assert ys._parse_gate_count(log, "my_module") == 2
+
+
+def test_scrape_of_a_log_with_no_area_line_is_none(tmp_path):
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_area_um2("no area here\n", "my_module") is None
+    assert ys._parse_gate_count("no cells here\n", "my_module") is None
+
+
+# ---------------------------------------------------------------------------
 # VlogFilelist strip=True fix
 # ---------------------------------------------------------------------------
 
@@ -2257,6 +2389,20 @@ def test_openroad_parse_tns_with_corner():
 def test_openroad_parse_area_missing_returns_none():
     or_synth = _make_openroad(Path("/tmp"))
     assert or_synth._parse_or_area_um2("no area here\n") is None
+
+
+def test_openroad_scrapes_the_yosys_log_for_the_top_module(tmp_path):
+    """Stage 1's Yosys log is scraped the same way the `yosys` backend scrapes
+    its own — anchored to the top, last match otherwise (#559)."""
+    or_synth = _make_openroad(tmp_path)
+    assert or_synth._parse_area_um2(_HIER_STAT_LOG, "my_module") == pytest.approx(
+        12.768
+    )
+    assert or_synth._parse_gate_count(_HIER_STAT_LOG, "my_module") == 5
+    assert or_synth._parse_area_um2(_HIER_STAT_LOG) == pytest.approx(12.768)
+    assert or_synth._parse_gate_count(_HIER_STAT_LOG) == 5
+    assert or_synth._parse_area_um2(_FLAT_STAT_LOG, "my_module") == pytest.approx(5.586)
+    assert or_synth._parse_gate_count(_FLAT_STAT_LOG, "my_module") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -5103,6 +5249,26 @@ def test_a_passing_synth_publishes_the_phys_model(tmp_path, monkeypatch):
     assert manifest["synth"]["backend"] == "yosys"
     assert manifest["power"]["backend"] is None
     assert manifest["synth"]["stats"].endswith("synth_stat.json")
+
+
+def test_a_passing_synth_totals_the_top_module_not_a_submodule(tmp_path, monkeypatch):
+    """The totals are a scrape of the flow's own log, kept independent of the
+    `stat -json` rows so a drift between them is information. That only holds
+    if the scrape measures the design: on a hierarchical log it used to take
+    the first `Chip area for module` line, which is a submodule's
+    (rtl-buddy/rtl_buddy#559)."""
+    from rtl_buddy.phys.model import load_model
+
+    _ys, result = _run_yosys_with(
+        tmp_path, monkeypatch, stats_text=_STAT_JSON, log_text=_HIER_STAT_LOG
+    )
+
+    assert isinstance(result, SynthPassResults)
+    assert result.results["area_um2"] == pytest.approx(12.768)
+    assert result.results["gate_count"] == 5
+    totals = load_model(result.results["phys_model"])["totals"]
+    assert totals["area_um2"] == pytest.approx(12.768)
+    assert totals["cell_count"] == 5
 
 
 def test_a_passing_synth_binds_the_model_to_the_netlist_it_wrote(tmp_path, monkeypatch):

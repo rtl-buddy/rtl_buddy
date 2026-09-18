@@ -585,6 +585,81 @@ def slang_handles_params(opts: SynthToolOpts) -> bool:
     return opts.frontend == "slang"
 
 
+# `stat -liberty` prints one `Chip area for module '\<name>':` line per module,
+# in design order, and on a hierarchical design a final
+# `Chip area for top module '\<top>':` line under its `=== design hierarchy ===`
+# roll-up — the only one whose area counts the submodules in. A `re.search`
+# therefore reported whichever module Yosys printed first, a submodule as often
+# as the top (rtl-buddy/rtl_buddy#559), so both parses below anchor on the top
+# and fall back to the last line rather than the first.
+_AREA_LINE_RE = re.compile(r"Chip area for (?:top )?module[^:]*:\s*([\d.]+)")
+
+# The `cells` line carries no module name — `stat` prints it under the
+# `=== <module> ===` header of the section it belongs to, with the area column
+# present only under `-liberty` — so the section header is what anchors it.
+_CELLS_LINE_RE = re.compile(
+    r"^\s+(\d+)\s+(?:[\d.]+(?:[Ee][+-]?\d+)?\s+)?cells$", re.MULTILINE
+)
+_STAT_SECTION_RE = re.compile(r"^=== (.+) ===\s*$", re.MULTILINE)
+_HIERARCHY_SECTION = "design hierarchy"
+
+
+def parse_area_um2(log_text: str, top: str | None = None) -> float | None:
+    """The design's chip area, scraped from a Yosys log.
+
+    Prefers the last area line that names ``top``: under `-liberty` the top
+    module has two — its own local area and the `top module` roll-up that
+    includes the submodules' — and the roll-up is what the design measures.
+    With no top known, or none of its lines in the log, the last area line of
+    any module is the answer, which is that same roll-up on a hierarchical
+    design and the single line a flat one prints.
+    """
+    if top:
+        anchored = re.findall(
+            r"Chip area for (?:top )?module '\\?" + re.escape(top) + r"':\s*([\d.]+)",
+            log_text,
+        )
+        if anchored:
+            return float(anchored[-1])
+    matches = _AREA_LINE_RE.findall(log_text)
+    return float(matches[-1]) if matches else None
+
+
+def _whole_design_stat_section(log_text: str, top: str | None) -> str | None:
+    """The body of the last `stat` section that measures the whole design.
+
+    That is the `=== design hierarchy ===` roll-up when there is one, and the
+    top module's own section when the design is flat and Yosys printed no
+    roll-up. Searching backwards is what keeps a flow that flattens mid-script
+    from being answered by the hierarchical `stat` its earlier stage printed.
+    """
+    headers = list(_STAT_SECTION_RE.finditer(log_text))
+    for i in range(len(headers) - 1, -1, -1):
+        name = headers[i].group(1).strip()
+        if name == _HIERARCHY_SECTION or (top and name == top):
+            end = headers[i + 1].start() if i + 1 < len(headers) else len(log_text)
+            return log_text[headers[i].end() : end]
+    return None
+
+
+def parse_gate_count(log_text: str, top: str | None = None) -> int | None:
+    """The design's cell count, scraped from a Yosys log.
+
+    Read out of the whole-design `stat` section, whose count includes the
+    submodules' cells; see :func:`_whole_design_stat_section`. A log whose
+    sections that cannot recognise still parses as it always did — the last
+    `cells` line of the log — since that is the roll-up's own line whenever
+    Yosys printed one.
+    """
+    section = _whole_design_stat_section(log_text, top)
+    if section is not None:
+        counts = _CELLS_LINE_RE.findall(section)
+        if counts:
+            return int(counts[-1])
+    counts = _CELLS_LINE_RE.findall(log_text)
+    return int(counts[-1]) if counts else None
+
+
 class YosysSynth:
     def __init__(
         self,
@@ -702,15 +777,11 @@ class YosysSynth:
             return extras
         return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
 
-    def _parse_area_um2(self, log_text: str) -> float | None:
-        m = re.search(r"Chip area for module[^:]*:\s*([\d.]+)", log_text)
-        return float(m.group(1)) if m else None
+    def _parse_area_um2(self, log_text: str, top: str | None = None) -> float | None:
+        return parse_area_um2(log_text, top)
 
-    def _parse_gate_count(self, log_text: str) -> int | None:
-        matches = re.findall(
-            r"^\s+(\d+)\s+(?:[\d.]+(?:[Ee][+-]?\d+)?\s+)?cells$", log_text, re.MULTILINE
-        )
-        return int(matches[-1]) if matches else None
+    def _parse_gate_count(self, log_text: str, top: str | None = None) -> int | None:
+        return parse_gate_count(log_text, top)
 
     def _parse_critical_path_ps(self, log_text: str) -> float | None:
         m = re.search(r"Delay\s*=\s*([\d.]+)\s*ps", log_text)
@@ -1203,8 +1274,9 @@ class YosysSynth:
                 f"warning(s) in {log_path}"
             )
 
-        area_um2 = self._parse_area_um2(log_text)
-        gate_count = self._parse_gate_count(log_text)
+        top = self.synth_cfg.get_top()
+        area_um2 = self._parse_area_um2(log_text, top)
+        gate_count = self._parse_gate_count(log_text, top)
         crit_path_ps = self._parse_critical_path_ps(log_text)
         wns_ps = (
             self._period_ps - crit_path_ps
