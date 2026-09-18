@@ -20,6 +20,8 @@ from rtl_buddy.config.dispatch import (
 )
 from rtl_buddy.config.dispatch import greedy_schedule, time_to_seconds
 from rtl_buddy.dispatch.rightsize import (
+    BUILD_JOB_ROW,
+    VERILATE_JOB_ROW,
     RightsizeFinding,
     _override_note,
     analyze_build_reservation,
@@ -863,6 +865,7 @@ def _build_advice(
     suite_config_hint=None,
     cpus_override=None,
     sbatch_args_config_path=None,
+    phase="compile",
 ):
     return analyze_build_reservation(
         telemetry,
@@ -877,6 +880,7 @@ def _build_advice(
         suite_config_hint=suite_config_hint,
         cpus_override=cpus_override,
         sbatch_args_config_path=sbatch_args_config_path,
+        phase=phase,
     )
 
 
@@ -3588,3 +3592,83 @@ def test_the_documented_note_examples_are_the_notes_actually_emitted():
         note = _override_note(args, masked, per_task=per_task, tasks=tasks)
         # The docs wrap these into a fenced block, so compare word streams.
         assert " ".join(note.split()) in " ".join(text.split()), note
+
+
+# ------ the verilate job's own row (#593)
+
+
+def test_the_verilate_job_gets_its_own_row_and_phase():
+    """Two jobs, two reservations, two rows a reader can tell apart."""
+    telemetry = {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200}
+    (build,) = [f for f in _build_advice(telemetry) if f.resource == "time"]
+    (verilate,) = [
+        f for f in _build_advice(telemetry, phase="verilate") if f.resource == "time"
+    ]
+    assert (build.test, build.phase) == (BUILD_JOB_ROW, "compile")
+    assert (verilate.test, verilate.phase) == (VERILATE_JOB_ROW, "verilate")
+    # Parenthesised, so neither can collide with a real test name.
+    assert VERILATE_JOB_ROW == "(verilate job)"
+
+
+def test_verilate_advice_names_the_verilate_key_it_is_written_at():
+    """`cfg-dispatch.compile.time` would not move this job: the verilate
+    sub-block beats every `compile:` layer (#593)."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        phase="verilate",
+        compile_origins={
+            "time": {
+                "origin": "cfg-dispatch",
+                "testbench": None,
+                "key": "verilate.time",
+            }
+        },
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {
+        "path": "cfg-dispatch.compile.verilate.time",
+        "file": "root_config.yaml",
+    }
+
+
+def test_verilate_advice_names_the_layer_and_the_key_together():
+    """Suite and testbench spellings, each with the key that really holds it."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        phase="verilate",
+        compile_origins={
+            "time": {
+                "origin": "testbench",
+                "testbench": "tb_chip_t1",
+                "key": "verilate.time",
+            }
+        },
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint == {
+        "file": "/abs/verif/blk/tests.yaml",
+        "path": "testbenches[name=tb_chip_t1].compile.verilate.time",
+    }
+
+    # ...and a field the verilate reservation INHERITED from `compile:` is
+    # named at that key, because the verilate one is not what won.
+    inherited = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        phase="verilate",
+        compile_origins={"time": {"origin": "suite", "testbench": None, "key": "time"}},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (inherited_time,) = [f for f in inherited if f.resource == "time"]
+    assert inherited_time.edit_hint["path"] == "compile.time"
+
+
+def test_the_build_job_row_is_unchanged_by_the_verilate_keys():
+    """A provenance map with no `key` is every compile field's, and stays so."""
+    findings = _build_advice(
+        {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+        compile_origins={"time": {"origin": "suite", "testbench": None}},
+        suite_config_hint="/abs/verif/blk/tests.yaml",
+    )
+    (time_a,) = [f for f in findings if f.resource == "time"]
+    assert time_a.edit_hint["path"] == "compile.time"

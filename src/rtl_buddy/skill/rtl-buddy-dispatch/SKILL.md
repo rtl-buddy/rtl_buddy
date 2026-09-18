@@ -24,13 +24,21 @@ One build job per suite compiles its distinct builds, `compile.parallel` of them
 at a time (default 1; a suite's `compile:` overrides cfg-dispatch's). Above 1 the
 job runs every config's `preproc` before any builder starts, so no hook may mutate
 another's inputs; at 1 it runs `preproc` then compile per config.
-Slurm refuses an array above the cluster's `MaxArraySize` (`Invalid job array
-specification`). rtl_buddy reads the limit from `scontrol show config` and
-splits an oversized group across arrays, each with its own manifest and logs
-under `slice-N/`. If the submit host cannot run `scontrol`, set
-`cfg-dispatch.max-array-size` (and `max-array-tasks` where
-`SchedulerParameters=max_array_tasks` caps lower); `max-jobs-per-array` then
-throttles each slice, so peak concurrency is that cap times the slice count.
+Under slurm a Verilator suite splits that job in two: `rb-verilate-<hash>`
+(reserved from `compile.verilate`, emits C++ only), then `rb-build-<hash>` on
+`afterok` (reserved from `compile`, builds it with `--no-verilate`).
+`compile.parallel` applies per phase; keys and stamps are unchanged. An OOM in
+elaboration is a `compile.verilate.mem` edit.
+`compile.build_phase_fallback` (WARNING) means the build job verilated a key
+itself — marker missing or stale, or no `--no-verilate` in that Verilator —
+correct but unsplit. `compile.split-verilate: false` runs one job.
+An oversized group is split across arrays, each with its own manifest and logs
+under `slice-N/`, from the `MaxArraySize` in `scontrol show config`. Where the
+submit host cannot run it, set `cfg-dispatch.max-array-size` (and
+`max-array-tasks` where `SchedulerParameters=max_array_tasks` caps lower) or
+Slurm refuses the array (`Invalid job array specification`).
+`max-jobs-per-array` throttles each slice, so peak concurrency is that cap
+times the slice count.
 Dispatched `test`, `randtest`, and `regression` keep their aggregate exit
 codes: 0 with no real failure, 1 when a job fails or its result envelope is
 missing, stale, or invalid, 2 for a fatal orchestration/configuration error.
@@ -41,8 +49,9 @@ In machine mode, inspect `payload.reservation_advice`. Apply its `edit_hint.file
 and `edit_hint.path` exactly: the governing field may be a test/testbench
 `resources:` entry, a `compile:` block on a testbench or atop that suite's
 `tests.yaml`, or `cfg-dispatch.compile` in `root_config.yaml`. Each overrides
-the previous field by field (`parallel` only to suite level), so a big suite or
-testbench carries its own `compile: {mem: ...}`, counted once per PLANNED
+the previous field by field (`parallel` and `split-verilate` only to suite
+level), so a big suite or testbench carries its own `compile: {mem: ...}`,
+counted once per PLANNED
 compile: the job sums the overlapping ones, schedules their time over
 `parallel`, and floors at the suite value.
 
@@ -54,48 +63,42 @@ compile: the job sums the overlapping ones, schedules their time over
 - Size the suite `compile.mem`/`time` for the WHOLE job at `compile.parallel: N`
   — N concurrent elaborations, N at or below the site's VCS license pool. Only
   per-testbench blocks are aggregated for you.
-- A `(build job)` row with `phase: compile` is the suite's build job. Its `cpus`
-  suggestion is per build while `reserved` is the scaled product submitted; read
-  `edit_hint.note`. The `cpus` row appears only for a job that ran one build at a
-  time — with `compile.parallel` above 1 the job's efficiency also counts idle
-  slots, so it is withheld as `parallel-utilization-ambiguous`; size `parallel`
-  against the suite's distinct compile keys and read `cpus` from a `parallel: 1`
-  run. A `reduce` is withheld (`rightsize.build_advice_withheld`) when no build
-  actually compiled, or when the job left no record of what it built, so
-  right-size the build job from a run that rebuilt.
+- A `(build job)` row with `phase: compile` is the C++ build job; a
+  `(verilate job)` row with `phase: verilate` is the verilate job, hinting at
+  `compile.verilate.<field>`. Their `cpus` suggestion is per build while
+  `reserved` is the scaled product submitted; read `edit_hint.note`. A `cpus`
+  row appears only for a job that ran one build at a time — above
+  `compile.parallel: 1` the efficiency also counts idle slots, so it is
+  withheld as `parallel-utilization-ambiguous`; size `parallel` against the
+  suite's distinct compile keys and read `cpus` from a `parallel: 1` run. A
+  `reduce` is withheld (`rightsize.build_advice_withheld`) when no build
+  actually compiled, or when the job left no record, so right-size from a run
+  that rebuilt.
 - `cpus` advice is judged against the cpus the job **requested**, not the cpus
-  Slurm allocated: a site that hands out whole cores charges a `cpus: 1` job two
-  and no reservation edit can change that. The request is the `--cpus-per-task`
-  rtl_buddy itself submitted, so the rule holds even where `ReqCPUS` is rounded
-  too. Where request and allocation differ the table reads
-  `Reserved 4 (8 allocated)`; `allocated` is on every finding and is null
-  except on such a `cpus` row. Edit the requested figure named in `Field`.
+  Slurm allocated: a site that hands out whole cores charges a `cpus: 1` job
+  two and no reservation edit can change that. Where the two differ the table
+  reads `Reserved 4 (8 allocated)`. Edit the figure named in `Field`.
 - ...unless `cfg-dispatch.sbatch-args` carries an argument that sets the job's
-  cpu request: `-c`/`--cpus-per-task`, or a task/node count `ReqCPUS`
-  raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`).
+  cpu request: `-c`/`--cpus-per-task`, or a task/node count that raises
+  `ReqCPUS` (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`).
   Node-selection constraints (`--threads-per-core`, `-B`), placement maxima
-  (`--ntasks-per-core`/`-socket`/`-gpu`) and `--exclusive` do not count — they
-  change what is selected, capped or allocated, not what is requested.
+  (`--ntasks-per-core`/`-socket`/`-gpu`) and `--exclusive` do not — they change
+  what is selected, capped or allocated, not what is requested.
 - The environment counts too: `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and
-  `SBATCH_NODES` are inherited by the submit and are treated exactly like the
-  matching `sbatch-args` entry (command line beats environment; the
-  environment is never sanitized). `SBATCH_CPUS_PER_TASK` is NOT one — every
-  submit path states `--cpus-per-task`, which beats it. An env-only override
-  has `edit_hint.path` `env` and no `file`. Overrides are appended last and
-  win — within one option the last occurrence, as for sbatch. The advice then
-  falls back to `ReqCPUS`, a DEBUG `rightsize request_from_scheduler` line
-  names the arguments, and the `cpus` row's `edit_hint` points at
-  `cfg-dispatch.sbatch-args`, naming the field it masks — edit the argument,
-  not that field. `mem` and `time` rows are unaffected.
-- `suggested` is always the whole-job cpu count, but only ONE shape of override
-  takes it: exactly one `-c`/`--cpus-per-task` — write it straight in. A lone
-  task or node count (`--ntasks`, `--ntasks-per-*`, `--nodes`) is not a cpu
-  count, and several arguments combine by sbatch's precedence, so the note
-  then says the number is the whole-job figure and the decomposition is yours.
-- A DIRECT `-c`/`--cpus-per-task` override disables the compile `cpus` floor —
-  it replaces the generated flag, so that floor never reached sbatch. A task or
-  node count does not: `--cpus-per-task` is still in force, so the floor stays
-  and no suggestion goes below it.
+  `SBATCH_NODES` are inherited by the submit and count like the matching
+  `sbatch-args` entry (command line wins; the environment is never sanitized).
+  `SBATCH_CPUS_PER_TASK` is NOT one — every submit states `--cpus-per-task`,
+  which beats it. The advice then falls back to `ReqCPUS`, DEBUG
+  `rightsize request_from_scheduler` names the arguments, and the `cpus`
+  `edit_hint` points at `cfg-dispatch.sbatch-args` (`env` and no `file` for an
+  env-only override), naming the field it masks — edit the argument, not that
+  field. `mem` and `time` rows are unaffected.
+- `suggested` is always the whole-job cpu count; only a single
+  `-c`/`--cpus-per-task` can take it straight. A task or node count is not a
+  cpu count, and several combine by sbatch's precedence — decompose it yourself.
+- A DIRECT `-c`/`--cpus-per-task` disables the compile `cpus` floor — it
+  replaced the generated flag, so that floor never reached sbatch. A task or
+  node count does not: `--cpus-per-task` is still in force, so the floor stays.
 - Right-size from representative regression levels and seeds; rerun until the
   advice retires. rtl_buddy suggests edits; it never edits YAML.
 
@@ -122,9 +125,9 @@ header); a consumed input that differs is `build_job.group_input_drift`.
 - `dispatch.build_job_deduped`: an earlier run's build job for this suite
   (`rb-build-<hash>`, one per suite dir) is still queued or running, so this
   one waits on it (`--dependency=singleton`), then revalidates the shared
-  build: unchanged inputs reuse it; `--rebuild`, an edit or another builder
-  recompile, correctly. Expected after an interrupt. If it stays PENDING,
-  inspect the job ahead (`squeue -j <ids> -O JobID,State,Reason`); `scancel`
+  build: unchanged inputs reuse it, an edit or `--rebuild` recompiles. Expected
+  after an interrupt. If it stays PENDING, inspect the job ahead
+  (`squeue -j <ids> -O JobID,State,Reason`); `scancel`
   only a held or stale one — a healthy build gates the sims.
 
 For missing envelopes, retries, license queues, accounting gaps, and builders

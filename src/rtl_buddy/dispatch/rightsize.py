@@ -432,6 +432,9 @@ def _aggregate(rows):
 # The build job is not a test, but every finding needs a row label. A
 # parenthesised name cannot collide with a real test name.
 BUILD_JOB_ROW = "(build job)"
+# ...and the verilate half of a split compile, which is a second job with
+# a second reservation and so a second row (#593).
+VERILATE_JOB_ROW = "(verilate job)"
 
 
 def _compile_origin(origins, field):
@@ -442,16 +445,26 @@ def _compile_origin(origins, field):
     row carries the flat ``{field: "suite"|"testbench"}`` map — there the
     governing testbench is the test's own, so naming it again would be
     noise. The build job carries the nested
-    ``{field: {"origin": ..., "testbench": ...}}`` map, because its
-    reservation is a maximum over several testbenches and ``mem`` may come
-    from one while ``time`` comes from another (#551). Returns
-    ``(origin, testbench)`` for either, and ``(None, None)`` for a field no
-    tests.yaml layer set.
+    ``{field: {"origin": ..., "testbench": ..., "key": ...}}`` map, because
+    its reservation is a maximum over several testbenches and ``mem`` may
+    come from one while ``time`` comes from another (#551). Returns
+    ``(origin, testbench, key)`` for either, and ``(None, None, None)`` for
+    a field no tests.yaml layer set.
+
+    ``key`` is the dotted key INSIDE the ``compile:`` block that holds the
+    value — ``mem``, or ``verilate.mem`` for a verilate job's field the
+    ``verilate:`` sub-block won (#593). ``None`` means "the field's own
+    name", which is every compile field.
     """
     value = (origins or {}).get(field)
     if isinstance(value, dict):
-        return value.get("origin"), value.get("testbench")
-    return value, None
+        return value.get("origin"), value.get("testbench"), value.get("key")
+    return value, None, None
+
+
+def _compile_key(origins, field):
+    """The dotted key inside a ``compile:`` block that holds ``field``."""
+    return _compile_origin(origins, field)[2] or field
 
 
 def _compile_edit_path(origins, field, *, testbench=None):
@@ -462,16 +475,17 @@ def _compile_edit_path(origins, field, *, testbench=None):
     is the fallback name for the flat per-test map, which records that a
     testbench block won without repeating which one.
     """
-    origin, governing_tb = _compile_origin(origins, field)
+    origin, governing_tb, key = _compile_origin(origins, field)
     governing_tb = governing_tb or testbench
+    key = key or field
     if origin == "testbench" and governing_tb:
-        return f"testbenches[name={governing_tb}].compile.{field}"
+        return f"testbenches[name={governing_tb}].compile.{key}"
     if origin in ("suite", "testbench"):
         # A testbench-governed field whose governing name went missing is a
         # defensive case only — the head records the two together. The suite
         # key at least lands the reader in the file that holds the block,
         # which ``cfg-dispatch`` in root_config.yaml would not.
-        return f"compile.{field}"
+        return f"compile.{key}"
     return None
 
 
@@ -503,7 +517,8 @@ def _compile_paths(
         # the suite's tests.yaml and root_config.yaml, and "compile.time"
         # beside "cfg-dispatch.compile.time" is only half the answer.
         if path is None:
-            path, config_file = f"cfg-dispatch.compile.{field}", root_config_hint
+            path = f"cfg-dispatch.compile.{_compile_key({field: source}, field)}"
+            config_file = root_config_hint
         else:
             config_file = suite_config_hint
         if config_file:
@@ -527,6 +542,7 @@ def analyze_build_reservation(
     suite_config_hint=None,
     cpus_override=None,
     sbatch_args_config_path=None,
+    phase="compile",
 ):
     """Right-size the *build job's* own reservation (#495).
 
@@ -605,6 +621,14 @@ def analyze_build_reservation(
     :func:`~rtl_buddy.config.dispatch.compile_resource_origins` beside the
     layering it mirrors and handed in — never guessed here from the
     values, which cannot tell an override from a coincidence.
+
+    ``phase`` says which half of a split compile this job ran (#593):
+    ``"compile"`` for the build job, ``"verilate"`` for the verilate job
+    in front of it. It selects the row label and travels on every finding,
+    so a suite whose compile is split produces two build-job rows a reader
+    can tell apart. The keys an ``edit_hint`` names come from
+    ``compile_origins`` rather than from here — the verilate job's
+    provenance map spells its own ``verilate.<field>`` keys.
     """
     if not build_telemetry:
         return []
@@ -711,7 +735,7 @@ def analyze_build_reservation(
             masked = (
                 compile_path
                 if compile_path and suite_config_hint
-                else "cfg-dispatch.compile.cpus"
+                else f"cfg-dispatch.compile.{_compile_key(origins, 'cpus')}"
             )
             # An environment variable lives in no file, so there is nothing
             # honest to point a `file` at; `sbatch-args` wins over it (the
@@ -750,7 +774,9 @@ def analyze_build_reservation(
         if compile_path and suite_config_hint:
             edit = {"file": suite_config_hint, "path": compile_path}
         else:
-            edit = {"path": f"cfg-dispatch.compile.{resource_field}"}
+            edit = {
+                "path": f"cfg-dispatch.compile.{_compile_key(origins, resource_field)}"
+            }
             if root_config_hint:
                 edit["file"] = root_config_hint
         if note:
@@ -759,11 +785,11 @@ def analyze_build_reservation(
 
     common = {
         "suite": suite_display,
-        "test": BUILD_JOB_ROW,
+        "test": VERILATE_JOB_ROW if phase == "verilate" else BUILD_JOB_ROW,
         "runs": 1,
         "reg_level": None,
         "states": states,
-        "phase": "compile",
+        "phase": phase,
         # Carried on every build-job row, not just the cpus one: the
         # footnote it feeds explains the row itself, and a table whose only
         # build-job row is `time` still has a build job behind it.

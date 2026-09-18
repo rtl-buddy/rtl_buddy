@@ -4474,3 +4474,124 @@ def test_the_drain_wait_still_polls_without_a_timeout(monkeypatch):
     backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
     backend.wait_all([JobHandle("41", _spec())])
     assert calls == [None]
+
+
+# --- the split compile: two chained jobs (#593) -----------------------------
+
+
+def test_the_verilate_job_has_its_own_name_over_the_same_digest():
+    """`singleton` serialises on the (user, name) pair, so the two halves
+    of one compile must not share a name: each phase would then wait for
+    the other phase's predecessor, which two overlapping runs of one suite
+    can satisfy only by deadlock."""
+    verilate = slurm_module.build_job_name(_build_spec(phase="verilate"))
+    build = slurm_module.build_job_name(_build_spec(phase="build"))
+    assert verilate.startswith("rb-verilate-")
+    assert build.startswith("rb-build-")
+    # One suite, one digest: the prefix is the only difference.
+    assert verilate.split("-", 2)[2] == build.split("-", 2)[2]
+    # ...and an unsplit compile keeps the name it always had.
+    assert build == slurm_module.build_job_name(_build_spec())
+
+
+def test_the_verilate_job_is_submitted_like_a_build_job_with_its_own_phase(
+    monkeypatch,
+):
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    spec = _build_spec(
+        phase="verilate", resources=JobResources(cpus=2, mem="96G", time="01:00:00")
+    )
+    backend.submit_build(spec)
+
+    _probe, argv = calls
+    assert f"--job-name={slurm_module.build_job_name(spec)}" in argv
+    assert "--cpus-per-task=2" in argv and "--mem=96G" in argv
+    assert "--dependency=singleton" in argv
+    # Nothing to reap: it waits for no job of its own.
+    assert "--kill-on-invalid-dep=yes" not in argv
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--phase") + 1] == "verilate"
+
+
+def test_the_build_half_waits_for_the_verilate_job_and_keeps_the_dedup(monkeypatch):
+    """Both conditions, ANDed: the chain, and the one-at-a-time identity."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec(phase="build"), dependency="1000")
+
+    _probe, argv = calls
+    assert "--dependency=afterok:1000,singleton" in argv
+    # An `afterok` CAN become unsatisfiable, so Slurm owns the cleanup —
+    # the head may be gone by the time the verilate job fails.
+    assert "--kill-on-invalid-dep=yes" in argv
+
+
+def test_the_chained_dependency_is_appended_after_sbatch_args(monkeypatch):
+    """Same ordering the build job's own flags already rely on: Slurm
+    resolves a repeated `--dependency` to the LAST one, so a site's
+    passthrough must not be able to drop the chain."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--partition=verif", "--dependency=afterok:7"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec(phase="build"), dependency="1000")
+
+    _probe, argv = calls
+    generated = "--dependency=afterok:1000,afterok:7,singleton"
+    assert argv.index(generated) > argv.index("--partition=verif")
+    assert argv.index("--dependency=afterok:7") < argv.index(generated)
+
+
+def test_an_any_of_dependency_loses_the_dedup_but_never_the_chain(monkeypatch):
+    """Slurm allows one separator per expression, so `?` cannot be composed
+    with. The dedup is what gives way — the in-job build lock still makes
+    two builders safe — while the chain is the correctness condition and
+    stays."""
+    # No dedup clause means no queue probe, so sbatch is the only call.
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7?afterok:8"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec(phase="build"), dependency="1000")
+
+    (argv,) = calls
+    assert "--dependency=afterok:1000" in argv
+    assert "--kill-on-invalid-dep=yes" in argv
+    assert not any("singleton" in arg for arg in argv)
+
+
+def test_the_verilate_job_gets_its_own_submission_event(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(_build_spec(phase="verilate"))
+    events = [r.__dict__.get("rtl_event") for r in caplog.records]
+    assert "dispatch.verilate_submitted" in events
+    assert "dispatch.build_submitted" not in events
+
+    caplog.clear()
+    calls[:] = []
+    results[:] = _dedup_results("")
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(_build_spec(phase="build"), dependency="1000")
+    events = [r.__dict__.get("rtl_event") for r in caplog.records]
+    assert "dispatch.build_submitted" in events
+    assert "dispatch.verilate_submitted" not in events

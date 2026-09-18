@@ -207,6 +207,7 @@ def _make_sim(
     filelist=None,
     rebuild=False,
     run_id=None,
+    build_phase="full",
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
@@ -229,6 +230,7 @@ def _make_sim(
         ),
         rebuild=rebuild,
         run_id=run_id,
+        build_phase=build_phase,
     )
 
 
@@ -7460,3 +7462,315 @@ def test_a_filelist_cycle_under_one_base_is_still_entered_once(tmp_path, monkeyp
         )
     ]
     assert keyed == ["-F lists/loop.f", "lists/beside.sv"], keyed
+
+
+# --- the split compile: verilate job, then build job (#593) ----------------
+
+_MARKER = vlog_sim_module.VERILATE_MARKER_NAME
+
+
+@pytest.fixture(autouse=True)
+def _forget_no_verilate_support():
+    """The `--help` probe is answered once per executable per PROCESS."""
+    vlog_sim_module._NO_VERILATE_SUPPORT.clear()
+    yield
+    vlog_sim_module._NO_VERILATE_SUPPORT.clear()
+
+
+def _install_phase_aware_builder(monkeypatch, calls, *, returncode=0, stderr=""):
+    """A fake Verilator that only produces a binary when asked to build.
+
+    The shared `_install_fake_builder` writes a simv wherever it sees
+    `--Mdir`, which would let the build half validate a stamp over a
+    directory the verilate half never built — exactly the confusion the
+    phases exist to keep apart.
+    """
+
+    def _fake_run(cmd, capture_output, text, cwd, env=None):
+        calls.append({"cmd": list(cmd), "cwd": cwd})
+        mdir = Path(cmd[cmd.index("--Mdir") + 1])
+        mdir = mdir if mdir.is_absolute() else Path(cwd) / mdir
+        mdir.mkdir(parents=True, exist_ok=True)
+        if "--no-verilate" not in cmd:
+            (mdir / "Vtop.mk").write_text("default:\n\t@true\n")
+        if returncode == 0 and (
+            "--binary" in cmd or "--build" in cmd or "--no-verilate" in cmd
+        ):
+            (mdir / "simv").write_text("binary\n")
+        return ManagedProcessResult(returncode=returncode, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+
+def _split_sim(tmp_path, monkeypatch, *, phase, name="alpha", **kwargs):
+    return _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name=name,
+        compile_opts=["--binary"],
+        build_phase=phase,
+        **kwargs,
+    )
+
+
+def _shared_dir_of(sim):
+    return Path(sim._compile_plan().shared_dir)
+
+
+def test_the_compile_key_is_identical_in_every_phase(tmp_path, monkeypatch):
+    """The two halves must meet in ONE build directory, so nothing about the
+    phase may reach the key: the rewrite happens at argv emission."""
+    _write_source(tmp_path)
+    keys = []
+    for phase in ("full", "verilate", "build"):
+        plan = _split_sim(tmp_path, monkeypatch, phase=phase)._compile_plan()
+        keys.append(
+            (
+                tuple(plan.key_cmd),
+                vlog_sim_module._fingerprint_sha(plan.fingerprint),
+                str(plan.shared_dir),
+            )
+        )
+    assert keys[0] == keys[1] == keys[2]
+
+
+def test_the_verilate_phase_emits_the_front_end_and_no_binary(tmp_path, monkeypatch):
+    """`--binary` is `--main --exe --build --timing`; this is that, less the
+    build. The marker replaces the stamp, which must NOT be written: there
+    is no executable for a gated simulation to reuse."""
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    sim = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    shared = _shared_dir_of(sim)
+
+    assert sim.compile() == 0
+
+    cmd = calls[0]["cmd"]
+    assert "--binary" not in cmd and "--build" not in cmd
+    assert {"--exe", "--main", "--timing"} <= set(cmd)
+    assert not (shared / "simv").exists()
+    assert not (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
+    marker = json.loads((shared / _MARKER).read_text())
+    assert marker["status"] == "ok"
+    assert marker["fingerprint_sha"] is not None
+    assert marker["duration_sec"] is not None
+    assert marker["transcript"].endswith("compile.log")
+
+
+def test_the_build_phase_runs_make_alone_and_consumes_the_marker(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    shared = _shared_dir_of(verilate)
+    assert verilate.compile() == 0
+
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = True
+    build = _split_sim(tmp_path, monkeypatch, phase="build")
+    assert build.compile() == 0
+
+    assert "--no-verilate" in calls[1]["cmd"]
+    # The build exists and is stamped, so a gated simulation can reuse it.
+    assert (shared / "simv").exists()
+    assert (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
+    # ...and the marker is gone, so a later run can never consult a stale one.
+    assert not (shared / _MARKER).exists()
+
+
+def test_the_build_phase_reports_the_whole_compiles_duration(tmp_path, monkeypatch):
+    """The two halves are one compile to the envelope and the overlay, so the
+    build half adds the verilation it was handed (#593)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    shared = _shared_dir_of(verilate)
+    assert verilate.compile() == 0
+    # Pin the recorded verilation so the sum is a fixed number.
+    marker = json.loads((shared / _MARKER).read_text())
+    marker["duration_sec"] = 120.0
+    (shared / _MARKER).write_text(json.dumps(marker))
+
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = True
+    build = _split_sim(tmp_path, monkeypatch, phase="build")
+    assert build.compile() == 0
+
+    record = build.last_compile
+    assert record["verilate_sec"] == 120.0
+    assert record["build_sec"] == pytest.approx(record["duration_sec"] - 120.0)
+    assert record["duration_sec"] >= 120.0
+    assert record["reused"] is False
+
+
+def test_an_unsplit_compile_records_only_the_three_keys_it_always_did(
+    tmp_path, monkeypatch
+):
+    _write_source(tmp_path)
+    _install_phase_aware_builder(monkeypatch, [])
+    sim = _split_sim(tmp_path, monkeypatch, phase="full")
+    assert sim.compile() == 0
+    assert set(sim.last_compile) == {"duration_sec", "builder", "reused"}
+
+
+@pytest.mark.parametrize(
+    "break_marker, reason",
+    [
+        (lambda path: path.unlink(), "marker-missing"),
+        (
+            lambda path: path.write_text(
+                json.dumps({"status": "ok", "fingerprint_sha": "deadbeef"})
+            ),
+            "marker-stale",
+        ),
+    ],
+    ids=["missing", "stale"],
+)
+def test_the_build_phase_falls_back_to_a_full_compile(
+    tmp_path, monkeypatch, caplog, break_marker, reason
+):
+    """No marker for these inputs means this job has to verilate too — said
+    out loud, because the suite paid for a verilate job that did not help."""
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    shared = _shared_dir_of(verilate)
+    assert verilate.compile() == 0
+    break_marker(shared / _MARKER)
+
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = True
+    build = _split_sim(tmp_path, monkeypatch, phase="build")
+    with caplog.at_level(logging.WARNING):
+        assert build.compile() == 0
+
+    assert "--no-verilate" not in calls[1]["cmd"]
+    assert "--binary" in calls[1]["cmd"]
+    fallbacks = [
+        record.__dict__["rtl_fields"]
+        for record in caplog.records
+        if record.__dict__.get("rtl_event") == "compile.build_phase_fallback"
+    ]
+    assert [entry["reason"] for entry in fallbacks] == [reason]
+    assert fallbacks[0]["test"] == "alpha"
+    assert (shared / "simv").exists()
+
+
+def test_a_verilator_without_no_verilate_falls_back_and_says_so(
+    tmp_path, monkeypatch, caplog
+):
+    """Probed, not version-gated: the flag is the whole mechanism, and the
+    reservation is what a reader has to reconsider."""
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    assert verilate.compile() == 0
+
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = False
+    build = _split_sim(tmp_path, monkeypatch, phase="build")
+    with caplog.at_level(logging.WARNING):
+        assert build.compile() == 0
+
+    assert "--no-verilate" not in calls[1]["cmd"]
+    reasons = [
+        record.__dict__["rtl_fields"]["reason"]
+        for record in caplog.records
+        if record.__dict__.get("rtl_event") == "compile.build_phase_fallback"
+    ]
+    assert reasons == ["no-verilate-unsupported"]
+
+
+def test_the_no_verilate_probe_is_answered_once_per_process(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    probes = []
+
+    def _fake_help(argv, capture_output=True, text=True, timeout=None):
+        probes.append(list(argv))
+        from types import SimpleNamespace
+
+        return SimpleNamespace(returncode=0, stdout="  --no-verilate\n", stderr="")
+
+    monkeypatch.setattr(vlog_sim_module.subprocess, "run", _fake_help)
+    sim = _split_sim(tmp_path, monkeypatch, phase="build")
+    assert sim._verilator_supports_no_verilate() is True
+    assert sim._verilator_supports_no_verilate() is True
+    assert [argv[1] for argv in probes] == ["--help"]
+
+
+def test_a_failed_verilation_is_not_re_run_under_the_build_reservation(
+    tmp_path, monkeypatch, caplog
+):
+    """It is deterministic, so the second attempt fails identically and only
+    costs the transcript holding the first one's errors (#593)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(
+        monkeypatch, calls, returncode=1, stderr="%Error: syntax\n"
+    )
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    shared = _shared_dir_of(verilate)
+    assert verilate.compile() != 0
+    marker = json.loads((shared / _MARKER).read_text())
+    assert marker["status"] == "failed"
+    transcript = marker["transcript"]
+
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = True
+    build = _split_sim(tmp_path, monkeypatch, phase="build")
+    with caplog.at_level(logging.ERROR):
+        assert build.compile() == 1
+
+    # No second builder invocation at all.
+    assert len(calls) == 1
+    assert build.compile_fail_desc.endswith(f"(see {transcript})")
+    assert build.last_compile_failure["transcript"] == transcript
+    assert "compile.verilate_failed" in [
+        record.__dict__.get("rtl_event") for record in caplog.records
+    ]
+
+
+def test_a_sibling_on_one_key_does_not_verilate_it_twice(tmp_path, monkeypatch):
+    """Two configs sharing a compile key share a build directory, and the
+    build job's group-leader rule cannot help here — its subject is a stamp
+    this phase does not write. The marker is what short-circuits (#593)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    first = _split_sim(tmp_path, monkeypatch, phase="verilate", name="alpha")
+    assert first.compile() == 0
+    second = _split_sim(tmp_path, monkeypatch, phase="verilate", name="beta")
+    assert second.compile() == 0
+
+    assert len(calls) == 1
+    assert second.last_compile["reused"] is True
+
+
+def test_a_compile_line_with_no_build_step_is_run_whole_by_the_verilate_phase(
+    tmp_path, monkeypatch
+):
+    """`--cc` alone already stops after the front end, so there is nothing to
+    split: the verilate job runs it and stamps, and the build job reuses."""
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="alpha",
+        compile_opts=["--cc"],
+        build_phase="verilate",
+    )
+    shared = Path(sim._compile_plan().shared_dir)
+    (shared).mkdir(parents=True, exist_ok=True)
+    (shared / "simv").write_text("binary\n")
+
+    assert sim.compile() == 0
+
+    assert "--cc" in calls[0]["cmd"]
+    # Stamped like any other whole compile, and no marker to mislead the
+    # build half.
+    assert (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
+    assert not (shared / _MARKER).exists()

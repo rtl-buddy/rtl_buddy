@@ -300,3 +300,30 @@ def test_an_explicit_disable_is_forwarded_as_an_empty_argument():
     # ...and that is distinguishable from saying nothing at all.
     assert "--shared-build-root" not in build_job_argv(_build_spec())
     assert "--shared-build-root" not in sim_job_argv(_test_spec())
+
+
+# --- the split compile's phase (#593) --------------------------------------
+
+
+def test_the_build_phase_is_absent_at_the_default():
+    """An unsplit suite's argv must be byte-identical to a pre-#593 head's."""
+    assert "--phase" not in build_job_argv(_build_spec())
+    assert "--phase" not in build_job_argv(_build_spec(phase="full"))
+
+
+def test_each_half_of_a_split_compile_names_its_phase():
+    for phase in ("verilate", "build"):
+        argv = build_job_argv(_build_spec(phase=phase))
+        assert _flag_value(argv, "--phase") == phase
+        assert argv.index("--phase") > argv.index("_build-job")
+
+
+def test_the_verilate_jobs_envelope_and_log_are_named_for_it():
+    """Mirrors the build job's pair, so a split suite's files never collide."""
+    assert job_log_path("/p/artefacts/.dispatch/verilate-result-77-abc.json") == Path(
+        "/p/artefacts/.dispatch/verilate-rtl_buddy-77-abc.log"
+    )
+    # ...and the build job's naming is untouched.
+    assert job_log_path("/p/artefacts/.dispatch/build-result-77-abc.json") == Path(
+        "/p/artefacts/.dispatch/build-rtl_buddy-77-abc.log"
+    )

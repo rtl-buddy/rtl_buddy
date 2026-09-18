@@ -385,10 +385,18 @@ def test_shim_parallel_build_job_reservation_is_scaled(parallel_shim_run):
 
     lines = [line for line in argv.read_text().splitlines() if line.strip()]
     wrapped = [line for line in lines if "--wrap" in line]
-    assert len(wrapped) == 1, f"expected exactly one build job\n{lines}\n{diag}"
-    assert "--cpus-per-task=2" in wrapped[0], wrapped[0]
-    # And the job it wrapped was told the budget it is paying for.
-    assert "--parallel 2" in wrapped[0], wrapped[0]
+    # Two compile jobs since #593, each scaled by `parallel` from its own
+    # per-build figure: the build job from this fixture's inherited
+    # `compile.cpus` of 1, the verilate job from the default 2.
+    assert len(wrapped) == 2, f"expected two compile jobs\n{lines}\n{diag}"
+    verilate = [line for line in wrapped if "--phase verilate" in line]
+    build = [line for line in wrapped if "--phase verilate" not in line]
+    assert len(verilate) == 1 and len(build) == 1, f"{wrapped}\n{diag}"
+    assert "--cpus-per-task=2" in build[0], build[0]
+    assert "--cpus-per-task=4" in verilate[0], verilate[0]
+    # And each job it wrapped was told the budget it is paying for.
+    assert "--parallel 2" in build[0], build[0]
+    assert "--parallel 2" in verilate[0], verilate[0]
     # The sim array is untouched: scaling is the build job's alone.
     arrays = [line for line in lines if "--array=" in line]
     assert arrays and all("--cpus-per-task=1" in line for line in arrays), arrays
@@ -595,3 +603,106 @@ def test_shim_adopt_collects_an_interrupted_fleet_without_resubmitting(
     adopted = [e for e in events if e.get("event") == "dispatch.orphans_adopted"]
     assert len(adopted) == 1, [e.get("event") for e in events]
     assert adopted[0]["run_token"] == manifest["run_token"]
+
+
+# ------------------------------ the split compile, end to end (#593)
+
+
+@pytest.fixture(scope="module")
+def split_shim_run(tmp_path_factory):
+    """One regression whose compile went out as two chained Slurm jobs.
+
+    The shim ``sbatch`` runs each submission synchronously in submission
+    order, which is exactly the order the ``afterok`` chain asks for — so
+    this is the whole path observable at once: the head's two submissions,
+    the front end alone under the first, ``--no-verilate`` under the
+    second, and a simulation that runs on what they built together.
+    """
+    work = tmp_path_factory.mktemp("dispatch_split")
+    argv = work / "sbatch_argv.txt"
+    proc, envelope, project, diag = _run_regression(
+        work, extra_env={"RB_SHIM_ARGV": str(argv)}
+    )
+    return proc, envelope, project, diag, argv
+
+
+def test_shim_split_compile_submits_a_verilate_job_then_a_build_job(split_shim_run):
+    proc, envelope, _project, diag, argv = split_shim_run
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
+    assert results == {"alpha": "PASS", "beta": "PASS"}, diag
+
+    wrapped = [
+        line
+        for line in argv.read_text().splitlines()
+        if "--wrap" in line and "_build-job" in line
+    ]
+    assert len(wrapped) == 2, f"expected two compile jobs\n{wrapped}\n{diag}"
+    verilate, build = wrapped
+    assert "--phase verilate" in verilate, verilate
+    assert "--job-name=rb-verilate-" in verilate, verilate
+    # No gates manifest: there is no build for a released simulation yet.
+    assert "--gates" not in verilate, verilate
+    assert "--phase build" in build, build
+    assert "--job-name=rb-build-" in build, build
+    # The chain, and Slurm owning the cleanup if the verilation fails.
+    assert "--dependency=afterok:" in build, build
+    assert "--kill-on-invalid-dep=yes" in build, build
+
+
+def test_shim_split_compile_runs_the_front_end_once_and_then_the_build(
+    split_shim_run,
+):
+    """The verilate job leaves the generated Makefile and no executable; the
+    build job runs ``--no-verilate`` over it and leaves the binary."""
+    proc, _envelope, project, diag, _argv = split_shim_run
+    assert proc.returncode == 0, diag
+
+    (shared,) = list(project.glob("verif/*/artefacts/.shared-builds/obj_dir_*"))
+    assert (shared / "Vtop.mk").exists(), diag
+    assert (shared / "simv").exists(), diag
+    # The stamp is the build job's; the marker it consumed is gone, so no
+    # later run can be cleared by a stale one.
+    assert (shared / "rb-compile-stamp.json").exists(), diag
+    assert not (shared / ".rb-verilate.json").exists(), diag
+
+    # The build job's transcript is the one that says how it compiled. Read
+    # whole: a reusing simulation job rewrites the file as a breadcrumb that
+    # CARRIES the compile it reused, so the command is no longer line one.
+    transcripts = list(project.glob("verif/*/artefacts/*/compile.log"))
+    assert transcripts, diag
+    texts = [path.read_text() for path in transcripts]
+    assert any("--no-verilate" in text for text in texts), texts
+
+
+def test_shim_split_compile_reports_both_halves_in_one_compile_record(
+    split_shim_run,
+):
+    """The two jobs are one compile to the envelope: `duration_sec` covers
+    both, with the halves beside it (#593)."""
+    proc, _envelope, project, diag, _argv = split_shim_run
+    assert proc.returncode == 0, diag
+
+    (verilate_envelope,) = list(
+        project.glob("verif/*/artefacts/.dispatch/verilate-result-*.json")
+    )
+    verilate_raw = json.loads(verilate_envelope.read_text())
+    assert verilate_raw["built"], verilate_raw
+    # Its own sacct row, on its own artifact.
+    assert verilate_raw["telemetry"]["state"] == "COMPLETED", verilate_raw
+    # ...and its own rtl_buddy log beside it.
+    assert job_log_path(verilate_envelope).exists(), diag
+
+    (build_envelope,) = list(
+        project.glob("verif/*/artefacts/.dispatch/build-result-*.json")
+    )
+    records = json.loads(build_envelope.read_text())["builds"]
+    compiled = [entry for entry in records if entry.get("reused") is False]
+    assert compiled, records
+    for entry in compiled:
+        assert entry["verilate_sec"] is not None, entry
+        assert entry["build_sec"] is not None, entry
+        assert entry["duration_sec"] == pytest.approx(
+            entry["verilate_sec"] + entry["build_sec"], abs=0.02
+        ), entry

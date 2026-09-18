@@ -49,6 +49,7 @@ class TestRunner:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        build_phase=None,
     ):
         """
         Run tests based on config
@@ -84,6 +85,10 @@ class TestRunner:
         # what acts on it, and this is what creates the sim instance.
         self.rebuild = rebuild
         self.build_result_json = build_result_json
+        # Which half of a split compile this runner's COMPILE performs
+        # (#593). ``None`` is the whole thing, which is every path but a
+        # split build job's.
+        self.build_phase = build_phase
         # Set by prepare(); the phases after it all drive this one instance,
         # because a preproc hook may mutate test_cfg and the compile key is
         # only knowable afterwards, on the sim that saw the mutation.
@@ -115,6 +120,11 @@ class TestRunner:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            **(
+                {"build_phase": self.build_phase}
+                if self.build_phase is not None
+                else {}
+            ),
         )
 
     def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):

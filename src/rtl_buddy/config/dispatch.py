@@ -101,6 +101,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_JOB_TIME = "01:00:00"
 DEFAULT_JOB_CPUS = 1
 
+# Cores the verilate job reserves per build when nothing says otherwise
+# (#593). Verilation is single-threaded, so the figure is not a guess at
+# how wide the phase can run: it is one core for the compiler and one for
+# the I/O and the process tree around it. `compile.cpus` stays the C++
+# build's number, which is the phase that actually scales.
+DEFAULT_VERILATE_CPUS = 2
+
 # What an interrupted run's surviving jobs get on the next invocation
 # (#521). `warn` keeps every release before this one's behaviour: the
 # orphans are named and a fresh fleet goes out beside them. It is the
@@ -127,6 +134,33 @@ class DispatchResourcesFile:
     sexagesimal resolver — which turns an unquoted ``4:00:00`` into the
     integer ``14400`` — is caught at validation with a clear message
     rather than silently sent to Slurm as 14400 minutes (10 days).
+    """
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+
+
+@serde
+class CompileVerilateFile:
+    """``compile.verilate`` — the verilate job's own reservation (#593).
+
+    Under Slurm the per-suite compile is two chained jobs: a verilate job
+    that runs Verilator's single-threaded front end, and a build job that
+    runs the ``make`` over the sources it emitted. They want opposite
+    shapes — the first is one core at peak memory, the second is
+    ``compile.cpus`` cores at a fraction of it — so they take separate
+    reservations, and this is the first one's.
+
+    ``cpus`` defaults to :data:`DEFAULT_VERILATE_CPUS`; ``mem`` and
+    ``time`` inherit the fully resolved compile values, because those are
+    the figures a project already sized for the verilation.
+
+    Its own class rather than :class:`DispatchResourcesFile` for the same
+    reason the compile block has one: the fields are identical, and
+    keeping the shapes apart is what stops ``parallel`` or
+    ``split-verilate`` from being documented onto a block that cannot
+    honour them.
     """
 
     cpus: int | None = None
@@ -168,6 +202,13 @@ class DispatchCompileFile:
     # 16-CPU reservation; this is what spends that reservation. 1 is
     # today's serial loop, and the default.
     parallel: int = 1
+    # The verilate job's own reservation, when the compile is split (#593).
+    verilate: CompileVerilateFile | None = None
+    # Whether to split it at all. True chains a verilate job and a build
+    # job with `afterok`; False keeps the single `verilator --binary` job
+    # every release before this one submitted. Only a backend that can
+    # chain jobs acts on it, so it is inert off Slurm.
+    split_verilate: bool = field(rename="split-verilate", default=True)
 
 
 def _validate_time(value):
@@ -277,6 +318,25 @@ def _validate_compile_cpus(value):
     return value
 
 
+def _validate_verilate_block(res):
+    """Validate a raw ``compile.verilate`` sub-block; return a fresh copy.
+
+    The compile validators, unchanged: the verilate job's reservation is
+    aggregated over the planned builds exactly as the build job's is, so a
+    ``mem`` the sum cannot read or a zero ``time`` is as wrong here as
+    there (#593).
+
+    ``None`` in, ``None`` out.
+    """
+    if res is None:
+        return None
+    return CompileVerilateFile(
+        cpus=_validate_compile_cpus(res.cpus),
+        mem=_validate_compile_mem(res.mem),
+        time=_validate_compile_time(res.time),
+    )
+
+
 @serde
 class TestbenchCompileFile:
     """A testbench's own ``compile:`` block in tests.yaml (#551).
@@ -297,9 +357,16 @@ class TestbenchCompileFile:
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
+    # This build's verilate reservation (#593), layered the same way the
+    # three fields above are.
+    verilate: CompileVerilateFile | None = None
     # Accepted by the schema, refused by the validator. See the class
     # docstring: silence here would be worse than an error.
     parallel: int | None = None
+    # Refused for the same reason `parallel` is: there is one compile per
+    # suite, split or not, so whether to split it cannot be a property of
+    # one testbench.
+    split_verilate: bool | None = field(rename="split-verilate", default=None)
 
 
 def validate_testbench_compile_block(res):
@@ -319,10 +386,17 @@ def validate_testbench_compile_block(res):
             "parallel is not accepted on a testbench compile block; set it "
             "at suite level (compile.parallel) or in cfg-dispatch.compile."
         )
+    if getattr(res, "split_verilate", None) is not None:
+        raise FatalRtlBuddyError(
+            "split-verilate is not accepted on a testbench compile block; "
+            "set it at suite level (compile.split-verilate) or in "
+            "cfg-dispatch.compile."
+        )
     return TestbenchCompileFile(
         cpus=_validate_compile_cpus(res.cpus),
         mem=_validate_compile_mem(res.mem),
         time=_validate_compile_time(res.time),
+        verilate=_validate_verilate_block(getattr(res, "verilate", None)),
     )
 
 
@@ -356,6 +430,12 @@ class SuiteCompileFile:
     # ``None`` means "inherit cfg-dispatch.compile.parallel", which is the
     # whole difference from DispatchCompileFile — see the class docstring.
     parallel: int | None = None
+    # This suite's verilate reservation (#593).
+    verilate: CompileVerilateFile | None = None
+    # ``None`` means "inherit cfg-dispatch.compile.split-verilate", for the
+    # same reason ``parallel`` does: a suite overriding only ``mem`` must
+    # not also pin whether its compile is split.
+    split_verilate: bool | None = field(rename="split-verilate", default=None)
 
 
 def validate_compile_block(res):
@@ -382,6 +462,8 @@ def validate_compile_block(res):
         mem=_validate_mem(res.mem),
         time=_validate_time(res.time),
         parallel=parallel,
+        verilate=_validate_verilate_block(getattr(res, "verilate", None)),
+        split_verilate=getattr(res, "split_verilate", None),
     )
 
 
@@ -594,6 +676,8 @@ class DispatchConfigFile:
                 mem=_validate_mem(res.mem),
                 time=_validate_time(res.time),
                 parallel=res.parallel,
+                verilate=_validate_verilate_block(getattr(res, "verilate", None)),
+                split_verilate=getattr(res, "split_verilate", True),
             )
 
         if self.progress_interval < 0:
@@ -1051,6 +1135,32 @@ def compile_parallel(dispatch_cfg, suite_compile=None) -> int:
     return dispatch_cfg.compile.parallel
 
 
+def compile_split_verilate(dispatch_cfg, suite_compile=None) -> bool:
+    """Is this suite's compile submitted as two chained jobs (#593)?
+
+    ``verilator --binary`` is a single-threaded verilation followed by a
+    ``make -j N``, and the whole thing is reserved at ``compile.cpus x
+    parallel`` — so the cores idle through the phase that holds the peak
+    memory. True splits it: a verilate job sized from
+    ``compile.verilate``, then a build job sized from ``compile`` and
+    gated on it with ``afterok``.
+
+    Layered exactly as :func:`compile_parallel` is, and for the same
+    reason: the compile is per suite, so the suite is entitled to say
+    whether its own is split. ``getattr``, so a caller holding a block
+    from before this key reads as "inherit".
+
+    Only a backend that can chain jobs acts on the answer; the head asks
+    it for Slurm alone.
+    """
+    suite_split = getattr(suite_compile, "split_verilate", None)
+    if suite_split is not None:
+        return bool(suite_split)
+    if dispatch_cfg is None or dispatch_cfg.compile is None:
+        return True
+    return bool(getattr(dispatch_cfg.compile, "split_verilate", True))
+
+
 def mem_to_bytes(value) -> int | None:
     """Parse an sbatch ``--mem`` spelling to bytes; ``None`` if unparseable.
 
@@ -1290,6 +1400,150 @@ def compile_resource_origins(suite_compile, tb_compile=None) -> dict:
     return origins
 
 
+def _verilate_layers(dispatch_cfg, suite_compile=None, tb_compile=None):
+    """The ``compile.verilate`` blocks, least specific first (#593)."""
+    layers = [getattr(getattr(dispatch_cfg, "compile", None), "verilate", None)]
+    layers += [
+        getattr(layer, "verilate", None) for layer in (suite_compile, tb_compile)
+    ]
+    return layers
+
+
+def resolve_verilate_resources(
+    dispatch_cfg, suite_compile=None, tb_compile=None
+) -> JobResources:
+    """Resolve the verilate reservation for ONE testbench (#593).
+
+    Two stages, because the block is an override of the compile
+    reservation rather than a replacement for it:
+
+    1. the fully resolved compile reservation supplies ``mem`` and
+       ``time``. Those are the figures a project sized for the
+       verilation in the first place — it is the phase that holds the
+       peak — so a suite that splits its compile and writes nothing new
+       keeps the reservation it already had.
+    2. every ``compile.verilate`` block then layers over them field by
+       field, testbench over suite over ``cfg-dispatch.compile``, so any
+       ``verilate:`` key beats any ``compile:`` key.
+
+    ``cpus`` does not inherit: verilation is single-threaded, so
+    ``compile.cpus`` describes the ``make`` and would reserve cores this
+    job cannot use. It starts at :data:`DEFAULT_VERILATE_CPUS` instead.
+
+    A scheduling fact only, like the compile reservation: nothing here
+    reaches the compile fingerprint or the shared-build key.
+    """
+    compile_resources = resolve_compile_resources(
+        dispatch_cfg, suite_compile, tb_compile
+    )
+    resolved = JobResources(
+        cpus=DEFAULT_VERILATE_CPUS,
+        mem=compile_resources.mem,
+        time=compile_resources.time,
+    )
+    for layer in _verilate_layers(dispatch_cfg, suite_compile, tb_compile):
+        if layer is None:
+            continue
+        if layer.cpus is not None:
+            resolved.cpus = _validate_compile_cpus(layer.cpus)
+        if layer.mem is not None:
+            resolved.mem = _validate_compile_mem(layer.mem)
+        if layer.time is not None:
+            resolved.time = _validate_compile_time(layer.time)
+    return resolved
+
+
+def verilate_resource_origins(suite_compile, tb_compile=None) -> dict:
+    """Which tests.yaml layer and which KEY won each verilate field (#593).
+
+    :func:`compile_resource_origins`, with the key spelled out beside the
+    layer: a verilate field can be won by ``compile.verilate.mem`` or by
+    the ``compile.mem`` it falls back to, and advice naming the wrong one
+    of those two is advice that does not retire. ``{field: {"origin":
+    "suite"|"testbench", "key": "mem"|"verilate.mem"}}``, with fields no
+    tests.yaml layer won simply absent — ``cfg-dispatch`` governs them,
+    and the key to write there is always the ``verilate`` one, since it
+    beats every ``compile`` layer.
+
+    ``cpus`` has no ``compile:`` fallback, so only a ``verilate:`` block
+    can appear for it.
+    """
+    origins = {}
+    # Stage 1: the compile fields the verilate reservation inherits.
+    for layer, origin in ((suite_compile, "suite"), (tb_compile, "testbench")):
+        for name in ("mem", "time"):
+            if getattr(layer, name, None) is not None:
+                origins[name] = {"origin": origin, "key": name}
+    # Stage 2: the verilate blocks, which beat every compile layer.
+    for layer, origin in ((suite_compile, "suite"), (tb_compile, "testbench")):
+        verilate = getattr(layer, "verilate", None)
+        for name in ("cpus", "mem", "time"):
+            if getattr(verilate, name, None) is not None:
+                origins[name] = {"origin": origin, "key": f"verilate.{name}"}
+    return origins
+
+
+def verilate_build_block(tb_compile) -> DispatchResourcesFile:
+    """One testbench's PER-BUILD verilate reservation, as it is stated (#593).
+
+    The block :func:`aggregate_verilate_resources` combines, which is not
+    simply ``tb_compile.verilate``: ``mem`` and ``time`` fall back to the
+    testbench's own ``compile:`` block, because a build sized there was
+    sized for its verilation — dropping the fallback would let a 256 GB
+    entry's verilate job be reserved from the suite-wide figure and be
+    OOM-killed in the one phase that needs the memory.
+
+    ``cpus`` has no such fallback; see :func:`resolve_verilate_resources`.
+    """
+    verilate = getattr(tb_compile, "verilate", None)
+
+    def stated(name):
+        own = getattr(verilate, name, None)
+        return own if own is not None else getattr(tb_compile, name, None)
+
+    return DispatchResourcesFile(
+        cpus=getattr(verilate, "cpus", None),
+        mem=stated("mem"),
+        time=stated("time"),
+    )
+
+
+def aggregate_verilate_resources(
+    dispatch_cfg, suite_compile=None, testbenches=(), parallel=1
+) -> tuple[JobResources, dict]:
+    """:func:`aggregate_compile_resources` for the verilate job (#593).
+
+    Same arithmetic over the same planned builds — ``cpus`` is the widest,
+    ``mem`` the sum of the widest ``min(parallel, n)``, ``time`` the
+    makespan — read off :func:`verilate_build_block` instead of the
+    ``compile:`` blocks and floored at
+    :func:`resolve_verilate_resources`. Shared rather than restated so
+    the two jobs of one compile can never disagree about how wide the
+    suite is.
+    """
+    blocks = [(name, verilate_build_block(block)) for name, block in testbenches]
+    tb_blocks = {}
+    for name, block in testbenches:
+        tb_blocks.setdefault(name, block)
+
+    def source_key(name, field_name):
+        # Which of the two spellings holds this source's value. Keyed on
+        # the testbench NAME, which is enough: two planned builds of one
+        # testbench read one block, so they carry one label.
+        if name is None or field_name == "cpus":
+            return f"verilate.{field_name}"
+        own = getattr(getattr(tb_blocks.get(name), "verilate", None), field_name, None)
+        return f"verilate.{field_name}" if own is not None else field_name
+
+    return _aggregate_resources(
+        resolve_verilate_resources(dispatch_cfg, suite_compile),
+        blocks,
+        parallel,
+        floor_origins=verilate_resource_origins(suite_compile),
+        source_key=source_key,
+    )
+
+
 def compile_parallel_origin(suite_owned: bool, suite_path=None) -> str:
     """How to spell the key that governs ``compile.parallel`` (#547).
 
@@ -1427,6 +1681,36 @@ def aggregate_compile_resources(
     sum is taken in bytes, and a value silently dropped out of it would
     shrink the reservation.
     """
+    return _aggregate_resources(
+        resolve_compile_resources(dispatch_cfg, suite_compile),
+        testbenches,
+        parallel,
+        floor_origins=compile_resource_origins(suite_compile),
+    )
+
+
+def _aggregate_resources(
+    floor, testbenches, parallel, *, floor_origins=None, source_key=None
+):
+    """Combine one reservation field-wise over the builds one job runs (#593).
+
+    The body :func:`aggregate_compile_resources` documents, with the floor
+    and the provenance labels handed in — because the verilate job
+    aggregates the same way over a different set of keys
+    (:func:`aggregate_verilate_resources`), and two copies of this
+    arithmetic would be two chances for the two jobs to disagree about how
+    wide a suite is.
+
+    ``floor_origins`` is the flat ``{field: origin}`` map of the whole-job
+    layer, as :func:`compile_resource_origins` produces it, or the richer
+    ``{field: {"origin", "key"}}`` :func:`verilate_resource_origins` does.
+    ``source_key(name, field)`` spells the key inside a ``compile:`` block
+    that holds one source's value — ``None`` (the default) for the compile
+    fields, whose key IS the field name; ``name`` is ``None`` for the
+    whole-job layer. Reservation advice renders it, so a hint about the
+    verilate job names ``compile.verilate.mem`` rather than the
+    ``compile.mem`` it would not be moved by.
+    """
     parallel = max(1, int(parallel or 1))
     # Only planned builds that state a block of their own take part in the
     # aggregation; the rest ride on the whole-job floor below.
@@ -1435,19 +1719,32 @@ def aggregate_compile_resources(
         for name, block in testbenches
         if any(getattr(block, f, None) is not None for f in ("cpus", "mem", "time"))
     ]
-    floor = resolve_compile_resources(dispatch_cfg, suite_compile)
-    floor_origins = compile_resource_origins(suite_compile)
+    floor_origins = floor_origins or {}
     resolved = JobResources(cpus=floor.cpus, mem=floor.mem, time=floor.time)
     origins = {}
 
-    def _floor_source(field_name):
-        return {
-            "origin": floor_origins.get(field_name, "cfg-dispatch"),
-            "testbench": None,
-        }
+    def _source(origin, name, field_name, key=None):
+        source = {"origin": origin, "testbench": name}
+        key = key or (source_key(name, field_name) if source_key else None)
+        if key is not None:
+            # Only where there is one, so a compile source stays the
+            # two-key dict every consumer of it already compares.
+            source["key"] = key
+        return source
 
-    def _tb_source(name):
-        return {"origin": "testbench", "testbench": name}
+    def _floor_source(field_name):
+        entry = floor_origins.get(field_name)
+        if isinstance(entry, dict):
+            return _source(
+                entry.get("origin") or "cfg-dispatch",
+                None,
+                field_name,
+                key=entry.get("key"),
+            )
+        return _source(entry or "cfg-dispatch", None, field_name)
+
+    def _tb_source(name, field_name="mem"):
+        return _source("testbench", name, field_name)
 
     def _dedupe(sources):
         """Collapse repeats: two planned builds can share one YAML key."""
@@ -1472,6 +1769,9 @@ def aggregate_compile_resources(
         origins[field_name] = {
             "origin": winners[0]["origin"],
             "testbench": winners[0]["testbench"],
+            # The key inside the `compile:` block that holds the winning
+            # value, where it is not simply the field's own name (#593).
+            **({"key": winners[0]["key"]} if "key" in winners[0] else {}),
             # Every source that produces the same number, so a `reduce` no
             # single edit could apply is withheld rather than aimed at one
             # of several tied sources.
@@ -1496,7 +1796,7 @@ def aggregate_compile_resources(
     # build needing 8 cores needs 8 whether or not its neighbour needs 2.
     cpus_bids = [(block.cpus, name) for name, block in blocks if block.cpus is not None]
     resolved.cpus = max([value for value, _ in cpus_bids] + [floor.cpus])
-    cpus_winners = [_tb_source(n) for v, n in cpus_bids if v == resolved.cpus]
+    cpus_winners = [_tb_source(n, "cpus") for v, n in cpus_bids if v == resolved.cpus]
     if floor.cpus == resolved.cpus:
         cpus_winners.append(_floor_source("cpus"))
     _record("cpus", cpus_winners)
@@ -1544,13 +1844,14 @@ def aggregate_compile_resources(
         # is recorded: a sum of several cannot be decomposed into one edit.
         top = overlapping[0][0]
         mem_winners = [
-            _tb_source(n) if n else _floor_source("mem")
+            _tb_source(n, "mem") if n else _floor_source("mem")
             for v, n, _ in overlapping
             if v == top
         ]
         mem_primary = top
         mem_contributors = [
-            _tb_source(n) if n else _floor_source("mem") for _, n, _ in overlapping
+            _tb_source(n, "mem") if n else _floor_source("mem")
+            for _, n, _ in overlapping
         ]
     floor_binds_mem = floor_mem is not None and floor_mem == winning_mem
     if floor_binds_mem:
@@ -1604,12 +1905,12 @@ def aggregate_compile_resources(
             group for group, done in zip(workers, finish) if done == makespan
         ]
         critical = critical_workers[0]
-        time_contributors = [_tb_source(time_bids[i][1]) for i in critical]
+        time_contributors = [_tb_source(time_bids[i][1], "time") for i in critical]
         longest = max(time_bids[i][0] for i in critical)
         for group in critical_workers:
             group_longest = max(time_bids[i][0] for i in group)
             time_winners += [
-                _tb_source(time_bids[i][1])
+                _tb_source(time_bids[i][1], "time")
                 for i in group
                 if time_bids[i][0] == group_longest
             ]

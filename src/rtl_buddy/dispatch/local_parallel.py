@@ -261,7 +261,13 @@ class LocalProcessBackend(DispatchBackend):
         self._queued.append(job)
         return JobHandle(job_id=job.job_id, spec=spec)
 
-    def submit_build(self, spec: BuildJobSpec) -> JobHandle:
+    def submit_build(
+        self, spec: BuildJobSpec, *, dependency: str | None = None
+    ) -> JobHandle:
+        # `dependency` is the split compile's chaining gate (#593), and this
+        # backend never sees one: the head only splits for a backend that
+        # can chain jobs, and a pool that queues by hand cannot express
+        # `afterok` on a job it may run out of order.
         # The pool's own cap counts jobs, not the processes inside them: a
         # build job carrying `--parallel N` (#495) occupies ONE slot and then
         # fans out to N concurrent compiles inside it, so `jobs` x

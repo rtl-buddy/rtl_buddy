@@ -23,6 +23,22 @@ from ..config.dispatch import JobResources
 from ..seed_mode import SeedMode
 
 
+# Which half of the compile one build job runs (#593).
+#
+# ``full`` is ``verilator --binary``: verilate, then make. It is the only
+# shape that existed before this, and it is still what a hand-run
+# ``rb _build-job`` and every backend that cannot chain jobs submits.
+#
+# ``verilate`` and ``build`` split it in two so the reservations can
+# differ: the verilation is single-threaded at peak memory, the make is
+# ``compile.cpus`` cores at a fraction of it, and one allocation covering
+# both idles most of its cores through the first half.
+BUILD_PHASE_FULL = "full"
+BUILD_PHASE_VERILATE = "verilate"
+BUILD_PHASE_BUILD = "build"
+BUILD_PHASES = (BUILD_PHASE_FULL, BUILD_PHASE_VERILATE, BUILD_PHASE_BUILD)
+
+
 @dataclass
 class BuildJobSpec:
     """Everything a backend needs to launch one suite's build job.
@@ -30,6 +46,9 @@ class BuildJobSpec:
     The job runs ``rb _build-job`` on a compute node — PRE+COMPILE for
     every runnable test in the suite with share-build, so each unique
     compile key Verilates once. Sim jobs depend on its success.
+
+    ``phase`` says which half of that compile it runs (#593); a split
+    suite submits one spec per phase, chained by ``afterok``.
     """
 
     suite_dir: str
@@ -86,6 +105,10 @@ class BuildJobSpec:
     # the job to resolve its own, which is what keeps an unconfigured
     # project's job script byte-identical.
     shared_build_root: str | None = None
+    # One of :data:`BUILD_PHASES` (#593). ``full`` is today's single job and
+    # travels with no ``--phase`` flag at all, so an unsplit suite's argv is
+    # byte-identical to a pre-#593 head's.
+    phase: str = BUILD_PHASE_FULL
 
 
 @dataclass
@@ -242,8 +265,16 @@ class DispatchBackend(ABC):
     scheduled: bool = True
 
     @abstractmethod
-    def submit_build(self, spec: BuildJobSpec) -> JobHandle:
-        """Submit one suite's build job; return its handle without waiting."""
+    def submit_build(
+        self, spec: BuildJobSpec, *, dependency: str | None = None
+    ) -> JobHandle:
+        """Submit one suite's build job; return its handle without waiting.
+
+        ``dependency`` is a job id this one must not start before — the
+        verilate job, for the ``build`` half of a split compile (#593). A
+        backend that cannot chain jobs never receives one, because the
+        head only splits where it can.
+        """
 
     @abstractmethod
     def submit(
