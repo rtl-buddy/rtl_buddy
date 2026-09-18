@@ -24,6 +24,11 @@ syntax and schemas, use `rb test --help`, `rb randtest --help`, and
   anchors on `dirname(regression.yaml)`.
 - Test artefacts are under `artefacts/<test>/`; randtest iterations use
   `run-NNNN/`. Durable verdicts live in `result.json`; `rtl_buddy.log` is JSONL.
+- "another rtl-buddy run is already using this artefact tree" means one lock per
+  artefact tree. To run two tiers at once (one per simulator), give each
+  `--run-tag <name>`: its tree, lock, log and overlay move under
+  `artefacts/.runs/<name>/`, shared builds stay shared, and
+  `rb graph results --run-tag <name>` converts that run. Unset changes nothing.
 - On a long regression use `rb --print-failures-only --machine regression ...`
   to trim `PASS`/`SKIP`/`XFAIL` rows from the console summary; the `summary`
   event and the log keep every row.

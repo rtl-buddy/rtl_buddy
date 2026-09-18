@@ -135,6 +135,12 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
         argv += ["-l", str(spec.reg_level)]
     if spec.start_level is not None:
         argv += ["-s", str(spec.start_level)]
+    if spec.run_tag is not None:
+        # Omitted without a tag, like --parallel and --phase above: an
+        # untagged suite's job script is byte-identical to a pre-#541
+        # head's. With one, the job has to compute the same artefact tree
+        # the head planned, or it writes outside the namespace.
+        argv += ["--run-tag", spec.run_tag]
     return argv
 
 
@@ -184,6 +190,9 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
         # needs no counterpart: it only ever compiles the plan's configs,
         # whose plusargs the head already merged.
         argv += ["--plusarg", key if value is None else f"{key}={value}"]
+    if spec.run_tag is not None:
+        # Same pairing as the build job's (#541).
+        argv += ["--run-tag", spec.run_tag]
     return argv
 
 

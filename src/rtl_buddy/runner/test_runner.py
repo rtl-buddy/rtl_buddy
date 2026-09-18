@@ -50,6 +50,7 @@ class TestRunner:
         rebuild=False,
         build_result_json=None,
         build_phase=None,
+        run_tag=None,
     ):
         """
         Run tests based on config
@@ -89,6 +90,11 @@ class TestRunner:
         # (#593). ``None`` is the whole thing, which is every path but a
         # split build job's.
         self.build_phase = build_phase
+        # The `--run-tag` artefact namespace this run writes into (#541).
+        # Threaded, like `shared_build_root` above: the head decided which
+        # tree the run belongs to, and the sim instance this creates is what
+        # turns that into paths.
+        self.run_tag = run_tag
         # Set by prepare(); the phases after it all drive this one instance,
         # because a preproc hook may mutate test_cfg and the compile key is
         # only knowable afterwards, on the sim that saw the mutation.
@@ -120,6 +126,7 @@ class TestRunner:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            run_tag=self.run_tag,
             **(
                 {"build_phase": self.build_phase}
                 if self.build_phase is not None

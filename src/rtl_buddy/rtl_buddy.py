@@ -210,7 +210,12 @@ from .tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileRun,
 )
 from .tools.coverage import CoverageReporter
-from .tools.artifact_paths import RESULT_JSON_NAME, test_artifact_dir
+from .tools.artifact_paths import (
+    RESULT_JSON_NAME,
+    run_artifact_root,
+    test_artifact_dir,
+    validate_run_tag,
+)
 from .tools.hier_rtl_buddy_view import (
     VIEW_BLOCK_DIAGRAM_MIN_VERSION,
     RtlBuddyView,
@@ -924,6 +929,13 @@ class RtlBuddy:
         # replaces it, so an envelope's identity is the same whether the
         # run happened in-process or on a compute node.
         self._run_token: str | None = None
+        # The validated `--run-tag` artefact namespace (#541), or None for
+        # the flat tree. Set by the handlers that accept the flag, BEFORE
+        # they enter their execution context — the context derives the
+        # artefact root from it, and the artefact root is what the tree lock
+        # is taken on. Read by everything that builds a per-run path, so
+        # there is exactly one answer per process.
+        self._run_tag: str | None = None
 
     def run(self):
         try:
@@ -1122,11 +1134,13 @@ class RtlBuddy:
             ctx = ExecutionContext.for_command(
                 invocation_cwd=self.invocation_cwd,
                 primary_config=primary_config,
+                run_tag=self._run_tag,
             )
         else:
             ctx = ExecutionContext.for_dir(
                 invocation_cwd=self.invocation_cwd,
                 command_root=command_root,
+                run_tag=self._run_tag,
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
@@ -1135,6 +1149,11 @@ class RtlBuddy:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(log_path)
         elif not list_only:
+            # Under a `--run-tag` the log lives in the tagged artefact root,
+            # which nothing has created yet — the tree lock below is what
+            # mkdirs it, and that is after this (#541). Untagged this is
+            # `command_root`, created two lines up, so the call is a no-op.
+            ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
 
@@ -1148,6 +1167,13 @@ class RtlBuddy:
         # (#351): they share the suite artefact tree deliberately,
         # write disjoint run dirs, and reuse the shared build read-only,
         # so they must not contend for the exclusive lock.
+        #
+        # `ctx.artifact_root` carries the `--run-tag` namespace (#541), so
+        # the lock is per-tag by construction: two tagged runs of one suite
+        # lock different directories, an untagged run locks exactly the
+        # directory it always did, and two runs naming the SAME tag still
+        # contend — which is the answer a caller that named one tag twice
+        # wants.
         if getattr(self, "_pending_invoked_subcommand", None) not in (
             "_test-job",
             "_build-job",
@@ -1711,6 +1737,16 @@ class RtlBuddy:
                 show_default=False,
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this run's artefact tree under "
+                "artefacts/.runs/<tag>/ so a concurrent run of the same "
+                "suite gets its own tree, its own tree lock and its own "
+                "log; shared builds stay shared",
+            ),
+        ] = None,
     ):
         """
         run a simple test
@@ -1721,6 +1757,10 @@ class RtlBuddy:
         # Parsed before anything runs, so a malformed value is a usage error
         # rather than a plusarg the bench silently never sees (#552).
         self._plusarg_overrides = parse_plusarg_overrides(plusarg)
+        # Validated and recorded before the execution context is entered:
+        # the context derives the artefact root — and therefore the tree
+        # lock — from it (#541).
+        self._run_tag = validate_run_tag(run_tag)
         master_seed = self._checked_master_seed(master_seed)
         if master_seed is not None and (rnd_new or rnd_last):
             raise FatalRtlBuddyError(
@@ -1835,6 +1875,9 @@ class RtlBuddy:
             # (#552); None rather than an empty dict, so the field reads the
             # same way `master_seed` does when it was never asked for.
             plusarg_overrides=self._plusarg_overrides or None,
+            # Which artefact tree this run wrote into (#541). Omitted by
+            # log_event when unset, so an untagged run's log is unchanged.
+            run_tag=self._run_tag,
         )
 
         seed_mode: SeedMode = SeedMode.DEFAULT
@@ -2063,11 +2106,22 @@ class RtlBuddy:
                 show_default="cfg-dispatch orphans, else warn",
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this run's artefact tree under "
+                "artefacts/.runs/<tag>/ so a concurrent run of the same "
+                "suite gets its own tree, its own tree lock and its own "
+                "log; shared builds stay shared",
+            ),
+        ] = None,
     ):
         """
         repeat a test with multiple random seeds
         """
         self._orphans = orphans
+        self._run_tag = validate_run_tag(run_tag)
         self.rebuild = rebuild
         self._shared_build_root_flag = shared_build_root
         self.rtl_builder_mode = (
@@ -2084,6 +2138,7 @@ class RtlBuddy:
             test=test_name,
             iterations=rnd_cnt,
             replay_run_id=rpt_i,
+            run_tag=self._run_tag,
         )
 
         # Seed fan-out is the dispatch sweet spot: one shared build, N
@@ -2376,12 +2431,25 @@ class RtlBuddy:
                 "command applied (KEY=VALUE or bare KEY); repeatable",
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="the head's artefact namespace; write into "
+                "artefacts/.runs/<tag>/ so this job's outputs land in the "
+                "tree the head planned",
+            ),
+        ] = None,
     ):
         """
         internal: run one (test, run_id) and write its result JSON (#351)
         """
         master_seed = self._checked_master_seed(master_seed)
         self._plusarg_overrides = parse_plusarg_overrides(plusarg)
+        # Re-validated here rather than trusted: this is a CLI boundary like
+        # any other, and a job whose tag was mangled in transport must fail
+        # loud rather than write a second tree beside the head's (#541).
+        self._run_tag = validate_run_tag(run_tag)
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -2428,6 +2496,7 @@ class RtlBuddy:
             resolved_seed=resolved_seed,
             result_json=str(result_json_path),
             plan=plan,
+            run_tag=self._run_tag,
         )
 
         plan_config = (
@@ -2572,6 +2641,7 @@ class RtlBuddy:
             run_id=run_id,
             results=res,
             run_token=run_token,
+            run_tag=self._run_tag,
         )
         # The head's grading rule, applied here too, so one run cannot be
         # scored differently by the job and by the collector (#546): an
@@ -2689,6 +2759,15 @@ class RtlBuddy:
                 "build), verilate (front end only), or build (make only)",
             ),
         ] = BUILD_PHASE_FULL,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="the head's artefact namespace; write into "
+                "artefacts/.runs/<tag>/ so this job's outputs land in the "
+                "tree the head planned",
+            ),
+        ] = None,
     ):
         """
         internal: compile a suite's runnable tests on a compute node (#351)
@@ -2730,6 +2809,9 @@ class RtlBuddy:
             raise FatalRtlBuddyError(
                 f"--phase must be one of {', '.join(BUILD_PHASES)} (got {phase!r})."
             )
+        # Re-validated like the phase above, and before anything is written
+        # (#541): a mangled tag must fail loud, not write a second tree.
+        self._run_tag = validate_run_tag(run_tag)
         if parallel < 1:
             # Rejected before anything is entered or written: a job allowed
             # zero concurrent builds would compile nothing, and a fatal here
@@ -2796,6 +2878,7 @@ class RtlBuddy:
             parallel_origin=parallel_origin,
             gates=gates,
             phase=phase,
+            run_tag=self._run_tag,
         )
 
         if plan is not None:
@@ -2846,6 +2929,8 @@ class RtlBuddy:
                 rebuild=rebuild,
                 # Which half of the compile this job runs (#593).
                 build_phase=phase,
+                # The head's artefact namespace (#541).
+                run_tag=self._run_tag,
             )
             try:
                 res = runner.prepare()
@@ -3763,7 +3848,11 @@ class RtlBuddy:
                 test_cfg=test_cfg,
                 root_cfg=self.root_cfg,
                 suite_dir=suite_dir,
-                artifact_dir=str(test_artifact_dir(suite_dir, test_cfg.get_name())),
+                artifact_dir=str(
+                    test_artifact_dir(
+                        suite_dir, test_cfg.get_name(), run_tag=self._run_tag
+                    )
+                ),
                 out_test_cfgs=[],
             )
         except Exception as e:
@@ -3814,6 +3903,7 @@ class RtlBuddy:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            run_tag=self._run_tag,
         )
 
         if len(run_ids) == 1:
@@ -3896,7 +3986,14 @@ class RtlBuddy:
         token = self._invocation_run_token()
         for run_id, res in zip(run_ids, results):
             path = (
-                Path(test_artifact_dir(suite_dir, test_cfg.get_name(), run_id=run_id))
+                Path(
+                    test_artifact_dir(
+                        suite_dir,
+                        test_cfg.get_name(),
+                        run_id=run_id,
+                        run_tag=self._run_tag,
+                    )
+                )
                 / RESULT_JSON_NAME
             )
             try:
@@ -3906,6 +4003,7 @@ class RtlBuddy:
                     run_id=run_id,
                     results=res,
                     run_token=token,
+                    run_tag=self._run_tag,
                 )
                 # Remember where the envelope landed so coverage
                 # post-processing can re-persist it once the artefact
@@ -4480,8 +4578,7 @@ class RtlBuddy:
             for cfg in suite_configs
         }
 
-    @staticmethod
-    def _validate_dispatch_test_artifacts(prepared_suites):
+    def _validate_dispatch_test_artifacts(self, prepared_suites):
         """Reject cross-suite test artefact collisions before submission."""
         owners = {}
         for prepared in prepared_suites:
@@ -4492,7 +4589,9 @@ class RtlBuddy:
             suite_dir = str(Path(suite_path).parent)
             for entry in prepared["entries"]:
                 test_name = entry["cfg"].get_name()
-                artifact_dir = test_artifact_dir(suite_dir, test_name)
+                artifact_dir = test_artifact_dir(
+                    suite_dir, test_name, run_tag=self._run_tag
+                )
                 key = str(artifact_dir)
                 previous = owners.get(key)
                 if previous is None:
@@ -5488,7 +5587,7 @@ class RtlBuddy:
         # `rb test` on either config writes to the root, a regression to a
         # namespace below it) while every file this run writes still goes
         # where this invocation computed (#580 review).
-        dispatch_base = Path(suite_dir) / "artefacts" / ".dispatch"
+        dispatch_base = run_artifact_root(suite_dir, self._run_tag) / ".dispatch"
         dispatch_root = dispatch_base
         if dispatch_namespace is not None:
             dispatch_root /= dispatch_namespace
@@ -5803,15 +5902,20 @@ class RtlBuddy:
                     overrides=cpus_request_args,
                 )
             dispatch_dir = (
-                Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
+                Path(
+                    test_artifact_dir(suite_dir, cfg.get_name(), run_tag=self._run_tag)
+                )
+                / "dispatch"
             )
             # Create the log dir on the head before submit: slurmstepd opens
             # the --output path before rb _test-job (which would otherwise
             # mkdir it) runs.
             dispatch_dir.mkdir(parents=True, exist_ok=True)
             for idx, run_id in entry["rows"]:
-                run_tag = "single" if run_id is None else f"{run_id:04d}"
-                result_json = dispatch_dir / f"result-{run_tag}.json"
+                # This job's envelope tag, not the artefact tree's
+                # `--run-tag` (#541) — a whole fleet shares the latter.
+                job_tag = "single" if run_id is None else f"{run_id:04d}"
+                result_json = dispatch_dir / f"result-{job_tag}.json"
                 # Deliberately do NOT pre-unlink a stale envelope here: on
                 # NFS the head's negative lookup caches a dentry that hides
                 # the job's later write for ~acdirmin, so fast jobs get
@@ -5864,12 +5968,15 @@ class RtlBuddy:
                     # Named after the backend that will write it: `slurm-*`
                     # from sbatch --output, `local-parallel-*` from the pool's
                     # redirected stdout.
-                    log_path=dispatch_dir / f"{backend.name}-{run_tag}.log",
+                    log_path=dispatch_dir / f"{backend.name}-{job_tag}.log",
                     plan_path=plan_path,
                     # Already merged into the plan above; carried so the job
                     # records them as this run's overrides and so a plan miss
                     # still applies them (#552).
                     plusarg_overrides=dict(self._plusarg_overrides),
+                    # Which artefact tree this fleet belongs to (#541); the
+                    # job recomputes its own paths from it.
+                    run_tag=self._run_tag,
                 )
                 # Resources alone: every group now takes the same dependency,
                 # so a self-compiling test that happens to resolve to the
@@ -6280,6 +6387,11 @@ class RtlBuddy:
                 and phase != BUILD_PHASE_VERILATE
                 else None
             ),
+            # The head's artefact namespace (#541). The SHARED build it
+            # populates is keyed on the compile fingerprint and stays shared
+            # across tags — the tag only moves this job's own per-test
+            # outputs and its transcripts into this run's tree.
+            run_tag=self._run_tag,
         )
         # A stale build-result must not annotate this run's collection.
         Path(spec.result_json).unlink(missing_ok=True)
@@ -7601,11 +7713,24 @@ class RtlBuddy:
                 show_default="cfg-dispatch orphans, else warn",
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this run's artefact tree under "
+                "artefacts/.runs/<tag>/ so a concurrent run of the same "
+                "suites gets its own trees, its own tree locks and its own "
+                "logs; shared builds stay shared",
+            ),
+        ] = None,
     ):
         """
         run rtl regression
         """
         self._orphans = orphans
+        # Before the first `_enter_command_context` — the manifest root's and
+        # every suite's artefact root (and tree lock) derive from it (#541).
+        self._run_tag = validate_run_tag(run_tag)
         master_seed = self._checked_master_seed(master_seed)
         merge_mode_count = sum(
             1
@@ -7640,6 +7765,7 @@ class RtlBuddy:
             start_level=start_level,
             share_build=share_build,
             master_seed=master_seed,
+            run_tag=self._run_tag,
         )
 
         start_dir = str(self.invocation_cwd)
@@ -8717,11 +8843,26 @@ class RtlBuddy:
                 help="coverage manifest.json to join from, instead of discovery",
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="convert one --run-tag run's results: scan "
+                "artefacts/.runs/<tag>/ in every suite and write that "
+                "run's overlay under artefacts/.runs/<tag>/graph/ "
+                "(graph.json is still read from artefacts/graph/)",
+            ),
+        ] = None,
     ):
         """
         refresh the results overlay beside graph.json: last status, run token,
         seed, artefact paths and coverage per test node
         """
+        # Before the context is entered: a tagged refresh reads and writes
+        # inside that run's tree, so it must lock that tree and not the
+        # project-wide one two concurrent regressions would contend for
+        # (#541).
+        self._run_tag = validate_run_tag(run_tag)
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root)
 
@@ -8748,6 +8889,7 @@ class RtlBuddy:
             verif_dir=verif_dir,
             strict=strict,
             coverage=cov_source,
+            run_tag=self._run_tag,
         )
 
         overlay = graph_results_mod.refresh_results_overlay(
@@ -8758,6 +8900,7 @@ class RtlBuddy:
             coverage=cov_source,
             cov_dir=str(ctx.resolve_input(cov_dir)) if cov_dir else None,
             cov_manifest=str(ctx.resolve_input(cov_manifest)) if cov_manifest else None,
+            run_tag=self._run_tag,
         )
 
         exit_code = 0
@@ -15307,6 +15450,12 @@ class RtlBuddy:
                         "argv": sys.argv[:],
                         "cwd": os.getcwd(),
                         "git": git,
+                        # Which artefact tree this run wrote into (#541).
+                        # Always present, unlike the result envelope's key:
+                        # `meta` is a fixed block a consumer reads whole,
+                        # and `null` there says "the flat tree" rather than
+                        # leaving the question unanswerable.
+                        "run_tag": self._run_tag,
                     },
                     "payload": payload,
                 },

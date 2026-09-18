@@ -28,7 +28,11 @@ Everything here is read back off the disk the runner already writes:
 * the documented **artefact layout** (``docs/development/guidelines.md``)
   — ``<suite>/artefacts/<test>/`` for a single run, plus
   ``run-NNNN/`` per iteration of a ``randtest``, holding ``test.log``,
-  ``test.err``, ``test.randseed``, ``coverage.dat`` and the trace.
+  ``test.err``, ``test.randseed``, ``coverage.dat`` and the trace. A
+  ``run_tag`` scans one ``--run-tag`` run's tree instead
+  (``<suite>/artefacts/.runs/<tag>/``) and writes its overlay into that
+  run's graph directory, so two concurrent regressions each convert their
+  own results (#541).
 
 A test directory with no envelope still gets an entry: its artefact
 paths are real and useful, its status is ``UNKNOWN``. That is the
@@ -60,7 +64,11 @@ from ..config.suite import SuiteConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..runner.result_io import load_result_json
-from ..tools.artifact_paths import RESULT_JSON_NAME, sanitize_artifact_component
+from ..tools.artifact_paths import (
+    RESULT_JSON_NAME,
+    run_artifact_root,
+    sanitize_artifact_component,
+)
 from ..tools.spec_trace import _walk_yaml_files
 from ..tools.wave_trace import TRACE_CANDIDATES
 from .config_tier import (
@@ -148,10 +156,19 @@ def _iso(epoch: float) -> str:
 
 
 def results_overlay_path(
-    project_root: str | os.PathLike, out_dir: str | os.PathLike | None = None
+    project_root: str | os.PathLike,
+    out_dir: str | os.PathLike | None = None,
+    run_tag: str | None = None,
 ) -> Path:
-    """``<out dir or artefacts/graph>/results-overlay.json``."""
-    base = Path(out_dir) if out_dir is not None else default_graph_dir(project_root)
+    """``<out dir or artefacts/graph>/results-overlay.json``.
+
+    ``run_tag`` reads the overlay of one tagged run instead (#541).
+    """
+    base = (
+        Path(out_dir)
+        if out_dir is not None
+        else default_graph_dir(project_root, run_tag)
+    )
     return base / RESULTS_OVERLAY_NAME
 
 
@@ -171,8 +188,13 @@ class _Scope:
     error: str | None = None
 
 
-def _run_tag(run_id: int | None) -> str:
-    """Dispatch envelope tag for a run id — mirrors ``_dispatch_suite_submit``."""
+def _job_tag(run_id: int | None) -> str:
+    """Dispatch envelope tag for a run id — mirrors ``_dispatch_suite_submit``.
+
+    Named for the *job*, not the run: ``--run-tag`` (#541) is a different
+    thing entirely — this one names one job's envelope inside a test's
+    ``dispatch/`` directory, that one names the whole artefact tree.
+    """
     return "single" if run_id is None else f"{run_id:04d}"
 
 
@@ -180,7 +202,7 @@ def _envelope_candidates(test_dir: Path, scope_dir: Path, run_id: int | None):
     """Envelope paths for one run scope, most authoritative first."""
     return [
         scope_dir / _RESULT_JSON,
-        test_dir / _DISPATCH_DIR / f"result-{_run_tag(run_id)}.json",
+        test_dir / _DISPATCH_DIR / f"result-{_job_tag(run_id)}.json",
     ]
 
 
@@ -455,6 +477,7 @@ def collect_results(
     coverage: bool | str = True,
     cov_dir: str | os.PathLike | None = None,
     cov_manifest: str | os.PathLike | None = None,
+    run_tag: str | None = None,
 ) -> ResultsOverlay:
     """Scan every suite's artefacts and build the results overlay.
 
@@ -478,6 +501,10 @@ def collect_results(
       cov_dir / cov_manifest: read coverage from here rather than from
         the newest ``cov_dir/manifest.json`` under the project. Naming
         either makes a failure to read it a reported problem.
+      run_tag: Scan one ``--run-tag`` namespace's tree
+        (``<suite>/artefacts/.runs/<tag>/``) instead of the flat one
+        (#541), so each of two concurrent regressions converts its own
+        results. ``None`` is the flat tree, unchanged.
 
     Returns:
       ResultsOverlay: the payload plus the bookkeeping the CLI reports.
@@ -494,7 +521,7 @@ def collect_results(
     for tests_yaml in _walk_yaml_files(str(search_verif), "tests.yaml"):
         suite_dir = Path(tests_yaml).parent
         suite_rel = _rel(root, suite_dir)
-        artefact_root = suite_dir / "artefacts"
+        artefact_root = run_artifact_root(suite_dir, run_tag)
         if not artefact_root.is_dir():
             continue
         declared = _declared_test_names(tests_yaml)
@@ -775,16 +802,28 @@ def refresh_results_overlay(
     coverage: bool | str = True,
     cov_dir: str | os.PathLike | None = None,
     cov_manifest: str | os.PathLike | None = None,
+    run_tag: str | None = None,
 ) -> ResultsOverlay:
     """Collect results and write ``results-overlay.json``.
 
     The one call behind ``rb graph results``. ``graph.json`` is read (for
     the id cross-check, the fingerprint linkage and the coverage join)
     and never written.
+
+    ``run_tag`` points the whole refresh at one run's tree (#541): the
+    scan reads ``<suite>/artefacts/.runs/<tag>/`` and the overlay is
+    written into that run's graph directory, so two concurrent
+    regressions convert their own results without overwriting each
+    other's. ``graph.json`` is NOT per-run and is still read from the
+    untagged ``artefacts/graph/`` unless ``--graph`` names another.
     """
     root = Path(os.path.realpath(str(project_root)))
-    out = Path(out_dir) if out_dir is not None else default_graph_dir(root)
-    graph_file = Path(graph_path) if graph_path is not None else out / GRAPH_JSON_NAME
+    out = Path(out_dir) if out_dir is not None else default_graph_dir(root, run_tag)
+    graph_file = (
+        Path(graph_path)
+        if graph_path is not None
+        else default_graph_dir(root) / GRAPH_JSON_NAME
+    )
     graph = None
     try:
         loaded = json.loads(graph_file.read_text())
@@ -800,6 +839,7 @@ def refresh_results_overlay(
         coverage=coverage,
         cov_dir=cov_dir,
         cov_manifest=cov_manifest,
+        run_tag=run_tag,
     )
     linkage = {**graph_linkage(graph_file.parent), "path": _rel(root, graph_file)}
     # Rebuilt rather than assigned into, so the linkage sits with the

@@ -287,6 +287,9 @@ def test_vlog_sim_post_passes_suite_work_dir_as_coverage_source_root(
     sim.test_name = "basic"
     sim.root_cfg = DummyRootCfg(tmp_path)
     sim.run_id = None
+    # No `--run-tag` here, set explicitly because this sim is built with
+    # `__new__` and so never ran `__init__` (#541).
+    sim.run_tag = None
     sim.vlog_post = None
     sim.suite_work_dir = str(tmp_path / "verif" / "sandbox")
     sim._coverage_enabled = lambda: True
