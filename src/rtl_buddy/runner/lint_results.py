@@ -2,7 +2,7 @@
 
 import pprint
 
-from .xfail import is_pass_with_xfail
+from .xfail import FAIL_STAGE_KEY, is_pass_with_xfail
 
 
 class LintResults:
@@ -44,6 +44,13 @@ class LintPassResults(LintResults):
 
 
 class LintFailResults(LintResults):
+    """A failed check.
+
+    ``fail_stage`` names a stage that failed *instead of* producing a
+    verdict on the design; such a failure is never excused by an xfail
+    marker (#553, #594). Leave it unset for the flow's own verdict.
+    """
+
     def __init__(
         self,
         name,
@@ -52,6 +59,7 @@ class LintFailResults(LintResults):
         files: int,
         excluded: int = 0,
         desc: str | None = None,
+        fail_stage: str | None = None,
     ):
         msg = desc or f"{violations} lint violation(s) over {files} file(s)"
         super().__init__(
@@ -61,6 +69,8 @@ class LintFailResults(LintResults):
         self.results["violations"] = violations
         self.results["files"] = files
         self.results["excluded"] = excluded
+        if fail_stage is not None:
+            self.results[FAIL_STAGE_KEY] = fail_stage
 
 
 class LintSkipResults(LintResults):

@@ -1393,6 +1393,28 @@ def test_apply_xfail_fail_becomes_xfail_and_passes():
         assert res.results["desc"].startswith("xfail (expected fail): ")
 
 
+def test_apply_xfail_does_not_excuse_a_proof_without_a_verdict():
+    """#594: sby reporting UNKNOWN / a solver timeout / an error is not a
+    disproof, so a marked verification is not covered by it."""
+    from rtl_buddy.runner.fpv_results import FpvFailResults
+    from rtl_buddy.runner.xfail import apply_xfail
+
+    for strict in (False, True):
+        res = FpvFailResults(
+            name="t",
+            mode="prove",
+            depth=20,
+            desc="sby reported TIMEOUT (see fpv.log)",
+            fail_stage="tool",
+        )
+        apply_xfail(res, strict=strict)
+        assert res.results["result"] == "FAIL"
+        assert res.is_pass() is False
+        assert res.results["desc"].startswith(
+            "xfail not applied (tool failure before a verdict): "
+        )
+
+
 def test_apply_xfail_nonstrict_xpass_still_passes():
     from rtl_buddy.runner.fpv_results import FpvPassResults
     from rtl_buddy.runner.xfail import apply_xfail

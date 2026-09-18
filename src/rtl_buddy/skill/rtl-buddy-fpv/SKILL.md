@@ -32,8 +32,9 @@ Use `rb --machine`; read `rb fpv --help`, `rb fpv-regression --help`, and
 - Confirm every intended cover is reachable.
 - Make one deliberate mutation and confirm the expected assertion fails before
   reporting a proof environment as trustworthy.
-- Track intentionally non-inductive or unsupported cases with the documented
-  `xfail`/`xfail_strict` semantics.
+- Track intentionally non-inductive cases with the documented
+  `xfail`/`xfail_strict` semantics: they excuse a property sby disproved, not
+  an `UNKNOWN`, a solver timeout, or an sby error, which stay FAIL.
 
 For mutation campaigns, use `rb --machine docs show concepts/mut`. Survivors are
 verification holes; mutants that cannot build are errors, not kills.

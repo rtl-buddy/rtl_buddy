@@ -61,15 +61,47 @@ def test_round_trip_preserves_semantics(result):
     assert clone.is_pass() == result.is_pass()
 
 
+def _sim_verdict_fail() -> TestResults:
+    """A FAIL the simulation itself reported — the excusable kind."""
+    return TestResults(
+        name="t/results",
+        results={"result": "FAIL", "name": "t", "desc": "mismatch at 120ns"},
+    )
+
+
 @pytest.mark.parametrize("strict", [False, True])
 def test_round_trip_preserves_xfail_semantics(strict):
     # FAIL->XFAIL always passes; PASS->XPASS passes only when non-strict.
-    failed = apply_xfail(CompileFailResults(name="t/results"), strict=strict)
+    failed = apply_xfail(_sim_verdict_fail(), strict=strict)
     assert TestResults.from_json_dict(failed.to_json_dict()).is_pass()
 
     passed = apply_xfail(TestPassResults(name="t/results"), strict=strict)
     clone = TestResults.from_json_dict(passed.to_json_dict())
     assert clone.is_pass() == (not strict)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CompileFailResults(name="t/results"),
+        SimTimeoutResults(name="t/results"),
+        SetupFailResults(name="t/results", desc="Setup failed in preproc: boom"),
+    ],
+    ids=lambda r: type(r).__name__,
+)
+@pytest.mark.parametrize("strict", [False, True])
+def test_round_trip_keeps_a_stage_failure_unexcusable(result, strict):
+    """#553/#594: the refusal travels in the envelope, not in the class.
+
+    ``from_json_dict`` rebuilds every kind as a plain ``TestResults``, so
+    a dispatched job's compile failure or timeout can only stay
+    non-excusable if the marker key rides along in the results dict.
+    """
+    clone = TestResults.from_json_dict(result.to_json_dict())
+    apply_xfail(clone, strict=strict)
+    assert clone.results["result"] == "FAIL"
+    assert clone.is_pass() is False
+    assert clone.results["desc"].startswith("xfail not applied (")
 
 
 def test_to_json_dict_is_json_serializable_and_kinded():

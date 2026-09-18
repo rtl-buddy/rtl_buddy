@@ -176,7 +176,7 @@ from .runner.test_results import (
     is_run_failure,
 )
 from .runner.test_runner import RunDepth, TestRunner
-from .runner.xfail import apply_xfail
+from .runner.xfail import apply_xfail, xfail_refusal
 from .runner.fpga_runner import FpgaRunner
 from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrRunner
@@ -1328,9 +1328,17 @@ class RtlBuddy:
         Shared by every command whose per-item config exposes
         ``is_xfail()`` / ``get_xfail_strict()`` (test, fpv, synth, cdc,
         pnr, power). Call only when ``cfg.is_xfail()`` is true.
+
+        A FAIL that happened instead of a verdict — a setup or compile
+        failure, a sim killed at the timeout, a lost dispatch job — keeps
+        its FAIL, and the event says so with ``excused=false`` plus the
+        reason, so a CI reader does not have to open every marked row to
+        find the one the marker never covered (#553, #594).
         """
         observed = res.results.get("result")
         strict = cfg.get_xfail_strict()
+        # Read before apply_xfail, which rewrites the desc either way.
+        refusal = xfail_refusal(res.results) if observed == "FAIL" else None
         apply_xfail(res, strict=strict)
         log_event(
             logger,
@@ -1340,6 +1348,10 @@ class RtlBuddy:
             observed=observed,
             reported=res.results.get("result"),
             strict=strict,
+            # log_event drops None fields, so `excused` is reported only
+            # where it means something: an observed failure.
+            excused=(refusal is None) if observed == "FAIL" else None,
+            reason=refusal,
         )
         return res
 
@@ -3746,7 +3758,9 @@ class RtlBuddy:
             results = test_runner.run_multiple(run_ids)
         if test_cfg.is_xfail():
             # FAIL->XFAIL (pass) / PASS->XPASS (a failure only when strict)
-            # so a known-failing test can live in a suite/regression.
+            # so a known-failing test can live in a suite/regression. A
+            # failure that happened instead of a verdict (setup, compile,
+            # timeout) keeps its FAIL — see _apply_xfail_logged.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
         get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)

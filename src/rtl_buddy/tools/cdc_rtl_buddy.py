@@ -234,7 +234,11 @@ class RtlBuddyCdc:
         return goes through here.
         """
         self._clear_stale_outputs()
-        return CdcFailResults(name=self.cdc_cfg.get_name(), violations=0, desc=desc)
+        # No violation count came back, so the FAIL is the analyzer's, not
+        # the design's, and an xfail marker does not excuse it (#553).
+        return CdcFailResults(
+            name=self.cdc_cfg.get_name(), violations=0, desc=desc, fail_stage="tool"
+        )
 
     # --- run ----------------------------------------------------------------
 

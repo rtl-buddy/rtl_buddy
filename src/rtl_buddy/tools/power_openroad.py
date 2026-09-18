@@ -959,7 +959,9 @@ class OpenRoadPower(BasePower):
             desc = f"script generation error: {e}"
             if stale_error is not None:
                 desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
-            return PowerFailResults(name=self.name + "/results", desc=desc)
+            return PowerFailResults(
+                name=self.name + "/results", desc=desc, fail_stage="setup"
+            )
 
         if not shutil.which(self.executable):
             log_event(
@@ -972,6 +974,7 @@ class OpenRoadPower(BasePower):
             return PowerFailResults(
                 name=self.name + "/results",
                 desc=f"{self.executable!r} not found",
+                fail_stage="setup",
             )
 
         # Everything past the "openroad not found" return above is a run of
@@ -991,6 +994,7 @@ class OpenRoadPower(BasePower):
             return PowerFailResults(
                 name=self.name + "/results",
                 desc=withdrawal_failure_desc(stale_error),
+                fail_stage="setup",
             )
 
         # After the clear, before OpenROAD: the script names this run's
@@ -1008,6 +1012,7 @@ class OpenRoadPower(BasePower):
             return PowerFailResults(
                 name=self.name + "/results",
                 desc=f"could not stage the netlist for OpenROAD: {snapshot_error}",
+                fail_stage="setup",
             )
 
         log_path = self._log_path()

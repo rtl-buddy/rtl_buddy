@@ -4,7 +4,7 @@
 #
 import pprint
 
-from .xfail import is_pass_with_xfail
+from .xfail import FAIL_STAGE_KEY, is_pass_with_xfail
 
 # Marks an ``NA`` result as an *intentional* stop before a verdict — a
 # run_depth early stop (``-E pre|comp|sim``, #336) — as opposed to a run
@@ -118,6 +118,9 @@ class CompileFailResults(TestResults):
     failed carries that build's exit status and error lines here, so the run
     summary shows the design error instead of a bare ``Compile failed``
     (#498). Keep it to ONE line: the summary tables render it in a cell.
+
+    Never an expected failure: no simulation ran, so an xfail marker on
+    this test has nothing to be about (#553).
     """
 
     def __init__(self, name, desc=None):
@@ -127,6 +130,7 @@ class CompileFailResults(TestResults):
                 "result": "FAIL",
                 "name": name,
                 "desc": desc or COMPILE_FAIL_DESC,
+                FAIL_STAGE_KEY: "compile",
             },
         )
 
@@ -156,12 +160,21 @@ class EarlyStopResults(TestResults):
 class SimTimeoutResults(TestResults):
     """
     Simulation timeout
+
+    Never an expected failure: the simulation was cut off before it could
+    report a verdict, so a marked test that times out has not shown the
+    failure it is marked for (#594).
     """
 
     def __init__(self, name):
         super().__init__(
             name=name,
-            results={"result": "FAIL", "name": name, "desc": "Sim hit timeout"},
+            results={
+                "result": "FAIL",
+                "name": name,
+                "desc": "Sim hit timeout",
+                FAIL_STAGE_KEY: "sim_timeout",
+            },
         )
 
 
@@ -174,11 +187,20 @@ class SimStageFailResults(TestResults):
     transcript — the user asked to skip that — so the desc names the exit
     status and says so, instead of claiming a verdict is missing
     (#574 review): a transcript can very well carry a FAIL banner here.
+
+    Never an expected failure: nothing read a verdict out of this run, so
+    an xfail marker has nothing to excuse (#594).
     """
 
     def __init__(self, name, desc):
         super().__init__(
-            name=name, results={"result": "FAIL", "name": name, "desc": desc}
+            name=name,
+            results={
+                "result": "FAIL",
+                "name": name,
+                "desc": desc,
+                FAIL_STAGE_KEY: "sim",
+            },
         )
 
 
@@ -196,22 +218,40 @@ class SkipResults(TestResults):
 class FilelistFailResults(TestResults):
     """
     Filelist validation failed before compile (bad path, malformed line, missing file, etc.).
+
+    Never an expected failure: the run stopped before the design was even
+    compiled (#553).
     """
 
     def __init__(self, name, desc):
         super().__init__(
-            name=name, results={"result": "FAIL", "name": name, "desc": desc}
+            name=name,
+            results={
+                "result": "FAIL",
+                "name": name,
+                "desc": desc,
+                FAIL_STAGE_KEY: "setup",
+            },
         )
 
 
 class SetupFailResults(TestResults):
     """
     Test setup failed before compile/sim.
+
+    Never an expected failure: the run stopped before the behaviour an
+    xfail marker is about could be exercised (#553).
     """
 
     def __init__(self, name, desc):
         super().__init__(
-            name=name, results={"result": "FAIL", "name": name, "desc": desc}
+            name=name,
+            results={
+                "result": "FAIL",
+                "name": name,
+                "desc": desc,
+                FAIL_STAGE_KEY: "setup",
+            },
         )
 
 
@@ -220,10 +260,18 @@ class DispatchFailResults(TestResults):
     A dispatched job failed as infrastructure: it was submitted but
     produced no loadable result envelope (killed by the scheduler,
     crashed before writing, or wrote garbage). Never silently dropped —
-    the run counts as a FAIL with the collection error in the desc.
+    the run counts as a FAIL with the collection error in the desc, and
+    never an expected one: infrastructure is not what a marker is about
+    (#594).
     """
 
     def __init__(self, name, desc):
         super().__init__(
-            name=name, results={"result": "FAIL", "name": name, "desc": desc}
+            name=name,
+            results={
+                "result": "FAIL",
+                "name": name,
+                "desc": desc,
+                FAIL_STAGE_KEY: "dispatch",
+            },
         )

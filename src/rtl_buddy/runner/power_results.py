@@ -1,6 +1,6 @@
 import pprint
 
-from .xfail import is_pass_with_xfail
+from .xfail import FAIL_STAGE_KEY, is_pass_with_xfail
 
 
 class PowerResults:
@@ -61,11 +61,19 @@ class PowerPassResults(PowerResults):
 
 
 class PowerFailResults(PowerResults):
-    def __init__(self, name, desc):
-        super().__init__(
-            name=name,
-            results={"result": "FAIL", "name": name, "desc": desc},
-        )
+    """A failed run.
+
+    ``fail_stage`` names a stage that failed *instead of* producing a
+    verdict on the design (a missing tool, an unresolvable platform, a
+    filelist error). Such a failure is never excused by an xfail marker
+    (#553, #594); leave it unset for the flow's own verdict.
+    """
+
+    def __init__(self, name, desc, *, fail_stage: str | None = None):
+        results = {"result": "FAIL", "name": name, "desc": desc}
+        if fail_stage is not None:
+            results[FAIL_STAGE_KEY] = fail_stage
+        super().__init__(name=name, results=results)
 
 
 class PowerSkipResults(PowerResults):

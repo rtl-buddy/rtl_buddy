@@ -13,6 +13,7 @@ import os
 logger = logging.getLogger(__name__)
 import re
 from ..runner.test_results import TestResults
+from ..runner.xfail import FAIL_STAGE_KEY
 from ..logging_utils import log_event
 
 
@@ -99,6 +100,9 @@ def grade_unknown_sim_exit(results: dict, sim_returncode, *, test, run_id=None):
         f"Sim {describe_sim_exit(sim_returncode)} with no PASS/FAIL "
         "verdict in the transcript"
     )
+    # The simulator died instead of reporting, so an xfail marker on this
+    # test has no verdict to excuse (#594).
+    results[FAIL_STAGE_KEY] = "sim"
     return True
 
 

@@ -582,6 +582,10 @@ class SbyFpv:
             runtime_s=round(runtime_s, 2),
             desc=f"sby reported {desc_status} (see {log_path}){hint}",
             per_engine=per_engine,
+            # UNKNOWN, a solver timeout or an sby crash: the proof never
+            # reached a verdict, so an xfail marker has nothing to excuse
+            # (#594).
+            fail_stage="tool",
         )
         self._merge_extras(result, vacuity=vacuity, coi=coi)
         return result

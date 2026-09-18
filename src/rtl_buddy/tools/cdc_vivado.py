@@ -336,7 +336,11 @@ class VivadoCdc:
         return goes through here.
         """
         self._clear_stale_report()
-        return CdcFailResults(name=self.cdc_cfg.get_name(), violations=0, desc=desc)
+        # No violation count came back, so the FAIL is Vivado's, not the
+        # design's, and an xfail marker does not excuse it (#553).
+        return CdcFailResults(
+            name=self.cdc_cfg.get_name(), violations=0, desc=desc, fail_stage="tool"
+        )
 
     def run(self) -> CdcResults:
         # Resolved up front, and ahead of the tool skip below, because a
@@ -419,6 +423,7 @@ class VivadoCdc:
                 name=self.cdc_cfg.get_name(),
                 violations=0,
                 desc=f"Filelist error: {e}",
+                fail_stage="setup",
             )
         sources = self._source_files_from_filelist(fl_path)
         if not sources:

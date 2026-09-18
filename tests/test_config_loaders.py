@@ -1183,16 +1183,32 @@ def test_suite_config_loads_xfail_flags(tmp_path):
 
 
 def test_apply_test_xfail_fail_becomes_xfail_and_passes():
-    from rtl_buddy.runner.test_results import CompileFailResults
+    from rtl_buddy.runner.test_results import TestResults
     from rtl_buddy.runner.xfail import apply_xfail
 
     for strict in (False, True):
-        res = CompileFailResults(name="t")
+        # A verdict the simulation itself reported: the excusable kind.
+        res = TestResults(
+            name="t", results={"result": "FAIL", "desc": "mismatch at 120ns"}
+        )
         assert res.is_pass() is False
         apply_xfail(res, strict=strict)
         assert res.results["result"] == "XFAIL"
         assert res.is_pass() is True  # XFAIL passes regardless of strictness
         assert res.results["desc"].startswith("xfail (expected fail): ")
+
+
+def test_apply_test_xfail_does_not_excuse_a_compile_failure():
+    """#553: a negative control that stopped compiling is not green."""
+    from rtl_buddy.runner.test_results import CompileFailResults
+    from rtl_buddy.runner.xfail import apply_xfail
+
+    for strict in (False, True):
+        res = CompileFailResults(name="t")
+        apply_xfail(res, strict=strict)
+        assert res.results["result"] == "FAIL"
+        assert res.is_pass() is False
+        assert res.results["desc"].startswith("xfail not applied (compile failure): ")
 
 
 def test_apply_test_xfail_nonstrict_xpass_still_passes():
