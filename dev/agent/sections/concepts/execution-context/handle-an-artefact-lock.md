@@ -4,6 +4,6 @@ Every artefact-writing command takes a non-blocking advisory lock on `<artifact_
 
 Wait for the first process to finish or terminate that process if it is stale. The kernel releases the lock on normal exit, crash, or kill; the metadata file itself does not need removal. Listing commands do not take the lock.
 
-The lock covers the entire artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Commands using different artefact roots can run concurrently.
+The lock covers the entire artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Commands using different artefact roots can run concurrently — which is what [`--run-tag`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/execution-context/#namespace-concurrent-runs) gives two runs of the same suite. Two runs naming the same tag still contend.
 
 This protection is host-local. Do not run the same suite concurrently from multiple machines on a shared filesystem unless the environment provides equivalent coordination.

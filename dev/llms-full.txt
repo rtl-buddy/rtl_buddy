@@ -1005,6 +1005,19 @@ Per-test outputs remain `artefacts/<test>/`. If two co-located configs expand
 tests onto the same per-test directory, the regression exits before submitting
 any jobs. Rename one test or put the configs in separate directories.
 
+Under `--run-tag <name>` every path in that table moves one level down, into
+`artefacts/.runs/<name>/`, and the head's own log moves with it —
+`artefacts/.runs/<name>/rtl_buddy.log` rather than `<suite>/rtl_buddy.log`, so
+two concurrent heads in one suite cannot truncate each other's record. The tag
+travels in each job's argv, so head and job derive the same paths; the shared
+build directory is keyed on the compile fingerprint and is deliberately *not*
+namespaced, so two tagged runs that compile the same thing reuse one build. See
+[Namespace concurrent runs](execution-context.md#namespace-concurrent-runs).
+
+Two tagged Slurm runs of one suite still serialise their **build** jobs: the
+`--dependency=singleton` rendezvous is keyed on the suite directory, which is
+what owns the shared build tree. Their simulation fan-outs overlap normally.
+
 `build-result-<pid>.json` carries the build job's `built` and `failed` test names and a `builds` list with one record per planned config: `test`, `builder`, `duration_sec`, `reused`, and `group` (the suite-relative path of the output the compile writes — the shared `artefacts/.shared-builds/obj_dir_<key>` directory, or an unshared build's own executable). Equal `group` values identify one single-writer output: a shared compile, or several configs pinned to one executable by `builder-simv:`. Where sharing is unsupported every test's output is its own, so distinct `group` values there say nothing about the compile keys. A config that never reached a builder still gets a record, with null timings. A record for a build that **succeeded** — compiled, reused, or adopted from a same-key sibling — also carries `fingerprint_sha`, the digest of the inputs its stamp recorded, taken over the same content-decides comparison the stamp uses, so a byte-identical input matches whatever its timestamp says; a gated simulation job whose stamp check fails compares its own digest against it to report whether the disagreement is over the same inputs. A record for a build whose compile succeeded but whose **stamp could not be written** also carries `stamp_written: false`; the field is absent otherwise, which is what every envelope written before it existed means too. A gated simulation job reads it as "built", declining its own recompile exactly as it does for a stamp that failed to validate, and reports the write rather than the stamp. A record for a build that **failed** carries up to four more fields: `returncode` (the builder's exit status), `fingerprint_sha` (the same digest, of the inputs that compile failed on), `error_tail` (the last non-blank lines of its transcript, or the worker's exception when no builder ran) and `transcript` (suite-relative). `returncode` plus a `fingerprint_sha` matching its own inputs is what a gated simulation job requires before declining its own recompile — a failure recorded without a returncode never reached a builder, and one whose fingerprint differs was a different compile, so both still get the retry — and `error_tail` is what puts the real compile error in the run summary. At collect the head folds the build job's own `sacct` row into the same file under `telemetry`, and copies each test's compile record into that test's `result-<tag>.json`, where [`rb graph results`](graph.md#results-overlay) surfaces it. Both are best-effort: an envelope written by an older build job simply has no `builds` key, and an annotation that cannot be written leaves the result itself untouched.
 
 `verilate-result-<pid>.json` mirrors that envelope for the verilate job of a split suite, recording what it verilated. The build job reads the per-build-directory `.rb-verilate.json` marker rather than this file, so an envelope that could not be written costs no more than the head's view of that phase.
@@ -1275,7 +1288,7 @@ RTL Buddy uses three anchors:
 | --- | --- |
 | `invocation_cwd` | The shell directory where `rb` was invoked |
 | `command_root` | The directory containing the command's primary config |
-| `artifact_root` | `<command_root>/artefacts/` |
+| `artifact_root` | `<command_root>/artefacts/`, or `<command_root>/artefacts/.runs/<tag>/` under `--run-tag` |
 
 Generated artefacts, builder scratch, and `rtl_buddy.log` use the command root. Explicit CLI input and output paths use normal shell semantics and are resolved from `invocation_cwd`.
 
@@ -1327,13 +1340,44 @@ out = os.path.join(os.getcwd(), "gen.sv")  # wrong: invocation cwd
 
 The configured `postproc` script is not currently executed; built-in post-processing determines results. See [Hook execution context](plugins.md#handle-hook-execution-context).
 
+## Namespace concurrent runs
+
+`rb test`, `rb randtest`, `rb regression`, and `rb graph results` accept `--run-tag <name>`. The tag moves that invocation's whole artefact tree under `artefacts/.runs/<tag>/`:
+
+| Path | Without `--run-tag` | With `--run-tag sim-a` |
+| --- | --- | --- |
+| Per-test artefacts | `<suite>/artefacts/<test>[/run-NNNN]` | `<suite>/artefacts/.runs/sim-a/<test>[/run-NNNN]` |
+| Result envelope | `<suite>/artefacts/<test>/result.json` | `<suite>/artefacts/.runs/sim-a/<test>/result.json` |
+| Tree lock | `<suite>/artefacts/.rtl-buddy.lock` | `<suite>/artefacts/.runs/sim-a/.rtl-buddy.lock` |
+| Command log | `<command_root>/rtl_buddy.log` | `<suite>/artefacts/.runs/sim-a/rtl_buddy.log` |
+| Dispatch head outputs | `<suite>/artefacts/.dispatch/` | `<suite>/artefacts/.runs/sim-a/.dispatch/` |
+| Results overlay | `<root>/artefacts/graph/results-overlay.json` | `<root>/artefacts/.runs/sim-a/graph/results-overlay.json` |
+| Shared builds | `<suite>/artefacts/.shared-builds/` | unchanged — shared across tags |
+| `graph.json` | `<root>/artefacts/graph/graph.json` | unchanged — the design graph is not per-run |
+
+Run two tiers at once, one per simulator, and convert each run's results separately:
+
+```bash
+rb -B verilator regression --run-tag verilator &
+rb -B icarus regression --run-tag icarus &
+wait
+rb graph results --run-tag verilator
+rb graph results --run-tag icarus
+```
+
+A tag must be a single safe path segment: letters, digits, `.`, `_`, and `-`, at most 64 characters. `.`, `..`, and anything containing a path separator are rejected before any directory is created. The directory is dot-prefixed (`.runs`) so a tag can never be confused with a test of the same name, and so every existing reader of the tree — the results-overlay scan, the `+incdir+` walk prune, the artefact clearers — keeps skipping it.
+
+Shared builds stay shared on purpose. A build directory is keyed on the compile fingerprint, including the toolchain executable, so two simulators already get separate `obj_dir`s and two tags that compile the same thing reuse one build instead of paying for it twice.
+
+Without `--run-tag` nothing moves. The flat layout, the lock path, the log location, and the result envelope bytes are exactly what they were.
+
 ## Handle an artefact lock
 
 Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holding PID, command, and start time.
 
 Wait for the first process to finish or terminate that process if it is stale. The kernel releases the lock on normal exit, crash, or kill; the metadata file itself does not need removal. Listing commands do not take the lock.
 
-The lock covers the entire artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Commands using different artefact roots can run concurrently.
+The lock covers the entire artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Commands using different artefact roots can run concurrently — which is what [`--run-tag`](#namespace-concurrent-runs) gives two runs of the same suite. Two runs naming the same tag still contend.
 
 This protection is host-local. Do not run the same suite concurrently from multiple machines on a shared filesystem unless the environment provides equivalent coordination.
 
@@ -1341,7 +1385,7 @@ This protection is host-local. Do not run the same suite concurrently from multi
 
 Read `<command_root>/rtl_buddy.log`. It is plain text by default and JSON Lines under `--machine`. For regressions, inspect the relevant suite log for test details and the manifest-root log for the final summary.
 
-The log belongs to the flow that wrote it. A file log is opened for writing and a process's first open of it truncates it, so the file holds one run and not an accumulation of every run before it. The commands that take no lock also attach no file log — `rb phys`, `rb cov`, the `rb graph` read verbs, `rb xplr`, and `--list` on any flow command — because they write nothing else, and opening the log would destroy the record of the run being read about. They report on the console and, under `--machine`, in the JSON result on stdout. See [Agent Use](../agents.md#know-which-commands-write-a-log).
+The log belongs to the flow that wrote it. A file log is opened for writing and a process's first open of it truncates it, so the file holds one run and not an accumulation of every run before it. That is why `--run-tag` moves the log into the tagged artefact root: two concurrent runs of one suite sharing `<suite>/rtl_buddy.log` would erase each other's record. The commands that take no lock also attach no file log — `rb phys`, `rb cov`, the `rb graph` read verbs, `rb xplr`, and `--list` on any flow command — because they write nothing else, and opening the log would destroy the record of the run being read about. They report on the console and, under `--machine`, in the JSON result on stdout. See [Agent Use](../agents.md#know-which-commands-write-a-log).
 
 
 ---
@@ -1927,6 +1971,8 @@ Entries are keyed by `test:<suite dir>#<test name>` and contain the latest resul
 
 An entry also carries an optional `compile` block with `duration_sec`, `builder`, and `reused` when the run's result envelope records one. A local run records its own. A dispatched run produces two envelopes that disagree on purpose: the simulation job writes `artefacts/<test>/result.json` with its own `compile` block, which says `reused: true` and near-zero duration because the shared build already produced the `simv`, and at collect the head overwrites the `compile` block in `artefacts/<test>/dispatch/result-<tag>.json` with the build job's record. The overlay takes the newest envelope, which is the head's, so a dispatched run reports the shared build's compile — the one that did the work. The exception is a simulation job that had to rebuild because the build job left no record for its config, so its own stamp check had nothing to reuse (`compile.prebuilt_stamp_invalid`): the overlay still reports the build job's record, not the recompile that actually produced that run's `simv`. Its values are read from the envelope, never measured at overlay time, and the block is absent when the envelope says nothing about the compile, so byte-stability holds for a refresh with nothing rerun.
 
+Point the refresh at one run's tree with `--run-tag <name>`, matching the tag its `rb regression` used. The scan then reads `<suite>/artefacts/.runs/<tag>/` and the overlay is written to `artefacts/.runs/<tag>/graph/results-overlay.json`, so two concurrent regressions each convert their own results. `graph.json` is structural, not per-run, and is still read from `artefacts/graph/`. Consumers that resolve the overlay implicitly — the hub, the MCP server, `rb graph query` — read the untagged one; publish a tagged run's results there with `rb graph results --run-tag <name> -o artefacts/graph`.
+
 Result status comes from each run's `result.json`, not from log parsing. A test directory with artefacts but no result envelope is retained as `UNKNOWN`. Random-test iterations remain available under `runs`; the newest iteration supplies the entry's top-level status.
 
 When cross-checking against `graph.json`:
@@ -2046,6 +2092,8 @@ artefacts/graph/
 ```
 
 `graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, skipped items, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
+
+A `--run-tag` run keeps the same shape one level down, under `artefacts/.runs/<tag>/graph/`, and holds only `results-overlay.json`: the design graph is shared.
 
 Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
 
@@ -3215,6 +3263,20 @@ Dispatch implies shared builds. RTL Buddy expands each suite, creates one build 
 `local-parallel` uses subprocesses on the current host and needs no scheduler. It cannot enforce `resources:` reservations or collect usage telemetry.
 
 Slurm dispatch requires a Linux submit host, Slurm client commands, and a filesystem shared with compute nodes. See [Parallel Dispatch](dispatch.md) for cluster configuration, resources, failure recovery, and job accounting.
+
+## Run two tiers at once
+
+One regression per simulator in one checkout, concurrently, needs a per-run artefact namespace — otherwise both runs write the same `artefacts/<test>/` paths and the second dies on the [artefact-tree lock](execution-context.md#handle-an-artefact-lock). Give each run a `--run-tag`:
+
+```bash
+rb -B verilator regression --run-tag verilator &
+rb -B icarus regression --run-tag icarus &
+wait
+rb graph results --run-tag verilator
+rb graph results --run-tag icarus
+```
+
+Each run gets its own tree, its own lock, its own log, and its own results overlay under `artefacts/.runs/<tag>/`; the shared builds stay shared. See [Namespace concurrent runs](execution-context.md#namespace-concurrent-runs) for the full path table and the tag's syntax rules.
 
 ## Read the results summary
 
@@ -4830,6 +4892,8 @@ Use explicit contexts, never ambient `os.getcwd()`:
 
 Config-driven commands use their primary config's directory as `command_root`. Managed outputs go below it, external tools run from their artifact directory, and explicit CLI paths resolve from `invocation_cwd`.
 
+`--run-tag <name>` namespaces one invocation's artefact root to `<command_root>/artefacts/.runs/<name>/`. It is accepted by `test`, `randtest`, `regression`, the dispatch job commands, and `graph results`; every per-run path in the table below moves below it, and so does the command's `rtl_buddy.log`. Shared builds (`artefacts/.shared-builds/`, keyed on the compile fingerprint) and `graph.json` are shared and must not be namespaced. A new path builder under `artefacts/` therefore has to be classified: per-run paths go through `run_artifact_root()` / `test_artifact_dir(..., run_tag=...)`, shared ones do not. Unset keeps today's flat layout byte for byte.
+
 ## Command Roots
 
 Use these roots unless a command documents a narrower exception:
@@ -4877,9 +4941,11 @@ Pass absolute paths to external tools unless a value is intentionally artifact-r
 
 ## Artifact Layout
 
-Write generated outputs under `artefacts/<name>/`. Keep compile outputs (`run.f`, `compile.log`, builder output) in the test root and randomized simulation output in `run-NNNN/`. Latest-run symlinks are conveniences, not durable storage.
+Write generated outputs under `artefacts/<name>/`, or `artefacts/.runs/<tag>/<name>/` under `--run-tag`. Keep compile outputs (`run.f`, `compile.log`, builder output) in the test root and randomized simulation output in `run-NNNN/`. Latest-run symlinks are conveniences, not durable storage.
 
-Every run writes `result.json` beside its durable output. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
+A reserved directory under `artefacts/` is dot-prefixed (`.shared-builds`, `.dispatch`, `.runs`) so it can never collide with a run named after it and so every scan that classifies directories by name keeps skipping it.
+
+Every run writes `result.json` beside its durable output. A tagged run's envelope also carries `run_tag`; an untagged run's does not, so its bytes are unchanged. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
 
 ## Subprocesses
 
@@ -5411,6 +5477,17 @@ When `sim_timeout` expires, the simulator may be terminated before flushing outp
 Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immediately on same-host contention. The file remains after release; kernel lock state, not file presence, determines whether the tree is locked.
 
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
+
+Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#namespace-concurrent-runs) so each locks its own tree. Two runs naming the same tag still contend, and the lock stays host-local.
+
+## `--run-tag` covers the test flows, not every reader
+
+`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, the dispatch job commands, and `rb graph results`. Three consequences to plan around:
+
+- `rb wave`, `rb cov`, `rb phys`, and the other flow commands resolve the flat `artefacts/<test>/`. Open a tagged run's trace by its path, `artefacts/.runs/<tag>/<test>/dump.fst`.
+- The hub, the MCP server, and `rb graph query` read the untagged `artefacts/graph/results-overlay.json`. Publish one tagged run there with `rb graph results --run-tag <name> -o artefacts/graph`.
+- Two tagged Slurm runs of one suite serialise their build jobs. The `--dependency=singleton` rendezvous is keyed on the suite directory, which owns the shared build tree; the simulation fan-outs still overlap.
+- Merged coverage is not namespaced. `--coverage-merge*` writes `<command_root>/cov_dir/` whatever the tag, so two concurrent tagged runs that both merge would write one directory. Merge in one run only, or merge afterwards from each run's per-test `coverage.dat`.
 
 ## Tool flows delete their previous outputs before running
 
@@ -5984,6 +6061,12 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 for a valueless +KEY); repeatable,   │
 │                                                 wins over the test's plusargs: and,  │
 │                                                 among repeats, the last one wins     │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suite     │
+│                                                 gets its own tree, its own tree lock │
+│                                                 and its own log; shared builds stay  │
+│                                                 shared                               │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6019,6 +6102,11 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 │                                       that are still queued or running (warn,        │
 │                                       cancel, adopt)                                 │
 │                                       [default: (cfg-dispatch orphans, else warn)]   │
+│ --run-tag                    TEXT     namespace this run's artefact tree under       │
+│                                       artefacts/.runs/<tag>/ so a concurrent run of  │
+│                                       the same suite gets its own tree, its own tree │
+│                                       lock and its own log; shared builds stay       │
+│                                       shared                                         │
 │ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6085,6 +6173,12 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 running (warn, cancel, adopt)        │
 │                                                 [default: (cfg-dispatch orphans,     │
 │                                                 else warn)]                          │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suites    │
+│                                                 gets its own trees, its own tree     │
+│                                                 locks and its own logs; shared       │
+│                                                 builds stay shared                   │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6678,6 +6772,10 @@ Usage: rtl-buddy graph results [OPTIONS]
 │                               newest cov_dir/ under the project)                     │
 │ --cov-manifest          TEXT  coverage manifest.json to join from, instead of        │
 │                               discovery                                              │
+│ --run-tag               TEXT  convert one --run-tag run's results: scan              │
+│                               artefacts/.runs/<tag>/ in every suite and write that   │
+│                               run's overlay under artefacts/.runs/<tag>/graph/       │
+│                               (graph.json is still read from artefacts/graph/)       │
 │ --help                        Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
