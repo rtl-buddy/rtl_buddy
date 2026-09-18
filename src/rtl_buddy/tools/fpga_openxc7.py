@@ -397,7 +397,9 @@ class OpenXc7Fpga(BaseFpga):
                 error=str(e),
             )
             return FpgaFailResults(
-                name=self.name + "/results", desc=f"Filelist error: {e}"
+                name=self.name + "/results",
+                desc=f"Filelist error: {e}",
+                fail_stage="setup",
             )
 
         script_path = self._write_script(fl_path)

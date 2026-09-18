@@ -1038,6 +1038,7 @@ class OpenRoadSynth:
             return SynthFailResults(
                 name=self.name + "/results",
                 desc=withdrawal_failure_desc(stale_error),
+                fail_stage="setup",
             )
         log_event(
             logger,
@@ -1070,6 +1071,7 @@ class OpenRoadSynth:
                     "(cfg-synth-platforms -> cfg-pdks corner) or add lib-paths "
                     "to the synth.yaml entry"
                 ),
+                fail_stage="setup",
             )
 
         if not lef_paths:
@@ -1086,6 +1088,7 @@ class OpenRoadSynth:
                     "provide tech-lef/macro-lef, or add lef-paths to the "
                     "synth.yaml entry"
                 ),
+                fail_stage="setup",
             )
 
         fl_path = self._filelist_path()
@@ -1107,7 +1110,9 @@ class OpenRoadSynth:
                 error=str(e),
             )
             return SynthFailResults(
-                name=self.name + "/results", desc=f"Filelist error: {e}"
+                name=self.name + "/results",
+                desc=f"Filelist error: {e}",
+                fail_stage="setup",
             )
 
         gate_count, yosys_ok, yosys_desc = self._run_yosys_stage(fl_path)

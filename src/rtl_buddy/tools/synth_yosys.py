@@ -1061,6 +1061,7 @@ class YosysSynth:
             return SynthFailResults(
                 name=self.name + "/results",
                 desc=withdrawal_failure_desc(stale_error),
+                fail_stage="setup",
             )
         log_event(
             logger,
@@ -1094,7 +1095,9 @@ class YosysSynth:
                 error=str(e),
             )
             return SynthFailResults(
-                name=self.name + "/results", desc=f"Filelist error: {e}"
+                name=self.name + "/results",
+                desc=f"Filelist error: {e}",
+                fail_stage="setup",
             )
 
         findings = self._scan_static_lifetimes(fl_path, opts)

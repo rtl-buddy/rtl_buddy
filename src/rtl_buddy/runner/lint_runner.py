@@ -168,4 +168,7 @@ class LintRunner:
                 f"verible-verilog-lint exited with code {proc.returncode} "
                 f"(see {self._log_path()})"
             ),
+            # The tool failed instead of reporting on the files, so this is
+            # not a violation count an xfail marker can excuse (#553).
+            fail_stage="tool",
         )

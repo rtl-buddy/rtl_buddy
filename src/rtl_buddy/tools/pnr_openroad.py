@@ -555,6 +555,7 @@ class OpenRoadPnr:
             return PnrFailResults(
                 name=self.name + "/results",
                 desc=f"{self.openroad_executable!r} not found",
+                fail_stage="setup",
             )
 
         version = self._probe_openroad_version()
@@ -581,7 +582,9 @@ class OpenRoadPnr:
             platform = self.root_cfg.get_pnr_platform_cfg(self.pnr_cfg.get_platform())
         except Exception as e:
             return PnrFailResults(
-                name=self.name + "/results", desc=f"platform lookup failed: {e}"
+                name=self.name + "/results",
+                desc=f"platform lookup failed: {e}",
+                fail_stage="setup",
             )
 
         try:
@@ -595,7 +598,9 @@ class OpenRoadPnr:
                 error=str(e),
             )
             return PnrFailResults(
-                name=self.name + "/results", desc=f"template error: {e}"
+                name=self.name + "/results",
+                desc=f"template error: {e}",
+                fail_stage="setup",
             )
 
         log_path = self._log_path()

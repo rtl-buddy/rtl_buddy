@@ -1,6 +1,6 @@
 import pprint
 
-from .xfail import is_pass_with_xfail
+from .xfail import FAIL_STAGE_KEY, is_pass_with_xfail
 
 
 class FpgaResults:
@@ -111,13 +111,22 @@ class FpgaPassResults(FpgaResults):
 
 
 class FpgaFailResults(FpgaResults):
-    def __init__(self, name, desc, metrics=None):
+    """A failed implementation run.
+
+    ``fail_stage`` names a stage that failed *instead of* producing a
+    verdict on the design; such a failure is never excused by an xfail
+    marker (#553, #594). Leave it unset for the flow's own verdict.
+    """
+
+    def __init__(self, name, desc, metrics=None, *, fail_stage: str | None = None):
         results = {"result": "FAIL", "name": name, "desc": desc}
         # A timing-gate failure (require-timing-met) carries the routed
         # metrics forward so a closure loop still sees wns_ns/timing_met/
         # failing_paths on the failing payload.
         if metrics:
             results.update(metrics)
+        if fail_stage is not None:
+            results[FAIL_STAGE_KEY] = fail_stage
         super().__init__(name=name, results=results)
 
 

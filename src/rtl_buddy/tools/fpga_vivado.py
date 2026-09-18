@@ -251,7 +251,9 @@ class VivadoFpga(BaseFpga):
                 error=str(e),
             )
             return FpgaFailResults(
-                name=self.name + "/results", desc=f"Filelist error: {e}"
+                name=self.name + "/results",
+                desc=f"Filelist error: {e}",
+                fail_stage="setup",
             )
 
         try:
@@ -265,7 +267,9 @@ class VivadoFpga(BaseFpga):
                 error=str(e),
             )
             return FpgaFailResults(
-                name=self.name + "/results", desc=f"script generation error: {e}"
+                name=self.name + "/results",
+                desc=f"script generation error: {e}",
+                fail_stage="setup",
             )
 
         # Relative paths: the process runs with cwd=artefacts/<run>/ so

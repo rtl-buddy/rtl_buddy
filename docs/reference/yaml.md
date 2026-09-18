@@ -10,7 +10,7 @@ Unless stated otherwise:
 
 - Relative paths resolve from the YAML file that contains them. See [Execution Context](../concepts/execution-context.md).
 - `reglvl` defaults to 0. It may be an integer or a per-tool/per-builder map with `default` fallback. A run is selected when its level is at most the CLI regression level.
-- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. See [Expected failures](../concepts/expected-failures.md).
+- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict — a setup or compile failure, a sim timeout, a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
 
 ## root_config.yaml
