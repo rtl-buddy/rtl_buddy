@@ -10,6 +10,12 @@ from importlib.metadata import version
 from .runner.elab_results import elab_failure, write_elab_result_json
 
 
+#: Forwarded by ``ElabRunner._slang_args`` when the profile raises the parser's
+#: nesting limit. Read back out of the slang arguments so the result envelope
+#: records the limit the run actually used, the way ``-G`` overrides are.
+MAX_PARSE_DEPTH_ARG = "--max-parse-depth="
+
+
 def _peak_memory_bytes() -> int:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform == "darwin":
@@ -26,6 +32,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--input-source-count", required=True, type=int)
     parser.add_argument("slang_args", nargs=argparse.REMAINDER)
     return parser
+
+
+def _max_parse_depth(slang_args: list[str]) -> int | None:
+    """The forwarded parser nesting limit, or None when it was left default.
+
+    Only ``ElabRunner`` writes this argument, and it writes a validated
+    integer; an unparsable value from a hand-run worker records as unset
+    rather than failing the elaboration over a sidecar field.
+    """
+    values = [
+        arg.removeprefix(MAX_PARSE_DEPTH_ARG)
+        for arg in slang_args
+        if arg.startswith(MAX_PARSE_DEPTH_ARG)
+    ]
+    return int(values[-1]) if values and values[-1].isdigit() else None
 
 
 def _parameter_names(slang_args: list[str]) -> set[str]:
@@ -59,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     slang_args = args.slang_args
     if slang_args and slang_args[0] == "--":
         slang_args = slang_args[1:]
+    max_parse_depth = _max_parse_depth(slang_args)
     started = time.perf_counter()
     stage = "import"
     results = elab_failure("pyslang worker did not complete", stage=stage)
@@ -120,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
             "source_count": source_count,
             "input_source_count": args.input_source_count,
             "diagnostics": {"errors": errors, "warnings": warnings},
+            "max_parse_depth": max_parse_depth,
             "pyslang_version": version("pyslang"),
         }
     except Exception as exc:  # noqa: BLE001 - the envelope is the worker contract
@@ -128,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         results["source_count"] = source_count
         results["input_source_count"] = args.input_source_count
         results["diagnostics"] = {"errors": errors, "warnings": warnings}
+        results["max_parse_depth"] = max_parse_depth
     results["elapsed_sec"] = round(time.perf_counter() - started, 6)
     results["peak_memory_bytes"] = _peak_memory_bytes()
     write_elab_result_json(

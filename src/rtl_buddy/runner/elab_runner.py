@@ -67,6 +67,8 @@ class ElabRunner:
             args.append("--libraries-inherit-macros")
         if profile.timescale is not None:
             args.append(f"--timescale={profile.timescale}")
+        if profile.max_parse_depth is not None:
+            args.append(f"--max-parse-depth={profile.max_parse_depth}")
         args.extend(f"--ignore-directive={item}" for item in profile.ignored_directives)
         args.extend(f"-W{item}" for item in profile.warnings)
         args.extend(

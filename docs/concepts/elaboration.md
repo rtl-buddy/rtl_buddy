@@ -51,6 +51,28 @@ Profile source and include paths resolve from `models.yaml`. Warning controls
 contain only the text after `-W`; they can suppress warnings but cannot disable
 hard parse, type, or elaboration errors.
 
+## Raise the parser nesting limit
+
+Set a profile's `max_parse_depth` when a run fails with `language constructs are
+too deeply nested`. slang stops recursive descent after 1024 nesting levels, and
+generated RTL can exceed that inside a single expression — a long chain of
+conditional expressions or concatenations is the usual cause. It is unset by
+default and moves the limit only for the profile that declares it:
+
+```yaml
+    elaborations:
+      - name: parse
+        max_parse_depth: 8192
+```
+
+It lifts a depth guard, not a correctness one: malformed sources still fail with
+the same diagnostics. Raise it to what the generated source needs rather than to
+the accepted maximum — the guard turns runaway recursion into a diagnostic, and
+past it the passes after the parser can exhaust the C stack and kill the worker
+with no diagnostic at all. See [YAML Formats](../reference/yaml.md#elaboration-profiles)
+for the accepted range and [Quirks & Known Issues](../known-issues.md) for the
+platform limit on nesting depth.
+
 ## Run a regression
 
 An elaboration regression deliberately selects `models.yaml` files through a
@@ -85,10 +107,11 @@ artefacts/elab/<model>/<base-or-profile>/
 
 `elab.f` has unrolled includes and absolute path-valued entries. `result.json` records
 the selected top, explicit and parsed source counts, error and warning counts,
-elapsed time, peak worker memory, and pyslang version. A profile whose
-`prepend_sources`, `append_sources`, or `include_dirs` entry is missing produces
-a `FAIL` result at stage `filelist` instead of aborting the command, so a
-regression continues with its remaining profiles. Machine mode returns the
+the configured `max_parse_depth` (`null` when unset), elapsed time, peak worker
+memory, and pyslang version. A profile whose `prepend_sources`,
+`append_sources`, or `include_dirs` entry is missing produces a `FAIL` result at
+stage `filelist` instead of aborting the command, so a regression continues with
+its remaining profiles. Machine mode returns the
 same result payload and writes JSONL events to `rtl_buddy.log`.
 
 `rb elab` dispatch is opt-in with `--dispatch`. `rb elab-regression` also honors
