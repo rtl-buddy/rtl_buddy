@@ -184,6 +184,93 @@ PROTECTED_OUTPUT_PATTERNS = (
 OWNED_LEDGER_NAME = ".rb-owned"
 
 
+def project_relative(path, project_root) -> str | None:
+    """POSIX path relative to the project root, or the path unchanged.
+
+    The spelling rule every manifest's paths keep, so one of them can be
+    read back after the tree has moved, been archived, or been attached
+    to a CI artefact. A path outside the project (an artefact directory
+    on a scratch filesystem, say) is kept verbatim rather than turned
+    into a ``../..`` chain nothing can join on.
+
+    The comparison is made on the *logical* paths first — absolute-ised
+    but with no symlink resolved — and only falls back to the resolved
+    pair. A suite whose ``artefacts/`` is a link to scratch storage is an
+    ordinary setup, the same one the discovery walks follow
+    (:func:`rtl_buddy.fs_walk.may_follow_link`) and the filelist writer
+    is pinned against, and resolving both operands would put the scratch
+    path on both sides of the ``relative_to``, match nothing, and write
+    the manifest full of absolute host paths. The project-relative rule
+    is about the tree the project is read through, not about where the
+    bytes live. Resolving is still worth a second try, for the reverse
+    arrangement: a path handed in through a link that the project root is
+    *not* reached through.
+
+    Lives here, the bottom of the import graph, because both manifest
+    writers keep the same rule and the coverage one kept a resolve-both
+    copy of it — which is exactly the bug above, for exactly the layout
+    its own discovery walk goes out of its way to follow
+    (rtl-buddy/rtl_buddy#564). Re-exported from
+    :mod:`rtl_buddy.phys.manifest` and :mod:`rtl_buddy.cov.manifest`,
+    where consumers already look.
+    """
+    if path is None:
+        return None
+    logical = Path(os.path.abspath(path))
+    logical_root = Path(os.path.abspath(project_root))
+    try:
+        return logical.relative_to(logical_root).as_posix()
+    except ValueError:
+        pass
+    try:
+        return Path(path).resolve().relative_to(Path(project_root).resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+#: What marks a project root, walking up from an artefact directory. Same
+#: two markers :func:`rtl_buddy.config.root.discover_project_root` uses,
+#: in the same order.
+ROOT_MARKERS = ("root_config.yaml", ".git")
+
+
+def project_root_or_none(artefact_dir) -> str | None:
+    """The project root above ``artefact_dir``, or ``None`` if it is in none.
+
+    A marker walk, not :func:`rtl_buddy.config.root.discover_project_root`,
+    close as the two are: that one logs at ERROR before falling back, and
+    an artefact directory outside a project is not an error *here* — it is
+    a manifest whose paths are bare filenames, which is still joinable and
+    still worth writing.
+
+    Both spellings are tried, logical first, for the reason
+    :func:`project_relative` gives: an ``artefacts/`` symlinked to scratch
+    resolves out of the project entirely, and a walk that started there
+    would find no root and hand every path back absolute. The resolved
+    walk is the fallback, so a directory reached through a link from
+    outside the project still finds the root it really sits under.
+    """
+    logical = Path(os.path.abspath(artefact_dir))
+    for start in (logical, Path(artefact_dir).resolve()):
+        for candidate in (start, *start.parents):
+            if any((candidate / marker).exists() for marker in ROOT_MARKERS):
+                return str(candidate)
+    return None
+
+
+def joins_back(root, artefact_dir_rel: str, artefact_dir_abs) -> bool:
+    """Whether ``root / artefact_dir_rel`` is the directory in question.
+
+    The check that turns a manifest's component count (see each
+    manifest module's ``project_root_for``) into an answer that can be
+    wrong out loud rather than quietly. Compared on the *resolved* paths,
+    because the whole point is that the two spellings may differ by a
+    link.
+    """
+    joined = os.path.join(str(root), artefact_dir_rel)
+    return os.path.realpath(joined) == os.path.realpath(artefact_dir_abs)
+
+
 def read_owned_ledger(artefact_dir: str | Path, flow: str) -> set[str]:
     """Return the output names ``flow`` has previously claimed here.
 
