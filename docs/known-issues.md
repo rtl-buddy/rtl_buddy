@@ -253,7 +253,7 @@ The scan is a tokenizer with a definedness-only preprocessor, and it is imperfec
 
 ## Unknown synthesis overrides are ignored after a warning
 
-`synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs `synth_tool_config.unknown_override` and the run uses the default. A non-mapping override block or non-boolean `single_unit` is fatal. See [Synthesis](concepts/synthesis.md).
+`synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs `synth_tool_config.unknown_override` and the run uses the default. A non-mapping override block or a non-boolean `single_unit` or `best_effort_hierarchy` is fatal. See [Synthesis](concepts/synthesis.md).
 
 ## `rb phys module` reports no power for an RTL module
 

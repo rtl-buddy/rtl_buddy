@@ -407,7 +407,9 @@ def emit_frontend_read_cmds(
       (the latter folded in here since slang elaborates eagerly — a later
       ``chparam`` would arrive too late). ``opts.single_unit`` adds
       ``--single-unit``, parsing every source as one compilation unit so
-      preprocessor definitions stay visible across file boundaries.
+      preprocessor definitions stay visible across file boundaries, and
+      ``opts.best_effort_hierarchy`` adds ``--best-effort-hierarchy``, so
+      module instances are kept as hierarchy rather than inlined.
     """
     # Shell-quote everything that comes from filesystem paths or
     # user-supplied dict values — Yosys parses each script line with
@@ -450,6 +452,14 @@ def emit_frontend_read_cmds(
                 frontend=opts.frontend,
                 top=top,
             )
+        if opts.best_effort_hierarchy:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.best_effort_hierarchy_ignored",
+                frontend=opts.frontend,
+                top=top,
+            )
         for src in source_files:
             cmds.append(f"read_verilog -sv -defer{define_flags_v} {shlex.quote(src)}")
         return cmds
@@ -464,10 +474,13 @@ def emit_frontend_read_cmds(
             flags.extend(f"-G{k}={shlex.quote(str(v))}" for k, v in params.items())
         flags_str = (" " + " ".join(flags)) if flags else ""
         single_unit_flag = " --single-unit" if opts.single_unit else ""
+        hierarchy_flag = (
+            " --best-effort-hierarchy" if opts.best_effort_hierarchy else ""
+        )
         sources_joined = " ".join(shlex.quote(s) for s in source_files)
         cmds.append(
             f"read_slang --std 1800-2017 --top {top}"
-            f"{single_unit_flag}{flags_str} {sources_joined}"
+            f"{single_unit_flag}{hierarchy_flag}{flags_str} {sources_joined}"
         )
         return cmds
 
@@ -535,7 +548,8 @@ def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
     never appears here at all — it is a stage-2 OpenROAD knob and no Yosys
     script line consumes it.
 
-    ``plugin_path`` and ``single_unit`` are recorded only under
+    ``plugin_path``, ``single_unit`` and ``best_effort_hierarchy`` are
+    recorded only under
     ``frontend: slang``. The verilog branch of the read emitter loads no
     plugin and warns that it cannot honour one compilation unit, so two
     verilog runs differing in either produce the same script and are the
@@ -576,6 +590,7 @@ def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
             plugin = opts.plugin_path
         fed["plugin_path"] = plugin
         fed["single_unit"] = opts.single_unit
+        fed["best_effort_hierarchy"] = opts.best_effort_hierarchy
     return fed
 
 

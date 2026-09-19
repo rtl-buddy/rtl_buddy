@@ -158,6 +158,58 @@ def test_synth_tool_config_single_unit_override_can_disable_base():
     assert cfg.get_opts({"single_unit": False}).single_unit is False
 
 
+def test_synth_tool_config_best_effort_hierarchy_defaults_to_false():
+    assert _tool_cfg().get_opts().best_effort_hierarchy is False
+    assert _tool_cfg().get_opts({}).best_effort_hierarchy is False
+
+
+def test_synth_tool_config_best_effort_hierarchy_from_opts_file():
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(frontend="slang", best_effort_hierarchy=True),
+        )
+    )
+    assert cfg.get_opts().best_effort_hierarchy is True
+
+
+def test_synth_tool_config_best_effort_hierarchy_override_sets_true():
+    cfg = _tool_cfg()
+    assert cfg.get_opts({"best_effort_hierarchy": True}).best_effort_hierarchy is True
+
+
+def test_synth_tool_config_best_effort_hierarchy_override_can_disable_base():
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(best_effort_hierarchy=True),
+        )
+    )
+    assert cfg.get_opts({"best_effort_hierarchy": False}).best_effort_hierarchy is False
+
+
+def test_synth_tool_config_best_effort_hierarchy_is_a_known_override(caplog):
+    cfg = _tool_cfg()
+    with caplog.at_level("WARNING"):
+        cfg.get_opts({"best_effort_hierarchy": True, "frontend": "slang"})
+    assert "unknown key" not in caplog.text
+
+
+def test_synth_tool_config_best_effort_hierarchy_non_bool_raises():
+    """A quoted "true" is a str, which is truthy: rejected, not applied."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg = _tool_cfg()
+    with pytest.raises(FatalRtlBuddyError, match="must be a bool"):
+        cfg.get_opts({"best_effort_hierarchy": "true"})
+
+
 def test_synth_tool_config_kebab_override_key_warns(caplog):
     """`single-unit` under tool_overrides is the kebab-vs-snake trap: it
     used to be silently ignored. It is still ignored — rejecting it would
@@ -1170,6 +1222,150 @@ def test_write_script_single_unit_with_verilog_frontend_warns_and_is_ignored(
     assert "--single-unit" not in script
     assert "read_verilog -sv -defer" in script
     assert "single_unit" in caplog.text and "slang" in caplog.text
+
+
+def test_write_script_slang_best_effort_hierarchy_from_tool_opts(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(
+                frontend="slang",
+                plugin_path=str(plugin),
+                best_effort_hierarchy=True,
+            ),
+        )
+    )
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="my_top"),
+        tool_cfg=tool_cfg,
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert (
+        f"read_slang --std 1800-2017 --top my_top --best-effort-hierarchy {sv}"
+        in script
+    )
+
+
+def test_write_script_slang_best_effort_hierarchy_follows_single_unit(tmp_path):
+    """Flag order is part of the emitted command's contract: the hierarchy
+    flag sits right after --single-unit and before the -D/-G flags."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(
+                frontend="slang",
+                plugin_path=str(plugin),
+                single_unit=True,
+                best_effort_hierarchy=True,
+            ),
+        )
+    )
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="my_top", params={"WIDTH": 8}, defines={"TARGET_SYNTH": 1}
+        ),
+        tool_cfg=tool_cfg,
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert (
+        "read_slang --std 1800-2017 --top my_top --single-unit "
+        f"--best-effort-hierarchy -DTARGET_SYNTH=1 -GWIDTH=8 {sv}" in script
+    )
+
+
+def test_write_script_slang_best_effort_hierarchy_via_tool_overrides(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="my_top",
+            tool_overrides={
+                "yosys": {
+                    "frontend": "slang",
+                    "plugin_path": str(plugin),
+                    "best_effort_hierarchy": True,
+                }
+            },
+        ),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert (
+        f"read_slang --std 1800-2017 --top my_top --best-effort-hierarchy {sv}"
+        in script
+    )
+
+
+def test_write_script_slang_omits_best_effort_hierarchy_by_default(tmp_path):
+    """Default behaviour is byte-identical to before the option existed."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="my_top"),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "--best-effort-hierarchy" not in script
+    assert f"read_slang --std 1800-2017 --top my_top {sv}" in script
+
+
+def test_write_script_best_effort_hierarchy_with_verilog_frontend_warns(
+    tmp_path, caplog
+):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(frontend="verilog", best_effort_hierarchy=True),
+        )
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=tool_cfg)
+    with caplog.at_level("WARNING"):
+        script = Path(ys._write_script(str(fl))).read_text()
+
+    assert "--best-effort-hierarchy" not in script
+    assert "read_verilog -sv -defer" in script
+    assert "best_effort_hierarchy" in caplog.text and "slang" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -2477,6 +2673,11 @@ def test_synth_suite_config_loads_xfail_flags(tmp_path):
             "synth.single_unit_ignored",
             {"frontend": "verilog", "top": "my_top"},
             ["single_unit", "verilog", "slang"],
+        ),
+        (
+            "synth.best_effort_hierarchy_ignored",
+            {"frontend": "verilog", "top": "my_top"},
+            ["best_effort_hierarchy", "verilog", "slang"],
         ),
         (
             "synth_tool_config.unknown_override",
@@ -5581,6 +5782,27 @@ def test_the_verilog_frontend_records_no_plugin_at_all(tmp_path):
         SynthToolOpts(frontend="verilog", plugin_path="/opt/a/slang.so"), None
     )
     assert "plugin_path" not in fed and "single_unit" not in fed
+    assert "best_effort_hierarchy" not in fed
+
+
+def test_the_slang_fingerprint_records_best_effort_hierarchy():
+    """Two slang runs differing only in the hierarchy flag read different
+    scripts, so they must not digest as one experiment."""
+    from rtl_buddy.config.synth import SynthToolOpts
+    from rtl_buddy.tools.synth_yosys import elaboration_fingerprint
+
+    def _fed(flag):
+        return elaboration_fingerprint(
+            SynthToolOpts(
+                frontend="slang",
+                plugin_path="/opt/a/slang.so",
+                best_effort_hierarchy=flag,
+            ),
+            None,
+        )
+
+    assert _fed(False)["best_effort_hierarchy"] is False
+    assert _fed(True)["best_effort_hierarchy"] is True
 
 
 def test_a_synth_run_digests_the_merged_define_table_its_script_fed(tmp_path):
