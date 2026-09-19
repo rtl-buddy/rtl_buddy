@@ -1637,6 +1637,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'single_unit: true has no effect with frontend "{fields.get("frontend")}" '
                 "— it only applies to the slang frontend; set frontend: slang to use it"
             )
+        case "synth.best_effort_hierarchy_ignored":
+            return (
+                "best_effort_hierarchy: true has no effect with frontend "
+                f'"{fields.get("frontend")}" — it only applies to the slang '
+                "frontend; set frontend: slang to use it"
+            )
         case "synth.static_functions":
             findings = fields.get("findings") or []
             listed = "; ".join(str(f) for f in findings)

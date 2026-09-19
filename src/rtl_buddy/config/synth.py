@@ -67,6 +67,10 @@ class SynthToolOpts:
     # Forwarded to yosys-slang as ``read_slang --single-unit``; the
     # legacy verilog frontend has no equivalent.
     single_unit: bool = False
+    # Keep module instances as hierarchy instead of inlining them. Forwarded
+    # to yosys-slang as ``read_slang --best-effort-hierarchy``; the legacy
+    # verilog frontend has no equivalent.
+    best_effort_hierarchy: bool = False
     # Pre-synthesis gate on `function`/`task` declarations that lack an
     # explicit `automatic` lifetime: "error", "warn", or "allow". Empty
     # selects the frontend-dependent default -- see
@@ -85,6 +89,7 @@ class SynthToolOptsFile:
     frontend: str = field(default="verilog")
     plugin_path: str = field(rename="plugin-path", default="")
     single_unit: bool = field(rename="single-unit", default=False)
+    best_effort_hierarchy: bool = field(rename="best-effort-hierarchy", default=False)
     static_functions: str = field(rename="static-functions", default="")
     conflicting_drivers: str = field(rename="conflicting-drivers", default="")
 
@@ -141,6 +146,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "frontend",
     "plugin_path",
     "single_unit",
+    "best_effort_hierarchy",
     "static_functions",
     "conflicting_drivers",
 )
@@ -153,6 +159,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
 # values under `cfg-synth-tools.opts.single-unit`.
 _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
     "single_unit": (bool, "bool", "write an unquoted YAML true/false"),
+    "best_effort_hierarchy": (bool, "bool", "write an unquoted YAML true/false"),
     "static_functions": (
         str,
         "string",
@@ -304,6 +311,7 @@ class SynthToolConfig:
         frontend = self._cfg.opts.frontend
         plugin_path = self._cfg.opts.plugin_path
         single_unit = self._cfg.opts.single_unit
+        best_effort_hierarchy = self._cfg.opts.best_effort_hierarchy
         static_functions = self._cfg.opts.static_functions
         conflicting_drivers = self._cfg.opts.conflicting_drivers
         if overrides:
@@ -329,6 +337,9 @@ class SynthToolConfig:
             frontend = overrides.get("frontend", frontend)
             plugin_path = overrides.get("plugin_path", plugin_path)
             single_unit = overrides.get("single_unit", single_unit)
+            best_effort_hierarchy = overrides.get(
+                "best_effort_hierarchy", best_effort_hierarchy
+            )
             static_functions = overrides.get("static_functions", static_functions)
             conflicting_drivers = overrides.get(
                 "conflicting_drivers", conflicting_drivers
@@ -340,6 +351,7 @@ class SynthToolConfig:
             frontend=frontend,
             plugin_path=plugin_path,
             single_unit=single_unit,
+            best_effort_hierarchy=best_effort_hierarchy,
             static_functions=static_functions,
             conflicting_drivers=conflicting_drivers,
         )
