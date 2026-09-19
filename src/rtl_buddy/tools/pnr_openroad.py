@@ -198,8 +198,13 @@ class OpenRoadPnr:
             "tie_hi": pdk.get_tie_hi(),
             "tie_lo": pdk.get_tie_lo(),
             "cts_buf": platform.get_cts_buffer(),
+            "cts_clustering_option": (
+                "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
+            ),
             "signal_layers": platform.get_signal_layers(),
             "clock_layers": platform.get_clock_layers(),
+            "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),
+            "pin_layer_vertical": pdk.get_pin_layer_vertical(),
             "fill_cells": fill_cells,
             "out_dir": self.artefact_dir,
             "extra_libs_lefs": extra_libs_lefs,
