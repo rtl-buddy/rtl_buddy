@@ -152,6 +152,11 @@ class WaveformValueReader:
         value yet at *timestamp*); logs once and returns None for any other
         (unexpected) pywellen error.
         """
+        if timestamp < 0:
+            # Before time zero nothing has a value. pywellen takes an unsigned
+            # time and raises OverflowError on a negative one, which would
+            # otherwise be reported below as an API break.
+            return None
         try:
             var = wf[path]
         except KeyError:

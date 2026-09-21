@@ -711,6 +711,13 @@ class TestWaveformValueReaderRealTrace:
         assert reader.get_value("tb_top.i_dut.rst", 0) is None
         assert reader.get_value("tb_top.i_dut.rst", 10) == "1"
 
+    def test_negative_timestamp_is_a_quiet_none(self, reader):
+        """pywellen raises OverflowError on a negative time; not an API break."""
+        with patch("rtl_buddy.tools.surfer_wcp.log_event") as logged:
+            assert reader.get_value("tb_top.i_dut.clk", -1) is None
+        logged.assert_not_called()
+        assert reader._api_break_logged is False
+
     def test_missing_signal_is_a_quiet_none(self, reader):
         """A lookup miss must not log — only a real API break does (#263)."""
         with patch("rtl_buddy.tools.surfer_wcp.log_event") as logged:
