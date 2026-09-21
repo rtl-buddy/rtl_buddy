@@ -195,6 +195,116 @@ def test_pdk_exposes_configured_pin_layers(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# PdkConfig — placement, don't-use cells, PDN (#101)
+# ---------------------------------------------------------------------------
+
+
+def test_pdk_leaves_the_new_process_keys_unset_by_default(tmp_path):
+    """A PDK that names none of them says so, rather than guessing."""
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_placement_density() is None
+    assert pdk.get_placement_padding() is None
+    assert pdk.get_dont_use_cells() == []
+    assert pdk.get_pdn_config() == ""
+
+
+def test_pdk_exposes_configured_placement(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=0.55, padding=2))
+    assert pdk.get_placement_density() == 0.55
+    assert pdk.get_placement_padding() == 2
+
+
+def test_pdk_resolves_pdn_config_against_the_root_config(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, pdn_config="pdk/nangate45/pdn.tcl")
+    assert pdk.get_pdn_config() == str(tmp_path / "pdk/nangate45/pdn.tcl")
+
+
+@pytest.mark.parametrize("density", [0.0, -0.5, 1.5])
+def test_pdk_rejects_a_placement_density_outside_zero_to_one(tmp_path, density):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _make_pdk_cfg(tmp_path, placement=PlacementFile(density=density))
+    assert "placement.density" in str(excinfo.value)
+    assert "nangate45" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("padding", [-1, True])
+def test_pdk_rejects_a_placement_padding_that_is_not_a_natural_number(
+    tmp_path, padding
+):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _make_pdk_cfg(tmp_path, placement=PlacementFile(padding=padding))
+    assert "placement.padding" in str(excinfo.value)
+
+
+def test_pdk_accepts_a_density_of_one_and_a_padding_of_zero(tmp_path):
+    """The range is half-open at zero and closed at one; padding may be 0."""
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=1.0, padding=0))
+    assert pdk.get_placement_density() == 1.0
+    assert pdk.get_placement_padding() == 0
+
+
+def test_pdk_keeps_dont_use_cell_patterns_in_config_order(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["*_X32", "AND2_X1"])
+    assert pdk.get_dont_use_cells() == ["*_X32", "AND2_X1"]
+
+
+def test_new_pdk_and_platform_keys_are_spelled_in_kebab_case(tmp_path):
+    """Pin the YAML spellings a `root_config.yaml` has to use."""
+    from serde.yaml import from_yaml
+
+    pdk_file = from_yaml(
+        PdkConfigFile,
+        dedent("""\
+            name: "nangate45"
+            corners:
+              typ: "pdk/lib/typ.lib"
+            placement:
+              density: 0.55
+              padding: 2
+            dont-use-cells: ["AND2_X1", "*_X32"]
+            pdn-config: "pdk/nangate45/pdn.tcl"
+        """),
+    )
+    pdk = PdkConfig(pdk_file, str(tmp_path / "root_config.yaml"))
+    assert pdk.get_placement_density() == 0.55
+    assert pdk.get_placement_padding() == 2
+    assert pdk.get_dont_use_cells() == ["AND2_X1", "*_X32"]
+    assert pdk.get_pdn_config() == str(tmp_path / "pdk/nangate45/pdn.tcl")
+
+    platform_file = from_yaml(
+        PnrPlatformConfigFile,
+        dedent("""\
+            name: "nangate45_typ"
+            pdk: "nangate45"
+            cts-buffer: ["BUF_X4", "BUF_X8"]
+            placement:
+              density: 0.62
+        """),
+    )
+    platform = PnrPlatformConfig(platform_file, lambda _name: pdk)
+    assert platform.get_cts_buffers() == ["BUF_X4", "BUF_X8"]
+    assert platform.get_placement_density() == 0.62
+    assert platform.get_placement_padding() == 2
+
+
+@pytest.mark.parametrize("cell", ["", "   ", "AND2_X1 OR2_X1"])
+def test_pdk_rejects_an_unusable_dont_use_entry(tmp_path, cell):
+    """One pattern per entry: a whitespace-carrying entry would silently
+    become two arguments on a Yosys command line."""
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _make_pdk_cfg(tmp_path, dont_use_cells=[cell])
+    assert "dont-use-cells" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # SynthPlatformConfig — pdk lookup, corner resolution, lef composition
 # ---------------------------------------------------------------------------
 
@@ -255,6 +365,63 @@ def test_pnr_platform_unknown_sta_corner_raises(tmp_path):
             ),
             lambda _name: pdk,
         )
+
+
+def _platform(pdk, **overrides):
+    base = dict(name="nangate45_typ", pdk="nangate45")
+    base.update(overrides)
+    return PnrPlatformConfig(PnrPlatformConfigFile(**base), lambda _name: pdk)
+
+
+def test_pnr_platform_placement_falls_back_to_the_flow_defaults(tmp_path):
+    """Neither block says anything: the values the flow always emitted."""
+    cfg = _platform(_make_pdk_cfg(tmp_path))
+    assert cfg.get_placement_density() == 0.7
+    assert cfg.get_placement_padding() == 1
+
+
+def test_pnr_platform_placement_takes_the_pdk_values(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=0.55, padding=2))
+    cfg = _platform(pdk)
+    assert cfg.get_placement_density() == 0.55
+    assert cfg.get_placement_padding() == 2
+
+
+def test_pnr_platform_placement_overrides_the_pdk_field_by_field(tmp_path):
+    """The platform wins where it says something, the PDK where it does not."""
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=0.55, padding=2))
+    cfg = _platform(pdk, placement=PlacementFile(density=0.6))
+    assert cfg.get_placement_density() == 0.6
+    assert cfg.get_placement_padding() == 2
+
+
+def test_pnr_platform_rejects_its_own_out_of_range_placement(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _platform(_make_pdk_cfg(tmp_path), placement=PlacementFile(density=1.2))
+    assert "pnr platform 'nangate45_typ'" in str(excinfo.value)
+    assert "placement.density" in str(excinfo.value)
+
+
+def test_pnr_platform_cts_buffer_takes_a_name_or_a_list(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    single = _platform(pdk, cts_buffer="BUF_X4")
+    assert single.get_cts_buffer() == "BUF_X4"
+    assert single.get_cts_buffers() == ["BUF_X4"]
+
+    listed = _platform(pdk, cts_buffer=["BUF_X4", "BUF_X8", "BUF_X16"])
+    # The root buffer is the first entry; the buffer list is all of them.
+    assert listed.get_cts_buffer() == "BUF_X4"
+    assert listed.get_cts_buffers() == ["BUF_X4", "BUF_X8", "BUF_X16"]
+
+    unset = _platform(pdk)
+    assert unset.get_cts_buffer() == ""
+    assert unset.get_cts_buffers() == []
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +670,198 @@ def test_openroad_pnr_can_disable_cts_sink_clustering(tmp_path):
 
     assert "-sink_clustering_enable" not in text
     assert "{{" not in text
+
+
+# ---------------------------------------------------------------------------
+# Tcl rendering — placement, PDN, don't-use, CTS buffer list (#101)
+# ---------------------------------------------------------------------------
+
+
+def _render_flow(tmp_path, platform, suite_dir=None):
+    """The `pnr.tcl` this platform renders, as text."""
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    resolved_synth = MagicMock()
+    resolved_synth.get_top.return_value = "demo_top"
+    resolved_synth.get_name.return_value = "demo_synth"
+    pnr_cfg.resolve_synth_cfg = MagicMock(return_value=resolved_synth)
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=pnr_cfg,
+        suite_dir=str(suite_dir or tmp_path),
+        root_cfg=MagicMock(),
+    )
+    return Path(backend._write_script(platform, pnr_cfg.get_floorplan())).read_text()
+
+
+def test_pnr_flow_is_unchanged_when_no_new_key_is_set(tmp_path):
+    """Back-compat pin: a config that sets none of the #101 keys renders the
+    Tcl the flow rendered before they existed — same placement line, same
+    CTS invocation, and no trace of the conditional stages."""
+    text = _render_flow(
+        tmp_path, _platform(_make_pdk_cfg(tmp_path), cts_buffer="BUF_X4")
+    )
+
+    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "set CTS_BUF         BUF_X4\n" in text
+    assert (
+        "clock_tree_synthesis \\\n"
+        "    -root_buf $CTS_BUF \\\n"
+        "    -buf_list $CTS_BUF \\\n"
+        "    -sink_clustering_enable\n"
+    ) in text
+    assert 'read_sdc $SDC_FILE\n\nputs ">>> Initializing floorplan"' in text
+    assert "pdngen" not in text
+    assert "set_dont_use" not in text
+    assert "{{" not in text
+
+
+def test_pnr_flow_substitutes_placement_density_and_padding(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=0.55, padding=2))
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+
+    assert "global_placement -density 0.55 -pad_left 2 -pad_right 2\n" in text
+
+
+def test_pnr_flow_placement_honours_the_platform_override(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=0.55, padding=2))
+    platform = _platform(
+        pdk, cts_buffer="BUF_X4", placement=PlacementFile(density=0.62)
+    )
+    text = _render_flow(tmp_path, platform)
+
+    assert "global_placement -density 0.62 -pad_left 2 -pad_right 2\n" in text
+
+
+def test_pnr_flow_emits_dont_use_before_any_optimisation(tmp_path):
+    """`set_dont_use` has to land before the first pass that may pick a
+    cell — placement, repair, CTS — so the exclusions actually hold."""
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1", "*_X32"])
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+
+    assert "set_dont_use [list AND2_X1 *_X32]\n" in text
+    dont_use_at = text.index("set_dont_use")
+    for later in ("global_placement", "repair_design", "clock_tree_synthesis"):
+        assert dont_use_at < text.index(later)
+
+
+def test_pnr_flow_sources_the_pdn_snippet_and_runs_pdngen(tmp_path):
+    """ORFS convention: the snippet declares the grid, the flow calls
+    `pdngen`, after macro placement and before global placement."""
+    pdk = _make_pdk_cfg(tmp_path, pdn_config="pdk/pdn.tcl")
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+
+    assert f"source {tmp_path / 'pdk/pdn.tcl'}\npdngen\n" in text
+    assert text.index("Macro placement") < text.index("source ")
+    assert text.index("pdngen") < text.index("global_placement")
+    assert text.index("pdngen") < text.index("global_route")
+
+
+def test_pnr_flow_renders_a_cts_buffer_list(tmp_path):
+    """Every entry reaches `-buf_list`; the first is the root buffer."""
+    platform = _platform(
+        _make_pdk_cfg(tmp_path), cts_buffer=["BUF_X4", "BUF_X8", "BUF_X16"]
+    )
+    text = _render_flow(tmp_path, platform)
+
+    assert "set CTS_BUF         {BUF_X4 BUF_X8 BUF_X16}\n" in text
+    assert (
+        "clock_tree_synthesis \\\n"
+        "    -root_buf [lindex $CTS_BUF 0] \\\n"
+        "    -buf_list $CTS_BUF \\\n"
+    ) in text
+
+
+def test_pnr_flow_renders_a_one_entry_list_exactly_like_a_name(tmp_path):
+    """`cts-buffer: [BUF_X4]` and `cts-buffer: BUF_X4` are one config."""
+    pdk = _make_pdk_cfg(tmp_path)
+    as_name = _render_flow(
+        tmp_path, _platform(pdk, cts_buffer="BUF_X4"), suite_dir=tmp_path / "a"
+    )
+    as_list = _render_flow(
+        tmp_path, _platform(pdk, cts_buffer=["BUF_X4"]), suite_dir=tmp_path / "a"
+    )
+    assert as_name == as_list
+
+
+def test_pnr_run_rejects_a_missing_pdn_config_before_launching_openroad(
+    tmp_path, monkeypatch
+):
+    """A snippet the config names and the disk does not have is a setup
+    failure, not a Tcl `source` error minutes into the run."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **kw: launched.append(a)
+    )
+
+    pdk = _make_pdk_cfg(tmp_path, pdn_config="pdk/nangate45/pdn.tcl")
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    events = _capture_pnr_events(monkeypatch)
+
+    res = backend.run()
+
+    assert isinstance(res, PnrFailResults)
+    assert res.results["fail_stage"] == "setup"
+    assert "pdn-config not found" in res.results["desc"]
+    assert not launched
+    assert not Path(backend._script_path()).exists()
+    _one_event(events, "pnr.pdn_config_missing")
+
+
+def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
+    """The same run, with the snippet present, reaches OpenROAD."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    pdk = _make_pdk_cfg(tmp_path, pdn_config="pdk/nangate45/pdn.tcl")
+    _touch(pdk.get_pdn_config())
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+
+    launched = []
+
+    def _fake_run(cmd, **_kwargs):
+        launched.append(cmd)
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    backend.run()
+
+    assert launched
 
 
 # ---------------------------------------------------------------------------

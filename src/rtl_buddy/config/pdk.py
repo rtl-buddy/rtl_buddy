@@ -27,6 +27,76 @@ class PdkPinLayersFile:
     vertical: str = "metal2"
 
 
+#: What the flow asks for when neither the PDK nor the P&R platform says.
+#: Both are FreePDK45-derived: 0.7 utilisation targets and one site of cell
+#: padding on each side are what `flow.tcl.template` used to spell out.
+DEFAULT_PLACEMENT_DENSITY = 0.7
+DEFAULT_PLACEMENT_PADDING = 1
+
+
+@serde
+class PlacementFile:
+    """Global-placement tuning, as written in YAML.
+
+    Both fields are `None` when unset, which is what lets a P&R platform
+    override one of them and inherit the other from the PDK.
+    """
+
+    density: float | None = None
+    padding: int | None = None
+
+
+def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
+    """Range-check a `placement:` block, naming the block that carries it.
+
+    The types are pyserde's to enforce; the ranges are not, and a density
+    of 0 or 7 reaches OpenROAD as a placement that cannot converge. The
+    `bool` guard is here because pyserde's `int` accepts `padding: true`.
+    """
+    density = placement.density
+    if density is not None:
+        density = float(density)
+        if not 0.0 < density <= 1.0:
+            raise FatalRtlBuddyError(
+                f"{where}: placement.density must be > 0 and <= 1, got {density}"
+            )
+    padding = placement.padding
+    if padding is not None:
+        if isinstance(padding, bool):
+            raise FatalRtlBuddyError(
+                f"{where}: placement.padding must be a non-negative integer, "
+                f"got {padding!r}"
+            )
+        if padding < 0:
+            raise FatalRtlBuddyError(
+                f"{where}: placement.padding must be >= 0, got {padding}"
+            )
+    return PlacementFile(density=density, padding=padding)
+
+
+def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
+    """Check a `dont-use-cells:` list, naming the block that carries it.
+
+    Each entry becomes one element of a Tcl list and one `-dont_use`
+    argument to Yosys, so an entry carrying whitespace would silently
+    become two patterns. Reject it here rather than in a tool log.
+    """
+    validated = []
+    for cell in cells:
+        if not isinstance(cell, str) or not cell.strip():
+            raise FatalRtlBuddyError(
+                f"{where}: dont-use-cells entries must be non-empty cell-name "
+                f"patterns, got {cell!r}"
+            )
+        if len(cell.split()) > 1:
+            raise FatalRtlBuddyError(
+                f"{where}: dont-use-cells entry {cell!r} contains whitespace; "
+                "write one pattern per list entry"
+            )
+        validated.append(cell)
+    return validated
+
+
 @serde
 class PdkConfigFile:
     name: str
@@ -45,6 +115,13 @@ class PdkConfigFile:
     pin_layers: PdkPinLayersFile = field(
         rename="pin-layers", default_factory=PdkPinLayersFile
     )
+    placement: PlacementFile = field(default_factory=PlacementFile)
+    # Cell names or patterns the flow must not map to or repair with. One
+    # list, read by both `rb synth` and `rb pnr`.
+    dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
+    # Path to a Tcl snippet that defines the power grid. The flow sources it
+    # and calls `pdngen` itself, as ORFS does with `PDN_TCL`.
+    pdn_config: str = field(rename="pdn-config", default="")
 
 
 class PdkConfig:
@@ -67,6 +144,11 @@ class PdkConfig:
         self._fill_cells = list(cfg.fill_cells)
         self._pin_layer_horizontal = cfg.pin_layers.horizontal
         self._pin_layer_vertical = cfg.pin_layers.vertical
+        self._placement = validate_placement(cfg.placement, f"PDK '{cfg.name}'")
+        self._dont_use_cells = _validate_dont_use_cells(
+            cfg.dont_use_cells, f"PDK '{cfg.name}'"
+        )
+        self._pdn_config = _resolve(cfg.pdn_config)
 
     def get_name(self) -> str:
         return self._name
@@ -129,3 +211,18 @@ class PdkConfig:
 
     def get_pin_layer_vertical(self) -> str:
         return self._pin_layer_vertical
+
+    def get_placement_density(self) -> float | None:
+        """Configured global-placement density, or `None` when unset."""
+        return self._placement.density
+
+    def get_placement_padding(self) -> int | None:
+        """Configured global-placement cell padding, or `None` when unset."""
+        return self._placement.padding
+
+    def get_dont_use_cells(self) -> list[str]:
+        return list(self._dont_use_cells)
+
+    def get_pdn_config(self) -> str:
+        """Resolved path to the PDN Tcl snippet, or `""` when unset."""
+        return self._pdn_config

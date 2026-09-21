@@ -38,6 +38,7 @@ class SynthPlatformConfig:
         self._corner = cfg.corner or pdk.get_default_corner()
         self._lib_path = pdk.get_corner_path(self._corner)
         self._lef_paths = [p for p in (pdk.get_tech_lef(), pdk.get_macro_lef()) if p]
+        self._dont_use_cells = pdk.get_dont_use_cells()
 
     def get_name(self) -> str:
         return self._name
@@ -53,6 +54,10 @@ class SynthPlatformConfig:
 
     def get_lef_paths(self) -> list[str]:
         return list(self._lef_paths)
+
+    def get_dont_use_cells(self) -> list[str]:
+        """The PDK's excluded cells — the same list P&R reads."""
+        return list(self._dont_use_cells)
 
 
 @dataclass

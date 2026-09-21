@@ -3,8 +3,32 @@ import logging
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
+from .pdk import (
+    DEFAULT_PLACEMENT_DENSITY,
+    DEFAULT_PLACEMENT_PADDING,
+    PlacementFile,
+    validate_placement,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _as_cell_list(value: str | list[str]) -> list[str]:
+    """A cell-name key as a list, whether it was written as one or many.
+
+    `cts-buffer` took a single name before the buffer-list support and
+    still does; a YAML list is taken entry by entry. Empty entries are
+    dropped — the key's own default is `""`, which means "not
+    configured", not "one nameless buffer".
+    """
+    if isinstance(value, str):
+        return [value] if value else []
+    return [c for c in value if c]
+
+
+def _first_set(*values):
+    """The first value that is not `None` — platform, then PDK, then default."""
+    return next(v for v in values if v is not None)
 
 
 @serde
@@ -18,11 +42,17 @@ class PnrPlatformConfigFile:
     name: str
     pdk: str
     sta_corner: str = field(rename="corner", default="")
-    cts_buffer: str = field(rename="cts-buffer", default="")
+    # One buffer name or a list of them. With a list, CTS is given every
+    # entry as its buffer list and the first as the root buffer.
+    cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
     routing_layers: PnrRoutingLayersFile = field(
         rename="routing-layers", default_factory=PnrRoutingLayersFile
     )
+    # Per-platform override of the PDK's `placement:` block, field by
+    # field: the platform wins where it says something, the PDK where it
+    # does not.
+    placement: PlacementFile = field(default_factory=PlacementFile)
 
 
 class PnrPlatformConfig:
@@ -44,10 +74,22 @@ class PnrPlatformConfig:
                 f"has no corner '{self._sta_corner}'; "
                 f"available: {self._pdk.get_corners()}"
             )
-        self._cts_buffer = cfg.cts_buffer
+        self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
         self._signal_layers = cfg.routing_layers.signal
         self._clock_layers = cfg.routing_layers.clock
+
+        placement = validate_placement(cfg.placement, f"pnr platform '{self._name}'")
+        self._placement_density = _first_set(
+            placement.density,
+            self._pdk.get_placement_density(),
+            DEFAULT_PLACEMENT_DENSITY,
+        )
+        self._placement_padding = _first_set(
+            placement.padding,
+            self._pdk.get_placement_padding(),
+            DEFAULT_PLACEMENT_PADDING,
+        )
 
     def get_name(self) -> str:
         return self._name
@@ -65,7 +107,20 @@ class PnrPlatformConfig:
         return self._pdk.get_corner_path(self._sta_corner)
 
     def get_cts_buffer(self) -> str:
-        return self._cts_buffer
+        """The root clock buffer: the configured name, or the first of a list."""
+        return self._cts_buffers[0] if self._cts_buffers else ""
+
+    def get_cts_buffers(self) -> list[str]:
+        """Every configured clock buffer, in config order."""
+        return list(self._cts_buffers)
+
+    def get_placement_density(self) -> float:
+        """Global-placement target density, after platform/PDK/default."""
+        return self._placement_density
+
+    def get_placement_padding(self) -> int:
+        """Global-placement cell padding, after platform/PDK/default."""
+        return self._placement_padding
 
     def get_cts_sink_clustering(self) -> bool:
         return self._cts_sink_clustering
