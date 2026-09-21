@@ -595,7 +595,7 @@ runs:
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
-The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie/fill cells, CTS buffer, and routing layers. With `--gds`, KLayout stream-out reads the PDK's `cell-gds` plus the run's `gds-paths`, and is given the technology LEF, the PDK macro LEF and the run's `lef-paths`; a configured input that is missing stops the export. `gds-mode` decides whether a cell with no layout at all fails the run or is reported as an incomplete preview. See [Place and Route](../concepts/pnr.md#stream-out-inputs) and [Stream-out completeness](../concepts/pnr.md#stream-out-completeness).
+The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie/fill cells, CTS buffer, and routing layers. With `--gds`, KLayout stream-out reads the PDK's `cell-gds` plus the run's `gds-paths`, and is given the technology LEF, the PDK macro LEF and the run's `lef-paths`; a configured input that is missing stops the export. `gds-mode` decides whether a cell with no layout at all fails the run or is reported as an incomplete preview. `rb pnr-export` reads the same keys over a result that is already routed, without running P&R. See [Place and Route](../concepts/pnr.md#stream-out-inputs), [Stream-out completeness](../concepts/pnr.md#stream-out-completeness) and [Export a saved result](../concepts/pnr.md#export-a-saved-result).
 
 ## power.yaml
 

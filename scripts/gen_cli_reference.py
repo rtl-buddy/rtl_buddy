@@ -33,6 +33,7 @@ SUBCOMMANDS = [
     "synth",
     "synth-regression",
     "pnr",
+    "pnr-export",
     "power",
     "power-regression",
     "fpga",

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -5,6 +6,8 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field as dc_field, replace
+from datetime import datetime
+from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 
@@ -14,7 +17,12 @@ from ..config.pnr import GdsMode, PnrConfig
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
-from .artifact_paths import clear_managed_outputs, clear_stale_artefacts
+from .artifact_paths import (
+    clear_managed_outputs,
+    clear_stale_artefacts,
+    project_relative,
+    project_root_or_none,
+)
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -77,13 +85,34 @@ _SCRIPT_NAME = "pnr.tcl"
 # report a complete export for a stream-out that never ran.
 _DEF2STREAM_REPORT_NAME = "def2stream.report.json"
 
+# What `rb pnr-export` records about an export it performed over a saved
+# result: the tool, the inputs and the outcome (#618). Written by the
+# export-only path alone — a P&R run writes no such record — but cleared
+# by both, because a fresh run replaces the very DEF the record describes.
+_EXPORT_PROVENANCE_NAME = "export.provenance.json"
+
+#: Bumped when :func:`OpenRoadPnr._write_export_provenance`'s document
+#: changes shape incompatibly.
+EXPORT_PROVENANCE_SCHEMA = 1
+
+#: Default render size, shared by the backend and the `--png-width` /
+#: `--png-height` options that override it for one invocation (#618).
+DEFAULT_PNG_WIDTH = 2048
+DEFAULT_PNG_HEIGHT = 2048
+
 
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     """Absolute paths of every non-log artefact one pnr run produces."""
     return [
         os.path.join(artefact_dir, name.format(design=design))
         for name in _FLOW_OUTPUT_NAMES + _KLAYOUT_OUTPUT_NAMES
-    ] + [os.path.join(artefact_dir, _DEF2STREAM_REPORT_NAME)]
+    ] + [
+        os.path.join(artefact_dir, _DEF2STREAM_REPORT_NAME),
+        # Not written by a run, but cleared by one: a rerun replaces the
+        # DEF a previous `rb pnr-export` record describes, so leaving the
+        # record would have it vouch for bytes that are gone (#618).
+        os.path.join(artefact_dir, _EXPORT_PROVENANCE_NAME),
+    ]
 
 
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
@@ -184,6 +213,57 @@ def describe_missing_cells(cells: list[str]) -> str:
     return f"{len(cells)} cell{'s' if len(cells) != 1 else ''} ({shown})"
 
 
+#: A DEF's own statement of which design it holds, as its header spells it.
+_DEF_DESIGN_RE = re.compile(r"^\s*DESIGN\s+(\S+)\s*;", re.MULTILINE)
+
+#: How much of a DEF is read looking for that statement. The header is the
+#: first handful of lines and the body is megabytes of components, so the
+#: read is bounded rather than streaming the whole file.
+_DEF_HEADER_BYTES = 64 * 1024
+
+
+def read_def_design_name(path: str) -> str | None:
+    """The design a DEF declares, or ``None`` if its header does not say.
+
+    The one staleness check an export over a saved result can make cheaply
+    and without guessing (#618). `DESIGN <name> ;` is the cell KLayout is
+    told to stream out, so a DEF belonging to some other design — a run
+    whose `synth:` back-reference has since been re-pointed, or a `--def`
+    from another tree — produces a GDS named after a design it does not
+    contain, and the caller is none the wiser. Deliberately *not* an mtime
+    comparison against the netlist or the ODB: a checkout, a copy or an
+    archive restore rewrites those timestamps in any order, so a
+    freshness verdict drawn from them is wrong as often as it is right.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(_DEF_HEADER_BYTES)
+    except OSError:
+        return None
+    match = _DEF_DESIGN_RE.search(head.decode("utf-8", "replace"))
+    return match.group(1) if match else None
+
+
+def _file_fingerprint(path: str | None) -> dict | None:
+    """``{path, size, sha256}`` for an input whose exact bytes matter.
+
+    What lets a reader of an export record decide, later, whether the
+    layout on disk still belongs to the DEF beside it — the question a
+    size or an mtime can only approximate.
+    """
+    if not path:
+        return None
+    digest = hashlib.sha256()
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return {"path": path, "size": None, "sha256": None}
+    return {"path": path, "size": size, "sha256": digest.hexdigest()}
+
+
 def _dedup_paths(paths) -> list[str]:
     """The paths in order, one entry per file, empties dropped.
 
@@ -246,9 +326,10 @@ class OpenRoadPnr:
         emit_gds: bool = False,
         emit_png: bool = False,
         klayout_executable: str = "klayout",
-        png_width: int = 2048,
-        png_height: int = 2048,
+        png_width: int = DEFAULT_PNG_WIDTH,
+        png_height: int = DEFAULT_PNG_HEIGHT,
         gds_mode: str | None = None,
+        klayout_props: str | None = None,
     ):
         self.name = name
         self.pnr_cfg = pnr_cfg
@@ -262,6 +343,10 @@ class OpenRoadPnr:
         # `--gds-mode` overrides the run's own `gds-mode` for this
         # invocation; `None` means the run's, which defaults to preview.
         self.gds_mode = gds_mode or pnr_cfg.get_gds_mode()
+        # `--lyp` overrides the PDK's `klayout-props` for this render, so a
+        # saved layout can be re-rendered with another palette without
+        # editing the PDK every project shares (#618). `None` is the PDK's.
+        self.klayout_props = klayout_props
 
         artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -556,7 +641,9 @@ class OpenRoadPnr:
             return None
         return data
 
-    def export_layout(self, platform, design: str) -> GdsExport:
+    def export_layout(
+        self, platform, design: str, *, in_def: str | None = None
+    ) -> GdsExport:
         """Stream the routed DEF out to GDS and, when asked, render it.
 
         The whole export in one place — gather, validate, stream out, read
@@ -564,13 +651,97 @@ class OpenRoadPnr:
         run it over a saved result without OpenROAD, and so the two agree
         on what counts as a complete export.
 
-        In `strict` mode an export that did not deliver everything asked
-        for publishes nothing: the layout is removed rather than left for
-        the next reader to take as this run's (#469). `preview` keeps what
-        it produced and carries the qualifier that says what is wrong
-        with it.
+        ``in_def`` streams a DEF other than the run's own
+        ``<design>.def``, which is what `rb pnr-export --def` hands in; the
+        design name, and every other input, still come from the run's
+        configuration. ``None`` is the run's own routed DEF.
         """
-        export = self._run_def2stream(platform, design)
+        return self._render_and_gate(
+            platform, self._run_def2stream(platform, design, in_def=in_def), design
+        )
+
+    def rerender_layout(self, platform, design: str) -> GdsExport:
+        """Render the PNG again from the GDS already in the artefact dir.
+
+        The re-render half of `rb pnr-export` (#618): new layer properties
+        or a new resolution over a layout that is already correct is a
+        KLayout `save_image`, not another DEF read, so the stream-out is
+        skipped entirely and the GDS is an *input* here — never cleared,
+        never rewritten.
+
+        The qualifier travels with it. A layout streamed with cells that
+        had no GDS is still incomplete however it is rendered, so the
+        `def2stream.report.json` beside it is read back and its missing
+        cells are carried onto this result. A GDS with no readable report
+        is not thereby complete — nothing vouched for it (#619) — so it is
+        reported as incomplete-without-a-list, which `preview` renders and
+        `strict` refuses.
+        """
+        gds_path = os.path.join(self.artefact_dir, f"{design}.gds")
+        if not os.path.isfile(gds_path) or os.path.getsize(gds_path) == 0:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.no_gds",
+                pnr=self.pnr_cfg.get_name(),
+                path=gds_path,
+            )
+            return self._export_failed(f"no GDS to re-render at {gds_path}")
+        report = self._read_def2stream_report()
+        missing = [str(c) for c in (report or {}).get("missing_cells", [])]
+        allowed_empty = [str(c) for c in (report or {}).get("allowed_empty_cells", [])]
+        if report is None:
+            log_event(
+                logger,
+                self._gds_log_level(),
+                "pnr_export.rerender_unverified",
+                pnr=self.pnr_cfg.get_name(),
+                gds=gds_path,
+                report=self._def2stream_report_path(),
+            )
+            desc = "no stream-out report beside the GDS; completeness unknown"
+        elif missing:
+            log_event(
+                logger,
+                self._gds_log_level(),
+                "pnr_export.rerender_incomplete",
+                pnr=self.pnr_cfg.get_name(),
+                mode=str(self.gds_mode),
+                count=len(missing),
+                cells=missing,
+            )
+            desc = f"GDS incomplete: no layout for {describe_missing_cells(missing)}"
+        else:
+            desc = ""
+        export = GdsExport(
+            mode=self.gds_mode,
+            status=GDS_COMPLETE
+            if report is not None and not missing
+            else GDS_INCOMPLETE,
+            png_requested=True,
+            gds_path=gds_path,
+            missing_cells=missing,
+            allowed_empty_cells=allowed_empty,
+            desc=desc,
+        )
+        return self._render_and_gate(platform, export, design, own_gds=False)
+
+    def _render_and_gate(
+        self, platform, export: GdsExport, design: str, *, own_gds: bool = True
+    ) -> GdsExport:
+        """Render the requested PNG, then apply the mode to the result.
+
+        The tail both exports share. In `strict` mode an export that did
+        not deliver everything asked for publishes nothing: the layout is
+        removed rather than left for the next reader to take as this run's
+        (#469). `preview` keeps what it produced and carries the qualifier
+        that says what is wrong with it.
+
+        ``own_gds`` is whether this invocation is the one that published
+        the layout. A stream-out withdraws the GDS and the report it just
+        wrote; a re-render was handed a layout someone else published and
+        withdraws only the image it made itself (#618).
+        """
         if export.gds_path is not None and self.emit_png:
             png_path = self._run_gds2png(platform, export.gds_path, design)
             if png_path is None:
@@ -596,13 +767,23 @@ class OpenRoadPnr:
                 desc=export.desc,
             )
             clear_stale_artefacts(
-                [export.gds_path, export.png_path, self._def2stream_report_path()],
+                [
+                    export.gds_path if own_gds else None,
+                    export.png_path,
+                    self._def2stream_report_path() if own_gds else None,
+                ],
                 owner=self.pnr_cfg.get_name(),
             )
-            export = replace(export, gds_path=None, png_path=None)
+            export = replace(
+                export,
+                gds_path=None if own_gds else export.gds_path,
+                png_path=None,
+            )
         return export
 
-    def _run_def2stream(self, platform, design: str) -> GdsExport:
+    def _run_def2stream(
+        self, platform, design: str, *, in_def: str | None = None
+    ) -> GdsExport:
         pdk = platform.get_pdk()
         inputs = self.gather_def2stream_inputs(platform)
         if not inputs.tech:
@@ -644,7 +825,7 @@ class OpenRoadPnr:
             return self._export_failed(
                 f"{len(inputs.missing)} configured input(s) not on disk"
             )
-        in_def = os.path.join(self.artefact_dir, f"{design}.def")
+        in_def = in_def or os.path.join(self.artefact_dir, f"{design}.def")
         out_gds = os.path.join(self.artefact_dir, f"{design}.gds")
         report_path = self._def2stream_report_path()
         inputs_json = self._write_def2stream_inputs(inputs)
@@ -775,7 +956,8 @@ class OpenRoadPnr:
         klayout = _resolve_klayout_exe()
         if not klayout:
             return None
-        lyp = platform.get_pdk().get_klayout_props()
+        # `--lyp` for this invocation, the PDK's `klayout-props` otherwise.
+        lyp = self.klayout_props or platform.get_pdk().get_klayout_props()
         out_png = os.path.join(self.artefact_dir, f"{design}.png")
         script = self._klayout_script_path("gds2png.py")
         cmd = [
@@ -816,6 +998,367 @@ class OpenRoadPnr:
         return out_png
 
     # ------------------------------------------------------------------
+    # Export-only entry point (#618)
+    # ------------------------------------------------------------------
+
+    def _export_provenance_path(self) -> str:
+        return os.path.join(self.artefact_dir, _EXPORT_PROVENANCE_NAME)
+
+    def _clear_export_outputs(self, design: str, *, keep_gds: bool = False) -> None:
+        """Clear what an export publishes — and nothing else (#618).
+
+        `run` begins by clearing the *P&R* outputs as well, which is right
+        for a run about to rewrite them and ruinous for an export over a
+        saved result: the routed DEF this reads, and the ODB, netlist and
+        SDC a later `rb power` reads, are exactly the files that clear
+        removes. So the list here is the export's own — the GDS, the PNG,
+        the stream-out report, the input manifest and this record — and
+        nothing OpenROAD wrote is named in it.
+
+        Up front, and not merely at each step, for the reason #469 gives:
+        an export that fails *before* KLayout is launched (no DEF, no
+        technology, an input off disk, no KLayout at all) would otherwise
+        leave the previous export's layout sitting at the very path the
+        result reports.
+
+        ``keep_gds`` is the PNG-only re-render, where the GDS and its
+        report are inputs rather than outputs.
+        """
+        cleared = clear_stale_artefacts(
+            [
+                None if keep_gds else os.path.join(self.artefact_dir, f"{design}.gds"),
+                os.path.join(self.artefact_dir, f"{design}.png"),
+                None if keep_gds else self._def2stream_report_path(),
+                None
+                if keep_gds
+                else os.path.join(self.artefact_dir, _DEF2STREAM_INPUTS_NAME),
+                self._export_provenance_path(),
+            ],
+            owner=self.pnr_cfg.get_name(),
+        )
+        if cleared:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "pnr_export.stale_artefacts_removed",
+                pnr=self.pnr_cfg.get_name(),
+                paths=cleared,
+            )
+
+    def _check_routed_def(self, in_def: str, design: str) -> str | None:
+        """Why this DEF cannot be exported, or ``None`` when it can.
+
+        Up front and before KLayout, for the reason #617 gives about a
+        missing input: a stream-out handed a DEF that is absent, empty or
+        another design's does not fail loudly — it writes a layout that
+        looks produced. "Fail clearly rather than silently rerouting"
+        means saying which of the three it is (#618).
+        """
+        if not os.path.isfile(in_def):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.no_def",
+                pnr=self.pnr_cfg.get_name(),
+                design=design,
+                path=in_def,
+            )
+            return f"no routed DEF at {in_def} — run rb pnr first"
+        if os.path.getsize(in_def) == 0:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.empty_def",
+                pnr=self.pnr_cfg.get_name(),
+                design=design,
+                path=in_def,
+            )
+            return f"routed DEF is empty: {in_def}"
+        found = read_def_design_name(in_def)
+        if found is None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.def_unreadable",
+                pnr=self.pnr_cfg.get_name(),
+                design=design,
+                path=in_def,
+            )
+            return f"{in_def} has no DESIGN statement — not a DEF"
+        if found != design:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.def_stale",
+                pnr=self.pnr_cfg.get_name(),
+                path=in_def,
+                expected=design,
+                found=found,
+            )
+            return (
+                f"{in_def} holds design '{found}', not '{design}' — "
+                "the saved result does not belong to this run"
+            )
+        return None
+
+    def _probe_klayout_version(self, klayout: str) -> str | None:
+        """KLayout's own version banner, or ``None``.
+
+        The readiness check an export makes up front, and the one thing in
+        the export record that cannot be read off the configuration. A
+        probe that fails says nothing about the export — `_run_def2stream`
+        is what refuses a KLayout that is not there — so it is recorded as
+        an unknown version rather than raised.
+        """
+        try:
+            r = subprocess.run(
+                [klayout, "-v"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        out = (r.stdout or r.stderr or "").strip()
+        return out.splitlines()[0] if out else None
+
+    def _write_export_provenance(
+        self,
+        platform,
+        design: str,
+        *,
+        export: GdsExport,
+        in_def: str | None,
+        png_only: bool,
+        klayout: str | None,
+        klayout_version: str | None,
+    ) -> str:
+        """Record what this export read and what it produced (#618).
+
+        Its own document, written by `rb pnr-export` alone: a P&R run's
+        record is its `pnr.log`, its results and its `def2stream.inputs
+        .json`, and an export performed days later must not be able to
+        edit any of them. Written whatever the outcome, because the
+        questions it answers — which KLayout, which technology, which GDS,
+        which DEF bytes — are asked most often about an export that came
+        out wrong.
+
+        The shape follows `phys-manifest.json` (#558): a schema version,
+        the generator and the timestamp, then project-relative POSIX
+        paths, so the document still reads after the tree has been moved,
+        archived or attached to a CI job. The DEF (or, for a re-render,
+        the GDS) additionally carries its size and a SHA-256 of its bytes
+        — the thing a later reader compares to decide whether the layout
+        still belongs to the result beside it.
+        """
+        root = project_root_or_none(self.artefact_dir)
+
+        def _rel(path):
+            return project_relative(path, root) if root and path else path
+
+        def _fingerprint(path):
+            record = _file_fingerprint(path)
+            if record is not None:
+                record["path"] = _rel(record["path"])
+            return record
+
+        inputs = self.gather_def2stream_inputs(platform)
+        source_gds = export.gds_path if png_only else None
+        document = {
+            "schema_version": EXPORT_PROVENANCE_SCHEMA,
+            "generator": f"rtl-buddy {version('rtl-buddy')}",
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "command": "pnr-export",
+            "run": self.pnr_cfg.get_name(),
+            "top": design,
+            "gds_mode": str(self.gds_mode),
+            "png_only": png_only,
+            "tool": {"name": "klayout", "path": klayout, "version": klayout_version},
+            "inputs": {
+                # Exactly one of these two is the layout's source: the DEF
+                # a stream-out read, or the GDS a re-render rendered.
+                "def": _fingerprint(in_def),
+                "gds": _fingerprint(source_gds),
+                "tech": _rel(inputs.tech) or None,
+                "cell_gds": [_rel(p) for p in inputs.gds],
+                "lef": [_rel(p) for p in inputs.lef],
+                "missing": [_rel(p) for p in inputs.missing],
+                "allow_empty": self.pnr_cfg.get_gds_allow_empty(),
+            },
+            "render": {
+                "requested": self.emit_png,
+                "lyp": _rel(
+                    self.klayout_props or platform.get_pdk().get_klayout_props()
+                )
+                or None,
+                "width": self.png_width,
+                "height": self.png_height,
+            },
+            "outputs": {
+                "gds": _rel(export.gds_path),
+                "png": _rel(export.png_path),
+            },
+            "outcome": {
+                "status": export.status,
+                "delivered": export.delivered,
+                "missing_cells": list(export.missing_cells),
+                "allowed_empty_cells": list(export.allowed_empty_cells),
+                "desc": export.desc,
+            },
+        }
+        path = self._export_provenance_path()
+        Path(path).write_text(json.dumps(document, indent=2) + "\n")
+        return path
+
+    def export_only(
+        self, *, def_path: str | None = None, png_only: bool = False
+    ) -> PnrResults:
+        """Export a saved P&R result's layout, running no P&R at all.
+
+        DEF → GDS → PNG over what is already in the artefact directory
+        (#618). Structurally incapable of launching OpenROAD or synthesis:
+        it never calls :meth:`run`, :meth:`_write_script` or
+        :meth:`_resolve_netlist_path`, and it never resolves the OpenROAD
+        executable. The design's name comes from the upstream synth
+        *entry* — the same `synth:` back-reference `rb pnr` substitutes
+        into its flow script, read out of `synth.yaml` — so a box that has
+        the configuration but none of the synthesis artefacts can still
+        export.
+
+        The verdict is not `rb pnr`'s. There the export is a bonus over a
+        P&R verdict, so a `preview` export that fails leaves the run
+        passing; here the export *is* the job, so anything short of the
+        artefacts that were asked for is a FAIL in both modes. What
+        `preview` still forgives is the case it exists for: a layout that
+        was published with cells that have no GDS is a qualified pass, not
+        a failure.
+        """
+        if png_only:
+            # A re-render is a PNG whether or not `--png` was also typed;
+            # there is nothing else for it to produce.
+            self.emit_png = True
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr_export.start",
+            pnr=self.pnr_cfg.get_name(),
+            mode=str(self.gds_mode),
+            png_only=png_only,
+            png=self.emit_png,
+        )
+        try:
+            platform = self.root_cfg.get_pnr_platform_cfg(self.pnr_cfg.get_platform())
+        except Exception as e:
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=f"platform lookup failed: {e}",
+                fail_stage="setup",
+            )
+        try:
+            design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.no_design",
+                pnr=self.pnr_cfg.get_name(),
+                synth=self.pnr_cfg.get_synth_name(),
+                error=str(e),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=f"cannot resolve the design name from the synth entry: {e}",
+                fail_stage="setup",
+            )
+        # Before the validation, not after it: an export that fails on its
+        # inputs must not leave the *previous* export's layout at the paths
+        # a reader takes for this one's (#469). Everything above this line
+        # is a failure that could not name those paths anyway.
+        self._clear_export_outputs(design, keep_gds=png_only)
+        if self.klayout_props and not os.path.isfile(self.klayout_props):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.no_lyp",
+                pnr=self.pnr_cfg.get_name(),
+                path=self.klayout_props,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=f"layer properties file not found: {self.klayout_props}",
+                fail_stage="setup",
+            )
+        # KLayout readiness, up front and once: the version is the one
+        # thing the record cannot read off the configuration, and it is
+        # wanted most when the export goes on to fail. Whether a missing
+        # KLayout fails the export is `_run_def2stream`'s call, not this.
+        klayout = _resolve_klayout_exe()
+        klayout_version = self._probe_klayout_version(klayout) if klayout else None
+
+        in_def = None
+        if png_only:
+            export = self.rerender_layout(platform, design)
+        else:
+            in_def = def_path or os.path.join(self.artefact_dir, f"{design}.def")
+            problem = self._check_routed_def(in_def, design)
+            export = (
+                self._export_failed(problem)
+                if problem is not None
+                else self.export_layout(platform, design, in_def=in_def)
+            )
+
+        provenance = self._write_export_provenance(
+            platform,
+            design,
+            export=export,
+            in_def=in_def,
+            png_only=png_only,
+            klayout=klayout,
+            klayout_version=klayout_version,
+        )
+        fields = {**export.result_fields(), "export_provenance": provenance}
+        # Everything that was asked for, on disk. `strict` has already
+        # withdrawn what it would not publish, so a rejected export
+        # arrives here with nothing to report either way.
+        produced = export.gds_path is not None and (
+            export.png_path is not None or not export.png_requested
+        )
+        if not produced:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_export.failed",
+                pnr=self.pnr_cfg.get_name(),
+                mode=str(self.gds_mode),
+                status=export.status,
+                desc=export.desc,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=export.desc or "export not delivered",
+                fail_stage="export",
+                fields=fields,
+            )
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr_export.done",
+            pnr=self.pnr_cfg.get_name(),
+            status=export.status,
+            gds=export.gds_path,
+            png=export.png_path,
+            provenance=provenance,
+        )
+        return PnrPassResults(
+            name=self.name + "/results",
+            # An export that delivered but is qualified says so in the one
+            # field every summary row shows first.
+            desc=export.desc or ("PNG re-rendered" if png_only else "GDS exported"),
+            fields=fields,
+        )
+
+    # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
@@ -841,7 +1384,9 @@ class OpenRoadPnr:
 
         The stream-out report goes with them: it is what says a layout is
         complete, so a previous run's would answer for a stream-out this
-        run never performed (#619).
+        run never performed (#619). So does any `rb pnr-export` record,
+        which describes a DEF this run is about to overwrite (#618) — a
+        run replaces an export, it never edits one.
 
         `include_script` additionally clears the generated `pnr.tcl` and the
         stream-out input manifest, and is set only by `run`. A rerun that
@@ -860,6 +1405,7 @@ class OpenRoadPnr:
                 for name in (
                     *_FIXED_OUTPUT_NAMES,
                     _DEF2STREAM_REPORT_NAME,
+                    _EXPORT_PROVENANCE_NAME,
                     *(
                         (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME)
                         if include_script

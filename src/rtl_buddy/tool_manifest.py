@@ -556,9 +556,19 @@ def _builtin_manifest() -> list[ToolSpec]:
                 "linux": "apt install klayout (Debian) or download from "
                 "https://www.klayout.de",
             },
-            used_by=("pnr",),
+            # `pnr-export` streams and renders a saved result and needs
+            # nothing else — no OpenROAD, no yosys — which is the whole
+            # point of asking `rb tool-check --required-for pnr-export`
+            # on a box where the collateral arrived after the P&R (#618).
+            used_by=("pnr", "pnr-export"),
             optional=True,
-            description="GDS viewer (optional, used by rb pnr to render layout)",
+            description=(
+                "GDS viewer (optional, used by rb pnr and rb pnr-export to "
+                "stream out and render layout)"
+            ),
+            # Optional to `rb pnr`, which runs P&R with or without it, and
+            # required by `rb pnr-export`, which is nothing but the export.
+            required_by=("pnr-export",),
         ),
         ToolSpec(
             name="vivado",

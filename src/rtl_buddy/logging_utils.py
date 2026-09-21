@@ -1711,6 +1711,72 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
                 "entry pointing at a cfg-pdks corner"
             )
+        # `rb pnr-export` (#618). Every one of these stops an export over a
+        # saved result before KLayout is launched, and each says which of
+        # the saved result's pieces is the problem — an export that runs on
+        # regardless writes a layout that merely looks produced.
+        case "pnr_export.no_def":
+            return (
+                f'pnr export "{fields.get("pnr")}": no routed DEF at '
+                f"{fields.get('path')} — run rb pnr for this entry first, or "
+                "point --def at the DEF to export"
+            )
+        case "pnr_export.empty_def":
+            return (
+                f'pnr export "{fields.get("pnr")}": the routed DEF '
+                f"{fields.get('path')} is empty — the run that wrote it did "
+                "not finish"
+            )
+        case "pnr_export.def_unreadable":
+            return (
+                f'pnr export "{fields.get("pnr")}": {fields.get("path")} has '
+                "no DESIGN statement, so it is not a DEF this can stream out"
+            )
+        case "pnr_export.def_stale":
+            return (
+                f'pnr export "{fields.get("pnr")}": {fields.get("path")} holds '
+                f"design '{fields.get('found')}', not '{fields.get('expected')}' "
+                "— the saved result does not belong to this run; rerun rb pnr "
+                "rather than exporting it"
+            )
+        case "pnr_export.no_design":
+            return (
+                f'pnr export "{fields.get("pnr")}": cannot resolve the design '
+                f'name from synth entry "{fields.get("synth")}" '
+                f"({fields.get('error')}) — the export needs the synth "
+                "configuration, though none of its artefacts"
+            )
+        case "pnr_export.no_lyp":
+            return (
+                f'pnr export "{fields.get("pnr")}": no layer properties file '
+                f"at {fields.get('path')} (--lyp)"
+            )
+        case "pnr_export.no_gds":
+            return (
+                f'pnr export "{fields.get("pnr")}": no GDS to re-render at '
+                f"{fields.get('path')} — export one before --png-only"
+            )
+        case "pnr_export.rerender_unverified":
+            return (
+                f'pnr export "{fields.get("pnr")}": no stream-out report '
+                f"beside {fields.get('gds')}, so nothing vouches for that "
+                "layout being complete; re-rendering it anyway"
+            )
+        case "pnr_export.rerender_incomplete":
+            cells = fields.get("cells", [])
+            named = (
+                ", ".join(str(c) for c in cells) if isinstance(cells, list) else cells
+            )
+            return (
+                f'pnr export "{fields.get("pnr")}": the layout being '
+                f"re-rendered is incomplete — {fields.get('count')} cell(s) "
+                f"with no layout ({named})"
+            )
+        case "pnr_export.failed":
+            return (
+                f'pnr export "{fields.get("pnr")}" did not deliver '
+                f"({fields.get('status')}): {fields.get('desc')}"
+            )
         # The stale half could not be withdrawn, and the reports behind it
         # have already been cleared. Not a by-product failure to log and
         # carry on past: the flows fail the run on this, because what is
