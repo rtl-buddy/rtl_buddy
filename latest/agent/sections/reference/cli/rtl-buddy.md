@@ -63,6 +63,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ synth              run synthesis                                                     │
 │ synth-regression   run synthesis regression                                          │
 │ pnr                run place-and-route                                               │
+│ pnr-export         export GDS/PNG from a saved P&R result (no synthesis, no          │
+│                    OpenROAD)                                                         │
 │ power              run power analysis                                                │
 │ power-regression   run power analysis regression                                     │
 │ fpga               run FPGA implementation (synth + place + route)                   │

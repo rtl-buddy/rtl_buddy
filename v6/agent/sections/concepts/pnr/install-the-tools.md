@@ -10,4 +10,4 @@ KLayout is optional and used only for `--gds` and `--png`:
 brew install --cask klayout
 ```
 
-A missing KLayout skips GDS or PNG generation without failing the OpenROAD run.
+A missing KLayout skips GDS or PNG generation without failing the OpenROAD run. Install it later and [export the saved result](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#export-a-saved-result) rather than rerunning P&R.

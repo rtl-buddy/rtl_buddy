@@ -953,6 +953,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/run-pr.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#export-a-saved-result",
+          "slug": "export-a-saved-result",
+          "title": "Export a saved result",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/export-a-saved-result.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#interpret-results",
           "slug": "interpret-results",
           "title": "Interpret results",
@@ -2000,10 +2006,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/a-timeout-kill-can-leave-testlog-with-an-unflushed-tail.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#pywellen-must-remain-below-025",
-          "slug": "pywellen-must-remain-below-025",
-          "title": "pywellen must remain below 0.25",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/pywellen-must-remain-below-025.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#pywellen-must-stay-within-025x",
+          "slug": "pywellen-must-stay-within-025x",
+          "title": "pywellen must stay within 0.25.x",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/pywellen-must-stay-within-025x.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#artifact-locking-is-per-tree-and-per-host",
@@ -2367,6 +2373,12 @@
           "slug": "pnr",
           "title": "pnr",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/pnr.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#pnr-export",
+          "slug": "pnr-export",
+          "title": "pnr-export",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/reference/cli/pnr-export.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#power",
