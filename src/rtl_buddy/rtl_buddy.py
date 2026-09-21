@@ -45,7 +45,7 @@ from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
-from .config.pnr import PnrSuiteConfig
+from .config.pnr import GdsMode, PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .cov import query as cov_query_mod
@@ -284,6 +284,38 @@ def _graph_where(node: dict) -> str:
         return "-"
     line = node.get("line")
     return f"{file_path}:{line}" if line is not None else str(file_path)
+
+
+def _pnr_outputs_cell(res: dict) -> str:
+    """The `Outputs` column for one P&R row, qualified when it has to be.
+
+    A layout with cells that have no GDS is still a layout, and `preview`
+    keeps it — but the row that reports it has to say so, or a reader
+    takes `gds+png` for a complete stream-out and never looks at the log
+    (#619). Cells the run's `gds-allow-empty` covers are empty on purpose
+    and are reported as such, not as a shortfall.
+    """
+    tags = []
+    if res.get("gds_path"):
+        tags.append("gds")
+    if res.get("png_path"):
+        tags.append("png")
+    text = "+".join(tags) if tags else "-"
+
+    def _qualified(note: str) -> str:
+        # A strict run that published nothing has no tags to qualify, so
+        # the note stands on its own rather than reading "- (…)".
+        return f"{text} ({note})" if tags else note
+
+    if res.get("gds_status") == "failed":
+        return _qualified("export failed")
+    missing = res.get("gds_missing_cell_count")
+    if missing:
+        return _qualified(f"incomplete: {missing} missing")
+    empty = len(res.get("gds_allowed_empty_cells") or [])
+    if empty:
+        return _qualified(f"{empty} empty by design")
+    return text
 
 
 def _line_ratio_text(coverage: dict | None) -> str:
@@ -11101,7 +11133,24 @@ class RtlBuddy:
         row = {"name": r["pnr_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("cell_count", "area_um2", "wns_setup_ps", "wns_hold_ps", "drc_count"):
+        for k in (
+            "cell_count",
+            "area_um2",
+            "wns_setup_ps",
+            "wns_hold_ps",
+            "drc_count",
+            # The optional KLayout export: where it landed, and how
+            # complete it is. Present only when one was requested, so a
+            # consumer reading `gds_status` reads the mode that produced
+            # it and, when cells had no layout, exactly which (#619).
+            "gds_path",
+            "png_path",
+            "gds_mode",
+            "gds_status",
+            "gds_missing_cells",
+            "gds_missing_cell_count",
+            "gds_allowed_empty_cells",
+        ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row
@@ -11391,13 +11440,26 @@ class RtlBuddy:
                 help="render a PNG of the routed GDS via KLayout (implies --gds)",
             ),
         ] = False,
+        gds_mode: Annotated[
+            GdsMode,
+            typer.Option(
+                "--gds-mode",
+                case_sensitive=False,
+                help=(
+                    "override each run's gds-mode (implies --gds): strict "
+                    "fails the run when a cell has no layout, preview keeps "
+                    "the incomplete layout and reports the cells"
+                ),
+                show_default="each run's gds-mode (preview)",
+            ),
+        ] = None,
     ):
         """run place-and-route"""
         ctx = self._enter_command_context(
             primary_config=pnr_config, list_only=list_runs
         )
         suite_cfg = PnrSuiteConfig(path=str(ctx.primary_config))
-        if emit_png:
+        if emit_png or gds_mode is not None:
             emit_gds = True
         log_event(
             logger,
@@ -11423,6 +11485,7 @@ class RtlBuddy:
             reg_level=reg_level,
             emit_gds=emit_gds,
             emit_png=emit_png,
+            gds_mode=gds_mode,
         )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -11443,6 +11506,7 @@ class RtlBuddy:
         reg_level=0,
         emit_gds: bool = False,
         emit_png: bool = False,
+        gds_mode: str | None = None,
     ):
         root_cfg = self.root_cfg
         runs = suite_cfg.get_runs(pnr_name)
@@ -11478,6 +11542,7 @@ class RtlBuddy:
                 reglvl_filter=reg_level if reg_level else None,
                 emit_gds=emit_gds,
                 emit_png=emit_png,
+                gds_mode=gds_mode,
             )
             res = runner.run()
             if run.is_xfail():
@@ -11492,7 +11557,9 @@ class RtlBuddy:
         has_hold = any("wns_hold_ps" in r["results"].results for r in pnr_results)
         has_drcs = any("drc_count" in r["results"].results for r in pnr_results)
         has_outputs = any(
-            "gds_path" in r["results"].results or "png_path" in r["results"].results
+            "gds_path" in r["results"].results
+            or "png_path" in r["results"].results
+            or "gds_status" in r["results"].results
             for r in pnr_results
         )
         rows = []
@@ -11528,12 +11595,7 @@ class RtlBuddy:
                 drcs = res.get("drc_count")
                 row["drcs"] = str(drcs) if drcs is not None else "-"
             if has_outputs:
-                tags = []
-                if res.get("gds_path"):
-                    tags.append("gds")
-                if res.get("png_path"):
-                    tags.append("png")
-                row["outputs"] = "+".join(tags) if tags else "-"
+                row["outputs"] = _pnr_outputs_cell(res)
             rows.append(row)
 
         columns = [

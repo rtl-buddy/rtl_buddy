@@ -2,6 +2,7 @@ import logging
 import os
 import pprint
 from dataclasses import dataclass, field as dc_field
+from enum import StrEnum
 from typing import Literal
 
 from serde import field, serde
@@ -13,6 +14,22 @@ from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
+
+
+class GdsMode(StrEnum):
+    """How complete a requested KLayout stream-out has to be (#619).
+
+    ``PREVIEW`` keeps a layout whose cells could not all be resolved, and
+    reports which ones; ``STRICT`` refuses to publish it. Preview is the
+    default: a platform with LEF-only macros (ORFS `fakeram45`) streams a
+    usable picture with those macros as empty placeholders, and the defect
+    the mode exists to fix is claiming that picture is a *complete*
+    stream-out, not producing it. A flow that signs off on the GDS asks
+    for ``strict`` in `pnr.yaml`, or on the command line for one run.
+    """
+
+    STRICT = "strict"
+    PREVIEW = "preview"
 
 
 @serde
@@ -76,6 +93,11 @@ class PnrConfigFile:
     # Layout for the macros `lef-paths` describes (e.g. an OpenRAM SRAM).
     # P&R never reads it; KLayout stream-out cannot do without it (#617).
     gds_paths: list[str] = field(rename="gds-paths", default_factory=list)
+    # How complete the stream-out has to be, and which cells are allowed to
+    # have no layout at all — a preview macro the design carries on purpose
+    # (#619). Names or fnmatch globs; matched case-sensitively.
+    gds_mode: str = field(rename="gds-mode", default=GdsMode.PREVIEW.value)
+    gds_allow_empty: list[str] = field(rename="gds-allow-empty", default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # Expected-fail markers (pytest-style). Either marks this run
@@ -100,6 +122,13 @@ class PnrConfigFile:
                 f"pnr run '{self.name}': missing 'platform' "
                 "(name of a cfg-pnr-platforms entry)"
             )
+        try:
+            gds_mode = GdsMode(self.gds_mode)
+        except ValueError:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': unknown 'gds-mode' {self.gds_mode!r} "
+                f"(expected one of {', '.join(m.value for m in GdsMode)})"
+            ) from None
 
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
         constraints = (
@@ -132,6 +161,8 @@ class PnrConfigFile:
             lef_paths=lef_paths,
             lib_paths=lib_paths,
             gds_paths=gds_paths,
+            gds_mode=gds_mode,
+            gds_allow_empty=list(self.gds_allow_empty),
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             xfail=self.xfail,
@@ -154,6 +185,8 @@ class PnrConfig:
     lef_paths: list[str] = dc_field(default_factory=list)
     lib_paths: list[str] = dc_field(default_factory=list)
     gds_paths: list[str] = dc_field(default_factory=list)
+    gds_mode: GdsMode = GdsMode.PREVIEW
+    gds_allow_empty: list[str] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -196,6 +229,12 @@ class PnrConfig:
 
     def get_gds_paths(self) -> list[str]:
         return list(self.gds_paths)
+
+    def get_gds_mode(self) -> GdsMode:
+        return self.gds_mode
+
+    def get_gds_allow_empty(self) -> list[str]:
+        return list(self.gds_allow_empty)
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

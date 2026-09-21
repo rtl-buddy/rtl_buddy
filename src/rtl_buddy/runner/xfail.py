@@ -53,6 +53,7 @@ FAIL_STAGE_REASONS = {
     "sim": "sim ended without a verdict",
     "dispatch": "dispatch failure",
     "tool": "tool failure before a verdict",
+    "export": "requested export not delivered",
 }
 
 

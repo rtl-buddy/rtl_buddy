@@ -4,14 +4,15 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace
 from importlib.resources import files
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from ..config.pnr import PnrConfig
+from ..config.pnr import GdsMode, PnrConfig
 from ..logging_utils import log_event, task_status
+from ..pnr.klayout.def2stream import REPORT_SCHEMA
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
 from .artifact_paths import clear_managed_outputs, clear_stale_artefacts
 
@@ -68,13 +69,21 @@ _FIXED_OUTPUT_NAMES = tuple(
 # (#527). Cleared up front only; see `_clear_stale_outputs`.
 _SCRIPT_NAME = "pnr.tcl"
 
+# The stream-out result the bundled KLayout helper writes and
+# `_run_def2stream` reads back: which cells came out empty, and whether
+# anything else went wrong. An *output*, and one judged by presence, so it
+# is cleared with the GDS and the PNG — a previous run's report read as
+# this run's is exactly the stale-artefact failure of #469, and would
+# report a complete export for a stream-out that never ran.
+_DEF2STREAM_REPORT_NAME = "def2stream.report.json"
+
 
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     """Absolute paths of every non-log artefact one pnr run produces."""
     return [
         os.path.join(artefact_dir, name.format(design=design))
         for name in _FLOW_OUTPUT_NAMES + _KLAYOUT_OUTPUT_NAMES
-    ]
+    ] + [os.path.join(artefact_dir, _DEF2STREAM_REPORT_NAME)]
 
 
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
@@ -99,6 +108,80 @@ class Def2StreamInputs:
     gds: list[str] = dc_field(default_factory=list)
     lef: list[str] = dc_field(default_factory=list)
     missing: list[str] = dc_field(default_factory=list)
+
+
+# What a requested export came to. `complete` is a stream-out whose every
+# cell has layout (allow-listed empties included — those are layout the
+# design says it does not have); `incomplete` streamed a GDS with cells
+# that have none; `failed` produced no usable layout at all.
+GDS_COMPLETE = "complete"
+GDS_INCOMPLETE = "incomplete"
+GDS_FAILED = "failed"
+
+# How many missing cell names a one-line description spells out before it
+# starts counting. The full list is always in the machine output and in the
+# structured log event; a summary table row is not the place for 200 names.
+_DESC_CELL_LIMIT = 3
+
+
+@dataclass(frozen=True)
+class GdsExport:
+    """What a requested KLayout export delivered, and how complete it is.
+
+    Produced by :meth:`OpenRoadPnr.export_layout`, which is the whole of
+    gather → validate → stream out → read the report → render, so the
+    export-only command (#618) can hand back the same record without
+    running OpenROAD at all.
+
+    `desc` is the one-line qualifier a summary row and a results `desc`
+    carry; it is empty exactly when the export delivered everything that
+    was asked for, complete.
+    """
+
+    mode: str
+    status: str
+    png_requested: bool = False
+    gds_path: str | None = None
+    png_path: str | None = None
+    missing_cells: list[str] = dc_field(default_factory=list)
+    allowed_empty_cells: list[str] = dc_field(default_factory=list)
+    desc: str = ""
+
+    @property
+    def delivered(self) -> bool:
+        """Whether the export produced everything asked for, complete.
+
+        A `strict` run that answers False publishes nothing and fails; a
+        `preview` one keeps what it has and says what is wrong with it.
+        """
+        return self.status == GDS_COMPLETE and (
+            self.png_path is not None or not self.png_requested
+        )
+
+    def result_fields(self) -> dict:
+        """The export as result-dict keys, for the machine output.
+
+        Empty lists and `None`s are dropped by the results classes, so a
+        run whose export was complete carries only its paths, its mode and
+        its status.
+        """
+        return {
+            "gds_path": self.gds_path,
+            "png_path": self.png_path,
+            "gds_mode": str(self.mode),
+            "gds_status": self.status,
+            "gds_missing_cells": list(self.missing_cells),
+            "gds_missing_cell_count": len(self.missing_cells) or None,
+            "gds_allowed_empty_cells": list(self.allowed_empty_cells),
+        }
+
+
+def describe_missing_cells(cells: list[str]) -> str:
+    """`'2 cells (a, b)'` — the missing-cell count with names attached."""
+    shown = ", ".join(cells[:_DESC_CELL_LIMIT])
+    if len(cells) > _DESC_CELL_LIMIT:
+        shown += f", +{len(cells) - _DESC_CELL_LIMIT} more"
+    return f"{len(cells)} cell{'s' if len(cells) != 1 else ''} ({shown})"
 
 
 def _dedup_paths(paths) -> list[str]:
@@ -165,6 +248,7 @@ class OpenRoadPnr:
         klayout_executable: str = "klayout",
         png_width: int = 2048,
         png_height: int = 2048,
+        gds_mode: str | None = None,
     ):
         self.name = name
         self.pnr_cfg = pnr_cfg
@@ -175,6 +259,9 @@ class OpenRoadPnr:
         self.klayout_executable = klayout_executable
         self.png_width = png_width
         self.png_height = png_height
+        # `--gds-mode` overrides the run's own `gds-mode` for this
+        # invocation; `None` means the run's, which defaults to preview.
+        self.gds_mode = gds_mode or pnr_cfg.get_gds_mode()
 
         artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -402,41 +489,142 @@ class OpenRoadPnr:
         return Def2StreamInputs(tech=tech, gds=gds, lef=lef, missing=missing)
 
     def _write_def2stream_inputs(self, inputs: Def2StreamInputs) -> str:
-        """Write the GDS/LEF manifest the bundled helper reads.
+        """Write the manifest the bundled helper reads.
 
         A file rather than `-rd` strings: KLayout's `-rd` carries one scalar
         per flag with no list contract, so a multi-path value could only
         travel joined on some separator and would break on the first path
-        containing it (#617). The manifest is also what a user debugging a
-        stream-out wants to see, beside the `pnr.tcl` of the same run.
+        containing it (#617). The allow-empty list and the report path ride
+        along for the same reason — and because the run's contract for
+        which cells may be empty belongs in `pnr.yaml`, not in an
+        environment variable the helper reads behind the caller's back
+        (#619). The manifest is also what a user debugging a stream-out
+        wants to see, beside the `pnr.tcl` of the same run.
         """
         path = os.path.join(self.artefact_dir, _DEF2STREAM_INPUTS_NAME)
         Path(path).write_text(
-            json.dumps({"gds": inputs.gds, "lef": inputs.lef}, indent=2) + "\n"
+            json.dumps(
+                {
+                    "gds": inputs.gds,
+                    "lef": inputs.lef,
+                    "allow_empty": self.pnr_cfg.get_gds_allow_empty(),
+                    "report": self._def2stream_report_path(),
+                },
+                indent=2,
+            )
+            + "\n"
         )
         return path
 
-    def _run_def2stream(self, platform, design: str) -> str | None:
+    def _def2stream_report_path(self) -> str:
+        return os.path.join(self.artefact_dir, _DEF2STREAM_REPORT_NAME)
+
+    def _strict(self) -> bool:
+        return self.gds_mode == GdsMode.STRICT
+
+    def _gds_log_level(self) -> int:
+        """ERROR when the export was required, WARNING when it was a bonus.
+
+        `strict` was asked for by someone who needs the layout, and its
+        failure fails the run; `preview` keeps going, so its own report of
+        the same condition is a warning.
+        """
+        return logging.ERROR if self._strict() else logging.WARNING
+
+    def _export_failed(self, desc: str) -> GdsExport:
+        return GdsExport(
+            mode=self.gds_mode,
+            status=GDS_FAILED,
+            png_requested=self.emit_png,
+            desc=f"GDS export failed: {desc}",
+        )
+
+    def _read_def2stream_report(self) -> dict | None:
+        """The helper's own account of the stream-out, or `None`.
+
+        `None` covers every way the report can fail to say anything: the
+        helper died before writing it, the file is truncated, or it carries
+        a schema this rtl_buddy does not know. All of them mean the same
+        thing to the caller — nobody vouched for this layout — and all of
+        them are a failed export rather than a complete one (#619).
+        """
+        try:
+            data = json.loads(Path(self._def2stream_report_path()).read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("schema") != REPORT_SCHEMA:
+            return None
+        return data
+
+    def export_layout(self, platform, design: str) -> GdsExport:
+        """Stream the routed DEF out to GDS and, when asked, render it.
+
+        The whole export in one place — gather, validate, stream out, read
+        the helper's report, render — so the export-only command (#618) can
+        run it over a saved result without OpenROAD, and so the two agree
+        on what counts as a complete export.
+
+        In `strict` mode an export that did not deliver everything asked
+        for publishes nothing: the layout is removed rather than left for
+        the next reader to take as this run's (#469). `preview` keeps what
+        it produced and carries the qualifier that says what is wrong
+        with it.
+        """
+        export = self._run_def2stream(platform, design)
+        if export.gds_path is not None and self.emit_png:
+            png_path = self._run_gds2png(platform, export.gds_path, design)
+            if png_path is None:
+                # The GDS may well be complete — the render is a separate
+                # step over a finished layout — but the export as a whole
+                # did not produce what `--png` asked for, so it is still a
+                # qualified result and, under `strict`, a failed one.
+                note = "PNG render failed"
+                export = replace(
+                    export, desc=f"{export.desc}; {note}" if export.desc else note
+                )
+            else:
+                export = replace(export, png_path=png_path)
+        if self._strict() and not export.delivered:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.gds_export_rejected",
+                pnr=self.pnr_cfg.get_name(),
+                mode=str(self.gds_mode),
+                status=export.status,
+                missing=export.missing_cells,
+                desc=export.desc,
+            )
+            clear_stale_artefacts(
+                [export.gds_path, export.png_path, self._def2stream_report_path()],
+                owner=self.pnr_cfg.get_name(),
+            )
+            export = replace(export, gds_path=None, png_path=None)
+        return export
+
+    def _run_def2stream(self, platform, design: str) -> GdsExport:
         pdk = platform.get_pdk()
         inputs = self.gather_def2stream_inputs(platform)
         if not inputs.tech:
             log_event(
                 logger,
-                logging.WARNING,
+                self._gds_log_level(),
                 "pnr.gds_no_klayout_tech",
                 pnr=self.pnr_cfg.get_name(),
                 pdk=pdk.get_name(),
             )
-            return None
+            return self._export_failed(
+                f"PDK '{pdk.get_name()}' configures no klayout-tech"
+            )
         klayout = _resolve_klayout_exe()
         if not klayout:
             log_event(
                 logger,
-                logging.WARNING,
+                self._gds_log_level(),
                 "pnr.no_klayout",
                 pnr=self.pnr_cfg.get_name(),
             )
-            return None
+            return self._export_failed("KLayout not found on PATH")
         if inputs.missing:
             # Every one of them, at ERROR, before KLayout is launched. A
             # stream-out missing one of its inputs does not fail: it writes
@@ -453,9 +641,12 @@ class OpenRoadPnr:
                 count=len(inputs.missing),
                 missing=inputs.missing,
             )
-            return None
+            return self._export_failed(
+                f"{len(inputs.missing)} configured input(s) not on disk"
+            )
         in_def = os.path.join(self.artefact_dir, f"{design}.def")
         out_gds = os.path.join(self.artefact_dir, f"{design}.gds")
+        report_path = self._def2stream_report_path()
         inputs_json = self._write_def2stream_inputs(inputs)
         script = self._klayout_script_path("def2stream.py")
         cmd = [
@@ -480,24 +671,18 @@ class OpenRoadPnr:
             script,
         ]
         log_path = os.path.join(self.artefact_dir, "klayout.def2stream.log")
-        # Streamout is judged purely by "did a non-empty GDS appear", so a
-        # previous run's GDS would mask a failure here and then be rendered
-        # and reported as this run's layout (#469).
-        clear_stale_artefacts([out_gds], owner=self.pnr_cfg.get_name())
+        # Both outputs are judged by presence, so a previous run's would
+        # mask a failure here and then be rendered and reported as this
+        # run's layout — the report the more quietly of the two, since it
+        # is what says the layout is complete (#469).
+        clear_stale_artefacts([out_gds, report_path], owner=self.pnr_cfg.get_name())
         with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout gds]"):
             r = subprocess.run(cmd, capture_output=True, text=True, check=False)
         Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
-        # def2stream is treated as failed only when no GDS file was
-        # produced. Some platforms ship LEF-only macros (e.g. ORFS
-        # fakeram45) for early-flow verification; KLayout emits an
-        # [ERROR] for each such cell and exits non-zero, but the GDS
-        # is still streamed (with the macro as an empty placeholder)
-        # and downstream gds2png works fine. Treating non-zero exit
-        # as fatal here unnecessarily skipped the PNG render step.
         if not os.path.isfile(out_gds) or os.path.getsize(out_gds) == 0:
             log_event(
                 logger,
-                logging.WARNING,
+                self._gds_log_level(),
                 "pnr.gds_failed",
                 pnr=self.pnr_cfg.get_name(),
                 returncode=r.returncode,
@@ -506,18 +691,85 @@ class OpenRoadPnr:
             # A zero-length GDS is what the size check above rejects, and it
             # is still a file: leaving it means the next run's `isfile` sees
             # a layout where none was produced (#469).
-            clear_stale_artefacts([out_gds], owner=self.pnr_cfg.get_name())
-            return None
-        if r.returncode != 0:
+            clear_stale_artefacts([out_gds, report_path], owner=self.pnr_cfg.get_name())
+            return self._export_failed(f"KLayout wrote no GDS (exit {r.returncode})")
+
+        report = self._read_def2stream_report()
+        if report is None:
             log_event(
                 logger,
-                logging.WARNING,
-                "pnr.gds_warnings",
+                logging.ERROR,
+                "pnr.gds_report_unreadable",
                 pnr=self.pnr_cfg.get_name(),
+                report=report_path,
                 returncode=r.returncode,
                 log=log_path,
             )
-        return out_gds
+            clear_stale_artefacts([out_gds, report_path], owner=self.pnr_cfg.get_name())
+            return self._export_failed("stream-out wrote no readable report")
+        missing = [str(c) for c in report.get("missing_cells", [])]
+        allowed_empty = [str(c) for c in report.get("allowed_empty_cells", [])]
+        other_errors = int(report.get("other_errors") or 0)
+        # A non-zero exit is the helper's error count, and the errors it
+        # accounts for are the cells with no layout — that is the case a
+        # preview export exists for. Anything else behind that exit code
+        # (an orphan cell, a KLayout that died after writing) is a failed
+        # export in *either* mode: it is not the condition preview covers.
+        # `% 256` because an exit code is a byte.
+        if other_errors or r.returncode % 256 != report.get("errors", 0) % 256:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.gds_failed",
+                pnr=self.pnr_cfg.get_name(),
+                returncode=r.returncode,
+                other_errors=other_errors,
+                orphan_cells=[str(c) for c in report.get("orphan_cells", [])],
+                log=log_path,
+            )
+            clear_stale_artefacts([out_gds, report_path], owner=self.pnr_cfg.get_name())
+            return self._export_failed(
+                f"stream-out reported {other_errors} error(s) beyond missing cells"
+                if other_errors
+                else f"KLayout exited {r.returncode} after streaming"
+            )
+
+        if allowed_empty:
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr.gds_allowed_empty_cells",
+                pnr=self.pnr_cfg.get_name(),
+                count=len(allowed_empty),
+                cells=allowed_empty,
+            )
+        if missing:
+            # Named, not counted: which SRAM has no layout is the whole
+            # content of this report, and a log line is where a user who
+            # did not ask for machine output meets it (#619).
+            log_event(
+                logger,
+                self._gds_log_level(),
+                "pnr.gds_incomplete",
+                pnr=self.pnr_cfg.get_name(),
+                mode=str(self.gds_mode),
+                count=len(missing),
+                cells=missing,
+                log=log_path,
+            )
+        return GdsExport(
+            mode=self.gds_mode,
+            status=GDS_INCOMPLETE if missing else GDS_COMPLETE,
+            png_requested=self.emit_png,
+            gds_path=out_gds,
+            missing_cells=missing,
+            allowed_empty_cells=allowed_empty,
+            desc=(
+                f"GDS incomplete: no layout for {describe_missing_cells(missing)}"
+                if missing
+                else ""
+            ),
+        )
 
     def _run_gds2png(self, platform, gds_path: str, design: str) -> str | None:
         klayout = _resolve_klayout_exe()
@@ -551,7 +803,7 @@ class OpenRoadPnr:
         if r.returncode != 0 or not os.path.isfile(out_png):
             log_event(
                 logger,
-                logging.WARNING,
+                self._gds_log_level(),
                 "pnr.png_failed",
                 pnr=self.pnr_cfg.get_name(),
                 returncode=r.returncode,
@@ -587,6 +839,10 @@ class OpenRoadPnr:
         Matching on the suffix also means editing a run's design does not
         strand the previous design's ODB in the same directory.
 
+        The stream-out report goes with them: it is what says a layout is
+        complete, so a previous run's would answer for a stream-out this
+        run never performed (#619).
+
         `include_script` additionally clears the generated `pnr.tcl` and the
         stream-out input manifest, and is set only by `run`. A rerun that
         dies before `_write_script` — no OpenROAD on the box, an
@@ -603,6 +859,7 @@ class OpenRoadPnr:
                 os.path.join(self.artefact_dir, name)
                 for name in (
                     *_FIXED_OUTPUT_NAMES,
+                    _DEF2STREAM_REPORT_NAME,
                     *(
                         (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME)
                         if include_script
@@ -785,35 +1042,51 @@ class OpenRoadPnr:
         tns = self._parse_tns(log_text)
         drcs = self._count_drcs()
 
-        gds_path: str | None = None
-        png_path: str | None = None
+        metrics = {
+            "area_um2": area,
+            "cell_count": cells,
+            "wns_setup_ps": wns_setup * 1000.0 if wns_setup is not None else None,
+            "wns_hold_ps": wns_hold * 1000.0 if wns_hold is not None else None,
+            "tns_ps": tns * 1000.0 if tns is not None else None,
+            "drc_count": drcs,
+        }
+
+        export: GdsExport | None = None
         if self.emit_gds:
             design = self.pnr_cfg.resolve_synth_cfg().get_top()
-            gds_path = self._run_def2stream(platform, design)
-            if gds_path and self.emit_png:
-                png_path = self._run_gds2png(platform, gds_path, design)
+            export = self.export_layout(platform, design)
+
+        if export is not None and self._strict() and not export.delivered:
+            # P&R itself is done and its verdict is a pass, but the export
+            # the user explicitly asked for could not be delivered complete
+            # — reporting that as an unqualified exit-0 PASS is the defect
+            # #619 is about, so the run fails and says which cells. The
+            # stage is named so an `xfail:` marker aimed at the design's
+            # timing cannot excuse a collateral problem (#553, #594), and
+            # the routed DEF / ODB stay: OpenROAD finished cleanly, and
+            # `rb power` has every right to the database it wrote.
+            # `export_layout` has already reported the export at ERROR,
+            # naming the cells; this is the verdict, not a second report.
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=export.desc,
+                fail_stage="export",
+                fields={**metrics, **export.result_fields()},
+            )
 
         log_event(
             logger,
             logging.INFO,
             "pnr.passed",
             pnr=self.pnr_cfg.get_name(),
-            area_um2=area,
-            cell_count=cells,
-            wns_setup_ps=wns_setup * 1000.0 if wns_setup is not None else None,
-            wns_hold_ps=wns_hold * 1000.0 if wns_hold is not None else None,
-            tns_ps=tns * 1000.0 if tns is not None else None,
-            drc_count=drcs,
+            **metrics,
+            gds_status=export.status if export is not None else None,
             log=log_path,
         )
         return PnrPassResults(
             name=self.name + "/results",
-            area_um2=area,
-            cell_count=cells,
-            wns_setup_ps=wns_setup * 1000.0 if wns_setup is not None else None,
-            wns_hold_ps=wns_hold * 1000.0 if wns_hold is not None else None,
-            tns_ps=tns * 1000.0 if tns is not None else None,
-            drc_count=drcs,
-            gds_path=gds_path,
-            png_path=png_path,
+            # An export that did not deliver qualifies the pass in the one
+            # field every summary row shows.
+            desc=f"P&R passed; {export.desc}" if export and export.desc else None,
+            fields={**metrics, **(export.result_fields() if export else {})},
         )
