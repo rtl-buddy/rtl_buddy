@@ -96,8 +96,9 @@ included, via the dependency list, which follows symlinks on every check).
 VCS/Icarus report no header dependencies, so for them any edited, added, or
 removed file in a listed directory rebuilds. The walk skips dot-directories,
 `artefacts`/`obj_dir*`, editor/VCS bookkeeping, rtl_buddy's own outputs by
-name (run.f, compile.log, test.log, result.json, the stamp), and the suite's own
-`rtl_buddy.log` by path; a header generated into a test's `artifact_dir` by a
+name (run.f, compile.log, test.log, result.json, the stamp) and those same names
+caught mid-write (`<output>.tmp`, `<output>.<pid>.<random>.tmp`), and the suite's
+own `rtl_buddy.log` by path; a header generated into a test's `artifact_dir` by a
 preproc hook is still tracked. One exception: inside a dispatch build job,
 same-key configs adopt the first one's Verilator build when its consumed inputs
 are unchanged, even if a later `preproc` added an unrelated file to a listed

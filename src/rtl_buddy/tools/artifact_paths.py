@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import uuid
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Iterable
@@ -210,6 +211,51 @@ PROTECTED_OUTPUT_PATTERNS = (
 #: directory. A dotfile with none of the managed suffixes, so no suffix clear
 #: can ever match it.
 OWNED_LEDGER_NAME = ".rb-owned"
+
+#: The suffix every atomic write in rtl_buddy gives the intermediate file it
+#: renames into place. Named once so the writers and the readers that must
+#: *recognise* a half-written output — the shared-build stamp's directory
+#: listings, above all — cannot drift apart (#613).
+ATOMIC_TMP_SUFFIX = ".tmp"
+
+
+def atomic_tmp_name(name) -> str:
+    """The temporary name an atomic write to ``name`` goes through.
+
+    ``<name>.<pid>.<uuid4 hex>.tmp``: the pid so a stray file names the
+    process that leaked it, the random half so no two writers — separate
+    processes (the elements of a dispatched Slurm array all writing one
+    suite's ``test.log`` symlink) or threads of one process — ever collide
+    on the intermediate name. The caller renames it over ``name`` with
+    :func:`os.replace`, which is a single atomic rename, so every reader
+    sees one complete version or the other (#363).
+
+    Every managed output's writer builds its temp name here, and
+    :func:`atomic_tmp_patterns` derives the matching exclusion from the same
+    shape — the point of #613, where ``test.log.<pid>.<uuid>.tmp`` appearing
+    in a suite directory that was on the include path read as a changed
+    compile input and refused an otherwise valid shared build.
+    """
+    return f"{name}.{os.getpid()}.{uuid.uuid4().hex}{ATOMIC_TMP_SUFFIX}"
+
+
+def atomic_tmp_patterns(pattern: str) -> tuple[str, ...]:
+    """fnmatch patterns for the in-flight forms of the output ``pattern``.
+
+    Two, because a managed output can be mid-write under either shape: the
+    unique one :func:`atomic_tmp_name` builds, and the plain
+    ``<name>.tmp`` a single-writer helper uses.
+
+    Deliberately anchored to the output name rather than being a blanket
+    ``*.tmp``: a project is free to `` `include "defs.tmp" `` and a file
+    called that is an ordinary compile input whose edit must still move the
+    fingerprint. Only ``<managed output>.tmp`` and
+    ``<managed output>.<something>.tmp`` are rtl_buddy's own (#613).
+    """
+    return (
+        f"{pattern}{ATOMIC_TMP_SUFFIX}",
+        f"{pattern}.*{ATOMIC_TMP_SUFFIX}",
+    )
 
 
 def project_relative(path, project_root) -> str | None:

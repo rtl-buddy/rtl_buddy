@@ -13,11 +13,11 @@ import logging
 logger = logging.getLogger(__name__)
 from ..errors import FilelistError
 from ..logging_utils import log_event
+from .artifact_paths import atomic_tmp_name
 import fnmatch
 import os
 import os.path
 import re
-import uuid
 
 
 # `+define+NAME[=VALUE]` — a preprocessor define, not a path. Kept as its
@@ -487,7 +487,7 @@ class VlogFilelist:
         # identical content, so a temp-then-os.replace makes every reader
         # see one complete version or the other. Same reasoning as
         # `vlog_sim.force_symlink` (#363).
-        tmp_path = f"{output_filepath}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        tmp_path = atomic_tmp_name(output_filepath)
         try:
             with open(tmp_path, "w") as f:
                 f.write("// rtl-buddy generated model filelist\n")
@@ -546,7 +546,7 @@ class VlogFilelist:
             absolute_sources=True,
         )
         os.makedirs(os.path.dirname(output_filepath) or ".", exist_ok=True)
-        tmp_path = f"{output_filepath}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        tmp_path = atomic_tmp_name(output_filepath)
         try:
             with open(tmp_path, "w") as file:
                 file.write("// rtl-buddy generated elaboration filelist\n")

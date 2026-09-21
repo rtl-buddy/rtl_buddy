@@ -14,7 +14,7 @@ from rtl_buddy import artifact_lock as artifact_lock_module
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.runner.test_results import TestResults
 from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
-from rtl_buddy.tools.artifact_paths import shared_build_dir
+from rtl_buddy.tools.artifact_paths import atomic_tmp_name, shared_build_dir
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
 
 
@@ -1868,6 +1868,139 @@ def test_a_pycache_beside_a_preproc_helper_is_never_listed(tmp_path, monkeypatch
     (cache / "other.cpython-313.pyc").write_bytes(b"\x00\x02")
     assert _incdir_dot_sim(tmp_path, monkeypatch, "test_b").compile() == 0
     assert len(calls) == 1
+
+
+def _tmp_log_names(tmp_path):
+    """The temp names the suite-level log writers really build.
+
+    Taken from :func:`atomic_tmp_name` — the helper `force_symlink` uses —
+    rather than spelled out here, so this test fails if the writer's shape
+    and the fingerprint's exclusion ever part company (#613).
+    """
+    return [
+        atomic_tmp_name(str(tmp_path / name))
+        for name in (
+            vlog_sim_module.TEST_LOG_NAME,
+            vlog_sim_module.TEST_ERR_NAME,
+            vlog_sim_module.TEST_RANDSEED_NAME,
+            vlog_sim_module.FILELIST_NAME,
+        )
+    ]
+
+
+def test_a_transient_log_temp_file_appearing_does_not_invalidate(tmp_path, monkeypatch):
+    """`+incdir+.` puts the suite directory on the include path, and that is
+    where the per-test `test.log`/`test.err` symlinks are repointed — through
+    a `<name>.<pid>.<uuid>.tmp` that `os.replace` renames into place. One of
+    those existing while a gated sim job validates the build job's stamp used
+    to read as a changed compile input, and a fan-out of jobs recompiled
+    under a simulation reservation because of it (#613)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
+    assert "src/top.sv" in listing  # the walk did happen
+
+    # Between the build job's fingerprint and the sim job's check.
+    for name in _tmp_log_names(tmp_path):
+        Path(name).write_text("in flight\n")
+
+    sim_b = _incdir_dot_sim(tmp_path, monkeypatch, "test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    assert sim_b.last_compile["reused"] is True
+    later = [entry[0] for entry in _dir_entry(sim_b, "+incdir+")[-1]]
+    assert not [name for name in later if name.endswith(".tmp")], later
+
+
+def test_a_transient_log_temp_file_disappearing_does_not_invalidate(
+    tmp_path, monkeypatch
+):
+    """The other half of the race: the temp file existed when the build
+    fingerprint was taken and was renamed away before the sim job looked.
+    Neither listing may contain it, so the direction cannot matter (#613)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    in_flight = [Path(name) for name in _tmp_log_names(tmp_path)]
+    for path in in_flight:
+        path.write_text("in flight\n")
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
+    assert not [name for name in listing if name.endswith(".tmp")], listing
+
+    for path in in_flight:
+        path.unlink()
+
+    sim_b = _incdir_dot_sim(tmp_path, monkeypatch, "test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    assert sim_b.last_compile["reused"] is True
+
+
+def test_a_settled_managed_output_temp_name_is_excluded_for_every_output():
+    """The exclusion is derived from the same patterns the final names come
+    from, so every managed output is covered rather than the two the report
+    happened to name."""
+    for pattern in vlog_sim_module._MANAGED_OUTPUT_FILE_PATTERNS:
+        name = pattern.replace("*", "job1")
+        assert vlog_sim_module._is_non_input_file(name), name
+        assert vlog_sim_module._is_non_input_file(f"{name}.tmp"), name
+        assert vlog_sim_module._is_non_input_file(atomic_tmp_name(name)), name
+
+
+def test_a_real_header_named_like_a_temp_file_stays_tracked(tmp_path, monkeypatch):
+    """Not a blanket `*.tmp`: the patterns are anchored to a managed output's
+    basename, so a project header that happens to end in `.tmp` is an
+    ordinary compile input and an edit to it still rebuilds (#613)."""
+    _write_source(tmp_path)
+    header = tmp_path / "defs.tmp"
+    header.write_text("`define W 8\n")
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a")
+    assert sim_a.compile() == 0
+    assert "defs.tmp" in [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
+
+    _touch(header, "`define W 16\n")
+    assert _incdir_dot_sim(tmp_path, monkeypatch, "test_b").compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_real_header_in_a_suite_incdir_still_moves_the_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The protection the temp-name exclusion must not weaken: adding,
+    editing and removing a genuine header in the same directory the temp
+    files appear in each rebuilds (#613)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _incdir_dot_sim(tmp_path, monkeypatch, "test_a").compile() == 0
+    assert len(calls) == 1
+
+    header = tmp_path / "w.svh"
+    header.write_text("`define W 8\n")  # added
+    assert _incdir_dot_sim(tmp_path, monkeypatch, "test_b").compile() == 0
+    assert len(calls) == 2
+
+    _touch(header, "`define W 16\n")  # modified
+    assert _incdir_dot_sim(tmp_path, monkeypatch, "test_c").compile() == 0
+    assert len(calls) == 3
+
+    header.unlink()  # removed
+    assert _incdir_dot_sim(tmp_path, monkeypatch, "test_d").compile() == 0
+    assert len(calls) == 4
 
 
 def test_a_regenerated_file_the_build_never_read_does_not_invalidate(
