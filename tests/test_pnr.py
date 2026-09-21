@@ -1,5 +1,6 @@
 """Tests for the P&R config schema, OpenRoadPnr backend, and rb pnr wiring."""
 
+import json
 import os
 from contextlib import nullcontext
 from pathlib import Path
@@ -67,6 +68,89 @@ def _make_stream_pdk(tmp_path, **overrides):
         *pdk.get_cell_gds_paths(),
     )
     return pdk
+
+
+_GDS_BYTES = b"\x00\x06\x00\x02\x00\x07"
+
+
+def _capture_pnr_events(monkeypatch):
+    """Record every `log_event` the P&R backend emits, with its level.
+
+    `caplog` cannot be used past the first console write: `task_status`
+    initialises rtl_buddy's own logging, which clears the root handlers
+    pytest installed. Recording at the call site tests the same contract —
+    which event, at which level, carrying which fields.
+    """
+    from rtl_buddy.tools import pnr_openroad
+
+    events: list[tuple[int, str, dict]] = []
+    real = pnr_openroad.log_event
+
+    def _record(logger, level, event, /, **fields):
+        events.append((level, event, fields))
+        return real(logger, level, event, **fields)
+
+    monkeypatch.setattr(pnr_openroad, "log_event", _record)
+    return events
+
+
+def _one_event(events, name):
+    """The single recorded event called `name`, as `(level, fields)`."""
+    matches = [(level, fields) for level, event, fields in events if event == name]
+    assert len(matches) == 1, f"{name}: {[e[1] for e in events]}"
+    return matches[0]
+
+
+def _fake_klayout(
+    backend,
+    design,
+    *,
+    missing=(),
+    allowed_empty=(),
+    orphans=(),
+    gds=_GDS_BYTES,
+    report=True,
+    returncode=None,
+):
+    """A `subprocess.run` stand-in that does what `def2stream.py` does.
+
+    It writes the GDS, then the JSON report that says which cells came out
+    empty, and exits with the helper's error count (#619). `report=False`
+    writes none and `report=<str>` writes that text verbatim, which is how
+    a helper that died mid-stream and a corrupt report are simulated.
+    """
+    out_gds = Path(backend.artefact_dir) / f"{design}.gds"
+    report_path = Path(backend.artefact_dir) / "def2stream.report.json"
+
+    def _run(_cmd, **_kwargs):
+        errors = len(missing) + len(orphans)
+        if gds is not None:
+            out_gds.write_bytes(gds)
+        if report is True:
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "design": design,
+                        "out_file": str(out_gds),
+                        "complete": not missing,
+                        "missing_cells": list(missing),
+                        "allowed_empty_cells": list(allowed_empty),
+                        "orphan_cells": list(orphans),
+                        "other_errors": len(orphans),
+                        "errors": errors,
+                    }
+                )
+            )
+        elif isinstance(report, str):
+            report_path.write_text(report)
+        result = MagicMock()
+        result.returncode = errors if returncode is None else returncode
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    return _run
 
 
 def test_pdk_resolves_corner_paths(tmp_path):
@@ -516,13 +600,16 @@ def test_openroad_pnr_png_implies_gds():
     assert backend.emit_png is True
 
 
-def test_def2stream_treats_nonzero_exit_as_warning_when_gds_exists(
+def test_def2stream_preview_keeps_an_incomplete_gds_and_names_the_cells(
     tmp_path, monkeypatch
 ):
-    """KLayout's def2stream exits non-zero when a LEF-only macro (e.g. ORFS
-    fakeram45) has no matching GDS body, but the streamout still produces a
-    valid GDS with the macro as an empty placeholder. The runner should keep
-    that GDS (so `--png` can still render it) and just log a warning."""
+    """KLayout's def2stream exits non-zero when a macro has no GDS body, but
+    the streamout still produces a valid GDS with the macro as an empty
+    placeholder. `preview` keeps that GDS (so `--png` can still render it)
+    and reports which cells have no layout — a picture with a hole in it is
+    still useful, as long as nobody is told it is complete (#619)."""
+    import logging
+
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -542,29 +629,32 @@ def test_def2stream_treats_nonzero_exit_as_warning_when_gds_exists(
 
     design = "demo_top"
     out_gds = Path(backend.artefact_dir) / f"{design}.gds"
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, design, missing=["sram_32x64"]),
+    )
+    events = _capture_pnr_events(monkeypatch)
 
-    def _fake_run(cmd, **_kwargs):
-        # Simulate KLayout writing a non-empty GDS but exiting non-zero
-        # because of a benign per-cell `[ERROR]` line.
-        out_gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
-        result = MagicMock()
-        result.returncode = 1
-        result.stdout = "[ERROR] LEF Cell 'foo' has no matching GDS/OAS cell.\n"
-        result.stderr = ""
-        return result
+    export = backend._run_def2stream(platform, design)
 
-    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
-
-    returned = backend._run_def2stream(platform, design)
-    assert returned == str(out_gds), (
-        "non-empty GDS should be returned even on non-zero exit"
+    assert export.status == "incomplete"
+    assert export.gds_path == str(out_gds), (
+        "preview keeps a non-empty GDS even on non-zero exit"
     )
     assert out_gds.exists() and out_gds.stat().st_size > 0
+    assert export.missing_cells == ["sram_32x64"]
+    assert "sram_32x64" in export.desc
+
+    level, fields = _one_event(events, "pnr.gds_incomplete")
+    assert level == logging.WARNING, "preview reports, it does not fail"
+    assert fields["cells"] == ["sram_32x64"]
+    assert fields["count"] == 1
 
 
 def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
-    """If KLayout fails before producing any GDS bytes the runner should
-    still return None so downstream PNG render is skipped."""
+    """If KLayout fails before producing any GDS bytes the export is a
+    failure, so the downstream PNG render is skipped."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -582,18 +672,16 @@ def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
         emit_gds=True,
     )
 
-    def _fake_run(cmd, **_kwargs):
-        # No GDS file written, exit non-zero.
-        result = MagicMock()
-        result.returncode = 1
-        result.stdout = "fatal: unable to load tech file"
-        result.stderr = ""
-        return result
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        # No GDS and no report written, exit non-zero.
+        _fake_klayout(backend, "demo_top", gds=None, report=False, returncode=1),
+    )
 
-    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
-
-    returned = backend._run_def2stream(platform, "demo_top")
-    assert returned is None
+    export = backend._run_def2stream(platform, "demo_top")
+    assert export.status == "failed"
+    assert export.gds_path is None
 
 
 def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
@@ -617,19 +705,18 @@ def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
     )
 
     stale_gds = Path(backend.artefact_dir) / "demo_top.gds"
-    stale_gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
+    stale_gds.write_bytes(_GDS_BYTES)
 
-    def _fake_run(cmd, **_kwargs):
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
         # KLayout dies before writing anything.
-        result = MagicMock()
-        result.returncode = 1
-        result.stdout = "fatal: unable to load tech file"
-        result.stderr = ""
-        return result
+        _fake_klayout(backend, "demo_top", gds=None, report=False, returncode=1),
+    )
 
-    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
-
-    assert backend._run_def2stream(platform, "demo_top") is None
+    export = backend._run_def2stream(platform, "demo_top")
+    assert export.status == "failed"
+    assert export.gds_path is None
     assert not stale_gds.exists()
 
 
@@ -800,7 +887,7 @@ def test_def2stream_reports_every_missing_input_and_skips_klayout(
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _must_not_run)
 
     with caplog.at_level(logging.ERROR):
-        assert backend._run_def2stream(platform, "demo_top") is None
+        assert backend._run_def2stream(platform, "demo_top").status == "failed"
 
     record = next(
         r
@@ -843,27 +930,26 @@ def test_def2stream_hands_klayout_a_json_manifest_that_survives_spaces(
 
     out_gds = Path(backend.artefact_dir) / "demo_top.gds"
     seen = {}
+    streamout = _fake_klayout(backend, "demo_top")
 
-    def _fake_run(cmd, **_kwargs):
+    def _fake_run(cmd, **kwargs):
         seen["cmd"] = list(cmd)
-        out_gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = ""
-        result.stderr = ""
-        return result
+        return streamout(cmd, **kwargs)
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
 
-    assert backend._run_def2stream(platform, "demo_top") == str(out_gds)
+    assert backend._run_def2stream(platform, "demo_top").gds_path == str(out_gds)
 
     manifest = next(
         arg.split("=", 1)[1] for arg in seen["cmd"] if arg.startswith("inputs_json=")
     )
     assert not any(arg.startswith("in_files=") for arg in seen["cmd"])
-    gds_files, lef_files = load_inputs(manifest)
-    assert gds_files == [str(tmp_path / "pdk" / "gds lib" / "std cells.gds"), sram_gds]
-    assert lef_files == [pdk.get_tech_lef(), pdk.get_macro_lef(), sram_lef]
+    inputs = load_inputs(manifest)
+    assert inputs["gds"] == [
+        str(tmp_path / "pdk" / "gds lib" / "std cells.gds"),
+        sram_gds,
+    ]
+    assert inputs["lef"] == [pdk.get_tech_lef(), pdk.get_macro_lef(), sram_lef]
 
 
 def test_merge_lef_files_appends_after_the_technologys_own(tmp_path):
@@ -972,6 +1058,685 @@ def test_merge_gds_reads_every_input_and_extends_the_lef_list(tmp_path):
         "lef/tech.lef",
         str(tmp_path / "sram macro.lef"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Stream-out completeness: strict vs preview (#619)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_empty_cells_splits_the_intentional_from_the_missing():
+    """`gds-allow-empty` takes names or globs; the legacy regex still counts.
+
+    A cell the run declared abstract is not a shortfall — it is layout the
+    design says it does not have. Everything else is a cell whose GDS the
+    stream-out could not find, which is what makes an export incomplete."""
+    from rtl_buddy.pnr.klayout.def2stream import classify_empty_cells
+
+    allowed, missing = classify_empty_cells(
+        ["fakeram45_64x32", "fakeram45_256x8", "sram_32x64", "SRAM_32x64"],
+        ["fakeram45_*", "sram_32x64"],
+    )
+    assert allowed == ["fakeram45_64x32", "fakeram45_256x8", "sram_32x64"]
+    # Matched case-sensitively: GDS cell names are.
+    assert missing == ["SRAM_32x64"]
+
+    allowed, missing = classify_empty_cells(
+        ["fakeram45_64x32", "sram_32x64"], (), "fakeram45_.*"
+    )
+    assert (allowed, missing) == (["fakeram45_64x32"], ["sram_32x64"])
+
+
+def _fake_pya_for(empty_cells, design_name="demo_top"):
+    """A `pya` stand-in whose final layout holds `empty_cells` as empty."""
+
+    class _FakeCell:
+        def __init__(self, name, empty=False):
+            self.name = name
+            self._empty = empty
+
+        def cell_index(self):
+            return 0
+
+        def clear(self):
+            pass
+
+        def is_empty(self):
+            return self._empty
+
+        def parent_cells(self):
+            return 1
+
+        def copy_tree(self, _other):
+            pass
+
+    class _FakeLayout:
+        dbu = 0.001
+
+        def __init__(self):
+            self.written = None
+
+        def each_cell(self):
+            return iter(
+                [_FakeCell(design_name)]
+                + [_FakeCell(name, empty=True) for name in empty_cells]
+            )
+
+        def read(self, _path, _options=None):
+            pass
+
+        def cell(self, name):
+            return _FakeCell(name)
+
+        def create_cell(self, name):
+            return _FakeCell(name)
+
+        def top_cells(self):
+            return [_FakeCell(design_name)]
+
+        def write(self, path):
+            self.written = path
+
+    lefdef = MagicMock()
+    lefdef.lef_files = []
+    options = MagicMock()
+    options.lefdef_config = lefdef
+    tech = MagicMock()
+    tech.load_layout_options = options
+    pya_mod = MagicMock()
+    pya_mod.Technology.return_value = tech
+    pya_mod.Layout.side_effect = [_FakeLayout(), _FakeLayout()]
+    return pya_mod
+
+
+def test_merge_gds_reports_missing_and_allowed_empty_cells(tmp_path):
+    """The helper writes its verdict as JSON rather than leaving the caller
+    to scrape cell names out of KLayout's stdout (#619)."""
+    from rtl_buddy.pnr.klayout import def2stream
+
+    report_file = tmp_path / "def2stream.report.json"
+    errors = def2stream.merge_gds(
+        pya_mod=_fake_pya_for(["fakeram45_64x32", "sram_32x64"]),
+        tech_file=str(tmp_path / "tech.lyt"),
+        layer_map="",
+        in_def=str(tmp_path / "demo_top.def"),
+        design_name="demo_top",
+        in_files=[],
+        seal_file="",
+        out_file=str(tmp_path / "demo_top.gds"),
+        allow_empty_patterns=["fakeram45_*"],
+        report_file=str(report_file),
+    )
+
+    # One error for the cell with no layout; the declared one is not an error.
+    assert errors == 1
+    report = json.loads(report_file.read_text())
+    assert report["schema"] == def2stream.REPORT_SCHEMA
+    assert report["complete"] is False
+    assert report["missing_cells"] == ["sram_32x64"]
+    assert report["allowed_empty_cells"] == ["fakeram45_64x32"]
+    assert report["other_errors"] == 0
+    assert report["errors"] == 1
+
+
+def test_merge_gds_reports_a_complete_export(tmp_path):
+    from rtl_buddy.pnr.klayout import def2stream
+
+    report_file = tmp_path / "def2stream.report.json"
+    errors = def2stream.merge_gds(
+        pya_mod=_fake_pya_for([]),
+        tech_file=str(tmp_path / "tech.lyt"),
+        layer_map="",
+        in_def=str(tmp_path / "demo_top.def"),
+        design_name="demo_top",
+        in_files=[],
+        seal_file="",
+        out_file=str(tmp_path / "demo_top.gds"),
+        report_file=str(report_file),
+    )
+
+    assert errors == 0
+    report = json.loads(report_file.read_text())
+    assert report["complete"] is True
+    assert report["missing_cells"] == []
+
+
+def _stream_backend(tmp_path, monkeypatch, *, run_overrides=None, **backend_kwargs):
+    """An `OpenRoadPnr` whose stream-out inputs are all on disk."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+    pdk = _make_stream_pdk(tmp_path, klayout_props="pdk/klayout/props.lyp")
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path, **(run_overrides or {})),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+        **backend_kwargs,
+    )
+    return backend, platform
+
+
+def test_export_of_a_complete_gds_is_unqualified(tmp_path, monkeypatch):
+    """Every cell has layout: nothing to qualify, in either mode."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", _fake_klayout(backend, "demo_top")
+    )
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "complete"
+    assert export.delivered is True
+    assert export.desc == ""
+    assert export.missing_cells == []
+    assert export.result_fields()["gds_status"] == "complete"
+
+
+def test_export_reports_an_allow_listed_macro_as_intentionally_empty(
+    tmp_path, monkeypatch
+):
+    """A macro the run declares abstract is complete-as-intended.
+
+    The declaration travels in the input manifest, not in an environment
+    variable the helper reads behind the caller's back (#619)."""
+    from rtl_buddy.pnr.klayout.def2stream import load_inputs
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(
+        tmp_path, monkeypatch, run_overrides={"gds_allow_empty": ["fakeram45_*"]}
+    )
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, "demo_top", allowed_empty=["fakeram45_64x32"]),
+    )
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "complete"
+    assert export.delivered is True
+    assert export.allowed_empty_cells == ["fakeram45_64x32"]
+    fields = export.result_fields()
+    assert fields["gds_allowed_empty_cells"] == ["fakeram45_64x32"]
+    assert fields["gds_missing_cell_count"] is None
+
+    manifest = load_inputs(os.path.join(backend.artefact_dir, "def2stream.inputs.json"))
+    assert manifest["allow_empty"] == ["fakeram45_*"]
+    assert manifest["report"] == os.path.join(
+        backend.artefact_dir, "def2stream.report.json"
+    )
+
+
+def test_strict_export_of_a_missing_macro_publishes_nothing(tmp_path, monkeypatch):
+    """A design that simply forgot its SRAM GDS gets a failure, not a
+    plausible picture with a hole in it (#619)."""
+    import logging
+
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(
+        tmp_path, monkeypatch, run_overrides={"gds_mode": "strict"}, emit_png=True
+    )
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, "demo_top", missing=["sram_32x64"]),
+    )
+    events = _capture_pnr_events(monkeypatch)
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "incomplete"
+    assert export.delivered is False
+    assert export.missing_cells == ["sram_32x64"]
+    assert export.gds_path is None and export.png_path is None
+    artefacts = Path(backend.artefact_dir)
+    assert not (artefacts / "demo_top.gds").exists()
+    assert not (artefacts / "demo_top.png").exists()
+    assert not (artefacts / "def2stream.report.json").exists()
+
+    level, fields = _one_event(events, "pnr.gds_incomplete")
+    assert level == logging.ERROR
+    assert fields["cells"] == ["sram_32x64"]
+    assert _one_event(events, "pnr.gds_export_rejected")[1]["missing"] == ["sram_32x64"]
+
+
+def test_strict_export_fails_when_klayout_is_missing(tmp_path, monkeypatch):
+    import logging
+
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(
+        tmp_path, monkeypatch, run_overrides={"gds_mode": "strict"}
+    )
+    monkeypatch.setattr(pnr_openroad, "_resolve_klayout_exe", lambda: None)
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        lambda *a, **kw: pytest.fail("KLayout was launched without an executable"),
+    )
+    events = _capture_pnr_events(monkeypatch)
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "failed"
+    assert "KLayout not found" in export.desc
+    assert _one_event(events, "pnr.no_klayout")[0] == logging.ERROR
+
+
+def test_preview_export_without_klayout_only_warns(tmp_path, monkeypatch):
+    """KLayout stays optional: preview reports its absence and moves on."""
+    import logging
+
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(pnr_openroad, "_resolve_klayout_exe", lambda: None)
+    events = _capture_pnr_events(monkeypatch)
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "failed"
+    assert _one_event(events, "pnr.no_klayout")[0] == logging.WARNING
+
+
+def test_strict_export_fails_without_a_klayout_technology(tmp_path, monkeypatch):
+    import logging
+
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)  # no klayout-tech
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path, gds_mode="strict"),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+    events = _capture_pnr_events(monkeypatch)
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "failed"
+    assert "klayout-tech" in export.desc
+    assert _one_event(events, "pnr.gds_no_klayout_tech")[0] == logging.ERROR
+
+
+def test_export_fails_when_the_render_fails(tmp_path, monkeypatch):
+    """A complete GDS whose PNG never rendered is not what `--png` asked
+    for; strict publishes neither, preview keeps the GDS and says so."""
+    from rtl_buddy.tools import pnr_openroad
+
+    for mode, keeps_gds in (("preview", True), ("strict", False)):
+        backend, platform = _stream_backend(
+            tmp_path / mode,
+            monkeypatch,
+            run_overrides={"gds_mode": mode},
+            emit_png=True,
+        )
+        streamout = _fake_klayout(backend, "demo_top")
+        calls = {"n": 0}
+
+        def _run(cmd, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return streamout(cmd, **kwargs)
+            # The render leaves a half-written PNG and fails.
+            Path(backend.artefact_dir, "demo_top.png").write_bytes(b"\x89PNG")
+            result = MagicMock()
+            result.returncode = 1
+            result.stdout = result.stderr = ""
+            return result
+
+        monkeypatch.setattr(pnr_openroad.subprocess, "run", _run)
+
+        export = backend.export_layout(platform, "demo_top")
+
+        assert export.status == "complete"
+        assert export.delivered is False, mode
+        assert "PNG render failed" in export.desc
+        assert export.png_path is None
+        assert not Path(backend.artefact_dir, "demo_top.png").exists()
+        assert (export.gds_path is not None) is keeps_gds, mode
+
+
+@pytest.mark.parametrize(
+    "report",
+    [False, "{not json", json.dumps({"schema": 99, "missing_cells": []})],
+    ids=["absent", "corrupt", "wrong-schema"],
+)
+def test_export_fails_when_the_report_says_nothing(tmp_path, monkeypatch, report):
+    """No readable report means nobody vouched for this layout, so it is a
+    failed export rather than a complete one — in either mode (#619)."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, "demo_top", report=report, returncode=0),
+    )
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "failed"
+    assert export.gds_path is None
+    assert not Path(backend.artefact_dir, "demo_top.gds").exists()
+
+
+def test_export_ignores_a_previous_runs_report(tmp_path, monkeypatch):
+    """A stale report is the #469 failure in its purest form: it is the file
+    that says a layout is complete."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(tmp_path, monkeypatch)
+    stale = Path(backend.artefact_dir) / "def2stream.report.json"
+    stale.write_text(
+        json.dumps({"schema": 1, "complete": True, "missing_cells": [], "errors": 0})
+    )
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, "demo_top", report=False, returncode=0),
+    )
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "failed"
+    assert not stale.exists()
+
+
+def test_export_fails_on_errors_the_missing_cells_do_not_account_for(
+    tmp_path, monkeypatch
+):
+    """Preview covers cells without layout, nothing else. An orphan cell is
+    a different failure and fails the export in both modes (#619)."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, "demo_top", orphans=["orphan_buf"]),
+    )
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "failed"
+    assert "beyond missing cells" in export.desc
+    assert not Path(backend.artefact_dir, "demo_top.gds").exists()
+
+
+def test_export_fails_when_klayout_dies_after_streaming(tmp_path, monkeypatch):
+    """An exit code the report does not explain is not a preview."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, platform = _stream_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, "demo_top", returncode=139),
+    )
+
+    export = backend.export_layout(platform, "demo_top")
+
+    assert export.status == "failed"
+    assert "139" in export.desc
+
+
+def test_cli_gds_mode_overrides_the_run_config(tmp_path):
+    """`--gds-mode` decides for the invocation; the run key is the default."""
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    def _backend(**kwargs):
+        return OpenRoadPnr(
+            name="demo/openroad",
+            pnr_cfg=_make_pnr_cfg(tmp_path, **kwargs.pop("run", {})),
+            suite_dir=str(tmp_path),
+            root_cfg=MagicMock(),
+            **kwargs,
+        )
+
+    assert _backend().gds_mode == "preview"
+    assert _backend(run={"gds_mode": "strict"}).gds_mode == "strict"
+    assert _backend(gds_mode="strict").gds_mode == "strict"
+    assert _backend(run={"gds_mode": "strict"}, gds_mode="preview").gds_mode == (
+        "preview"
+    )
+
+
+_PNR_GDS_MODE_YAML = dedent("""\
+    rtl-buddy-filetype: pnr_config
+
+    runs:
+      - name: "gds_default"
+        desc: "no gds-mode"
+        tool: "openroad"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+      - name: "gds_strict"
+        desc: "signoff stream-out"
+        tool: "openroad"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+        gds-mode: strict
+        gds-allow-empty:
+          - "fakeram45_*"
+""")
+
+
+def test_pnr_suite_loads_gds_mode_and_allow_empty(tmp_path):
+    from rtl_buddy.config.pnr import GdsMode
+
+    pnr_yaml = tmp_path / "pnr.yaml"
+    pnr_yaml.write_text(_PNR_GDS_MODE_YAML)
+    suite = PnrSuiteConfig(path=str(pnr_yaml))
+
+    default = suite.get_runs("gds_default")[0]
+    assert default.get_gds_mode() == GdsMode.PREVIEW
+    assert default.get_gds_allow_empty() == []
+
+    strict = suite.get_runs("gds_strict")[0]
+    assert strict.get_gds_mode() == GdsMode.STRICT
+    assert strict.get_gds_allow_empty() == ["fakeram45_*"]
+
+
+def test_pnr_suite_rejects_an_unknown_gds_mode(tmp_path):
+    pnr_yaml = tmp_path / "pnr.yaml"
+    pnr_yaml.write_text(
+        _PNR_GDS_MODE_YAML.replace("gds-mode: strict", "gds-mode: signoff")
+    )
+    with pytest.raises(FatalRtlBuddyError, match="gds-mode"):
+        PnrSuiteConfig(path=str(pnr_yaml))
+
+
+def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
+    """A full `run()` over a clean OpenROAD and a fake KLayout stream-out."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "_resolve_klayout_exe", lambda: "/opt/klayout")
+
+    pdk = _make_stream_pdk(tmp_path, klayout_props="pdk/klayout/props.lyp")
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path, gds_mode=mode),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+        emit_gds=True,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    artefacts = Path(backend.artefact_dir)
+    streamout = _fake_klayout(backend, "demo_top", missing=missing)
+
+    def _run(cmd, **kwargs):
+        if "-log" in cmd:
+            Path(cmd[cmd.index("-log") + 1]).write_text(
+                "Design area 123.45 um^2 1% utilization\n"
+                "Number of instances:          42\n"
+            )
+            (artefacts / "demo_top.routed.odb").write_bytes(b"\x00odb\x00")
+            (artefacts / "demo_top.def").write_text("DESIGN demo_top ;\n")
+            result = MagicMock()
+            result.returncode = 0
+            return result
+        return streamout(cmd, **kwargs)
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _run)
+    return backend, artefacts
+
+
+def test_strict_export_failure_fails_the_run_but_keeps_the_routed_database(
+    tmp_path, monkeypatch
+):
+    """The P&R verdict is a pass and its outputs are trustworthy — OpenROAD
+    finished cleanly — but the export the user asked for was not delivered,
+    so the run fails and says which cells (#619). The stage is named so an
+    `xfail:` marker on the design's timing cannot excuse it (#553)."""
+    backend, artefacts = _run_backend_with_export(
+        tmp_path, monkeypatch, mode="strict", missing=["sram_32x64"]
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "export"
+    assert "sram_32x64" in res.results["desc"]
+    assert res.results["gds_status"] == "incomplete"
+    assert res.results["gds_missing_cells"] == ["sram_32x64"]
+    assert res.results["gds_missing_cell_count"] == 1
+    assert res.results["gds_mode"] == "strict"
+    # The measurements P&R did make are still reported beside the failure.
+    assert res.results["area_um2"] == 123.45
+    assert res.results["cell_count"] == 42
+    # No layout published; the routed database stays for `rb power`.
+    assert not (artefacts / "demo_top.gds").exists()
+    assert not (artefacts / "def2stream.report.json").exists()
+    assert (artefacts / "demo_top.routed.odb").exists()
+
+
+def test_preview_export_qualifies_an_otherwise_passing_run(tmp_path, monkeypatch):
+    """Preview keeps the incomplete layout, and every place the result is
+    read says it is incomplete — including the `desc` a table shows."""
+    backend, artefacts = _run_backend_with_export(
+        tmp_path, monkeypatch, mode="preview", missing=["sram_32x64"]
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS"
+    assert res.is_pass()
+    assert res.results["desc"].startswith("P&R passed; GDS incomplete")
+    assert "sram_32x64" in res.results["desc"]
+    assert res.results["gds_status"] == "incomplete"
+    assert res.results["gds_missing_cells"] == ["sram_32x64"]
+    assert res.results["gds_path"] == str(artefacts / "demo_top.gds")
+    assert (artefacts / "demo_top.gds").exists()
+
+
+def test_complete_export_leaves_the_pass_unqualified(tmp_path, monkeypatch):
+    backend, artefacts = _run_backend_with_export(tmp_path, monkeypatch, mode="strict")
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS"
+    assert res.results["desc"] == "P&R passed"
+    assert res.results["gds_status"] == "complete"
+    assert "gds_missing_cells" not in res.results
+    assert (artefacts / "demo_top.gds").exists()
+
+
+def test_pnr_result_row_carries_the_export_status():
+    """The machine output names the cells, not just a count (#619)."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    results = PnrPassResults(
+        name="demo/results",
+        desc="P&R passed; GDS incomplete: no layout for 1 cell (sram_32x64)",
+        area_um2=123.45,
+        fields={
+            "gds_path": "/a/demo_top.gds",
+            "gds_mode": "preview",
+            "gds_status": "incomplete",
+            "gds_missing_cells": ["sram_32x64"],
+            "gds_missing_cell_count": 1,
+            "gds_allowed_empty_cells": [],
+        },
+    )
+    row = RtlBuddy._pnr_result_row(None, {"pnr_name": "demo", "results": results})
+
+    assert row["gds_status"] == "incomplete"
+    assert row["gds_missing_cells"] == ["sram_32x64"]
+    assert row["gds_missing_cell_count"] == 1
+    assert row["gds_path"] == "/a/demo_top.gds"
+    # An empty list is "nothing to report", not a field worth carrying.
+    assert "gds_allowed_empty_cells" not in row
+    assert "sram_32x64" in row["desc"]
+
+
+def test_pnr_outputs_column_qualifies_an_incomplete_export():
+    """The human table says it too, in the Outputs column (#619)."""
+    from rtl_buddy.rtl_buddy import _pnr_outputs_cell
+
+    complete = {"gds_path": "a.gds", "png_path": "a.png", "gds_status": "complete"}
+    assert _pnr_outputs_cell(complete) == "gds+png"
+    assert (
+        _pnr_outputs_cell(
+            {**complete, "gds_status": "incomplete", "gds_missing_cell_count": 2}
+        )
+        == "gds+png (incomplete: 2 missing)"
+    )
+    assert (
+        _pnr_outputs_cell({**complete, "gds_allowed_empty_cells": ["fakeram45_64x32"]})
+        == "gds+png (1 empty by design)"
+    )
+    assert _pnr_outputs_cell({"gds_status": "failed"}) == "export failed"
+    # A strict run publishes nothing, so the note stands on its own.
+    assert (
+        _pnr_outputs_cell({"gds_status": "incomplete", "gds_missing_cell_count": 3})
+        == "incomplete: 3 missing"
+    )
 
 
 _PNR_XFAIL_YAML = dedent("""\
@@ -1502,17 +2267,13 @@ def test_def2stream_removes_a_zero_length_gds(tmp_path, monkeypatch):
     )
     out_gds = Path(backend.artefact_dir) / "demo_top.gds"
 
-    def _writes_empty(cmd, **_kwargs):
-        out_gds.write_bytes(b"")
-        result = MagicMock()
-        result.returncode = 1
-        result.stdout = "fatal: streamout aborted"
-        result.stderr = ""
-        return result
+    monkeypatch.setattr(
+        pnr_openroad.subprocess,
+        "run",
+        _fake_klayout(backend, "demo_top", gds=b"", report=False, returncode=1),
+    )
 
-    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_empty)
-
-    assert backend._run_def2stream(platform, "demo_top") is None
+    assert backend._run_def2stream(platform, "demo_top").status == "failed"
     assert not out_gds.exists()
 
 

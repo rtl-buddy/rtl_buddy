@@ -18,6 +18,7 @@ class PnrRunner:
         reglvl_filter: int | None = None,
         emit_gds: bool = False,
         emit_png: bool = False,
+        gds_mode: str | None = None,
     ):
         self.name = name
         self.root_cfg = root_cfg
@@ -26,6 +27,9 @@ class PnrRunner:
         self.reglvl_filter = reglvl_filter
         self.emit_gds = emit_gds
         self.emit_png = emit_png
+        # `None` leaves each run to its own `gds-mode:`; `--gds-mode`
+        # overrides every run in the invocation.
+        self.gds_mode = gds_mode
 
     def run(self) -> PnrResults:
         log_event(
@@ -65,5 +69,6 @@ class PnrRunner:
             openroad_executable=executable,
             emit_gds=self.emit_gds,
             emit_png=self.emit_png,
+            gds_mode=self.gds_mode,
         )
         return backend.run()

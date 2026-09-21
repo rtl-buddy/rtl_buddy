@@ -3,28 +3,94 @@ try:
 except ImportError:
     pya = None
 
+import fnmatch
 import json
 import re
 import sys
 import os
 
 
+# Version of the JSON result this script writes beside the GDS. The reader
+# is `rb pnr`, which ships in the same wheel as this script, so it demands
+# an exact match: a report it cannot parse — or one an older helper left —
+# is a failed export, never a complete one (#619).
+REPORT_SCHEMA = 1
+
+
 def load_inputs(inputs_json):
     """Read the stream-out input manifest `rb pnr` wrote beside this script.
 
-    The GDS and LEF lists travel as JSON rather than as one `-rd` string
-    because a `-rd` string has no path-list contract: splitting it on
-    whitespace silently breaks any path containing a space (#617). Returns
-    `(gds_files, lef_files)`; either may be empty.
+    The inputs travel as JSON rather than as `-rd` strings because a `-rd`
+    string has no list contract: splitting one on whitespace silently
+    breaks any path containing a space (#617). Returns a dict with the
+    `gds` and `lef` path lists, the `allow_empty` cell patterns and the
+    `report` path, each defaulted so an older manifest still loads.
 
     Kept free of `pya` so it is importable — and testable — outside KLayout.
     """
     with open(inputs_json) as f:
         data = json.load(f)
-    return (
-        [str(p) for p in data.get("gds", [])],
-        [str(p) for p in data.get("lef", [])],
-    )
+    return {
+        "gds": [str(p) for p in data.get("gds", [])],
+        "lef": [str(p) for p in data.get("lef", [])],
+        "allow_empty": [str(p) for p in data.get("allow_empty", [])],
+        "report": str(data.get("report", "")),
+    }
+
+
+def is_allowed_empty(name, patterns=(), allow_empty_regex=""):
+    """Whether an empty cell is empty on purpose.
+
+    `patterns` are the run's `gds-allow-empty` entries: a cell name or an
+    fnmatch glob over one, matched case-sensitively because GDS cell names
+    are. `allow_empty_regex` is the legacy `GDS_ALLOW_EMPTY` environment
+    regex, still honoured and still anchored at the start of the name.
+
+    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    """
+    for pattern in patterns:
+        if fnmatch.fnmatchcase(name, pattern):
+            return True
+    if allow_empty_regex and re.match(allow_empty_regex, name):
+        return True
+    return False
+
+
+def classify_empty_cells(names, patterns=(), allow_empty_regex=""):
+    """Split empty cells into the deliberately abstract and the missing.
+
+    Returns `(allowed_empty, missing)`, each in the order given. A cell the
+    allow list covers is a preview macro the user declared — reported, but
+    not an error; anything else is a cell whose layout the stream-out could
+    not find, which is what makes an export incomplete (#619).
+
+    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    """
+    allowed_empty = []
+    missing = []
+    for name in names:
+        if is_allowed_empty(name, patterns, allow_empty_regex):
+            allowed_empty.append(name)
+        else:
+            missing.append(name)
+    return allowed_empty, missing
+
+
+def write_report(report_file, report):
+    """Write the stream-out result `rb pnr` reads back.
+
+    A file rather than a line for the caller to scrape out of KLayout's
+    stdout: cell names are reported verbatim, and a caller that finds no
+    report knows the helper did not finish (#619). Written last, after the
+    layout, so its presence means the GDS beside it was written too.
+
+    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    """
+    if not report_file:
+        return
+    with open(report_file, "w") as f:
+        json.dump(report, f, indent=2)
+        f.write("\n")
 
 
 def merge_lef_files(tech_lef_files, extra_lef_files, tech_file=""):
@@ -66,6 +132,8 @@ def merge_gds(
     out_file,
     allow_empty="",
     lef_files=(),
+    allow_empty_patterns=(),
+    report_file="",
 ):
     """Merge DEF and GDS/OAS files into a single stream file.
 
@@ -78,13 +146,20 @@ def merge_gds(
         in_files: List of GDS/OAS files to merge.
         seal_file: Path to seal ring GDS/OAS file (empty string if none).
         out_file: Path to output GDS/OAS file.
-        allow_empty: Regex pattern for cells allowed to be empty.
+        allow_empty: Legacy `GDS_ALLOW_EMPTY` regex for cells allowed to be
+            empty.
         lef_files: LEF files the DEF reader needs on top of the technology's
             own, in reader order (technology LEF, PDK macro LEF, then the
             run's macro LEFs).
+        allow_empty_patterns: The run's `gds-allow-empty` cell names or
+            globs — the per-run form of `allow_empty`.
+        report_file: Where to write the JSON result the caller reads back
+            (empty string to write none).
 
     Returns:
-        Number of errors encountered.
+        Number of errors encountered, which is also the exit code: one per
+        cell with no layout and one per orphan cell. A cell the allow list
+        covers is reported and is not an error.
     """
     errors = 0
 
@@ -132,39 +207,35 @@ def merge_gds(
     top = top_only_layout.create_cell(design_name)
     top.copy_tree(main_layout.cell(design_name))
 
-    missing_cell = False
-    regex = re.compile(allow_empty) if allow_empty else None
-
     if allow_empty:
-        print(f"[INFO] GDS_ALLOW_EMPTY={allow_empty}")
+        print("[INFO] GDS_ALLOW_EMPTY={0}".format(allow_empty))
+    if allow_empty_patterns:
+        print("[INFO] gds-allow-empty={0}".format(" ".join(allow_empty_patterns)))
 
-    for i in top_only_layout.each_cell():
-        if i.is_empty():
-            missing_cell = True
-            if regex is not None and regex.match(i.name):
-                print(
-                    "[WARNING] LEF Cell '{0}' ignored. Matches GDS_ALLOW_EMPTY.".format(
-                        i.name
-                    )
-                )
-            else:
-                print(
-                    "[ERROR] LEF Cell '{0}' has no matching GDS/OAS cell."
-                    " Cell will be empty.".format(i.name)
-                )
-                errors += 1
+    empty_cells = [i.name for i in top_only_layout.each_cell() if i.is_empty()]
+    allowed_empty, missing_cells = classify_empty_cells(
+        empty_cells, allow_empty_patterns, allow_empty
+    )
+    for name in allowed_empty:
+        print("[WARNING] LEF Cell '{0}' ignored. Allowed to be empty.".format(name))
+    for name in missing_cells:
+        print(
+            "[ERROR] LEF Cell '{0}' has no matching GDS/OAS cell."
+            " Cell will be empty.".format(name)
+        )
+    errors += len(missing_cells)
 
-    if not missing_cell:
+    if not empty_cells:
         print("[INFO] All LEF cells have matching GDS/OAS cells")
 
-    orphan_cell = False
+    orphan_cells = []
     for i in top_only_layout.each_cell():
         if i.name != design_name and i.parent_cells() == 0:
-            orphan_cell = True
+            orphan_cells.append(i.name)
             print("[ERROR] Found orphan cell '{0}'".format(i.name))
-            errors += 1
+    errors += len(orphan_cells)
 
-    if not orphan_cell:
+    if not orphan_cells:
         print("[INFO] No orphan cells in the final layout")
 
     if seal_file:
@@ -184,6 +255,26 @@ def merge_gds(
     # Write out the GDS
     top_only_layout.write(out_file)
 
+    # Last, so that a report on disk vouches for the layout beside it: a
+    # caller that reads one knows this script got all the way here.
+    write_report(
+        report_file,
+        {
+            "schema": REPORT_SCHEMA,
+            "design": design_name,
+            "out_file": out_file,
+            "complete": not missing_cells,
+            "missing_cells": missing_cells,
+            "allowed_empty_cells": allowed_empty,
+            "orphan_cells": orphan_cells,
+            # Errors the missing cells do not account for, so the caller can
+            # tell "a preview macro has no layout" from "the stream-out went
+            # wrong in some other way" without parsing this script's stdout.
+            "other_errors": errors - len(missing_cells),
+            "errors": errors,
+        },
+    )
+
     return errors
 
 
@@ -192,7 +283,7 @@ def merge_gds(
 if pya is not None:
     try:
         # These globals are set by klayout -rd flags
-        gds_files, extra_lefs = load_inputs(inputs_json)  # noqa: F821
+        manifest = load_inputs(inputs_json)  # noqa: F821
         sys.exit(
             merge_gds(
                 pya_mod=pya,
@@ -200,11 +291,13 @@ if pya is not None:
                 layer_map=layer_map,  # noqa: F821
                 in_def=in_def,  # noqa: F821
                 design_name=design_name,  # noqa: F821
-                in_files=gds_files,
+                in_files=manifest["gds"],
                 seal_file=seal_file,  # noqa: F821
                 out_file=out_file,  # noqa: F821
                 allow_empty=os.environ.get("GDS_ALLOW_EMPTY", ""),
-                lef_files=extra_lefs,
+                lef_files=manifest["lef"],
+                allow_empty_patterns=manifest["allow_empty"],
+                report_file=manifest["report"],
             )
         )
     except NameError:
