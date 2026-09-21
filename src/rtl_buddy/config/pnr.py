@@ -73,6 +73,9 @@ class PnrConfigFile:
     floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
     lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
+    # Layout for the macros `lef-paths` describes (e.g. an OpenRAM SRAM).
+    # P&R never reads it; KLayout stream-out cannot do without it (#617).
+    gds_paths: list[str] = field(rename="gds-paths", default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # Expected-fail markers (pytest-style). Either marks this run
@@ -110,6 +113,9 @@ class PnrConfigFile:
         lib_paths = [
             os.path.normpath(os.path.join(config_dir, p)) for p in self.lib_paths
         ]
+        gds_paths = [
+            os.path.normpath(os.path.join(config_dir, p)) for p in self.gds_paths
+        ]
         return PnrConfig(
             name=self.name,
             desc=self.desc,
@@ -125,6 +131,7 @@ class PnrConfigFile:
             ),
             lef_paths=lef_paths,
             lib_paths=lib_paths,
+            gds_paths=gds_paths,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             xfail=self.xfail,
@@ -146,6 +153,7 @@ class PnrConfig:
     tool_overrides: dict | None
     lef_paths: list[str] = dc_field(default_factory=list)
     lib_paths: list[str] = dc_field(default_factory=list)
+    gds_paths: list[str] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -185,6 +193,9 @@ class PnrConfig:
 
     def get_lib_paths(self) -> list[str]:
         return list(self.lib_paths)
+
+    def get_gds_paths(self) -> list[str]:
+        return list(self.gds_paths)
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

@@ -3,9 +3,56 @@ try:
 except ImportError:
     pya = None
 
+import json
 import re
 import sys
 import os
+
+
+def load_inputs(inputs_json):
+    """Read the stream-out input manifest `rb pnr` wrote beside this script.
+
+    The GDS and LEF lists travel as JSON rather than as one `-rd` string
+    because a `-rd` string has no path-list contract: splitting it on
+    whitespace silently breaks any path containing a space (#617). Returns
+    `(gds_files, lef_files)`; either may be empty.
+
+    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    """
+    with open(inputs_json) as f:
+        data = json.load(f)
+    return (
+        [str(p) for p in data.get("gds", [])],
+        [str(p) for p in data.get("lef", [])],
+    )
+
+
+def merge_lef_files(tech_lef_files, extra_lef_files, tech_file=""):
+    """Append the run's LEFs to the ones the technology file already names.
+
+    The `.lyt` is the PDK's own description of its layers and, usually, of
+    its LEFs; replacing that list would strip the masters the existing flow
+    relies on, so the technology's entries stay first and in their order and
+    the caller's are appended in theirs. Entries are de-duplicated on the
+    resolved path, with a relative one taken against the `.lyt`'s directory,
+    which is where KLayout itself reads it from.
+
+    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    """
+    base = os.path.dirname(tech_file)
+
+    def _key(path):
+        return os.path.normcase(os.path.realpath(os.path.join(base, path)))
+
+    merged = list(tech_lef_files)
+    seen = {_key(p) for p in merged}
+    for path in extra_lef_files:
+        key = _key(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(path)
+    return merged
 
 
 def merge_gds(
@@ -18,6 +65,7 @@ def merge_gds(
     seal_file,
     out_file,
     allow_empty="",
+    lef_files=(),
 ):
     """Merge DEF and GDS/OAS files into a single stream file.
 
@@ -27,10 +75,13 @@ def merge_gds(
         layer_map: Path to layer map file (empty string if none).
         in_def: Path to input DEF file.
         design_name: Top-level design name.
-        in_files: Space-separated string of GDS/OAS files to merge.
+        in_files: List of GDS/OAS files to merge.
         seal_file: Path to seal ring GDS/OAS file (empty string if none).
         out_file: Path to output GDS/OAS file.
         allow_empty: Regex pattern for cells allowed to be empty.
+        lef_files: LEF files the DEF reader needs on top of the technology's
+            own, in reader order (technology LEF, PDK macro LEF, then the
+            run's macro LEFs).
 
     Returns:
         Number of errors encountered.
@@ -43,6 +94,14 @@ def merge_gds(
     layout_options = tech.load_layout_options
     if len(layer_map) > 0:
         layout_options.lefdef_config.map_file = layer_map
+    if lef_files:
+        # Only `lef_files` is touched: `read_lef_with_def`,
+        # `macro_resolution_mode` and the rest stay as the `.lyt` set them,
+        # so a PDK that already streams correctly keeps doing so and only
+        # gains the masters it was missing.
+        layout_options.lefdef_config.lef_files = merge_lef_files(
+            layout_options.lefdef_config.lef_files, lef_files, tech_file
+        )
 
     # Load def file
     main_layout = pya_mod.Layout()
@@ -63,7 +122,7 @@ def merge_gds(
                 i.clear()
 
     # Load in the gds to merge
-    for fil in in_files.split():
+    for fil in in_files:
         print("\t{0}".format(fil))
         main_layout.read(fil)
 
@@ -133,6 +192,7 @@ def merge_gds(
 if pya is not None:
     try:
         # These globals are set by klayout -rd flags
+        gds_files, extra_lefs = load_inputs(inputs_json)  # noqa: F821
         sys.exit(
             merge_gds(
                 pya_mod=pya,
@@ -140,10 +200,11 @@ if pya is not None:
                 layer_map=layer_map,  # noqa: F821
                 in_def=in_def,  # noqa: F821
                 design_name=design_name,  # noqa: F821
-                in_files=in_files,  # noqa: F821
+                in_files=gds_files,
                 seal_file=seal_file,  # noqa: F821
                 out_file=out_file,  # noqa: F821
                 allow_empty=os.environ.get("GDS_ALLOW_EMPTY", ""),
+                lef_files=extra_lefs,
             )
         )
     except NameError:

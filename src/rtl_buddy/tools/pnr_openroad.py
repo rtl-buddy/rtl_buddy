@@ -1,8 +1,10 @@
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass, field as dc_field
 from importlib.resources import files
 from pathlib import Path
 
@@ -43,7 +45,8 @@ _KLAYOUT_OUTPUT_NAMES = ("{design}.gds", "{design}.png")
 # synth back-reference that supplies `{design}` — and so that editing a run's
 # design leaves nothing of the previous one behind. Safe because an artefact
 # directory belongs to exactly one pnr run; the KLayout helper scripts it also
-# holds are `.py`, and the logs are deliberately absent from this set.
+# holds are `.py` and their input manifest `.json`, and the logs are
+# deliberately absent from this set.
 _MANAGED_OUTPUT_SUFFIXES = (
     ".def",
     ".routed.v",
@@ -75,6 +78,48 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
 
 
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
+
+# The stream-out input manifest `_run_def2stream` hands the bundled KLayout
+# helper. An input, not an output — it is written beside the generated
+# `pnr.tcl` for the same reason, so a run's layout inputs can be read back
+# off disk — and so it is absent from the managed-output suffixes.
+_DEF2STREAM_INPUTS_NAME = "def2stream.inputs.json"
+
+
+@dataclass(frozen=True)
+class Def2StreamInputs:
+    """Every file KLayout stream-out reads, resolved and in reader order.
+
+    Gathered apart from the run so an export-only command (#618) and the
+    completeness gate (#619) can ask for the same set without launching
+    anything. `missing` is the subset that is configured but not on disk.
+    """
+
+    tech: str
+    gds: list[str] = dc_field(default_factory=list)
+    lef: list[str] = dc_field(default_factory=list)
+    missing: list[str] = dc_field(default_factory=list)
+
+
+def _dedup_paths(paths) -> list[str]:
+    """The paths in order, one entry per file, empties dropped.
+
+    De-duplication is on the resolved path: a PDK macro LEF a run repeats in
+    its own `lef-paths` is one LEF to the reader, and handing it twice makes
+    KLayout re-register every master in it.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path:
+            continue
+        key = os.path.normcase(os.path.realpath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
 
 # Minimum OpenROAD release we test against. Older builds may still work for
 # the basic flow but are not validated — we warn rather than refuse.
@@ -322,10 +367,59 @@ class OpenRoadPnr:
         target.write_text(files(_KLAYOUT_PACKAGE).joinpath(name).read_text())
         return str(target)
 
-    def _run_def2stream(self, platform, design: str) -> str | None:
+    def gather_def2stream_inputs(self, platform) -> Def2StreamInputs:
+        """Resolve every file KLayout stream-out reads, and check it exists.
+
+        The GDS side is the PDK's `cell-gds` — one path or a list of them —
+        followed by the run's own `gds-paths`, which is where the layout of
+        a hard macro lives (an OpenRAM SRAM, say). The LEF side is what the
+        DEF reader needs to resolve the masters the DEF instantiates, in the
+        order OpenROAD itself read them: technology LEF, the PDK's macro
+        LEF, then the run's `lef-paths`. Both lists are de-duplicated; a
+        macro named in both the PDK and the run is one input.
+
+        Public, and separate from the run, so the export-only command (#618)
+        and the completeness gate (#619) can gather and validate the same
+        set without launching KLayout.
+        """
         pdk = platform.get_pdk()
         tech = pdk.get_klayout_tech()
-        if not tech:
+        gds = _dedup_paths([*pdk.get_cell_gds_paths(), *self.pnr_cfg.get_gds_paths()])
+        lef = _dedup_paths(
+            [
+                pdk.get_tech_lef(),
+                pdk.get_macro_lef(),
+                *self.pnr_cfg.get_lef_paths(),
+            ]
+        )
+        # Only what the config named: the DEF and the helper script are this
+        # run's own outputs and are judged where they are produced.
+        missing = [
+            path
+            for path in ([tech] if tech else []) + gds + lef
+            if not os.path.isfile(path)
+        ]
+        return Def2StreamInputs(tech=tech, gds=gds, lef=lef, missing=missing)
+
+    def _write_def2stream_inputs(self, inputs: Def2StreamInputs) -> str:
+        """Write the GDS/LEF manifest the bundled helper reads.
+
+        A file rather than `-rd` strings: KLayout's `-rd` carries one scalar
+        per flag with no list contract, so a multi-path value could only
+        travel joined on some separator and would break on the first path
+        containing it (#617). The manifest is also what a user debugging a
+        stream-out wants to see, beside the `pnr.tcl` of the same run.
+        """
+        path = os.path.join(self.artefact_dir, _DEF2STREAM_INPUTS_NAME)
+        Path(path).write_text(
+            json.dumps({"gds": inputs.gds, "lef": inputs.lef}, indent=2) + "\n"
+        )
+        return path
+
+    def _run_def2stream(self, platform, design: str) -> str | None:
+        pdk = platform.get_pdk()
+        inputs = self.gather_def2stream_inputs(platform)
+        if not inputs.tech:
             log_event(
                 logger,
                 logging.WARNING,
@@ -343,16 +437,33 @@ class OpenRoadPnr:
                 pnr=self.pnr_cfg.get_name(),
             )
             return None
+        if inputs.missing:
+            # Every one of them, at ERROR, before KLayout is launched. A
+            # stream-out missing one of its inputs does not fail: it writes
+            # a GDS with whatever the DEF reader could not resolve left
+            # empty, which is a layout that looks produced. An input the
+            # config names and the disk does not have is a configuration
+            # error, so the export stops here rather than publishing that.
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.gds_missing_inputs",
+                pnr=self.pnr_cfg.get_name(),
+                pdk=pdk.get_name(),
+                count=len(inputs.missing),
+                missing=inputs.missing,
+            )
+            return None
         in_def = os.path.join(self.artefact_dir, f"{design}.def")
         out_gds = os.path.join(self.artefact_dir, f"{design}.gds")
-        cell_gds = pdk.get_cell_gds()
+        inputs_json = self._write_def2stream_inputs(inputs)
         script = self._klayout_script_path("def2stream.py")
         cmd = [
             klayout,
             "-zz",
             "-nc",
             "-rd",
-            f"tech_file={tech}",
+            f"tech_file={inputs.tech}",
             "-rd",
             "layer_map=",
             "-rd",
@@ -360,7 +471,7 @@ class OpenRoadPnr:
             "-rd",
             f"design_name={design}",
             "-rd",
-            f"in_files={cell_gds}",
+            f"inputs_json={inputs_json}",
             "-rd",
             "seal_file=",
             "-rd",
@@ -476,21 +587,27 @@ class OpenRoadPnr:
         Matching on the suffix also means editing a run's design does not
         strand the previous design's ODB in the same directory.
 
-        `include_script` additionally clears the generated `pnr.tcl`, and is
-        set only by `run`. A rerun that dies before `_write_script` — no
-        OpenROAD on the box, an unresolvable platform — would otherwise leave
-        the *previous* run's flow script sitting beside this run's absent
-        outputs, where it reads as the script this run used (#527). It is
-        deliberately not cleared by `_fail_after_openroad`: past that point
-        the script on disk is the one OpenROAD really ran, which is exactly
-        what someone reading `pnr.log` needs.
+        `include_script` additionally clears the generated `pnr.tcl` and the
+        stream-out input manifest, and is set only by `run`. A rerun that
+        dies before `_write_script` — no OpenROAD on the box, an
+        unresolvable platform — would otherwise leave the *previous* run's
+        flow script sitting beside this run's absent outputs, where it reads
+        as the script this run used (#527); the manifest says which GDS and
+        LEF were streamed and reads the same way. Neither is cleared by
+        `_fail_after_openroad`: past that point what is on disk is what the
+        tools really read, which is exactly what someone reading `pnr.log`
+        or `klayout.def2stream.log` needs.
         """
         stale = clear_stale_artefacts(
             [
                 os.path.join(self.artefact_dir, name)
                 for name in (
                     *_FIXED_OUTPUT_NAMES,
-                    *((_SCRIPT_NAME,) if include_script else ()),
+                    *(
+                        (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME)
+                        if include_script
+                        else ()
+                    ),
                 )
             ],
             owner=self.pnr_cfg.get_name(),

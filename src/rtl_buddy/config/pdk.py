@@ -8,6 +8,19 @@ from ..errors import FatalRtlBuddyError
 logger = logging.getLogger(__name__)
 
 
+def _as_path_list(value: str | list[str]) -> list[str]:
+    """A path-valued key as a list, whether it was written as one or many.
+
+    `cell-gds` took a single string before #617 and still does; a YAML list
+    is taken entry by entry, so a path is never split on whitespace and a
+    path containing spaces survives. Empty entries are dropped — the key's
+    own default is `""`, which means "not configured", not "one empty path".
+    """
+    if isinstance(value, str):
+        return [value] if value else []
+    return [p for p in value if p]
+
+
 @serde
 class PdkPinLayersFile:
     horizontal: str = "metal3"
@@ -21,7 +34,9 @@ class PdkConfigFile:
     corners: dict[str, str] = field(default_factory=dict)
     tech_lef: str = field(rename="tech-lef", default="")
     macro_lef: str = field(rename="macro-lef", default="")
-    cell_gds: str = field(rename="cell-gds", default="")
+    # One path or a list of them: standard cells plus whatever else the
+    # stream-out has to read from the PDK (#617).
+    cell_gds: str | list[str] = field(rename="cell-gds", default="")
     klayout_tech: str = field(rename="klayout-tech", default="")
     klayout_props: str = field(rename="klayout-props", default="")
     tie_hi: str = field(rename="tie-hi", default="")
@@ -44,7 +59,7 @@ class PdkConfig:
         self._corners = {k: _resolve(v) for k, v in (cfg.corners or {}).items()}
         self._tech_lef = _resolve(cfg.tech_lef)
         self._macro_lef = _resolve(cfg.macro_lef)
-        self._cell_gds = _resolve(cfg.cell_gds)
+        self._cell_gds = [_resolve(p) for p in _as_path_list(cfg.cell_gds)]
         self._klayout_tech = _resolve(cfg.klayout_tech)
         self._klayout_props = _resolve(cfg.klayout_props)
         self._tie_hi = cfg.tie_hi
@@ -83,7 +98,16 @@ class PdkConfig:
         return self._macro_lef
 
     def get_cell_gds(self) -> str:
-        return self._cell_gds
+        """The first configured cell GDS, or `""` when none is.
+
+        Kept for callers written against the single-valued key; anything
+        that streams layout wants :meth:`get_cell_gds_paths` (#617).
+        """
+        return self._cell_gds[0] if self._cell_gds else ""
+
+    def get_cell_gds_paths(self) -> list[str]:
+        """Every configured cell GDS, resolved, in config order."""
+        return list(self._cell_gds)
 
     def get_klayout_tech(self) -> str:
         return self._klayout_tech

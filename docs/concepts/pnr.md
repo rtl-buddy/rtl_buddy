@@ -73,6 +73,12 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png
 
 `--png` implies `--gds`. RTL Buddy invokes KLayout after a successful OpenROAD run. KLayout conversion failures produce warnings but do not change the P&R verdict; use the OpenROAD timing and DRC results as the run outcome.
 
+### Stream-out inputs
+
+Stream-out reads more than the routed DEF. The layout comes from the PDK's `cell-gds` — one path or a list of them — followed by the run's own `gds-paths`, which is where the layout of a hard macro belongs: an OpenRAM SRAM has its LEF in `lef-paths` and its GDS in `gds-paths`, and each path resolves against the file that names it, `root_config.yaml` for the PDK and `pnr.yaml` for the run. The DEF reader is also given the LEFs, so it can resolve the masters the DEF instantiates: technology LEF, the PDK's macro LEF, then the run's `lef-paths`, in that order and de-duplicated, appended to whatever the KLayout technology file already lists rather than replacing it. Both lists reach KLayout through `def2stream.inputs.json` in the artefact directory, which is also where to read back what a given run streamed.
+
+An input the config names and the disk does not have stops the export before KLayout is launched, with every missing path reported at once — a stream-out run without it succeeds and writes a GDS with the unresolvable cells left empty, which is a layout that looks produced.
+
 ## Interpret results
 
 The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing; zero DRC lines indicate a clean route.
@@ -86,6 +92,7 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | File | Purpose |
 | --- | --- |
 | `pnr.log`, `pnr.tcl` | OpenROAD output and generated flow |
+| `def2stream.inputs.json` | GDS and LEF the optional KLayout stream-out read |
 | `<top>.def` | Routed DEF |
 | `<top>.routed.v` | Post-route gate-level netlist |
 | `<top>.routed.sdc` | Post-route constraints |
@@ -95,4 +102,4 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `<top>.gds`, `<top>.png` | Optional KLayout outputs |
 | `klayout.*.log` | Optional conversion logs |
 
-Every file above except the logs is deleted before each run — including the optional KLayout outputs, which are cleared up front rather than at the streamout step, so a run that dies inside OpenROAD or on a host without KLayout leaves no older layout behind. A run that dies short of routing therefore leaves the outputs it never wrote absent rather than the previous run's. Unlike the other flows, this happens even when OpenROAD itself is missing — the clear is the first thing a run does — because `rb power` resolves `<top>.routed.odb` by path and must never be handed the previous run's database. For the same reason a run that reaches `write_db` and then dies — killed, exiting non-zero, or logging an `[ERROR ...]` line — has its outputs removed again, so a `FAIL` never leaves a routed database behind. `pnr.tcl` is cleared only in that first up-front pass, so a rerun that never reaches script generation does not leave the previous run's flow script looking like the one it used — but a run that does reach OpenROAD keeps its script even when it fails, because that script is what `pnr.log` is a log of. The optional KLayout steps behave the same: a zero-length GDS or a half-rendered PNG is removed rather than left to be read as this run's layout. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.
+Every file above except the logs is deleted before each run — including the optional KLayout outputs, which are cleared up front rather than at the streamout step, so a run that dies inside OpenROAD or on a host without KLayout leaves no older layout behind. A run that dies short of routing therefore leaves the outputs it never wrote absent rather than the previous run's. Unlike the other flows, this happens even when OpenROAD itself is missing — the clear is the first thing a run does — because `rb power` resolves `<top>.routed.odb` by path and must never be handed the previous run's database. For the same reason a run that reaches `write_db` and then dies — killed, exiting non-zero, or logging an `[ERROR ...]` line — has its outputs removed again, so a `FAIL` never leaves a routed database behind. `pnr.tcl` and `def2stream.inputs.json` are cleared only in that first up-front pass, so a rerun that never reaches script generation does not leave the previous run's flow script or stream-out inputs looking like the ones it used — but a run that does reach the tools keeps them even when it fails, because they are what `pnr.log` and `klayout.def2stream.log` are logs of. The optional KLayout steps behave the same: a zero-length GDS or a half-rendered PNG is removed rather than left to be read as this run's layout. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.
