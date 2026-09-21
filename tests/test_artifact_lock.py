@@ -12,11 +12,13 @@ degrades to unlocked when the filesystem cannot lock.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import fcntl
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import textwrap
@@ -389,3 +391,296 @@ def test_another_process_blocks_on_the_lock_until_it_is_released(tmp_path):
     # log that simply stops for a compile reads as a hang.
     assert "waiting for another rtl-buddy" in out
     assert f"pid {os.getpid()}" in out
+
+
+# ---------------------------------------------------------------------------
+# Stale-lock reclaim (#609)
+#
+# Every test here needs the same unnatural state: a lock file whose flock
+# is genuinely held (so `acquire` cannot take it) but whose *record* names
+# a holder that is gone. A second file description in this process supplies
+# the flock — the property the module docstring opens with — and the record
+# is written underneath it.
+# ---------------------------------------------------------------------------
+
+
+def _dead_pid() -> int:
+    """A pid that existed and does not any more."""
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait(timeout=60)
+    return proc.pid
+
+
+def _wedge_lock(root: Path, holder: dict) -> int:
+    """Hold ``root``'s tree flock and write ``holder`` into the file.
+
+    Returns the descriptor holding the flock; the caller closes it.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    lock_file = root / LOCK_FILENAME
+    fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    lock_file.write_text(json.dumps(holder))
+    return fd
+
+
+@pytest.fixture
+def wedged():
+    """`_wedge_lock`, with the descriptors closed on the way out."""
+    fds = []
+
+    def make(root: Path, holder: dict) -> int:
+        fd = _wedge_lock(root, holder)
+        fds.append(fd)
+        return fd
+
+    yield make
+    for fd in fds:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def test_stale_same_host_dead_pid_is_reclaimed(tmp_path, locks, wedged, caplog):
+    """The #609 case: the owner is gone, so the next run takes the tree."""
+    root = tmp_path / "artefacts"
+    dead = _dead_pid()
+    wedged(
+        root,
+        {
+            "pid": dead,
+            "command": "pnr",
+            "started": "2026-09-20T10:00:00",
+            "host": socket.gethostname(),
+            "start_token": "whatever-it-was",
+        },
+    )
+    with caplog.at_level(logging.WARNING):
+        locks().acquire(root, command="synth")
+
+    holder = json.loads((root / LOCK_FILENAME).read_text())
+    assert holder["pid"] == os.getpid()
+    assert holder["command"] == "synth"
+    assert holder["host"] == socket.gethostname()
+    assert "artifact_lock reclaimed" in caplog.text
+
+    # Reclaimed means *held*, not merely overwritten: the next process
+    # in still finds the tree taken.
+    with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run"):
+        locks().acquire(root, command="pnr")
+
+
+def test_live_holder_is_never_reclaimed(tmp_path, locks, wedged):
+    """A pid that is alive is the holder, whatever else the record says."""
+    root = tmp_path / "artefacts"
+    wedged(
+        root,
+        {
+            "pid": os.getpid(),
+            "command": "pnr",
+            "started": "2026-09-20T10:00:00",
+            "host": socket.gethostname(),
+            "start_token": artifact_lock_module._process_start_token(os.getpid()),
+        },
+    )
+    with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run") as excinfo:
+        locks().acquire(root, command="synth")
+    assert f"pid {os.getpid()}" in str(excinfo.value)
+
+
+def test_lock_from_another_host_is_not_reclaimed_by_pid(tmp_path, locks, wedged):
+    """A shared filesystem: a dead pid *here* says nothing about a pid there."""
+    root = tmp_path / "artefacts"
+    wedged(
+        root,
+        {
+            "pid": _dead_pid(),
+            "command": "pnr",
+            "started": "2026-09-20T10:00:00",
+            "host": "some-other-node",
+            "start_token": "12345",
+        },
+    )
+    with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run") as excinfo:
+        locks().acquire(root, command="synth")
+    assert "some-other-node" in str(excinfo.value)
+
+
+def test_lock_without_a_host_is_not_reclaimed(tmp_path, locks, wedged):
+    """A pre-#609 record has unknown identity, which is not "reclaim me"."""
+    root = tmp_path / "artefacts"
+    wedged(
+        root,
+        {"pid": _dead_pid(), "command": "pnr", "started": "2026-09-20T10:00:00"},
+    )
+    with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run"):
+        locks().acquire(root, command="synth")
+
+
+def test_reused_pid_is_treated_as_a_dead_holder(tmp_path, locks, wedged):
+    """Alive, but not the process that wrote the record: the start token says so."""
+    root = tmp_path / "artefacts"
+    wedged(
+        root,
+        {
+            "pid": os.getpid(),
+            "command": "pnr",
+            "started": "2026-09-20T10:00:00",
+            "host": socket.gethostname(),
+            # This process started once; a token from another era means
+            # the recorded holder is gone and its number was handed on.
+            "start_token": "0",
+        },
+    )
+    locks().acquire(root, command="synth")
+    assert json.loads((root / LOCK_FILENAME).read_text())["command"] == "synth"
+
+
+def test_reclaim_does_not_race_a_concurrent_reclaimer(tmp_path, locks, wedged):
+    """Two runs diagnosing one corpse: exactly one of them gets the tree."""
+    root = tmp_path / "artefacts"
+    wedged(
+        root,
+        {
+            "pid": _dead_pid(),
+            "command": "pnr",
+            "started": "2026-09-20T10:00:00",
+            "host": socket.gethostname(),
+            "start_token": "gone",
+        },
+    )
+    results: list[object] = []
+    barrier = threading.Barrier(2)
+
+    def attempt(manager):
+        barrier.wait(timeout=30)
+        try:
+            manager.acquire(root, command="synth")
+        except FatalRtlBuddyError as exc:
+            results.append(exc)
+        else:
+            results.append(True)
+
+    managers = [locks(), locks()]
+    threads = [threading.Thread(target=attempt, args=(m,)) for m in managers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+
+    assert sorted(r is True for r in results) == [False, True], results
+
+
+def test_reclaim_picks_up_a_lock_released_between_the_two_attempts(
+    tmp_path, locks, monkeypatch
+):
+    """The holder exits mid-diagnosis: lock it, do not replace the file."""
+    root = tmp_path / "artefacts"
+    fd = _wedge_lock(
+        root,
+        {
+            "pid": _dead_pid(),
+            "command": "pnr",
+            "started": "2026-09-20T10:00:00",
+            "host": socket.gethostname(),
+            "start_token": "gone",
+        },
+    )
+    before = (root / LOCK_FILENAME).stat().st_ino
+    real_reclaim = artifact_lock_module._reclaim_if_stale
+
+    def _release_then_reclaim(*args, **kwargs):
+        os.close(fd)  # the "holder" exits while we are inside the reclaim
+        return real_reclaim(*args, **kwargs)
+
+    monkeypatch.setattr(
+        artifact_lock_module, "_reclaim_if_stale", _release_then_reclaim
+    )
+    locks().acquire(root, command="synth")
+    assert (root / LOCK_FILENAME).stat().st_ino == before
+
+
+def test_unlockable_filesystem_is_not_reported_as_contention(
+    tmp_path, locks, monkeypatch
+):
+    """ENOLCK is a broken mount, not another run — say which."""
+    root = tmp_path / "artefacts"
+
+    def _no_locks(fd, operation):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(artifact_lock_module.fcntl, "flock", _no_locks)
+    with pytest.raises(FatalRtlBuddyError, match="cannot lock this artefact tree"):
+        locks().acquire(root, command="synth")
+
+
+# ---------------------------------------------------------------------------
+# Release paths: the lock comes back on failure and on interrupt (#609)
+# ---------------------------------------------------------------------------
+
+
+def _rb_running(raiser):
+    """An RtlBuddy whose CLI takes the tree lock and then raises."""
+    rb = RtlBuddy(name="test_artifact_lock_release")
+
+    def _app(*args, **kwargs):
+        raiser(rb)
+
+    rb.app = _app
+    return rb
+
+
+def test_run_releases_the_tree_lock_when_a_tool_fails(tmp_path):
+    """An OpenROAD Tcl error surfaces as FatalRtlBuddyError — and unlocks."""
+    root = tmp_path / "artefacts"
+
+    def _fail(rb):
+        rb._artifact_locks.acquire(root, command="pnr")
+        raise FatalRtlBuddyError("openroad: Tcl error in macro placement")
+
+    assert _rb_running(_fail).run() == 2
+    assert _nonblocking_acquire(root / LOCK_FILENAME)
+
+
+def test_run_releases_the_tree_lock_on_keyboard_interrupt(tmp_path, capsys):
+    """Ctrl-C during OpenROAD: exit 130, tree given back."""
+    root = tmp_path / "artefacts"
+
+    def _interrupt(rb):
+        rb._artifact_locks.acquire(root, command="pnr")
+        raise KeyboardInterrupt
+
+    assert _rb_running(_interrupt).run() == 130
+    captured = capsys.readouterr()
+    assert "interrupted" in captured.out + captured.err
+    assert _nonblocking_acquire(root / LOCK_FILENAME)
+
+
+def test_run_releases_the_tree_lock_on_success(tmp_path):
+    root = tmp_path / "artefacts"
+
+    def _ok(rb):
+        rb._artifact_locks.acquire(root, command="test")
+
+    assert _rb_running(_ok).run() == 0
+    assert _nonblocking_acquire(root / LOCK_FILENAME)
+
+
+def test_acquirer_that_loses_the_path_to_a_reclaimer_stands_down(tmp_path, monkeypatch):
+    """#609: a reclaimer may replace the file between our flock and our record."""
+    from rtl_buddy import artifact_lock
+
+    real_write = artifact_lock._write_holder
+
+    def write_then_lose_the_path(fd, command):
+        real_write(fd, command)
+        # What a concurrent reclaimer's os.replace does to the path.
+        usurper = tmp_path / "usurper"
+        usurper.write_text("{}")
+        os.replace(usurper, tmp_path / artifact_lock.LOCK_FILENAME)
+
+    monkeypatch.setattr(artifact_lock, "_write_holder", write_then_lose_the_path)
+    locks = artifact_lock.ArtifactLocks()
+    with pytest.raises(FatalRtlBuddyError, match="already using"):
+        locks.acquire(tmp_path, command="pnr")
+    assert not locks._held

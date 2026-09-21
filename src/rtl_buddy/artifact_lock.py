@@ -16,10 +16,21 @@ arrives already namespaced, from
 :class:`~rtl_buddy.exec_context.ExecutionContext`.
 
 The lock is advisory and kernel-managed: it disappears when the holding
-process exits for any reason, so crashes cannot leave stale locks. The
-lock *file* persists and carries holder metadata (pid, command, start
-time) purely so the contention error can say who is in the way; a
-leftover file with no live flock is harmless.
+process exits for any reason, and :meth:`ArtifactLocks.release_all` is
+called from the CLI's outermost ``finally`` so an interrupted or failed
+run (a SIGINT during OpenROAD, an OpenROAD Tcl error) gives it back on
+the way out rather than only at teardown (#609). The lock *file*
+persists and carries holder metadata (pid, command, start time, host,
+process start token); a leftover file with no live flock is harmless.
+
+That metadata is also the fallback. A filesystem whose lock state can
+outlive its owner — and any state a reader cannot explain — would
+otherwise wedge a tree forever, so a lock we cannot take is re-read: if
+it names *this* host and a pid that is gone (or has been reused by a
+different process, which the start token catches), it is reclaimed by
+atomically replacing the lock file under a second ``.reclaim`` flock
+that serialises reclaimers. A lock recorded on another host is never
+judged by a pid here, and a record with no host is left alone.
 
 :func:`build_dir_lock` applies the same idiom at a second, narrower
 scope — one *shared build directory*, held only for the compile that
@@ -32,10 +43,13 @@ lock at all.
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import json
 import logging
 import os
+import socket
+import subprocess
 import threading
 import time
 from collections.abc import Iterator
@@ -49,6 +63,18 @@ logger = logging.getLogger(__name__)
 
 LOCK_FILENAME = ".rtl-buddy.lock"
 BUILD_LOCK_FILENAME = ".rb-build.lock"
+
+# Serialises the reclaim of a stale tree lock (#609). A sibling of the
+# lock file rather than the lock file itself, because reclaiming means
+# replacing that file: two processes that both diagnosed the same dead
+# holder must not both install their own lock over it.
+RECLAIM_LOCK_SUFFIX = ".reclaim"
+
+# errnos that mean "someone else holds it" rather than "this filesystem
+# cannot lock". Only the former is contention; the latter is a broken
+# mount and says so (the tree lock fails loud either way, but the two
+# need different answers from a reader).
+_CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
 
 # How often a blocked compile retries, and how often it says so. The poll
 # is cheap (one non-blocking flock) and the announcement interval is what
@@ -115,36 +141,57 @@ class ArtifactLocks:
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except OSError as exc:
             holder = _read_holder(fd)
             os.close(fd)
+            fd = _reclaim_if_stale(artifact_root, lock_path, holder)
+            if fd is None:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "artifact_lock.contended",
+                    path=str(artifact_root),
+                    holder_pid=holder.get("pid"),
+                    holder_command=holder.get("command"),
+                    holder_started=holder.get("started"),
+                    holder_host=holder.get("host"),
+                    error=str(exc),
+                )
+                if exc.errno not in _CONTENTION_ERRNOS:
+                    raise FatalRtlBuddyError(
+                        f"{artifact_root}: cannot lock this artefact tree — "
+                        f"{os.strerror(exc.errno) if exc.errno else exc} "
+                        "(the filesystem may not support flock; move the "
+                        "artefact tree to a filesystem that does)"
+                    ) from exc
+                raise FatalRtlBuddyError(
+                    f"{artifact_root}: another rtl-buddy run is already using "
+                    f"this artefact tree{_describe_holder(holder)} — wait for "
+                    "it to finish or kill it"
+                ) from exc
             log_event(
                 logger,
-                logging.ERROR,
-                "artifact_lock.contended",
+                logging.WARNING,
+                "artifact_lock.reclaimed",
                 path=str(artifact_root),
                 holder_pid=holder.get("pid"),
                 holder_command=holder.get("command"),
                 holder_started=holder.get("started"),
-            )
-            raise FatalRtlBuddyError(
-                f"{artifact_root}: another rtl-buddy run is already using "
-                f"this artefact tree{_describe_holder(holder)} — wait for "
-                "it to finish or kill it"
+                holder_host=holder.get("host"),
             )
 
-        os.ftruncate(fd, 0)
-        os.write(
-            fd,
-            json.dumps(
-                {
-                    "pid": os.getpid(),
-                    "command": command,
-                    "started": datetime.now().isoformat(timespec="seconds"),
-                }
-            ).encode(),
-        )
-        os.fsync(fd)
+        _write_holder(fd, command)
+        if not _still_owns_lock_path(artifact_root, lock_path, fd):
+            # A reclaimer judged the *previous* holder's record, which
+            # this file still carried between our flock and our write,
+            # and replaced the file under us. It holds the tree; we hold
+            # an unlinked inode.
+            os.close(fd)
+            raise FatalRtlBuddyError(
+                f"{artifact_root}: another rtl-buddy run is already using "
+                "this artefact tree (it reclaimed a stale lock at the same "
+                "moment) — wait for it to finish or kill it"
+            )
         self._held[lock_path] = fd
         log_event(
             logger,
@@ -155,10 +202,24 @@ class ArtifactLocks:
         )
 
     def release_all(self) -> None:
-        """Drop every held lock. Only tests need this; real runs rely on
-        the kernel releasing flocks at process exit."""
+        """Drop every held lock.
+
+        Called from the CLI's outermost ``finally`` (#609) so that a tool
+        failure, a ``FatalRtlBuddyError``, or a ``KeyboardInterrupt``
+        during a long ``rb pnr`` gives the tree back on the way out
+        rather than relying on process teardown alone. The kernel still
+        releases the flock if the process dies without unwinding; this is
+        the deterministic path, and it is what tests use too.
+
+        Idempotent, and never raises: this runs while another exception
+        may already be propagating, and a failed close must not replace
+        the real error with a lock-teardown one.
+        """
         for fd in self._held.values():
-            os.close(fd)
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(fd)
         self._held.clear()
 
 
@@ -315,6 +376,230 @@ def _wait_for_lock(fd: int, fields: dict) -> None:
             return
 
 
+def _write_holder(fd: int, command: str | None) -> None:
+    """Stamp this process's identity into the lock file it just locked.
+
+    Diagnostics *and*, since #609, evidence: ``host`` and ``start_token``
+    are what a later process needs to decide whether a lock whose flock
+    it cannot take belongs to a holder that no longer exists. A record
+    without them (a lock written by an older rtl-buddy) is never
+    reclaimed — it is read as "identity unknown", which is the safe
+    reading on a shared filesystem.
+    """
+    os.ftruncate(fd, 0)
+    os.write(
+        fd,
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "command": command,
+                "started": datetime.now().isoformat(timespec="seconds"),
+                "host": _this_host(),
+                "start_token": _process_start_token(os.getpid()),
+            }
+        ).encode(),
+    )
+    os.fsync(fd)
+
+
+def _this_host() -> str:
+    return socket.gethostname()
+
+
+def _pid_alive(pid: int) -> bool:
+    """Does a process with this pid exist, whoever owns it?
+
+    ``EPERM`` means it exists and is someone else's — a shared compute
+    node is exactly where that happens, and "not mine" must never read
+    as "not there".
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        # Unknown answer; the conservative one is "still running".
+        return True
+    return True
+
+
+def _process_start_token(pid: int) -> str | None:
+    """A stable-per-process stamp for ``pid``, or None if unobtainable.
+
+    Guards the reclaim against pid reuse: a dead holder's number can be
+    handed to an unrelated process before anyone looks, and the liveness
+    check alone would then read a stranger as the holder forever. Linux
+    reads field 22 of ``/proc/<pid>/stat`` (start time in clock ticks);
+    everything else shells out to ``ps -o lstart=`` once per pid. None
+    from either is not an error — the caller falls back to liveness
+    alone, which is the pre-#609 answer.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            raw = handle.read().decode("utf-8", "replace")
+        # The comm field is parenthesised and may contain spaces, so the
+        # split point is its LAST ')': the fields after it start at
+        # ``state`` (field 3), which puts starttime (field 22) at index 19.
+        fields = raw.rsplit(")", 1)[1].split()
+        return fields[19]
+    except (OSError, IndexError, ValueError):
+        pass
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    token = proc.stdout.strip()
+    return token or None
+
+
+def _holder_is_stale(holder: dict) -> bool:
+    """Is this lock record's owner definitely gone from this machine?
+
+    Three gates, all of which must pass, because the cost of a wrong
+    "yes" is two rtl-buddy runs interleaving one artefact tree:
+
+    * a pid we can read;
+    * ``host`` recorded AND equal to ours — a lock taken on another node
+      of a shared filesystem is never judged by a pid on this one, and a
+      record with no host at all (pre-#609, or truncated) is unknown
+      identity, so it is left alone;
+    * the pid is not alive, or it is alive as a *different* process than
+      the one that wrote the record (pid reuse, caught by the start
+      token when both the record and the live process have one).
+    """
+    pid = holder.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    host = holder.get("host")
+    if not host or host != _this_host():
+        return False
+    if not _pid_alive(pid):
+        return True
+    recorded = holder.get("start_token")
+    if not recorded:
+        return False
+    current = _process_start_token(pid)
+    return current is not None and current != recorded
+
+
+def _reclaim_if_stale(artifact_root: Path, lock_path: Path, holder: dict) -> int | None:
+    """Take a lock whose recorded holder is dead, or return None (#609).
+
+    Returns a locked file descriptor for ``lock_path`` on success. None
+    means "treat this as contention", which is the answer for every case
+    that is not provably reclaimable.
+
+    Race safety has three parts:
+
+    * reclaimers serialise on a sibling ``.reclaim`` flock, so two runs
+      that spot the same corpse do not both install a lock;
+    * inside that section the lock is re-opened and re-tried — a holder
+      that exited in the meantime is simply locked, no replacement
+      needed — and the record is re-read and re-judged against the file
+      as it is *now*, not as it was before the wait;
+    * the replacement itself is an ``os.replace`` of a fresh file that
+      is already flocked by us, so the lock path never exists unlocked
+      and never exists twice. The dead holder's inode is unlinked, which
+      is safe precisely because nothing living holds it.
+    """
+    if not _holder_is_stale(holder):
+        return None
+
+    reclaim_path = artifact_root / (LOCK_FILENAME + RECLAIM_LOCK_SUFFIX)
+    try:
+        guard = os.open(reclaim_path, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another process is mid-reclaim. It wins; we are its
+            # contender and report contention as usual.
+            return None
+
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            pass
+        else:
+            # The holder let go between our two attempts (or a reclaimer
+            # ahead of us finished and exited). Nothing to replace.
+            return fd
+        current = _read_holder(fd)
+        os.close(fd)
+        if not _holder_is_stale(current):
+            return None
+        return _replace_lock_file(artifact_root, lock_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(guard)
+
+
+def _still_owns_lock_path(artifact_root: Path, lock_path: Path, fd: int) -> bool:
+    """Is ``fd`` still the file at ``lock_path``, now that our record is in it?
+
+    Closes the one window the reclaim leaves open (#609). A process that
+    wins the flock on a file still carrying a dead holder's record looks,
+    until its own record lands, exactly like that dead holder — and a
+    reclaimer may replace the file in that window. Checked under the same
+    ``.reclaim`` flock the reclaimer works under, *after* our record is
+    written: a reclaimer that ran before this check has already replaced
+    the path (we see a different inode and stand down); one that runs
+    after it reads our live record and stands down itself.
+
+    A guard that cannot be opened or locked means reclaim cannot run here
+    either, so the answer falls back to the inode comparison alone.
+    """
+    guard = None
+    try:
+        with contextlib.suppress(OSError):
+            guard = os.open(
+                artifact_root / (LOCK_FILENAME + RECLAIM_LOCK_SUFFIX),
+                os.O_RDWR | os.O_CREAT,
+                0o644,
+            )
+            fcntl.flock(guard, fcntl.LOCK_EX)
+        try:
+            ours, current = os.fstat(fd), os.stat(lock_path)
+        except OSError:
+            return False
+        return (ours.st_dev, ours.st_ino) == (current.st_dev, current.st_ino)
+    finally:
+        if guard is not None:
+            with contextlib.suppress(OSError):
+                os.close(guard)
+
+
+def _replace_lock_file(artifact_root: Path, lock_path: Path) -> int | None:
+    """Install a fresh, already-locked lock file over a stale one."""
+    tmp_path = artifact_root / f"{LOCK_FILENAME}.new-{os.getpid()}"
+    try:
+        fd = os.open(tmp_path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.replace(tmp_path, lock_path)
+    except OSError:
+        # Either this filesystem cannot lock at all or the rename failed;
+        # in both cases we do not hold the tree and must not claim to.
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        return None
+    return fd
+
+
 def _read_holder(fd: int) -> dict:
     try:
         os.lseek(fd, 0, os.SEEK_SET)
@@ -342,4 +627,6 @@ def _describe_holder(holder: dict) -> str:
         parts.append(f"test {holder['test']}")
     if holder.get("started"):
         parts.append(f"started {holder['started']}")
+    if holder.get("host"):
+        parts.append(f"on {holder['host']}")
     return f" ({', '.join(parts)})" if parts else ""
