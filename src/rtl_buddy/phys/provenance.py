@@ -44,7 +44,7 @@ does have. Per backend, derived from the script writers:
 *Yosys synthesis* (:meth:`YosysSynth._phys_options
 <rtl_buddy.tools.synth_yosys.YosysSynth._phys_options>`). The shared
 elaboration subset (:func:`~rtl_buddy.tools.synth_yosys.elaboration_fingerprint`:
-frontend, the two resolved correctness-gate modes, and under ``slang``
+frontend, the three resolved correctness-gate modes, and under ``slang``
 the plugin path and ``--single-unit``), the resolved ``synth-args``,
 the elaboration parameters and defines, and which branch the script
 took. A **mapped** run adds the ABC delay target parsed out of the SDC

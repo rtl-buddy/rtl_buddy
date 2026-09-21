@@ -3442,6 +3442,190 @@ def test_conflicting_driver_regex_is_anchored_on_the_warning(line, expected):
     assert bool(find_conflicting_driver_warnings(line + "\n")) is expected
 
 
+# ---------------------------------------------------------------------------
+# Unbound interface instances (rtl-buddy/rtl_buddy#628)
+# ---------------------------------------------------------------------------
+
+# Verbatim shape of the yosys `hierarchy` warning. `synth` runs `hierarchy`
+# more than once and re-elaborates each time, so a real log carries the same
+# line repeatedly -- the finder must count the instance, not the line.
+_UNBOUND_IF_WARNING = (
+    "Warning: Could not find interface instance for `bus' in `wrapper_top'\n"
+)
+
+
+def test_unresolved_interfaces_default_warns_without_failing(
+    tmp_path, monkeypatch, caplog
+):
+    """The fallback netlist is correct when the interface has no ports of its
+    own, or none the subtree reads, so the default cannot be `error`."""
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_yosys(monkeypatch, write_log=_UNBOUND_IF_WARNING * 3)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    # De-duplicated: three `hierarchy` passes, one instance, one warning.
+    assert caplog.text.count("wrapper_top.bus") == 1
+    # The finding survives into the machine-readable envelope, so a passing
+    # run whose netlist may be missing port connections says so.
+    assert result.results["unresolved_interfaces"] == 1
+
+
+def test_unresolved_interfaces_error_fails_the_run(tmp_path, monkeypatch):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={
+            "static_functions": "allow",
+            "unresolved_interfaces": "error",
+        },
+    )
+    _patch_yosys(
+        monkeypatch,
+        write_log=(
+            _UNBOUND_IF_WARNING
+            + "Warning: Could not find interface instance for `dbg' in `core'\n"
+        ),
+    )
+    result = ys.run()
+    assert isinstance(result, SynthFailResults)
+    assert "2 unbound interface instance(s)" in result.results["desc"]
+    assert "wrapper_top.bus" in result.results["desc"]
+    assert "core.dbg" in result.results["desc"]
+
+
+def test_unresolved_interfaces_error_drops_the_netlist(tmp_path, monkeypatch):
+    """`rb pnr` / `rb power` resolve the netlist by `isfile`, so a run that
+    fails the gate must not leave yosys's own product behind. Yosys wrote it
+    before the gate fired, so the start-of-run cleanup cannot have."""
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={
+            "static_functions": "allow",
+            "unresolved_interfaces": "error",
+        },
+    )
+    mapped = Path(ys.artefact_dir) / "synth_netlist.v"
+
+    def _yosys_writes_then_warns(cmd, stdout, stderr, **kwargs):
+        mapped.write_text("module disconnected(); endmodule\n")
+        stdout.write(_UNBOUND_IF_WARNING)
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "run_managed_process", _yosys_writes_then_warns
+    )
+    assert isinstance(ys.run(), SynthFailResults)
+    assert not mapped.exists()
+
+
+def test_unresolved_interfaces_allow_is_silent(tmp_path, monkeypatch, caplog):
+    import logging
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={
+            "static_functions": "allow",
+            "unresolved_interfaces": "allow",
+        },
+    )
+    _patch_yosys(monkeypatch, write_log=_UNBOUND_IF_WARNING)
+    with caplog.at_level(logging.WARNING):
+        result = ys.run()
+    assert isinstance(result, SynthPassResults)
+    assert "interface instance" not in caplog.text
+    assert "unresolved_interfaces" not in result.results
+
+
+def test_unresolved_interfaces_invalid_mode_is_fatal(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={
+            "static_functions": "allow",
+            "unresolved_interfaces": "loud",
+        },
+    )
+    _patch_yosys(monkeypatch, write_log="")
+    with pytest.raises(FatalRtlBuddyError, match="unresolved-interfaces"):
+        ys.run()
+
+
+def test_unresolved_interfaces_mode_settable_per_run_via_tool_overrides(
+    tmp_path, monkeypatch
+):
+    ys, _ = _gate_yosys(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={"static_functions": "allow"},
+        tool_overrides={"yosys": {"unresolved_interfaces": "error"}},
+    )
+    _patch_yosys(monkeypatch, write_log=_UNBOUND_IF_WARNING)
+    assert isinstance(ys.run(), SynthFailResults)
+
+
+def test_unresolved_interfaces_default_is_warn():
+    from rtl_buddy.config.synth import (
+        SynthToolOpts,
+        resolve_unresolved_interfaces_mode,
+    )
+
+    assert resolve_unresolved_interfaces_mode(SynthToolOpts()) == "warn"
+    assert resolve_unresolved_interfaces_mode(SynthToolOpts(frontend="slang")) == "warn"
+    assert (
+        resolve_unresolved_interfaces_mode(SynthToolOpts(unresolved_interfaces="error"))
+        == "error"
+    )
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        # The real yosys `hierarchy` warning, verbatim.
+        ("Warning: Could not find interface instance for `bus' in `top'", True),
+        # Same message reported against a source location.
+        ("top.sv:9: Warning: Could not find interface instance for `b' in `t'", True),
+        # A command echo or a comment that merely names the phrase.
+        ("yosys> echo Could not find interface instance", False),
+        ("# Could not find interface instance for `bus' in `top'", False),
+        # The sibling implicit-declaration noise from the same elaboration is
+        # not this warning and must not be counted.
+        ("top.sv:30: Warning: Identifier `\\bus.paddr' is implicitly declared.", False),
+    ],
+)
+def test_unresolved_interface_regex_is_anchored_on_the_warning(line, expected):
+    from rtl_buddy.tools.synth_yosys import find_unresolved_interface_warnings
+
+    assert bool(find_unresolved_interface_warnings(line + "\n")) is expected
+
+
+def test_unresolved_interface_finder_keeps_each_instance_once_in_order():
+    from rtl_buddy.tools.synth_yosys import (
+        describe_unresolved_interfaces,
+        find_unresolved_interface_warnings,
+    )
+
+    log = (
+        _UNBOUND_IF_WARNING
+        + "Warning: Could not find interface instance for `dbg' in `core'\n"
+        + _UNBOUND_IF_WARNING
+    )
+    hits = find_unresolved_interface_warnings(log)
+    assert hits == [("bus", "wrapper_top"), ("dbg", "core")]
+    assert describe_unresolved_interfaces(hits) == "wrapper_top.bus, core.dbg"
+
+
 @pytest.mark.parametrize(
     "event, fields, expected_substrings",
     [
@@ -3477,6 +3661,33 @@ def test_conflicting_driver_regex_is_anchored_on_the_warning(line, expected):
             "synth.conflicting_drivers",
             {"synth": "block", "count": 5, "log": "artefacts/block/synth.log"},
             ["block", "5", "artefacts/block/synth.log", "conflicting-drivers"],
+        ),
+        (
+            "synth.unresolved_interfaces",
+            {
+                "synth": "block",
+                "frontend": "verilog",
+                "count": 1,
+                "instances": ["top.bus"],
+                "log": "artefacts/block/synth.log",
+            },
+            [
+                "block",
+                "top.bus",
+                "artefacts/block/synth.log",
+                "unresolved-interfaces",
+            ],
+        ),
+        (
+            "synth.unresolved_interface",
+            {
+                "synth": "block",
+                "frontend": "verilog",
+                "instance": "bus",
+                "module": "top",
+                "log": "artefacts/block/synth.log",
+            },
+            ["top.bus", "undriven", "slang"],
         ),
     ],
 )
@@ -3965,6 +4176,39 @@ def test_openroad_stage1_conflicting_drivers_allow(tmp_path, monkeypatch):
     _patch_openroad_yosys(monkeypatch, write_log=_SHARED_FORMAL_WARNING)
     _, ok, desc = or_synth._run_yosys_stage(fl)
     assert (ok, desc) == (True, None)
+
+
+def test_openroad_stage1_fails_on_unbound_interfaces(tmp_path, monkeypatch):
+    """Stage 1 elaborates with the same frontend, so it carries the same
+    hazard and must gate it the same way."""
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path,
+        _AUTOMATIC_FN_SRC,
+        opts_overrides={
+            "static_functions": "allow",
+            "unresolved_interfaces": "error",
+        },
+    )
+    _patch_openroad_yosys(monkeypatch, write_log=_UNBOUND_IF_WARNING * 3)
+    gate_count, ok, desc = or_synth._run_yosys_stage(fl)
+    assert (gate_count, ok) == (None, False)
+    assert "1 unbound interface instance(s)" in desc
+    assert "wrapper_top.bus" in desc
+
+
+def test_openroad_stage1_unbound_interfaces_default_warns(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    or_synth, fl, _ = _gate_openroad(
+        tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
+    )
+    _patch_openroad_yosys(monkeypatch, write_log=_UNBOUND_IF_WARNING * 2)
+    with caplog.at_level(logging.WARNING):
+        _, ok, desc = or_synth._run_yosys_stage(fl)
+    assert (ok, desc) == (True, None)
+    assert caplog.text.count("wrapper_top.bus") == 1
 
 
 # ---------------------------------------------------------------------------

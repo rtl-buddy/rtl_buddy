@@ -18,6 +18,7 @@ from ..config.synth import (
     default_effort_config,
     resolve_conflicting_drivers_mode,
     resolve_static_functions_mode,
+    resolve_unresolved_interfaces_mode,
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
@@ -112,6 +113,46 @@ def find_conflicting_driver_warnings(log_text: str) -> list[str]:
         if not _is_tristate_bus(drivers):
             hits.append(header)
     return hits
+
+
+# Yosys `hierarchy` reports a SystemVerilog interface instance it could not
+# bind to a child's interface port as
+# `Warning: Could not find interface instance for `<inst>' in `<module>'`,
+# from log_warning(), so the "Warning: " prefix always starts the line.
+# `hierarchy` runs more than once inside `synth`, and re-elaborates on each
+# pass, so the same instance is reported repeatedly -- the finder de-duplicates
+# on (instance, module) and keeps first-seen order.
+_UNRESOLVED_INTERFACE_RE = re.compile(
+    r"^(?:\S+:\d+:\s*)?Warning:\s*Could not find interface instance "
+    r"for [`'](?P<inst>[^'`]+)' in [`'](?P<module>[^'`]+)'"
+)
+
+
+def find_unresolved_interface_warnings(log_text: str) -> list[tuple[str, str]]:
+    """Unbound interface instances as ``(instance, module)``, de-duplicated.
+
+    Each pair is one interface instance Yosys could not bind to the interface
+    port it is passed to, so the instance's own port connections were dropped.
+    See :func:`config.synth.resolve_unresolved_interfaces_mode` for why that
+    is a hazard and why it is not always a defect.
+    """
+    hits: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for line in log_text.splitlines():
+        m = _UNRESOLVED_INTERFACE_RE.match(line)
+        if not m:
+            continue
+        key = (m.group("inst"), m.group("module"))
+        if key in seen:
+            continue
+        seen.add(key)
+        hits.append(key)
+    return hits
+
+
+def describe_unresolved_interfaces(hits: list[tuple[str, str]]) -> str:
+    """``<module>.<inst>`` for each unbound instance, comma separated."""
+    return ", ".join(f"{module}.{inst}" for inst, module in hits)
 
 
 def filelist_scan_context(
@@ -597,7 +638,7 @@ def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
     has already refused by the time any run publishes, and a fingerprint
     is the last place worth raising from.
 
-    The two gates are recorded *resolved* rather than as configured: the
+    The gates are recorded *resolved* rather than as configured: the
     default of ``static_functions`` depends on the frontend
     (:func:`resolve_static_functions_mode`), so an empty setting under
     slang and an explicit ``error`` are one behaviour and must digest as
@@ -607,6 +648,7 @@ def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
         "frontend": opts.frontend,
         "static_functions": resolve_static_functions_mode(opts),
         "conflicting_drivers": resolve_conflicting_drivers_mode(opts),
+        "unresolved_interfaces": resolve_unresolved_interfaces_mode(opts),
     }
     if opts.frontend == "slang":
         try:
@@ -1186,13 +1228,14 @@ class YosysSynth:
             top=self.synth_cfg.get_top(),
         )
 
-        # Both gate modes are resolved up front, ahead of the filelist write,
+        # Every gate mode is resolved up front, ahead of the filelist write,
         # so a misspelled value is the fatal config error it is on every run --
         # not something a FilelistError can mask into an ordinary FAIL. Matches
         # OpenRoadSynth.run().
         opts = self._resolve_opts()
         static_mode = resolve_static_functions_mode(opts)
         conflicting_mode = resolve_conflicting_drivers_mode(opts)
+        interfaces_mode = resolve_unresolved_interfaces_mode(opts)
         # Same reason: an unknown frontend or a missing slang plugin is a
         # config error, and the gates below return before `_write_script()`
         # would have reached the same check inside emit_frontend_read_cmds().
@@ -1320,6 +1363,43 @@ class YosysSynth:
                 f"warning(s) in {log_path}"
             )
 
+        unbound: list[tuple[str, str]] = []
+        if interfaces_mode != "allow":
+            unbound = find_unresolved_interface_warnings(log_text)
+            if unbound and interfaces_mode == "error":
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth.unresolved_interfaces",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    count=len(unbound),
+                    instances=[
+                        f"{module}.{inst}"
+                        for inst, module in unbound[:MAX_EVENT_FINDINGS]
+                    ],
+                    truncated=max(0, len(unbound) - MAX_EVENT_FINDINGS),
+                    log=log_path,
+                )
+                # Same reason the conflicting-driver gate drops the netlist:
+                # Yosys has already written one, and an unbound interface
+                # instance means its own port connections are missing from it.
+                return self._fail_after_yosys(
+                    f"{len(unbound)} unbound interface instance(s): "
+                    f"{describe_unresolved_interfaces(unbound)}"
+                )
+            for inst, module in unbound:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.unresolved_interface",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    instance=inst,
+                    module=module,
+                    log=log_path,
+                )
+
         top = self.synth_cfg.get_top()
         area_um2 = self._parse_area_um2(log_text, top)
         gate_count = self._parse_gate_count(log_text, top)
@@ -1351,6 +1431,7 @@ class YosysSynth:
             gate_count=gate_count,
             wns_ps=wns_ps,
             static_function_findings=len(findings) or None,
+            unresolved_interfaces=len(unbound) or None,
             phys_model=phys_model,
         )
 

@@ -11124,6 +11124,7 @@ class RtlBuddy:
             "wns_ps",
             "tns_ps",
             "static_function_findings",
+            "unresolved_interfaces",
             # Where the per-module breakdown behind these scalars was
             # published (#560). Omitted, like every other optional field
             # here, when the run published no model.

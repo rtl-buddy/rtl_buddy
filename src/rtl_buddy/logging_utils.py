@@ -1708,6 +1708,26 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "to x and takes its downstream logic with it. Fix the design, "
                 "or set synth option conflicting-drivers: allow to proceed"
             )
+        case "synth.unresolved_interfaces":
+            listed = ", ".join(str(i) for i in (fields.get("instances") or []))
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                f"interface instance(s) Yosys could not bind to the interface "
+                f"port they are passed to — {listed} (see "
+                f"{fields.get('log')}). The instance's own port connections "
+                "are dropped from the netlist, so an interface carrying its "
+                "clock or reset leaves them undriven. Elaborate with "
+                "frontend: slang, or set synth option unresolved-interfaces: "
+                "warn|allow to proceed"
+            )
+        case "synth.unresolved_interface":
+            return (
+                f"interface instance {fields.get('module')}."
+                f"{fields.get('instance')} could not be bound to the interface "
+                f"port it is passed to; its own port connections "
+                "are dropped from the netlist, leaving any clock or reset it "
+                "carries undriven. frontend: slang binds it correctly"
+            )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.openroad.no_lef":

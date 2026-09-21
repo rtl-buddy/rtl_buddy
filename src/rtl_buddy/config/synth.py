@@ -84,6 +84,10 @@ class SynthToolOpts:
     # Post-synthesis gate on Yosys "multiple conflicting drivers" warnings:
     # "error" (the default) or "allow".
     conflicting_drivers: str = ""
+    # Post-synthesis gate on Yosys "Could not find interface instance"
+    # warnings: "error", "warn" (the default) or "allow". See
+    # :func:`resolve_unresolved_interfaces_mode`.
+    unresolved_interfaces: str = ""
 
 
 @serde
@@ -97,12 +101,14 @@ class SynthToolOptsFile:
     best_effort_hierarchy: bool = field(rename="best-effort-hierarchy", default=False)
     static_functions: str = field(rename="static-functions", default="")
     conflicting_drivers: str = field(rename="conflicting-drivers", default="")
+    unresolved_interfaces: str = field(rename="unresolved-interfaces", default="")
 
 
-# Accepted values for the two correctness gates, and the default each takes
+# Accepted values for the correctness gates, and the default each takes
 # when the option is left empty.
 STATIC_FUNCTIONS_MODES: tuple[str, ...] = ("error", "warn", "allow")
 CONFLICTING_DRIVERS_MODES: tuple[str, ...] = ("error", "allow")
+UNRESOLVED_INTERFACES_MODES: tuple[str, ...] = ("error", "warn", "allow")
 
 
 def resolve_static_functions_mode(opts: SynthToolOpts) -> str:
@@ -139,6 +145,38 @@ def resolve_conflicting_drivers_mode(opts: SynthToolOpts) -> str:
     return mode
 
 
+def resolve_unresolved_interfaces_mode(opts: SynthToolOpts) -> str:
+    """Effective ``unresolved-interfaces`` mode for these tool options.
+
+    ``read_verilog`` cannot bind a SystemVerilog interface *instance* to the
+    interface port of a child, so it falls back to deriving a per-child
+    ``<child>$interfaces$<interface>`` module whose ports are the interface's
+    members, wired in the parent through implicitly declared ``<inst>.<member>``
+    wires. The members usually survive that, but the interface instance's own
+    port connections do not: ``bus_if b (.clk(clk));`` leaves ``\\b.clk``
+    undriven, so every flop clocked from it loses its clock, silently, with a
+    warning and an exit code of 0. yosys-slang binds the instance properly, so
+    the hazard is a ``frontend: verilog`` one.
+
+    The fallback is correct often enough -- an interface with no ports of its
+    own, or whose ports nothing downstream reads, synthesizes to the same
+    netlist slang produces -- that ``error`` would fail working designs. The
+    default is therefore ``warn``: the warning is otherwise buried in a Yosys
+    log nobody reads. An explicit setting always wins, and ``error`` is the
+    setting for a project that uses interface ports and wants the hazard
+    gated.
+    """
+    mode = (opts.unresolved_interfaces or "").strip()
+    if not mode:
+        return "warn"
+    if mode not in UNRESOLVED_INTERFACES_MODES:
+        raise FatalRtlBuddyError(
+            f"synth option unresolved-interfaces must be one of "
+            f"{', '.join(UNRESOLVED_INTERFACES_MODES)}, got {mode!r}"
+        )
+    return mode
+
+
 # Accepted keys of a `synth.yaml` ``tool_overrides.<tool>`` block. These are
 # the snake_case attribute names of SynthToolOpts, NOT the kebab-case YAML
 # spellings used under ``cfg-synth-tools.opts`` — an override written in the
@@ -154,6 +192,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "best_effort_hierarchy",
     "static_functions",
     "conflicting_drivers",
+    "unresolved_interfaces",
 )
 
 # Overrides whose value type is checked, as key -> (type, label, hint).
@@ -174,6 +213,11 @@ _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
         str,
         "string",
         f"write one of {', '.join(CONFLICTING_DRIVERS_MODES)}",
+    ),
+    "unresolved_interfaces": (
+        str,
+        "string",
+        f"write one of {', '.join(UNRESOLVED_INTERFACES_MODES)}",
     ),
 }
 
@@ -319,6 +363,7 @@ class SynthToolConfig:
         best_effort_hierarchy = self._cfg.opts.best_effort_hierarchy
         static_functions = self._cfg.opts.static_functions
         conflicting_drivers = self._cfg.opts.conflicting_drivers
+        unresolved_interfaces = self._cfg.opts.unresolved_interfaces
         if overrides:
             if not isinstance(overrides, dict):
                 # Previously this reached `overrides.get(...)` and died with a
@@ -349,6 +394,9 @@ class SynthToolConfig:
             conflicting_drivers = overrides.get(
                 "conflicting_drivers", conflicting_drivers
             )
+            unresolved_interfaces = overrides.get(
+                "unresolved_interfaces", unresolved_interfaces
+            )
         return SynthToolOpts(
             synth_args=synth_args,
             abc_args=abc_args,
@@ -359,6 +407,7 @@ class SynthToolConfig:
             best_effort_hierarchy=best_effort_hierarchy,
             static_functions=static_functions,
             conflicting_drivers=conflicting_drivers,
+            unresolved_interfaces=unresolved_interfaces,
         )
 
 

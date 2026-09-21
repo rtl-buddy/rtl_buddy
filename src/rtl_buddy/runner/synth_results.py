@@ -32,6 +32,7 @@ class SynthPassResults(SynthResults):
         wns_ps: float | None = None,
         tns_ps: float | None = None,
         static_function_findings: int | None = None,
+        unresolved_interfaces: int | None = None,
         phys_model: str | None = None,
     ):
         super().__init__(
@@ -50,6 +51,11 @@ class SynthPassResults(SynthResults):
         # found something: a passing run whose netlist may still be wrong.
         if static_function_findings:
             self.results["static_function_findings"] = static_function_findings
+        # Present only when the interface gate ran in `warn` mode and found
+        # something: a passing run whose netlist is missing the port
+        # connections of that many interface instances.
+        if unresolved_interfaces:
+            self.results["unresolved_interfaces"] = unresolved_interfaces
         # Where the per-module breakdown behind these scalars was written
         # (#558). Absent when the run could not publish one.
         if phys_model is not None:

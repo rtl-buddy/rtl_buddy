@@ -33,7 +33,7 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
 
 ## Synthesis correctness gates
 
-`rb synth` (both backends) fails on two silent-corruption shapes before
+`rb synth` (both backends) gates three silent-corruption shapes before
 reporting PPA. A `function`/`task` without an explicit `automatic` lifetime
 shares one storage location per formal across call sites; the gate names each
 `file:line: function <name>`, following `` `include ``s and honouring
@@ -46,6 +46,16 @@ to `x` and may have taken registers with it, so never report the area or gate
 count from such a run. `static_function_findings` in a passing result means the
 gate ran in `warn` mode and the netlist may still be wrong. A failed gate also
 deletes the netlist, so `rb pnr` / `rb power` cannot read it.
+
+A `synth.unresolved_interface` warning means `read_verilog` could not bind a
+SystemVerilog interface instance to a child's interface port and fell back to
+a per-child `<child>$interfaces$<interface>` module. The interface's members
+still connect, but the instance's own port connections are dropped — an
+interface carrying `clk` or `rst_n` leaves them undriven and the subtree loses
+its clock. Check the netlist before quoting PPA from such a run, and prefer
+`frontend: slang`, which binds the instance. `unresolved-interfaces: error`
+makes it a failed run; the default is `warn` because the fallback is correct
+when the interface has no ports of its own, or none the subtree reads.
 
 A `synth.filelist_defines_overridden` warning means the synth.yaml entry's
 `defines:` set a macro the model filelist also defines, with a different
