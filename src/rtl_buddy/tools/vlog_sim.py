@@ -22,7 +22,6 @@ import subprocess
 import logging
 import threading
 import types
-import uuid
 from dataclasses import dataclass, field
 from stat import S_ISREG
 
@@ -41,6 +40,8 @@ from .artifact_paths import (
     DISPATCH_OUTPUT_PATTERNS,
     RESULT_JSON_NAME,
     SHARED_BUILDS_DIRNAME,
+    atomic_tmp_name,
+    atomic_tmp_patterns,
     run_artifact_root,
     shared_build_dir,
     shared_build_namespace,
@@ -80,11 +81,14 @@ def force_symlink(target, link_name):
     ``--dispatch`` every element of a suite's Slurm array runs at once
     against the same suite-level ``test.log``/``test.err``/``test.randseed``,
     and the interleaving killed passing tests with ``FileNotFoundError`` /
-    ``FileExistsError`` (#363). The temp name carries the pid and a random
-    suffix so no two writers — separate processes (real array elements) or
-    threads — ever collide on the intermediate link.
+    ``FileExistsError`` (#363). The temp name comes from
+    :func:`atomic_tmp_name`, which carries the pid and a random suffix so no
+    two writers — separate processes (real array elements) or threads — ever
+    collide on the intermediate link, and which the share-build fingerprint
+    derives its exclusion from so a link caught mid-flight in an include
+    directory is not read as a changed compile input (#613).
     """
-    tmp = f"{link_name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    tmp = atomic_tmp_name(link_name)
     os.symlink(target, tmp)
     try:
         os.replace(tmp, link_name)
@@ -590,7 +594,36 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
 # by PATH in `_directory_listing` (see `_is_suite_log`), because a file of
 # that name in any other include directory is an ordinary input.
 
-_NON_INPUT_FILE_PATTERNS = _BOOKKEEPING_FILE_PATTERNS + _MANAGED_OUTPUT_FILE_PATTERNS
+# The same outputs caught MID-WRITE (#613).
+#
+# Every managed output above is written through a sibling temp file that
+# `os.replace` renames into place, so between the build job's fingerprint
+# and a gated sim job's validation of it an include directory can hold a
+# `test.log.<pid>.<uuid>.tmp` that existed in neither listing. That is the
+# writer's own in-flight file, not a compile input — but it read as one,
+# and a fan-out of gated sim jobs recompiled under a simulation
+# reservation because of it. `+incdir+.` on a suite directory, where the
+# suite-level `test.log`/`test.err`/`test.randseed` symlinks are
+# repointed per test, is what makes those temp names visible at all.
+#
+# Derived from the patterns above via the helper the WRITERS build their
+# temp names with, so a renamed output or a changed temp shape cannot
+# leave this list behind — the same rule the final names already follow.
+#
+# Anchored to a managed output's name, NOT a blanket `*.tmp`: a project
+# may `include "defs.tmp"`, and such a file is an ordinary input whose
+# edit must still move the fingerprint.
+_MANAGED_OUTPUT_TMP_PATTERNS = tuple(
+    tmp_pattern
+    for pattern in _MANAGED_OUTPUT_FILE_PATTERNS
+    for tmp_pattern in atomic_tmp_patterns(pattern)
+)
+
+_NON_INPUT_FILE_PATTERNS = (
+    _BOOKKEEPING_FILE_PATTERNS
+    + _MANAGED_OUTPUT_FILE_PATTERNS
+    + _MANAGED_OUTPUT_TMP_PATTERNS
+)
 
 # The stamp's own keys, as opposed to the compile fingerprint it wraps: the
 # builder's reported dependencies, the executable it produced, and (in cache
@@ -2355,7 +2388,10 @@ class VlogSim:
         managed artefact trees are never descended into — see
         :func:`_is_pruned_walk_dir`. **Files** are skipped when they match
         :data:`_NON_INPUT_FILE_PATTERNS`, which is editor and VCS
-        bookkeeping plus rtl_buddy's own per-test outputs. A dot-*file* is
+        bookkeeping, rtl_buddy's own per-test outputs, and those same
+        outputs caught mid-write — every one is renamed into place from a
+        sibling temp file, and a listing that recorded one could never
+        validate again (#613). A dot-*file* is
         otherwise listed like any other: `` `include ".config.svh" `` is
         legal and resolves, so a blanket dot-name skip would reopen the gap
         this stamp closes. One more file is skipped by *path*: the suite's
@@ -4830,7 +4866,7 @@ class VlogSim:
     def _replace_text(self, path, text):
         """Write ``text`` to ``path`` as one atomic replacement."""
         path = Path(path)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp = path.with_name(atomic_tmp_name(path.name))
         try:
             tmp.write_text(text)
             os.replace(tmp, path)

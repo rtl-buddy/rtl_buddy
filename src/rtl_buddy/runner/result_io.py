@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..tools.artifact_paths import atomic_tmp_name
 from .test_results import TestResults
 
 logger = logging.getLogger(__name__)
@@ -136,10 +137,11 @@ def write_result_json(
 ):
     """Atomically write one run's result envelope to ``path``.
 
-    The write goes through a sibling ``.tmp`` file and ``os.replace`` so
-    a collector polling a shared filesystem never observes a partially
-    written envelope. Parent directories are created as needed. Returns
-    the resolved path.
+    The write goes through a sibling temp file (:func:`atomic_tmp_name`)
+    and ``os.replace`` so a collector polling a shared filesystem never
+    observes a partially written envelope. The temp name is unique per
+    writer, and is one the share-build fingerprint knows to skip (#613).
+    Parent directories are created as needed. Returns the resolved path.
 
     ``run_token`` is the head's per-invocation nonce (from the dispatch
     plan). Stamping it here lets the head reject a stale envelope from an
@@ -166,7 +168,7 @@ def write_result_json(
     }
     if run_tag is not None:
         envelope["run_tag"] = run_tag
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(atomic_tmp_name(path.name))
     tmp.write_text(json.dumps(envelope, ensure_ascii=True, indent=2) + "\n")
     os.replace(tmp, path)
     return path
@@ -229,7 +231,7 @@ def _write_envelope_best_effort(path, raw, *, what):
     advisory, the run's verdict is not. Returns whether the write landed;
     on failure the envelope is left exactly as it was found.
     """
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(atomic_tmp_name(path.name))
     try:
         tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
         os.replace(tmp, path)
@@ -411,7 +413,7 @@ def write_build_result_json(path, *, built, failed, builds=None, partial=False):
         # Only ever written true, so a complete envelope is byte-identical
         # to one from before this key existed.
         envelope["partial"] = True
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(atomic_tmp_name(path.name))
     tmp.write_text(json.dumps(envelope, ensure_ascii=True, indent=2) + "\n")
     os.replace(tmp, path)
     return path
