@@ -1613,8 +1613,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "pywellen.api_missing":
             return (
                 f"pywellen {fields.get('version')} lacks the random-access Waveform API "
-                f"{fields.get('tool')} requires (removed in 0.25) — "
-                f"reinstall with 'pywellen>=0.20.0,<0.25' (#263)"
+                f"{fields.get('tool')} requires (missing: {fields.get('missing')}) — "
+                f"reinstall with 'pywellen{fields.get('supported')}' (#263)"
+            )
+        case "wave.value_reader.api_error":
+            return (
+                "waveform value reader failed on "
+                f"{fields.get('path')} ({fields.get('error')}) — annotations will"
+                " be blank; check the installed pywellen (#263)"
+            )
+        case "saif.read_failed":
+            return (
+                f"could not read waveform from {fields.get('path')}: "
+                f"{fields.get('error')}"
             )
         case "wcp.resolve_failed":
             return f'WCP: could not find source for "{fields.get("variable")}" (searched {fields.get("searched")} files)'

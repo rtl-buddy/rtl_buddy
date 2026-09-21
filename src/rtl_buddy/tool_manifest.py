@@ -832,6 +832,13 @@ def _builtin_manifest() -> list[ToolSpec]:
             description="AXI interconnect profiler used by rb axi-profile",
         ),
         # ----- python extras -----
+        # Only *optional* python dependencies belong here — the ones a user
+        # may not have because they live behind an extra or an external
+        # install. Core runtime requirements (pywellen, rich, typer, …) are
+        # installed with the wheel, so a tool-check row for them could only
+        # ever say "found"; their version contract is enforced by the
+        # pyproject pin plus an import-time guard instead (see
+        # tools/pywellen_compat.py for the pywellen case, #263).
         ToolSpec(
             name="pyslang",
             binaries=("pyslang",),
