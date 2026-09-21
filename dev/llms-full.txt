@@ -85,7 +85,7 @@ uv add "rtl_buddy[mcp]"
 
 Each response wraps the corresponding `--machine` payload in `{tool, ok, meta, payload}`. Command-level failures return `ok: false` and an `error`; they do not become transport failures. The CLI provides the same operations when MCP is unavailable.
 
-The physical-metrics tools are `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`, reading the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; they run no EDA tool and need no hub. `phys_runs` lists every run under the project with the power mode, the activity and the configuration fingerprint each recorded, and is where the `phys_dir` the other three take comes from. `phys_focus` joins them when a live hub is discovered. `phys_module` joins on the model's `module` column, which holds RTL module names in the synthesis half and Liberty cell names in the power half — see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
+The physical-metrics tools are `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`, reading the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; they run no EDA tool and need no hub. `phys_runs` lists every run under the project with the power mode, the activity and the configuration fingerprint each recorded, and is where the `phys_dir` the other three take comes from. `phys_summary` heads both its rankings at `limit`, and takes `modules_limit`/`instances_limit` to override it one ranking at a time — each accepting `"none"` for a ranking you do not want, so the complete module table need not carry every leaf instance row. `phys_focus` joins them when a live hub is discovered. `phys_module` joins on the model's `module` column, which holds RTL module names in the synthesis half and Liberty cell names in the power half — see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
 
 ## Bundled agent skills
 
@@ -2665,12 +2665,13 @@ Every synthesis and power run writes `phys-model.json` and `phys-manifest.json` 
 ```bash
 rb phys summary
 rb phys summary --limit 0
+rb phys summary --limit 0 --instances-limit none
 rb phys module sub
 rb phys instance u_sub
 rb phys summary --phys-dir verif/blk/artefacts/nightly
 ```
 
-- `summary` reports the run header, the design totals, the heaviest modules by cell count, and the hottest instances by total power. `--limit 0` shows every row.
+- `summary` reports the run header, the design totals, the heaviest modules by cell count, and the hottest instances by total power. `--limit 0` shows every row of both rankings. `--modules-limit` and `--instances-limit` override `--limit` for one ranking each, and take `none` for a ranking you do not want at all — `--limit 0 --instances-limit none` is the complete module table without a leaf instance row behind it, which on a mapped design is the difference between a few hundred rows and a few hundred thousand.
 - `module` reports one module's cells and area, then the instances of it and the power they burn. The name may be a design module from the synthesis half or a Liberty cell from the power half; see [What the module join can answer](#what-the-module-join-can-answer).
 - `instance` reports one instance's power. A path that names a subtree instead of a leaf lists the leaves under it, hottest by total power first, and rolls them up. Paths are compared level by level, so `u_sub.u_leaf` and `u_sub/u_leaf` name the same instance whichever spelling the tool wrote.
 
@@ -2770,13 +2771,13 @@ Every run header also carries the run's identity: `power_mode`, `power_activity`
 
 `rb phys runs --machine` emits its own payload: `count`, the applied `limit`, and `runs`, newest first. Each entry carries `phys_dir` and `manifest`, `run`, `top`, `run_command`, `generated_at`, `backends`, `mode` and `activity`, `config`, a derived `fingerprint`, `xplr`, `newest`, and `error` — non-null only for a manifest that could not be read, where the rest of the entry is null and `phys_dir` still selects the run. `phys_dir` is derived from where the manifest was found, not from the document, so it is always relative to the root the listing was taken under.
 
-`--limit` truncates the machine payload as well as the table, so a payload is exactly the rows the flag asked for and `--limit 0` is how an agent asks for all of them. A truncated list says so: `summary` carries `limit` beside its two rankings, `module` carries `limit` and `instance_count`, and `instance` carries `limit` and `child_count` — the counts are how many rows there are, never how many are listed. The figures beside a truncated list are still whole-set figures: `module`'s `power` sums every instance of the module and a prefix `instance`'s `rollup` sums every leaf under the path. The builders themselves default to the complete list, so only a caller that asks for a head gets one.
+`--limit` truncates the machine payload as well as the table, so a payload is exactly the rows the flag asked for and `--limit 0` is how an agent asks for all of them. On `summary` the per-ranking overrides do the same: the payload's `limits` block reports what each ranking was actually headed at — a number, or `"none"` for one that was suppressed — beside the `limit` both would have followed. A suppressed ranking is an empty list, and `counts` still reports how many rows the model holds, so it is never mistaken for a half the run did not produce; that half is `counts` `null`. Nothing is sorted or serialised for a ranking asked for as `none`. A truncated list says so: `summary` carries `limit` beside its two rankings, `module` carries `limit` and `instance_count`, and `instance` carries `limit` and `child_count` — the counts are how many rows there are, never how many are listed. The figures beside a truncated list are still whole-set figures: `module`'s `power` sums every instance of the module and a prefix `instance`'s `rollup` sums every leaf under the path. The builders themselves default to the complete list, so only a caller that asks for a head gets one.
 
 Each payload also carries `halves` and `missing_halves`, which report which halves the model has and which command fills each one. Each half's entry also carries `netlist_hash`: whether that half's producer recorded the hash of the netlist it measured, which is what the merge is gated on and therefore what a surface needs before advising anyone to run the other command. A `null` value means the run did not measure it; `0` means it measured zero. The `module` payload also carries `namespaces` — `["rtl"]`, `["liberty"]`, or both — and `instance_join`: `null` when the instance list needs no qualification, a sentence naming the Liberty-cell namespace limit when the module matched nothing because of it, and a collision sentence when the name is in both namespaces.
 
 A manifest or model whose JSON root is not an object — an empty file rebuilt by hand, a truncated write, a path pointed at the wrong file — is refused by name, as an unreadable one is, and so is one whose blocks are not the shapes the read dereferences them as: the producer blocks and the totals are objects, the manifest's `model` and `phys_dir` paths strings, the model's two halves arrays of objects. A `null` block is not malformed, since that is what a half-filled run writes. Under `--machine` either arrives as the usual error envelope rather than a traceback.
 
-`rb mcp` exposes the same query builders as `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`. `phys_runs` is where the `phys_dir` the other three take comes from; it needs no arguments and takes the same `limit`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. All three take the same `limit` the flag does, with the same default: the head of the ranking, and `0` for every row. The payload says which it gave you — the applied `limit` sits beside the untruncated `instance_count`/`child_count`, and the `power` and `rollup` sums cover every matching row either way. A `phys_focus` tool mirroring `rb hub send phys-focus` joins them when a live hub is discovered. See [The MCP server](graph.md#the-mcp-server).
+`rb mcp` exposes the same query builders as `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`. `phys_runs` is where the `phys_dir` the other three take comes from; it needs no arguments and takes the same `limit`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. All three take the same `limit` the flag does, with the same default: the head of the ranking, and `0` for every row. `phys_summary` also takes `modules_limit` and `instances_limit`, the tool arguments for `--modules-limit` and `--instances-limit`: an integer or the string `"none"`, overriding `limit` for one ranking each, and omitted means the ranking follows `limit`. The payload says which it gave you — the applied `limit` sits beside the untruncated `instance_count`/`child_count`, and the `power` and `rollup` sums cover every matching row either way. A `phys_focus` tool mirroring `rb hub send phys-focus` joins them when a live hub is discovered. See [The MCP server](graph.md#the-mcp-server).
 
 
 ---
@@ -6971,16 +6972,24 @@ Usage: rtl-buddy phys summary [OPTIONS]
  the run's totals, its heaviest modules and its hottest instances
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest first (0  │
-│                                         for all); truncates the --machine payload    │
-│                                         too                                          │
-│                                         [default: 10]                                │
-│ --phys-dir        TEXT                  artefact directory holding                   │
-│                                         phys-manifest.json                           │
-│                                         [default: (newest phys-manifest.json under   │
-│                                         the project root)]                           │
-│ --manifest        TEXT                  phys-manifest.json to read directly          │
-│ --help                                  Show this message and exit.                  │
+│ --limit                  INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest    │
+│                                                first (0 for all); truncates the      │
+│                                                --machine payload too                 │
+│                                                [default: 10]                         │
+│ --modules-limit          N|none                rows in the modules ranking,          │
+│                                                overriding --limit (0 for all, 'none' │
+│                                                for no rows)                          │
+│                                                [default: (--limit)]                  │
+│ --instances-limit        N|none                rows in the instances ranking,        │
+│                                                overriding --limit (0 for all, 'none' │
+│                                                for no rows)                          │
+│                                                [default: (--limit)]                  │
+│ --phys-dir               TEXT                  artefact directory holding            │
+│                                                phys-manifest.json                    │
+│                                                [default: (newest phys-manifest.json  │
+│                                                under the project root)]              │
+│ --manifest               TEXT                  phys-manifest.json to read directly   │
+│ --help                                         Show this message and exit.           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
