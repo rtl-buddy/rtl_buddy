@@ -25,6 +25,7 @@ fails in CI with the break landing mid-phrase (#570).
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 from pathlib import Path
@@ -311,6 +312,131 @@ def test_phys_summary_limit_truncates_the_rankings(phys_project):
     payload = _machine(result)["payload"]
     assert len(payload["modules"]) == 1
     assert len(payload["instances"]) == 1
+
+
+def test_phys_summary_limit_heads_both_rankings_and_says_so(phys_project):
+    """The shared flag is unchanged, and the payload reports what each
+    ranking was headed at — the per-ranking block reads back as `--limit`
+    when neither override is given (#606)."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "summary", "--limit", "1"])
+
+    payload = _machine(result)["payload"]
+    assert payload["limit"] == 1
+    assert payload["limits"] == {"modules": 1, "instances": 1}
+
+
+def test_phys_summary_instances_limit_none_drops_the_instance_rows(phys_project):
+    """The #606 ask: the complete module table without every leaf instance
+    row behind it. `--limit 0` means *all* on both rankings, so "none" is
+    a word rather than a number — and `counts` still reports how many rows
+    the model holds, so an empty ranking cannot be read as an empty half."""
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "phys",
+            "summary",
+            "--limit",
+            "0",
+            "--instances-limit",
+            "none",
+        ],
+    )
+
+    payload = _machine(result)["payload"]
+    assert [row["module"] for row in payload["modules"]] == ["blk", "sub"]
+    assert payload["instances"] == []
+    assert payload["limits"] == {"modules": 0, "instances": "none"}
+    # Truthful about what was suppressed: the model's own row counts, and
+    # the halves block, are what they were.
+    assert payload["counts"] == {"modules": 2, "instances": 2}
+    assert payload["missing_halves"] == []
+
+
+def test_phys_summary_modules_limit_overrides_the_shared_limit(phys_project):
+    """Each override is per ranking: heading one leaves the other alone."""
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "phys", "summary", "--limit", "0", "--modules-limit", "1"],
+    )
+
+    payload = _machine(result)["payload"]
+    assert len(payload["modules"]) == 1
+    assert len(payload["instances"]) == 2
+    assert payload["limits"] == {"modules": 1, "instances": 0}
+
+
+def test_phys_summary_modules_limit_none_renders_no_module_table(phys_project):
+    """The console obeys the same suppression the payload does, since both
+    read the one list the builder returned."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["phys", "summary", "--modules-limit", "none"])
+
+    assert result.exit_code == 0, result.output
+    assert "Heaviest Modules" not in _flat(result.output)
+    assert "Hottest Instances" in _flat(result.output)
+
+
+@pytest.mark.parametrize("bad", ["all", "-1", ""])
+def test_phys_summary_rejects_a_per_ranking_limit_it_cannot_read(phys_project, bad):
+    """A usage error, not a traceback, and not a silent fallback to a
+    number the caller did not write."""
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app, ["--machine", "phys", "summary", "--instances-limit", bad]
+    )
+
+    assert result.exit_code == 2, result.output
+    # The usage error is click's own rendering, which colours the flag
+    # name piecewise when the console is forced to colour (as CI's is).
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "instances-limit" in _flat(plain)
+
+
+def test_phys_summary_without_the_overrides_is_unchanged(phys_project):
+    """The flags are additive: an invocation that names neither gets the
+    ranking pair it always got, headed at the same default."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "phys", "summary"])
+
+    payload = _machine(result)["payload"]
+    assert payload["limit"] == phys_query_mod.DEFAULT_RANK_LIMIT
+    assert payload["limits"] == {
+        "modules": phys_query_mod.DEFAULT_RANK_LIMIT,
+        "instances": phys_query_mod.DEFAULT_RANK_LIMIT,
+    }
+    assert len(payload["modules"]) == 2
+    assert len(payload["instances"]) == 2
+
+
+def test_summary_payload_does_not_rank_a_suppressed_half(phys_project):
+    """Suppression is worth having only if it skips the work: a 300k-row
+    ranking costs a sort and a serialisation before anyone drops it. The
+    builder is asked for a model whose rows would raise if sorted."""
+    ctx = phys_query_mod.load_context(str(phys_project))
+
+    class _Explodes(dict):
+        def get(self, key, default=None):
+            raise AssertionError(f"ranked a suppressed half: {key}")
+
+    ctx.model["instances"] = [_Explodes(), _Explodes()]
+
+    payload = phys_query_mod.summary_payload(
+        ctx, limit=0, instances_limit=phys_query_mod.RANK_NONE
+    )
+
+    assert payload["instances"] == []
+    # The count is a len(), not a read of the rows, so it stays truthful.
+    assert payload["counts"]["instances"] == 2
 
 
 # --- discovery precedence ---------------------------------------------------

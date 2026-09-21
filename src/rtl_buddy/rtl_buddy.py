@@ -9733,6 +9733,19 @@ class RtlBuddy:
             self._read_query_failed(verb, exc)
 
     @staticmethod
+    def _phys_rank_limit(flag: str, value: str | None):
+        """A `--modules-limit`/`--instances-limit` value, or a usage error.
+
+        `--limit 0` has always meant *all*, so "none" needs a spelling
+        of its own; `phys.query.parse_rank_limit` owns it and this only
+        names the flag that carried the bad one.
+        """
+        try:
+            return phys_query_mod.parse_rank_limit(value)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint=flag) from None
+
+    @staticmethod
     def _phys_num(value, digits: int = 3):
         """Format one model number, or `-` for a value nobody measured.
 
@@ -9995,6 +10008,30 @@ class RtlBuddy:
                 ),
             ),
         ] = phys_query_mod.DEFAULT_RANK_LIMIT,
+        modules_limit: Annotated[
+            str | None,
+            typer.Option(
+                "--modules-limit",
+                metavar="N|none",
+                help=(
+                    "rows in the modules ranking, overriding --limit "
+                    "(0 for all, 'none' for no rows)"
+                ),
+                show_default="--limit",
+            ),
+        ] = None,
+        instances_limit: Annotated[
+            str | None,
+            typer.Option(
+                "--instances-limit",
+                metavar="N|none",
+                help=(
+                    "rows in the instances ranking, overriding --limit "
+                    "(0 for all, 'none' for no rows)"
+                ),
+                show_default="--limit",
+            ),
+        ] = None,
         phys_dir: Annotated[
             str | None,
             typer.Option(
@@ -10012,8 +10049,18 @@ class RtlBuddy:
         report a run's physical metrics from its artefacts: the design totals,
         the heaviest modules, the hottest instances, and where everything landed
         """
+        # Parsed before the model is read: a misspelled flag is a usage
+        # error, and a usage error that first walks the project for a
+        # manifest is a usage error the reader waits for.
+        modules_rows = self._phys_rank_limit("--modules-limit", modules_limit)
+        instances_rows = self._phys_rank_limit("--instances-limit", instances_limit)
         ctx = self._phys_context("phys summary", phys_dir=phys_dir, manifest=manifest)
-        payload = phys_query_mod.summary_payload(ctx, limit=limit)
+        payload = phys_query_mod.summary_payload(
+            ctx,
+            limit=limit,
+            modules_limit=modules_rows,
+            instances_limit=instances_rows,
+        )
 
         if self.machine:
             self._emit_machine_result("phys summary", 0, **payload)

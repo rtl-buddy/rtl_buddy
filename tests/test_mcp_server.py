@@ -1064,6 +1064,98 @@ def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Pat
         assert f"(default {DEFAULT_RANK_LIMIT}, 0 for all)" in ts.spec(tool).description
 
 
+def test_phys_summary_takes_a_limit_per_ranking(phys_project: Path):
+    """#606 on the tool surface: an agent that wants the whole module
+    table should not be handed every leaf instance row to get it.
+    ``limit`` still heads both, each override wins for its own ranking,
+    and ``"none"`` is the spelling of an empty one because ``0`` is
+    taken and means all."""
+    from rtl_buddy.phys.query import DEFAULT_RANK_LIMIT
+
+    ts = _toolset(phys_project)
+
+    modules_only = ts.call("phys_summary", {"limit": 0, "instances_limit": "none"})[
+        "payload"
+    ]
+    assert len(modules_only["modules"]) == 2
+    assert modules_only["instances"] == []
+    assert modules_only["limits"] == {"modules": 0, "instances": "none"}
+    # Truthful: the counts are the model's rows, not the listed ones, so
+    # a suppressed ranking is not an empty half.
+    assert modules_only["counts"] == {"modules": 2, "instances": 2}
+
+    headed = ts.call("phys_summary", {"limit": 0, "modules_limit": 1})["payload"]
+    assert len(headed["modules"]) == 1
+    assert len(headed["instances"]) == 2
+    assert headed["limits"] == {"modules": 1, "instances": 0}
+
+    # Neither override: the payload an existing host already gets.
+    default = ts.call("phys_summary", {})["payload"]
+    assert default["limit"] == DEFAULT_RANK_LIMIT
+    assert default["limits"] == {
+        "modules": DEFAULT_RANK_LIMIT,
+        "instances": DEFAULT_RANK_LIMIT,
+    }
+
+
+def test_a_per_ranking_phys_summary_limit_is_validated_like_the_shared_one(
+    phys_project: Path,
+):
+    """The overrides go through the same helper ``limit`` does, so the
+    holes it was hardened against are not reopened one input over: a
+    negative value is refused rather than read as "all", a bool is not
+    coerced to ``0``, and a word that is not ``"none"`` is refused
+    naming the input that carried it."""
+    ts = _toolset(phys_project)
+
+    for key in ("modules_limit", "instances_limit"):
+        refused = ts.call("phys_summary", {key: -1})
+        assert refused["ok"] is False, key
+        assert f"{key} must be 0 or greater, not -1" in refused["error"]
+        assert "payload" not in refused
+
+        for bad, shown in ((False, "False"), ("all", "'all'"), (None, "None")):
+            refused = ts.call("phys_summary", {key: bad})
+            assert refused["ok"] is False, (key, bad)
+            assert f"{key} must be an integer, not {shown}" in refused["error"]
+
+        # The word, in any case a host spells it, is the one non-number.
+        assert ts.call("phys_summary", {key: "NONE"})["ok"] is True
+        # And a number that arrived as a string is still a number.
+        assert (
+            ts.call("phys_summary", {key: "1"})["payload"]["limits"][
+                key.removesuffix("_limit")
+            ]
+            == 1
+        )
+
+
+def test_phys_summary_declares_its_per_ranking_limits(mcp_project: Path):
+    """An input an agent cannot see is an input it will not use: the
+    schema has to say that ``"none"`` is legal and that omitting the
+    override follows ``limit``."""
+    ts = _toolset(mcp_project)
+
+    schema = ts.spec("phys_summary").input_schema
+    for key, listed in (
+        ("modules_limit", "Module rows"),
+        ("instances_limit", "Instance rows"),
+    ):
+        prop = schema["properties"][key]
+        assert prop["anyOf"] == [
+            {"type": "integer", "minimum": 0},
+            {"type": "string", "enum": ["none"]},
+        ]
+        assert prop["description"].startswith(listed)
+        assert "'none' for no rows at all" in prop["description"]
+        assert "omit to follow 'limit'" in prop["description"]
+        assert key not in schema.get("required", [])
+    assert (
+        "take 'none' for a ranking you do not want"
+        in ts.spec("phys_summary").description
+    )
+
+
 def test_phys_runs_is_the_rb_phys_runs_payload_verbatim(phys_project: Path):
     """The menu the other physical tools take their ``phys_dir`` from, and
     the same builder ``rb --machine phys runs`` prints."""
@@ -1155,6 +1247,8 @@ def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
         "halves",
         "missing_halves",
         "limit",
+        # What each ranking was actually headed at (#606).
+        "limits",
         "modules",
         "instances",
         "artefacts",

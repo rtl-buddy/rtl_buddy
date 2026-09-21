@@ -497,6 +497,8 @@ class Toolset:
         return phys_query.summary_payload(
             self._phys_context(args),
             limit=self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT),
+            modules_limit=self._rank_limit_arg(args, "modules_limit"),
+            instances_limit=self._rank_limit_arg(args, "instances_limit"),
         )
 
     def _h_phys_module(self, args: dict) -> dict:
@@ -550,7 +552,7 @@ class Toolset:
         return value
 
     @staticmethod
-    def _limit_arg(args: dict, default: int) -> int:
+    def _limit_arg(args: dict, default: int, key: str = "limit") -> int:
         """The row cap a read tool applies, defaulting like its CLI verb.
 
         Shared by every tool that takes a ``limit`` — the coverage
@@ -616,11 +618,11 @@ class Toolset:
         answer this default exists to prevent. ``0`` still means all of
         them, because that is what the input's description promises.
         """
-        raw = args.get("limit", default)
+        raw = args.get(key, default)
 
         def not_an_integer() -> ToolError:
             return ToolError(
-                f"limit must be an integer, not {raw!r}; "
+                f"{key} must be an integer, not {raw!r}; "
                 "0 lists every row and a positive number heads the list"
             )
 
@@ -646,10 +648,32 @@ class Toolset:
                 raise not_an_integer() from None
         if limit < 0:
             raise ToolError(
-                f"limit must be 0 or greater, not {limit}; "
+                f"{key} must be 0 or greater, not {limit}; "
                 "0 lists every row and a positive number heads the list"
             )
         return limit
+
+    def _rank_limit_arg(self, args: dict, key: str) -> phys_query.RankLimit:
+        """A ``phys_summary`` per-ranking override, or ``None`` for none given.
+
+        The optional half of :meth:`_limit_arg`, for the two inputs that
+        override ``limit`` for one ranking each (#606). Absent means
+        *not overridden*, which is ``None`` — the payload builder then
+        heads that ranking at ``limit``, so a host that sends neither
+        gets exactly the payload it always got. Present, the value is
+        either :data:`~rtl_buddy.phys.query.RANK_NONE` — the one
+        spelling of "no rows", because ``0`` is taken and means all —
+        or a number validated by :meth:`_limit_arg` under this key's
+        own name, so ``modules_limit: -1`` is refused in the same words
+        and for the same reason ``limit: -1`` is. The ``default`` there
+        is unreachable: the key is present by the time it is called.
+        """
+        if key not in args:
+            return None
+        raw = args[key]
+        if isinstance(raw, str) and raw.strip().lower() == phys_query.RANK_NONE:
+            return phys_query.RANK_NONE
+        return self._limit_arg(args, phys_query.DEFAULT_RANK_LIMIT, key)
 
     # ------------------------------------------------------------------
     # hierarchy handlers (rtl-buddy-view, subprocess)
@@ -1052,6 +1076,30 @@ def _phys_limit_prop(rows: str) -> dict:
     }
 
 
+def _phys_rank_limit_prop(rows: str) -> dict:
+    """A ``phys_summary`` per-ranking override input.
+
+    Same semantics as the CLI flag it mirrors: it overrides ``limit``
+    for one ranking, ``0`` is still all of it, and the word
+    ``"none"`` — the only non-numeric value — asks for an empty list,
+    which ``0`` cannot say. Omitted, the ranking follows ``limit``.
+    """
+    return {
+        "anyOf": [
+            {"type": "integer", "minimum": 0},
+            {"type": "string", "enum": [phys_query.RANK_NONE]},
+        ],
+        "description": (
+            f"{rows}, overriding 'limit' for this ranking only (0 for all, "
+            f"'{phys_query.RANK_NONE}' for no rows at all; omit to follow "
+            "'limit'). Ask for 'none' when you do not need the ranking: a "
+            "mapped design's instance list is six figures of rows, and the "
+            "payload's 'counts' still reports how many there are. The "
+            "applied values ride on the payload's 'limits' block."
+        ),
+    }
+
+
 def build_toolset(
     project_root: str | os.PathLike,
     *,
@@ -1385,11 +1433,18 @@ def build_toolset(
                 "command fills a missing one, and where every physical "
                 "artefact landed. Stateless: a CI node answers this with no "
                 "hub and no daemon. Start here when the question is 'what is "
-                "big or hot', then call phys_module or phys_instance."
+                "big or hot', then call phys_module or phys_instance. "
+                "'limit' heads both rankings; 'modules_limit' and "
+                "'instances_limit' override it one ranking at a time, and "
+                "take 'none' for a ranking you do not want at all — ask for "
+                "the whole module table without six figures of leaf instance "
+                "rows behind it."
             ),
             input_schema=_obj(
                 {
                     "limit": _phys_limit_prop("Rows per ranking"),
+                    "modules_limit": _phys_rank_limit_prop("Module rows"),
+                    "instances_limit": _phys_rank_limit_prop("Instance rows"),
                     "phys_dir": _PHYS_DIR_PROP,
                     "manifest": _PHYS_MANIFEST_PROP,
                 }
