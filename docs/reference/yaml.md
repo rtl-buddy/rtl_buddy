@@ -123,6 +123,9 @@ cfg-pdks:
       - pdk/sky130hd/gds/sky130_fd_sc_hd.gds
       - pdk/sky130hd/gds/sky130_fd_sc_hd_fill.gds
     klayout-tech: pdk/sky130hd/sky130hd.lyt
+    placement: {density: 0.55, padding: 2}
+    dont-use-cells: ["*_lp__*", "sky130_fd_sc_hd__probe*"]
+    pdn-config: pdk/sky130hd/pdn.tcl
 
 cfg-synth-platforms:
   - name: sky130hd_tt
@@ -133,20 +136,33 @@ cfg-pnr-platforms:
   - name: sky130hd_tt
     pdk: sky130hd
     corner: tt
-    cts-buffer: sky130_fd_sc_hd__clkbuf_4
+    cts-buffer: [sky130_fd_sc_hd__clkbuf_4, sky130_fd_sc_hd__clkbuf_8]
     cts-sink-clustering: false
     routing-layers: {signal: met1-met5, clock: met3-met5}
+    placement: {density: 0.6}
 ```
 
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, and `conflicting-drivers`. OpenROAD additionally accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, and `pin-layers.horizontal` / `pin-layers.vertical`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding`, `dont-use-cells`, and `pdn-config`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
-| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), and `routing-layers.signal`/`.clock` |
+| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, and `placement.density` / `placement.padding` |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `openroad.run`, and `openroad.pre-sta-tcl` settings. Built-in default is `standard`. Precedence is per-run override, effort, tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
+
+The process-dependent P&R keys are all optional, and a config that omits them generates exactly the flow it generated before they existed:
+
+| Key | Where | Behavior |
+|---|---|---|
+| `placement.density` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement target density, `> 0` and `<= 1`. Default `0.7` |
+| `placement.padding` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement cell padding in sites, a non-negative integer applied to both `-pad_left` and `-pad_right`. Default `1` |
+| `dont-use-cells` | `cfg-pdks` | Cell names or patterns, one per list entry, excluded by both synthesis and P&R. Empty by default |
+| `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid; P&R sources it and calls `pdngen`. Unset by default |
+| `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list of them. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
+
+A `placement:` block on a P&R platform overrides its PDK's field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
 
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` and `best-effort-hierarchy` are slang-only and must be booleans; `best-effort-hierarchy: true` asks yosys-slang to keep module instances as hierarchy instead of inlining them, which a design relying on `(* keep_hierarchy *)` for mapping needs. In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`; unknown keys warn and are ignored, while a non-mapping override or wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 

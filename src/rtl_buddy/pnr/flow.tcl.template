@@ -43,7 +43,7 @@ link_design  $DESIGN
 
 puts ">>> Reading SDC"
 read_sdc $SDC_FILE
-
+{{ dont_use_block }}
 puts ">>> Initializing floorplan"
 initialize_floorplan \
     -site         $SITE \
@@ -115,9 +115,9 @@ if {$macro_count > 0} {
     puts ">>>   placed [$inst getName] at ($x, $y) DBU"
   }
 }
-
+{{ pdn_block }}
 puts ">>> Global placement"
-global_placement -density 0.7 -pad_left 1 -pad_right 1
+global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}
 
 puts ">>> Resize"
 estimate_parasitics -placement
@@ -129,7 +129,7 @@ detailed_placement
 puts ">>> Clock tree synthesis"
 set_propagated_clock [all_clocks]
 clock_tree_synthesis \
-    -root_buf $CTS_BUF \
+    -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
     {{ cts_clustering_option }}
 

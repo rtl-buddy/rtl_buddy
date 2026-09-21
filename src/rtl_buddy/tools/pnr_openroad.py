@@ -401,6 +401,37 @@ class OpenRoadPnr:
             extra_lines.append(f"read_lef     {lef}")
         extra_libs_lefs = "\n".join(extra_lines)
 
+        # `cts-buffer` is one name or a list. A single name keeps the Tcl
+        # the flow has always emitted — `$CTS_BUF` for both flags — so a
+        # config that never touched the key renders byte-identically. A
+        # list becomes a Tcl list, with its first entry as the root buffer.
+        cts_buffers = platform.get_cts_buffers()
+        if len(cts_buffers) > 1:
+            cts_buf = "{" + " ".join(cts_buffers) + "}"
+            cts_root_buf = "[lindex $CTS_BUF 0]"
+        else:
+            cts_buf = cts_buffers[0] if cts_buffers else ""
+            cts_root_buf = "$CTS_BUF"
+
+        # Both blocks carry their own leading newline and are empty when
+        # unconfigured, so the surrounding blank lines stay as they are.
+        dont_use_cells = pdk.get_dont_use_cells()
+        dont_use_block = (
+            '\nputs ">>> Don\'t-use cells"\n'
+            f"set_dont_use [list {' '.join(dont_use_cells)}]\n"
+            if dont_use_cells
+            else ""
+        )
+
+        # ORFS convention: the snippet declares the grid, the flow runs
+        # `pdngen` after sourcing it.
+        pdn_config = pdk.get_pdn_config()
+        pdn_block = (
+            f'\nputs ">>> Power distribution network"\nsource {pdn_config}\npdngen\n'
+            if pdn_config
+            else ""
+        )
+
         substitutions = {
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
@@ -414,7 +445,12 @@ class OpenRoadPnr:
             "core_margin": f"{fp.core_margin:.2f}",
             "tie_hi": pdk.get_tie_hi(),
             "tie_lo": pdk.get_tie_lo(),
-            "cts_buf": platform.get_cts_buffer(),
+            "cts_buf": cts_buf,
+            "cts_root_buf": cts_root_buf,
+            "place_density": f"{platform.get_placement_density():g}",
+            "place_padding": str(platform.get_placement_padding()),
+            "dont_use_block": dont_use_block,
+            "pdn_block": pdn_block,
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
@@ -1509,6 +1545,25 @@ class OpenRoadPnr:
             return PnrFailResults(
                 name=self.name + "/results",
                 desc=f"platform lookup failed: {e}",
+                fail_stage="setup",
+            )
+
+        # A PDN snippet the config names and the disk does not have would
+        # otherwise surface as a Tcl `source` error minutes into the run,
+        # with a floorplan already written. Same reasoning as the
+        # stream-out input check (#617): name it before the tool starts.
+        pdn_config = platform.get_pdk().get_pdn_config()
+        if pdn_config and not os.path.isfile(pdn_config):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.pdn_config_missing",
+                pnr=self.pnr_cfg.get_name(),
+                path=pdn_config,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=f"pdn-config not found: {pdn_config}",
                 fail_stage="setup",
             )
 

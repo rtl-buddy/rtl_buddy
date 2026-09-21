@@ -532,6 +532,31 @@ def library_fingerprint(paths, root_cfg) -> list[str]:
     return [project_relative(path, root) for path in paths]
 
 
+def resolve_dont_use_cells(synth_cfg, root_cfg) -> list[str]:
+    """Cell patterns the run's PDK excludes, or `[]` when it names none.
+
+    One `cfg-pdks.dont-use-cells` list serves both flows: P&R emits
+    `set_dont_use`, synthesis passes the same patterns to the two Yosys
+    passes that pick library cells. A run with no platform — an unmapped
+    synthesis — has no PDK to ask.
+    """
+    platform = synth_cfg.get_platform()
+    if not platform or root_cfg is None:
+        return []
+    return root_cfg.get_synth_platform_cfg(platform).get_dont_use_cells()
+
+
+def dont_use_args(cells: list[str]) -> str:
+    """`-dont_use` arguments for a Yosys `dfflibmap` / `abc` command line.
+
+    One flag per pattern, appended to the command the script already
+    emits, so a PDK that excludes nothing leaves that line untouched.
+    `dfflibmap` matches simple globs; `abc` forwards each pattern to
+    ABC's own library exclusion.
+    """
+    return "".join(f" -dont_use {cell}" for cell in cells)
+
+
 def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
     """The elaboration settings a generated Yosys script actually reads.
 
@@ -925,10 +950,13 @@ class YosysSynth:
         lines.append("chformal -remove")
 
         if mapped:
+            dont_use = dont_use_args(
+                resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
+            )
             for lib in lib_paths:
-                lines.append(f"dfflibmap -liberty {lib}")
+                lines.append(f"dfflibmap{dont_use} -liberty {lib}")
 
-            abc_cmd = f"abc -liberty {lib_paths[0]}"
+            abc_cmd = f"abc -liberty {lib_paths[0]}{dont_use}"
             constraints = self.synth_cfg.get_constraints()
             period_ps = None
             if constraints:
@@ -1388,6 +1416,9 @@ class YosysSynth:
         if mapped:
             fed["abc_period_ps"] = self._period_ps
             fed["libs"] = library_fingerprint(self._resolve_lib_paths(), self.root_cfg)
+            # Two runs differing only in the PDK's excluded cells map to
+            # two netlists, so they are two experiments.
+            fed["dont_use"] = resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
         else:
             fed["abc_args"] = opts.abc_args
         return fed

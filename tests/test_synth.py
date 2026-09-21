@@ -1530,23 +1530,28 @@ def test_run_uses_managed_process_for_yosys(tmp_path, monkeypatch):
 
 
 class _FakePlatformCfg:
-    def __init__(self, path):
+    def __init__(self, path, dont_use_cells=()):
         self._path = path
+        self._dont_use_cells = list(dont_use_cells)
 
     def get_path(self):
         return self._path
 
+    def get_dont_use_cells(self):
+        return list(self._dont_use_cells)
+
 
 class _FakeRootCfg:
-    def __init__(self, lib_map):
+    def __init__(self, lib_map, dont_use_cells=()):
         self._lib_map = lib_map
+        self._dont_use_cells = list(dont_use_cells)
 
     def get_synth_platform_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
 
         if name not in self._lib_map:
             raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
-        return _FakePlatformCfg(self._lib_map[name])
+        return _FakePlatformCfg(self._lib_map[name], self._dont_use_cells)
 
 
 def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
@@ -1570,6 +1575,30 @@ def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
     assert f"abc -liberty {lib}" in script
     assert "write_verilog" in script
     assert "write_rtlil" not in script
+    # A PDK that excludes nothing leaves both mapping lines untouched.
+    assert "-dont_use" not in script
+
+
+def test_write_script_passes_pdk_dont_use_cells_to_dfflibmap_and_abc(tmp_path):
+    """`cfg-pdks.dont-use-cells` is one list read by both flows: P&R emits
+    `set_dont_use`, Yosys excludes the same patterns from tech mapping."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    root_cfg = _FakeRootCfg({"mylib": str(lib)}, dont_use_cells=["AND2_X1", "*_X32"])
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert f"dfflibmap -dont_use AND2_X1 -dont_use *_X32 -liberty {lib}" in script
+    assert f"abc -liberty {lib} -dont_use AND2_X1 -dont_use *_X32" in script
 
 
 def test_write_script_lib_flow_no_standalone_abc(tmp_path):
@@ -1966,9 +1995,10 @@ def test_synth_platform_config_lef_paths_from_pdk(tmp_path):
 
 
 class _FakePlatformCfgWithLef:
-    def __init__(self, path, lef_paths=None):
+    def __init__(self, path, lef_paths=None, dont_use_cells=()):
         self._path = path
         self._lef_paths = lef_paths or []
+        self._dont_use_cells = list(dont_use_cells)
 
     def get_path(self):
         return self._path
@@ -1976,11 +2006,15 @@ class _FakePlatformCfgWithLef:
     def get_lef_paths(self):
         return self._lef_paths
 
+    def get_dont_use_cells(self):
+        return list(self._dont_use_cells)
+
 
 class _FakeRootCfgOR:
-    def __init__(self, lib_map, lef_map=None):
+    def __init__(self, lib_map, lef_map=None, dont_use_cells=()):
         self._lib_map = lib_map
         self._lef_map = lef_map or {}
+        self._dont_use_cells = list(dont_use_cells)
 
     def get_synth_platform_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
@@ -1988,7 +2022,9 @@ class _FakeRootCfgOR:
         if name not in self._lib_map:
             raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
         lef_paths = self._lef_map.get(name, [])
-        return _FakePlatformCfgWithLef(self._lib_map[name], lef_paths)
+        return _FakePlatformCfgWithLef(
+            self._lib_map[name], lef_paths, self._dont_use_cells
+        )
 
     def get_synth_tool_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
@@ -2050,6 +2086,64 @@ def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
     assert f"abc -liberty {lib}" in script
     assert "write_verilog" in script
     assert "write_rtlil" not in script
+
+
+def test_openroad_stages_both_honour_pdk_dont_use_cells(tmp_path):
+    """Stage 1 maps with the exclusions; stage 2 may resynthesize, so it
+    needs `set_dont_use` before it reads the netlist."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "tech.lef"
+    lef.write_text("")
+
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)},
+        lef_map={"mylib": [str(lef)]},
+        dont_use_cells=["AND2_X1", "*_X32"],
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+
+    yosys_script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert f"dfflibmap -dont_use AND2_X1 -dont_use *_X32 -liberty {lib}" in yosys_script
+    assert f"abc -liberty {lib} -dont_use AND2_X1 -dont_use *_X32 " in yosys_script
+
+    or_script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    assert "set_dont_use [list AND2_X1 *_X32]" in or_script
+    assert or_script.index("set_dont_use") < or_script.index("read_verilog")
+
+
+def test_openroad_script_has_no_dont_use_when_the_pdk_names_none(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "tech.lef"
+    lef.write_text("")
+
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+
+    assert "-dont_use" not in Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert (
+        "set_dont_use"
+        not in Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    )
 
 
 def test_openroad_yosys_script_strips_formal_cells_after_synth(tmp_path):
@@ -5341,6 +5435,9 @@ def test_write_script_stat_json_takes_the_liberty_that_gives_it_areas(tmp_path):
             class _P:
                 def get_path(self_inner):
                     return str(lib)
+
+                def get_dont_use_cells(self_inner):
+                    return []
 
             return _P()
 

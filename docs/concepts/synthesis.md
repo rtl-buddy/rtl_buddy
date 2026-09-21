@@ -112,6 +112,8 @@ The Yosys backend uses Liberty for mapping, area, and timing. The OpenROAD backe
 
 OpenROAD `strategy` values are `AREA`, `TIMING`, `TIMING_ANNEAL`, and `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
 
+A PDK's `dont-use-cells` list excludes cells from mapping: each pattern becomes a `-dont_use` argument to Yosys `dfflibmap` and `abc`, and on the OpenROAD backend a `set_dont_use` before the resynthesis stage reads the netlist. It is the same list [P&R](pnr.md#tune-the-process-dependent-steps) reads, so a cell excluded here is excluded there too, and two runs that exclude different cells fingerprint as two experiments.
+
 ## Use SDC constraints
 
 A Yosys run extracts `create_clock` periods from the SDC and supplies the shortest period to ABC. It warns when multiple clocks require this approximation.

@@ -10,6 +10,7 @@ from .artifact_paths import clear_stale_artefacts
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
+    dont_use_args,
     elaboration_defines,
     library_fingerprint,
     elaboration_fingerprint,
@@ -18,6 +19,7 @@ from .synth_yosys import (
     lifetime_scan_inputs,
     parse_area_um2,
     parse_gate_count,
+    resolve_dont_use_cells,
     slang_handles_params,
     validate_frontend,
 )
@@ -269,9 +271,14 @@ class OpenRoadSynth:
         lines.append("chformal -remove")
 
         if lib_paths:
+            dont_use = dont_use_args(
+                resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
+            )
             for lib in lib_paths:
-                lines.append(f"dfflibmap -liberty {lib}")
-            abc_cmd = f'abc -liberty {lib_paths[0]} -script "+{_ABC_SCRIPT_AREA}"'
+                lines.append(f"dfflibmap{dont_use} -liberty {lib}")
+            abc_cmd = (
+                f'abc -liberty {lib_paths[0]}{dont_use} -script "+{_ABC_SCRIPT_AREA}"'
+            )
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
             lines.append(f"stat -liberty {lib_paths[0]}")
@@ -599,6 +606,11 @@ class OpenRoadSynth:
             lines.append(f"read_lef {lef}")
         for lib in lib_paths:
             lines.append(f"read_liberty {lib}")
+        # The resynthesis strategies below pick library cells of their own,
+        # so the PDK's exclusions have to hold here too.
+        or_dont_use = resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
+        if or_dont_use:
+            lines.append(f"set_dont_use [list {' '.join(or_dont_use)}]")
         lines.append(f"read_verilog {self._yosys_netlist_path()}")
         # Read cleaned blackbox stubs so OpenROAD link_design can resolve them
         known_masters = self._masters_from_lef_and_liberty(lef_paths, lib_paths)
@@ -820,6 +832,9 @@ class OpenRoadSynth:
                 "lefs": library_fingerprint(self._resolve_lef_paths(), self.root_cfg),
             },
             "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
+            # Both stages read the PDK's excluded cells, and two runs that
+            # exclude different cells are two experiments.
+            "dont_use": resolve_dont_use_cells(self.synth_cfg, self.root_cfg),
             "params": self.synth_cfg.get_params(),
             "defines": self._digested_defines(),
         }
