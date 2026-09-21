@@ -1461,3 +1461,88 @@ def test_root_cfg_tools_min_version_honours_active_platform(
     rc = RootConfig(name="pins")
     by_name = {s.name: s for s in tm.get_manifest(rc)}
     assert by_name["verilator"].minimum_version == "5.050"
+
+
+# ---------------------------------------------------------------------------
+# Per-subcommand minimum versions (rtl_buddy#550)
+
+
+def _viewer_status(version: str | None) -> tuple[tm.ToolSpec, tm.ToolStatus]:
+    spec = tm.resolve_spec(tm.get_manifest(), "rtl-buddy-view")
+    assert spec is not None
+    status = tm.ToolStatus(
+        name=spec.name,
+        status="ok",
+        version=version,
+        path="/usr/bin/rtl-buddy-view",
+        optional=spec.optional,
+        minimum_version=spec.minimum_version,
+        kind="path",
+        used_by=spec.used_by,
+        subcommand_minimum_versions=dict(spec.subcommand_minimum_versions),
+    )
+    return spec, status
+
+
+def test_viewer_graph_floor_is_the_one_graph_build_enforces():
+    from rtl_buddy.graph import build as graph_build
+
+    spec, _ = _viewer_status("0.3.0")
+    floor = spec.subcommand_minimum_versions["graph"]
+    assert floor == graph_build.VIEW_GRAPH_MIN_VERSION
+    # The contract the issue asked for: whatever tool-check accepts for
+    # `graph`, graph build accepts too, and vice versa.
+    assert graph_build.check_view_supports_graph(floor) is None
+    assert graph_build.check_view_supports_graph("0.3.0") is not None
+
+
+def test_viewer_below_graph_floor_is_outdated_for_graph_only():
+    spec, status = _viewer_status("0.3.0")
+    readiness = tm.subcommand_readiness([status], [spec])
+    assert readiness["graph"]["status"] == "outdated"
+    assert readiness["graph"]["outdated"] == ["rtl-buddy-view"]
+    assert readiness["graph"]["minimum_versions"] == {"rtl-buddy-view": "0.4.0"}
+    for sub in ("hier", "hier-query", "hub"):
+        assert readiness[sub]["status"] == "ok"
+        assert readiness[sub]["minimum_versions"] == {}
+
+
+@pytest.mark.parametrize("version", ["0.4.0", "0.4", "0.10.1", None])
+def test_viewer_at_or_above_graph_floor_is_ready(version):
+    spec, status = _viewer_status(version)
+    readiness = tm.subcommand_readiness([status], [spec])
+    assert readiness["graph"]["status"] == "ok"
+
+
+def test_graph_floor_reaches_the_json_payload_text_and_explain():
+    spec, status = _viewer_status("0.3.0")
+    readiness = tm.subcommand_readiness([status], [spec])
+    payload = tm.build_json_payload([status], readiness)
+    tool = payload["tools"]["rtl-buddy-view"]
+    assert tool["status"] == "ok"
+    assert tool["minimum_version"] == "0.3.0"
+    assert tool["subcommand_minimum_versions"] == {"graph": "0.4.0"}
+    assert payload["subcommands"]["graph"]["status"] == "outdated"
+    assert payload["subcommands"]["graph"]["minimum_versions"] == {
+        "rtl-buddy-view": "0.4.0"
+    }
+    assert "minimum_versions" not in payload["subcommands"]["hier"]
+
+    text = tm.render_text([status], readiness)
+    assert "outdated: rtl-buddy-view (need ≥ 0.4.0)" in text
+
+    explained = tm.explain(spec, status)
+    assert "Minimum version for rb graph: 0.4.0" in explained
+    assert "too old" in explained
+    assert "too old" not in tm.explain(spec, _viewer_status("0.4.0")[1])
+
+
+def test_graph_floor_fails_required_for_graph():
+    spec, status = _viewer_status("0.3.0")
+    readiness = tm.subcommand_readiness([status], [spec])
+    assert (
+        tm.compute_exit_code([status], required_for="graph", subcommands=readiness) != 0
+    )
+    assert (
+        tm.compute_exit_code([status], required_for="hier", subcommands=readiness) == 0
+    )

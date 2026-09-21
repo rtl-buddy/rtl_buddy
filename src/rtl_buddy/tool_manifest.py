@@ -288,6 +288,10 @@ class ToolSpec:
       optional: ``True`` means missing this tool does not gate
         subcommand readiness.
       required_by: Subcommands for which an otherwise optional tool is required.
+      subcommand_minimum_versions: Extra per-subcommand floors layered on
+        ``minimum_version``, keyed by a ``used_by`` name. A tool that
+        clears ``minimum_version`` stays ``ok``; only the named
+        subcommand's readiness turns ``outdated`` (rtl_buddy#550).
       description: Short one-liner shown by ``--explain``.
       notes: Free-form additional context for ``--explain``.
     """
@@ -307,6 +311,7 @@ class ToolSpec:
     aliases: tuple[str, ...] = ()
     required_by: tuple[str, ...] = ()
     maximum_version_exclusive: str | None = None
+    subcommand_minimum_versions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -322,6 +327,14 @@ class ToolStatus:
     kind: str | None  # "path" | "vendor" | "python" | None
     used_by: tuple[str, ...]
     maximum_version_exclusive: str | None = None
+    subcommand_minimum_versions: dict[str, str] = field(default_factory=dict)
+
+
+#: First ``rtl-buddy-view`` release carrying the ``graph`` subcommand
+#: (rtl-buddy-view#126). ``rb graph build`` refuses the design tier below
+#: it, and ``rb tool-check`` reports ``rb graph`` as outdated below it —
+#: one constant so the two cannot disagree again (rtl_buddy#550).
+VIEW_GRAPH_MIN_VERSION = "0.4.0"
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +733,11 @@ def _builtin_manifest() -> list[ToolSpec]:
             # 0.2.3 coverage overlay + Coverview deep links and the SPA
             # bundle that earlier floors guarded.
             minimum_version="0.3.0",
+            # `rb graph build` needs the viewer's `graph` subcommand, which
+            # is newer than the shared floor above. Declared per subcommand
+            # so a 0.3.x viewer still reads as ok for hier / hier-query /
+            # hub (rtl_buddy#550).
+            subcommand_minimum_versions={"graph": VIEW_GRAPH_MIN_VERSION},
             # The dist was renamed to `rtl-buddy-sch` at 0.7.0
             # (rtl-buddy-sch#157); `rtl-buddy-view` is frozen at 0.5.0
             # and stays a fallback for anyone still on it. `name`,
@@ -1112,6 +1130,24 @@ def _version_satisfies(actual: str | None, minimum: str | None) -> bool:
     return a >= m
 
 
+def _subcommand_floor_unmet(actual: str | None, minimum: str) -> bool:
+    """True iff ``actual`` is provably older than a per-subcommand floor.
+
+    Deliberately more lenient than :func:`_version_satisfies`: an unknown
+    version is the shared floor's business, and the tuples are zero-padded
+    so a probe that captured ``0.4`` from a ``0.4.devN`` build is not read
+    as older than ``0.4.0``. The subcommand's own runtime gate stays the
+    authority; this only keeps the report from promising too much.
+    """
+    if actual is None:
+        return False
+    a, m = _version_tuple(actual), _version_tuple(minimum)
+    if not a or not m:
+        return False
+    width = max(len(a), len(m))
+    return a + (0,) * (width - len(a)) < m + (0,) * (width - len(m))
+
+
 def _version_below(actual: str | None, maximum_exclusive: str | None) -> bool:
     """Tolerant ``actual < maximum_exclusive`` check.
 
@@ -1248,6 +1284,7 @@ def check_tool(
             minimum_version=spec.minimum_version,
             kind=None,
             used_by=spec.used_by,
+            subcommand_minimum_versions=dict(spec.subcommand_minimum_versions),
         )
 
     version = det.version
@@ -1270,6 +1307,7 @@ def check_tool(
         kind=det.kind,
         used_by=spec.used_by,
         maximum_version_exclusive=spec.maximum_version_exclusive,
+        subcommand_minimum_versions=dict(spec.subcommand_minimum_versions),
     )
 
 
@@ -1309,6 +1347,8 @@ def subcommand_readiness(
         ``missing`` — list of required tools that are absent
         ``outdated`` — list of required tools that are too old
         ``unsupported`` — list of required tools that are too new
+        ``minimum_versions`` — ``{tool: floor}`` for tools that are ``ok``
+            overall but older than this subcommand's own floor
         ``optional_feature`` — True iff *all* gating tools are optional
             (i.e. the subcommand only runs when the user opts in)
     """
@@ -1324,6 +1364,7 @@ def subcommand_readiness(
                     "outdated": [],
                     "unsupported": [],
                     "tools": [],
+                    "floors": {},
                     "optional_only": True,
                 },
             )
@@ -1340,6 +1381,11 @@ def subcommand_readiness(
                 slot["outdated"].append(spec.name)
             elif st.status == "unsupported" and required:
                 slot["unsupported"].append(spec.name)
+            elif st.status == "ok" and required:
+                floor = spec.subcommand_minimum_versions.get(sub)
+                if floor and _subcommand_floor_unmet(st.version, floor):
+                    slot["outdated"].append(spec.name)
+                    slot["floors"][spec.name] = floor
 
     out: dict[str, dict] = {}
     for sub, slot in sorted(subcommands.items()):
@@ -1357,6 +1403,9 @@ def subcommand_readiness(
             "unsupported": slot["unsupported"],
             "tools": slot["tools"],
             "optional_feature": slot["optional_only"],
+            # tool -> the per-subcommand floor it missed. Empty unless a
+            # tool is ``ok`` overall but too old for this subcommand.
+            "minimum_versions": slot["floors"],
         }
     return out
 
@@ -1461,6 +1510,12 @@ def explain(spec: ToolSpec, status: ToolStatus | None = None) -> str:
             lines.append(f"    {platform:8s} {hint}")
     if spec.minimum_version:
         lines.append(f"  Minimum version: {spec.minimum_version}")
+    for sub, floor in spec.subcommand_minimum_versions.items():
+        unmet = status is not None and _subcommand_floor_unmet(status.version, floor)
+        lines.append(
+            f"  Minimum version for rb {sub}: {floor}"
+            + ("  (installed version is too old)" if unmet else "")
+        )
     if spec.maximum_version_exclusive:
         lines.append(f"  Supported below: {spec.maximum_version_exclusive}")
     if spec.optional:
@@ -1522,7 +1577,12 @@ def render_text(
         if info["missing"]:
             gloss_parts.append(f"needs: {', '.join(info['missing'])}")
         if info["outdated"]:
-            gloss_parts.append(f"outdated: {', '.join(info['outdated'])}")
+            floors = info.get("minimum_versions", {})
+            names = [
+                f"{n} (need ≥ {floors[n]})" if n in floors else n
+                for n in info["outdated"]
+            ]
+            gloss_parts.append(f"outdated: {', '.join(names)}")
         if info["unsupported"]:
             gloss_parts.append(f"unsupported: {', '.join(info['unsupported'])}")
         if not gloss_parts:
@@ -1561,6 +1621,8 @@ def build_json_payload(
             entry["minimum_version"] = st.minimum_version
         if st.maximum_version_exclusive:
             entry["maximum_version_exclusive"] = st.maximum_version_exclusive
+        if st.subcommand_minimum_versions:
+            entry["subcommand_minimum_versions"] = dict(st.subcommand_minimum_versions)
         tools_out[st.name] = entry
 
     subs_out: dict[str, dict] = {}
@@ -1571,6 +1633,8 @@ def build_json_payload(
             "outdated": info["outdated"],
             "unsupported": info["unsupported"],
         }
+        if info.get("minimum_versions"):
+            entry["minimum_versions"] = dict(info["minimum_versions"])
         if info["optional_feature"]:
             entry["optional_feature"] = True
         subs_out[sub] = entry
