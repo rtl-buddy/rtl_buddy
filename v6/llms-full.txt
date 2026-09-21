@@ -85,7 +85,7 @@ uv add "rtl_buddy[mcp]"
 
 Each response wraps the corresponding `--machine` payload in `{tool, ok, meta, payload}`. Command-level failures return `ok: false` and an `error`; they do not become transport failures. The CLI provides the same operations when MCP is unavailable.
 
-The physical-metrics tools are `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`, reading the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; they run no EDA tool and need no hub. `phys_runs` lists every run under the project with the power mode, the activity and the configuration fingerprint each recorded, and is where the `phys_dir` the other three take comes from. `phys_focus` joins them when a live hub is discovered. `phys_module` joins on the model's `module` column, which holds RTL module names in the synthesis half and Liberty cell names in the power half — see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
+The physical-metrics tools are `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`, reading the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; they run no EDA tool and need no hub. `phys_runs` lists every run under the project with the power mode, the activity and the configuration fingerprint each recorded, and is where the `phys_dir` the other three take comes from. `phys_summary` heads both its rankings at `limit`, and takes `modules_limit`/`instances_limit` to override it one ranking at a time — each accepting `"none"` for a ranking you do not want, so the complete module table need not carry every leaf instance row. `phys_focus` joins them when a live hub is discovered. `phys_module` joins on the model's `module` column, which holds RTL module names in the synthesis half and Liberty cell names in the power half — see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
 
 ## Bundled agent skills
 
@@ -1373,9 +1373,11 @@ Without `--run-tag` nothing moves. The flat layout, the lock path, the log locat
 
 ## Handle an artefact lock
 
-Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holding PID, command, and start time.
+Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holding PID, command, start time, and host.
 
-Wait for the first process to finish or terminate that process if it is stale. The kernel releases the lock on normal exit, crash, or kill; the metadata file itself does not need removal. Listing commands do not take the lock.
+Wait for the first process to finish or terminate that process if it is stale. The lock is released on the way out of every run — a clean exit, a tool failure, or a `Ctrl-C` during a long flow, which now exits 130 — and the kernel releases it anyway on crash or kill; the metadata file itself does not need removal. Listing commands do not take the lock.
+
+A stale lock is reclaimed rather than waited on. When the lock cannot be taken, the record is re-read: if it names this host and a dead process (or a pid that has since been reused by a different process), the next run replaces the lock file under a second `.reclaim` flock that serialises reclaimers, takes the tree, and logs `artifact_lock.reclaimed`. Nothing recorded on another host is judged by a pid here, so a cross-machine lock on a shared filesystem still has to be cleared deliberately.
 
 The lock covers the entire artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Commands using different artefact roots can run concurrently — which is what [`--run-tag`](#namespace-concurrent-runs) gives two runs of the same suite. Two runs naming the same tag still contend.
 
@@ -2663,12 +2665,13 @@ Every synthesis and power run writes `phys-model.json` and `phys-manifest.json` 
 ```bash
 rb phys summary
 rb phys summary --limit 0
+rb phys summary --limit 0 --instances-limit none
 rb phys module sub
 rb phys instance u_sub
 rb phys summary --phys-dir verif/blk/artefacts/nightly
 ```
 
-- `summary` reports the run header, the design totals, the heaviest modules by cell count, and the hottest instances by total power. `--limit 0` shows every row.
+- `summary` reports the run header, the design totals, the heaviest modules by cell count, and the hottest instances by total power. `--limit 0` shows every row of both rankings. `--modules-limit` and `--instances-limit` override `--limit` for one ranking each, and take `none` for a ranking you do not want at all — `--limit 0 --instances-limit none` is the complete module table without a leaf instance row behind it, which on a mapped design is the difference between a few hundred rows and a few hundred thousand.
 - `module` reports one module's cells and area, then the instances of it and the power they burn. The name may be a design module from the synthesis half or a Liberty cell from the power half; see [What the module join can answer](#what-the-module-join-can-answer).
 - `instance` reports one instance's power. A path that names a subtree instead of a leaf lists the leaves under it, hottest by total power first, and rolls them up. Paths are compared level by level, so `u_sub.u_leaf` and `u_sub/u_leaf` name the same instance whichever spelling the tool wrote.
 
@@ -2768,13 +2771,13 @@ Every run header also carries the run's identity: `power_mode`, `power_activity`
 
 `rb phys runs --machine` emits its own payload: `count`, the applied `limit`, and `runs`, newest first. Each entry carries `phys_dir` and `manifest`, `run`, `top`, `run_command`, `generated_at`, `backends`, `mode` and `activity`, `config`, a derived `fingerprint`, `xplr`, `newest`, and `error` — non-null only for a manifest that could not be read, where the rest of the entry is null and `phys_dir` still selects the run. `phys_dir` is derived from where the manifest was found, not from the document, so it is always relative to the root the listing was taken under.
 
-`--limit` truncates the machine payload as well as the table, so a payload is exactly the rows the flag asked for and `--limit 0` is how an agent asks for all of them. A truncated list says so: `summary` carries `limit` beside its two rankings, `module` carries `limit` and `instance_count`, and `instance` carries `limit` and `child_count` — the counts are how many rows there are, never how many are listed. The figures beside a truncated list are still whole-set figures: `module`'s `power` sums every instance of the module and a prefix `instance`'s `rollup` sums every leaf under the path. The builders themselves default to the complete list, so only a caller that asks for a head gets one.
+`--limit` truncates the machine payload as well as the table, so a payload is exactly the rows the flag asked for and `--limit 0` is how an agent asks for all of them. On `summary` the per-ranking overrides do the same: the payload's `limits` block reports what each ranking was actually headed at — a number, or `"none"` for one that was suppressed — beside the `limit` both would have followed. A suppressed ranking is an empty list, and `counts` still reports how many rows the model holds, so it is never mistaken for a half the run did not produce; that half is `counts` `null`. Nothing is sorted or serialised for a ranking asked for as `none`. A truncated list says so: `summary` carries `limit` beside its two rankings, `module` carries `limit` and `instance_count`, and `instance` carries `limit` and `child_count` — the counts are how many rows there are, never how many are listed. The figures beside a truncated list are still whole-set figures: `module`'s `power` sums every instance of the module and a prefix `instance`'s `rollup` sums every leaf under the path. The builders themselves default to the complete list, so only a caller that asks for a head gets one.
 
 Each payload also carries `halves` and `missing_halves`, which report which halves the model has and which command fills each one. Each half's entry also carries `netlist_hash`: whether that half's producer recorded the hash of the netlist it measured, which is what the merge is gated on and therefore what a surface needs before advising anyone to run the other command. A `null` value means the run did not measure it; `0` means it measured zero. The `module` payload also carries `namespaces` — `["rtl"]`, `["liberty"]`, or both — and `instance_join`: `null` when the instance list needs no qualification, a sentence naming the Liberty-cell namespace limit when the module matched nothing because of it, and a collision sentence when the name is in both namespaces.
 
 A manifest or model whose JSON root is not an object — an empty file rebuilt by hand, a truncated write, a path pointed at the wrong file — is refused by name, as an unreadable one is, and so is one whose blocks are not the shapes the read dereferences them as: the producer blocks and the totals are objects, the manifest's `model` and `phys_dir` paths strings, the model's two halves arrays of objects. A `null` block is not malformed, since that is what a half-filled run writes. Under `--machine` either arrives as the usual error envelope rather than a traceback.
 
-`rb mcp` exposes the same query builders as `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`. `phys_runs` is where the `phys_dir` the other three take comes from; it needs no arguments and takes the same `limit`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. All three take the same `limit` the flag does, with the same default: the head of the ranking, and `0` for every row. The payload says which it gave you — the applied `limit` sits beside the untruncated `instance_count`/`child_count`, and the `power` and `rollup` sums cover every matching row either way. A `phys_focus` tool mirroring `rb hub send phys-focus` joins them when a live hub is discovered. See [The MCP server](graph.md#the-mcp-server).
+`rb mcp` exposes the same query builders as `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`. `phys_runs` is where the `phys_dir` the other three take comes from; it needs no arguments and takes the same `limit`. They read files directly, run no EDA tool, and do not require a running hub. `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root. All three take the same `limit` the flag does, with the same default: the head of the ranking, and `0` for every row. `phys_summary` also takes `modules_limit` and `instances_limit`, the tool arguments for `--modules-limit` and `--instances-limit`: an integer or the string `"none"`, overriding `limit` for one ranking each, and omitted means the ranking follows `limit`. The payload says which it gave you — the applied `limit` sits beside the untruncated `instance_count`/`child_count`, and the `power` and `rollup` sums cover every matching row either way. A `phys_focus` tool mirroring `rb hub send phys-focus` joins them when a live hub is discovered. See [The MCP server](graph.md#the-mcp-server).
 
 
 ---
@@ -4347,7 +4350,7 @@ Exit behavior depends on the invocation:
 
 `--required-for` implies enforcement. Optional dependencies do not fail the global `--strict` check, but they do fail a focused check for a command that declares them required.
 
-The JSON payload contains `tools`, `subcommands`, and `exit_code`. Each `tools` entry carries `status`, `version`, `path`, `optional`, and `minimum_version` when one is declared. Optional binaries are deliberately absent from it: they are documentation of what a tool can additionally use, not a state anything can gate on, so machine consumers see no field for them. `rb --machine tool-check --explain <tool>` mirrors the human explanation verbatim in the payload's `instructions` field, which is where they do appear. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
+The JSON payload contains `tools`, `subcommands`, and `exit_code`. Each `tools` entry carries `status`, `version`, `path`, `optional`, and `minimum_version` when one is declared. A tool whose subcommands need different versions also carries `subcommand_minimum_versions`, and the matching `subcommands` entry reports `outdated` with a `minimum_versions` map naming the floor that was missed. The tool itself stays `ok`, because its other subcommands still work. `rtl-buddy-view` is the built-in case: 0.3.0 is enough for `rb hier`, `rb hier-query` and `rb hub`, while `rb graph` needs 0.4.0. Optional binaries are deliberately absent from it: they are documentation of what a tool can additionally use, not a state anything can gate on, so machine consumers see no field for them. `rb --machine tool-check --explain <tool>` mirrors the human explanation verbatim in the payload's `instructions` field, which is where they do appear. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
 
 Example focused CI gate:
 
@@ -5480,7 +5483,11 @@ When `sim_timeout` expires, the simulator may be terminated before flushing outp
 
 Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail immediately on same-host contention. The file remains after release; kernel lock state, not file presence, determines whether the tree is locked.
 
+A lock that cannot be taken is re-read before it is reported. If the record names this host and a process that no longer exists — or one whose recorded start time does not match the live process of that pid — the next run reclaims the tree and logs `artifact_lock.reclaimed`. A record written on another host, or one with no host recorded, is never reclaimed by a pid check here; clear it by hand once the other machine is known to be idle.
+
 The lock is intentionally coarse across command families and is not assumed to coordinate different NFS hosts. Dispatched worker jobs skip it because they write planned subdirectories, so do not start another command against a tree with a dispatch run in flight.
+
+A filesystem that cannot `flock` at all (`ENOLCK` on some NFS mounts, a read-only tree) now fails with `cannot lock this artefact tree` rather than claiming another run holds it. Unlike the shared-build lock, the tree lock does not degrade to unlocked.
 
 Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#namespace-concurrent-runs) so each locks its own tree. Two runs naming the same tag still contend, and the lock stays host-local.
 
@@ -5599,9 +5606,9 @@ Where the build **does** report its dependencies, the listing is compared by nam
 
 An `+incdir+` is walked **recursively**, because `` `include "nested/deep.svh" `` resolves beneath the directory; a `-y` directory is listed **flat**, because library resolution maps a module name to a file in the directory itself. Neither is filtered by suffix: `+libext+` can be set in `builder-opts.compile-time` and never reach `run.f`, so a filter derived from `run.f` would silently miss the library file that appears with any other suffix. The cost of the walk is a fraction of a second for a few thousand files, but it is paid on every stamp validation, so pointing an `+incdir+` at a large tree makes every reuse check walk it.
 
-Two kinds of name are left out of the walk. **Directories**: dot-directories (`.git`, `.svn`), `__pycache__` (bytecode CPython writes beside a helper module a `preproc` hook imports), and RTL Buddy's own managed trees — the suite's `artefacts/`, `.shared-builds/`, and any `obj_dir*`. A project directory genuinely named `artefacts` or `obj_dir*` under an include path is therefore not tracked. **Files**: a denylist of editor and VCS bookkeeping (`.DS_Store`, `.gitignore`, `.gitattributes`, `.gitkeep`, `*.swp`, `*.swo`, `*~`, `.#*`, `#*#`) plus RTL Buddy's own outputs (`run.f`, `compile.log`, `compile.retry.log`, `test.log`, `test.err`, `test.randseed`, `coverage.dat`, `simv`, `simv.vvp`, `rb-compile-stamp.json`, `result.json`, and a dispatched job's `result-*.json` / `rtl_buddy-*.log`), and the suite's own `rtl_buddy.log` — that one by path rather than by name, so a compile input that happens to be called `rtl_buddy.log` elsewhere under an include directory is still tracked. Every other file is listed, dot-prefixed ones included, because `` `include ".config.svh" `` is legal and resolves.
+Two kinds of name are left out of the walk. **Directories**: dot-directories (`.git`, `.svn`), `__pycache__` (bytecode CPython writes beside a helper module a `preproc` hook imports), and RTL Buddy's own managed trees — the suite's `artefacts/`, `.shared-builds/`, and any `obj_dir*`. A project directory genuinely named `artefacts` or `obj_dir*` under an include path is therefore not tracked. **Files**: a denylist of editor and VCS bookkeeping (`.DS_Store`, `.gitignore`, `.gitattributes`, `.gitkeep`, `*.swp`, `*.swo`, `*~`, `.#*`, `#*#`) plus RTL Buddy's own outputs (`run.f`, `compile.log`, `compile.retry.log`, `test.log`, `test.err`, `test.randseed`, `coverage.dat`, `simv`, `simv.vvp`, `rb-compile-stamp.json`, `result.json`, and a dispatched job's `result-*.json` / `rtl_buddy-*.log`), **plus those same outputs caught mid-write** — every one of them is written through a sibling temp file that is renamed into place, so `<output>.tmp` and `<output>.<pid>.<random>.tmp` are excluded too (`test.log.12345.<uuid>.tmp`, `run.f.9271.<uuid>.tmp`). Those patterns are anchored to a managed output's name, not a blanket `*.tmp`: a header genuinely called `defs.tmp` under an include directory is an ordinary input and an edit to it still rebuilds. Also excluded is the suite's own `rtl_buddy.log` — that one by path rather than by name, so a compile input that happens to be called `rtl_buddy.log` elsewhere under an include directory is still tracked. Every other file is listed, dot-prefixed ones included, because `` `include ".config.svh" `` is legal and resolves.
 
-Both exclusions exist for one failure. Everything RTL Buddy writes into an artefact directory is written *after* the fingerprint that would list it, so a listing containing any of it could never validate again: every later run saw a different listing and recompiled, and under `--dispatch` that is every gated simulation job. Pruning the directory covers an `+incdir+` that is an *ancestor* of the artefact tree (`+incdir+.` in a `tests.yaml`, `+incdir+..` from a design directory holding verif suites). Excluding the output names covers an include root that **is** an artefact directory: a `preproc` hook may generate headers into its `artifact_dir`, and the filelist then carries `+incdir+artefacts/<test>` with no `artefacts` component left for the walk to see. **Generated headers under `artefacts/` are tracked** — they are real compile inputs and an edit to one rebuilds; only RTL Buddy's own outputs beside them are skipped. The suite's `rtl_buddy.log` is excluded for the same reason and needs naming separately: it is written to the *suite* directory, which `+incdir+.` puts in the walk with no `artefacts` component to prune, and the head appends to it for the whole life of a dispatched run. Adding a name to either exclusion changes the listing, so a stamp taken before the change cannot match one taken after it: a build whose listing carried `rtl_buddy.log` or a `__pycache__` entry rebuilds once on the first run after the upgrade, then validates normally.
+Both exclusions exist for one failure. Everything RTL Buddy writes into an artefact directory is written *after* the fingerprint that would list it, so a listing containing any of it could never validate again: every later run saw a different listing and recompiled, and under `--dispatch` that is every gated simulation job. Pruning the directory covers an `+incdir+` that is an *ancestor* of the artefact tree (`+incdir+.` in a `tests.yaml`, `+incdir+..` from a design directory holding verif suites). Excluding the output names covers an include root that **is** an artefact directory: a `preproc` hook may generate headers into its `artifact_dir`, and the filelist then carries `+incdir+artefacts/<test>` with no `artefacts` component left for the walk to see. **Generated headers under `artefacts/` are tracked** — they are real compile inputs and an edit to one rebuilds; only RTL Buddy's own outputs beside them are skipped. The in-flight temp names are the same failure one step finer (#613): a suite directory on the include path holds the per-test `test.log`/`test.err`/`test.randseed` symlinks, which are repointed through a temp name, so a temp file could exist between the build job's fingerprint and a gated simulation job's validation of it and belong to neither listing — and nine jobs in a fan-out recompiled under a simulation reservation because of it. Writer and exclusion are both built from one helper, so a renamed output or a changed temp shape cannot leave the exclusion behind. The suite's `rtl_buddy.log` is excluded for the same reason and needs naming separately: it is written to the *suite* directory, which `+incdir+.` puts in the walk with no `artefacts` component to prune, and the head appends to it for the whole life of a dispatched run. Adding a name to either exclusion changes the listing, so a stamp taken before the change cannot match one taken after it: a build whose listing carried `rtl_buddy.log` or a `__pycache__` entry rebuilds once on the first run after the upgrade, then validates normally.
 
 A simulator's own scratch output in the same directory is not excluded, because its spelling belongs to the tool rather than to RTL Buddy. Pointing an `+incdir+` at a directory a builder writes into is therefore still a way to make every run recompile.
 
@@ -5702,6 +5709,8 @@ uv tool install rtl-buddy-sch
 ```
 
 `rb tool-check --explain rtl-buddy-sch` accepts the alias but reports the canonical tool key `rtl-buddy-view`.
+
+`rb graph build` needs a newer viewer than the other viewer-backed commands: 0.4.0, against the shared 0.3.0 floor. `rb tool-check` reports the viewer itself as `ok` from 0.3.0 and marks only `rb graph` as `outdated` below 0.4.0; `rb tool-check --required-for graph` exits non-zero in that state. Releases before this distinction reported `rb graph` as ready on a 0.3.x viewer and then failed the design tier at build time.
 
 ## Verible lint findings are on stderr
 
@@ -6965,16 +6974,24 @@ Usage: rtl-buddy phys summary [OPTIONS]
  the run's totals, its heaviest modules and its hottest instances
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest first (0  │
-│                                         for all); truncates the --machine payload    │
-│                                         too                                          │
-│                                         [default: 10]                                │
-│ --phys-dir        TEXT                  artefact directory holding                   │
-│                                         phys-manifest.json                           │
-│                                         [default: (newest phys-manifest.json under   │
-│                                         the project root)]                           │
-│ --manifest        TEXT                  phys-manifest.json to read directly          │
-│ --help                                  Show this message and exit.                  │
+│ --limit                  INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest    │
+│                                                first (0 for all); truncates the      │
+│                                                --machine payload too                 │
+│                                                [default: 10]                         │
+│ --modules-limit          N|none                rows in the modules ranking,          │
+│                                                overriding --limit (0 for all, 'none' │
+│                                                for no rows)                          │
+│                                                [default: (--limit)]                  │
+│ --instances-limit        N|none                rows in the instances ranking,        │
+│                                                overriding --limit (0 for all, 'none' │
+│                                                for no rows)                          │
+│                                                [default: (--limit)]                  │
+│ --phys-dir               TEXT                  artefact directory holding            │
+│                                                phys-manifest.json                    │
+│                                                [default: (newest phys-manifest.json  │
+│                                                under the project root)]              │
+│ --manifest               TEXT                  phys-manifest.json to read directly   │
+│ --help                                         Show this message and exit.           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
