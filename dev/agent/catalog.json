@@ -2006,10 +2006,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-timeout-kill-can-leave-testlog-with-an-unflushed-tail.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#pywellen-must-remain-below-025",
-          "slug": "pywellen-must-remain-below-025",
-          "title": "pywellen must remain below 0.25",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/pywellen-must-remain-below-025.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#pywellen-must-stay-within-025x",
+          "slug": "pywellen-must-stay-within-025x",
+          "title": "pywellen must stay within 0.25.x",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/pywellen-must-stay-within-025x.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#artifact-locking-is-per-tree-and-per-host",

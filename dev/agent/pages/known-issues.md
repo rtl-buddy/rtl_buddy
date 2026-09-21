@@ -72,9 +72,9 @@ If `vcd2fst` is installed, the VCD becomes a cached `vcdplus.fst`; otherwise rtl
 
 When `sim_timeout` expires, the simulator may be terminated before flushing output. `test.log` can end mid-line or at a power-of-two byte count, so its final bytes are not an exact stop location. Follow the [timeout triage order](concepts/tests.md#triaging-sim-hit-timeout) before raising the limit.
 
-## pywellen must remain below 0.25
+## pywellen must stay within 0.25.x
 
-`rb wave` annotations and `rb saif` require pywellen's removed random-access API, so the supported range is `>=0.20,<0.25`. A forced newer version fails at launch with `pywellen.api_missing`; restore the supported dependency range.
+`rb wave` annotations and `rb saif` read traces through pywellen's random-access Waveform API, which pywellen rewrites on every pre-1.0 minor bump. The supported range is therefore two-sided, `>=0.25.6,<0.26`. A forced out-of-range version fails at launch with `pywellen.api_missing` naming the installed version and the supported range; restore the supported dependency range.
 
 ## Artifact locking is per tree and per host
 
