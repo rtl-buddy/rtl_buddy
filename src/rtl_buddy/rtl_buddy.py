@@ -938,6 +938,16 @@ class RtlBuddy:
         self._run_tag: str | None = None
 
     def run(self):
+        """The process entry point: run the CLI, always giving the tree back.
+
+        Every exit path from here — a clean return, a tool failure
+        surfaced as :class:`FatalRtlBuddyError`, a click abort, or a
+        ``KeyboardInterrupt`` raised out of the subprocess signal handler
+        while OpenROAD was running — leaves through the ``finally``, which
+        releases the artefact-tree lock (#609). The kernel would release
+        it at process exit anyway; doing it here is what makes the release
+        deterministic and independent of how the process ends.
+        """
         try:
             rv = self.app(standalone_mode=False)
         except click.exceptions.Exit as exc:
@@ -959,6 +969,18 @@ class RtlBuddy:
                 )
                 self._emit_machine_result(command, 2, error=str(exc))
             return 2
+        except KeyboardInterrupt:
+            # Ctrl-C during a long flow: `process_utils` has already
+            # terminated the tool's process group and re-raised here, so
+            # the only thing left is to say so and exit on the
+            # conventional 128+SIGINT. Handled rather than propagated
+            # precisely so the `finally` below is the release path for an
+            # interrupt too, and so the user gets a line instead of a
+            # traceback.
+            emit_console_text("interrupted", style="red", markup=False)
+            return 130
+        finally:
+            self._artifact_locks.release_all()
         # standalone_mode=False makes click *return* the exit code from
         # `typer.Exit(code=N)` rather than re-raise it, so we have to
         # surface it here. Existing commands that return None continue
