@@ -40,6 +40,35 @@ def _make_pdk_cfg(tmp_path, **overrides):
     return PdkConfig(PdkConfigFile(**base), str(tmp_path / "root_config.yaml"))
 
 
+def _touch(*paths):
+    """Materialize configured input files as empty placeholders."""
+    for path in paths:
+        if not path:
+            continue
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
+
+def _make_stream_pdk(tmp_path, **overrides):
+    """A PDK whose stream-out inputs all exist on disk.
+
+    `_run_def2stream` refuses to launch KLayout when an input the config
+    names is missing (#617), so a test that wants to reach the tool has to
+    put those files there.
+    """
+    base = dict(klayout_tech="pdk/klayout/tech.lyt", cell_gds="pdk/gds/cells.gds")
+    base.update(overrides)
+    pdk = _make_pdk_cfg(tmp_path, **base)
+    _touch(
+        pdk.get_klayout_tech(),
+        pdk.get_tech_lef(),
+        pdk.get_macro_lef(),
+        *pdk.get_cell_gds_paths(),
+    )
+    return pdk
+
+
 def test_pdk_resolves_corner_paths(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
     assert pdk.get_corner_path("typ") == str(tmp_path / "pdk" / "lib" / "typ.lib")
@@ -233,10 +262,10 @@ def test_pnr_suite_unknown_run_raises(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_pnr_cfg(tmp_path):
+def _make_pnr_cfg(tmp_path, **overrides):
     from rtl_buddy.config.pnr import PnrFloorplan
 
-    return PnrConfig(
+    base = dict(
         name="demo_pnr",
         desc="demo",
         tool="openroad",
@@ -248,6 +277,8 @@ def _make_pnr_cfg(tmp_path):
         _reglvl=1000,
         tool_overrides=None,
     )
+    base.update(overrides)
+    return PnrConfig(**base)
 
 
 def test_pnr_runner_resolves_executable_from_cfg_pnr_tools(tmp_path):
@@ -497,11 +528,7 @@ def test_def2stream_treats_nonzero_exit_as_warning_when_gds_exists(
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
 
-    pdk = _make_pdk_cfg(
-        tmp_path,
-        klayout_tech="pdk/klayout/tech.lyt",
-        cell_gds="pdk/gds/cells.gds",
-    )
+    pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
     platform.get_pdk.return_value = pdk
 
@@ -543,11 +570,7 @@ def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
 
-    pdk = _make_pdk_cfg(
-        tmp_path,
-        klayout_tech="pdk/klayout/tech.lyt",
-        cell_gds="pdk/gds/cells.gds",
-    )
+    pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
     platform.get_pdk.return_value = pdk
 
@@ -581,11 +604,7 @@ def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
 
-    pdk = _make_pdk_cfg(
-        tmp_path,
-        klayout_tech="pdk/klayout/tech.lyt",
-        cell_gds="pdk/gds/cells.gds",
-    )
+    pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
     platform.get_pdk.return_value = pdk
 
@@ -612,6 +631,347 @@ def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
 
     assert backend._run_def2stream(platform, "demo_top") is None
     assert not stale_gds.exists()
+
+
+# ---------------------------------------------------------------------------
+# Stream-out inputs: multi-GDS and the macro LEF handoff (#617)
+# ---------------------------------------------------------------------------
+
+
+def test_pdk_cell_gds_accepts_a_single_path(tmp_path):
+    """The key took one string before the list form and still does."""
+    pdk = _make_pdk_cfg(tmp_path, cell_gds="pdk/gds/cells.gds")
+    assert pdk.get_cell_gds() == str(tmp_path / "pdk" / "gds" / "cells.gds")
+    assert pdk.get_cell_gds_paths() == [str(tmp_path / "pdk" / "gds" / "cells.gds")]
+
+
+def test_pdk_cell_gds_unset_is_empty(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_cell_gds() == ""
+    assert pdk.get_cell_gds_paths() == []
+
+
+def test_pdk_cell_gds_accepts_a_list_resolved_entry_by_entry(tmp_path):
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        cell_gds=["pdk/gds/cells.gds", "../shared/sram.gds"],
+    )
+    assert pdk.get_cell_gds_paths() == [
+        str(tmp_path / "pdk" / "gds" / "cells.gds"),
+        str(tmp_path.parent / "shared" / "sram.gds"),
+    ]
+    # The single-valued getter still answers, with the first entry.
+    assert pdk.get_cell_gds() == str(tmp_path / "pdk" / "gds" / "cells.gds")
+
+
+def test_pdk_cell_gds_path_with_spaces_is_one_path(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, cell_gds=["pdk/gds lib/std cells.gds"])
+    assert pdk.get_cell_gds_paths() == [
+        str(tmp_path / "pdk" / "gds lib" / "std cells.gds")
+    ]
+
+
+def test_pdk_cell_gds_from_yaml(tmp_path):
+    """Both spellings have to survive deserialization, not just the ctor."""
+    from serde.yaml import from_yaml
+
+    one = from_yaml(PdkConfigFile, "name: sky130hd\ncell-gds: pdk/cells.gds\n")
+    many = from_yaml(
+        PdkConfigFile,
+        "name: sky130hd\ncell-gds: [pdk/cells.gds, pdk/sram.gds]\n",
+    )
+    root = str(tmp_path / "root_config.yaml")
+    assert PdkConfig(one, root).get_cell_gds_paths() == [
+        str(tmp_path / "pdk/cells.gds")
+    ]
+    assert PdkConfig(many, root).get_cell_gds_paths() == [
+        str(tmp_path / "pdk/cells.gds"),
+        str(tmp_path / "pdk/sram.gds"),
+    ]
+
+
+def test_pnr_run_gds_paths_resolve_against_the_pnr_yaml(tmp_path):
+    pnr_yaml = tmp_path / "pnr.yaml"
+    pnr_yaml.write_text(
+        dedent("""\
+            rtl-buddy-filetype: pnr_config
+            runs:
+              - name: "demo_pnr"
+                desc: "Demo run"
+                synth: "demo_synth"
+                synth-path: "../synth/synth.yaml"
+                platform: "nangate45_typ"
+                lef-paths: ["../../pdk/sram/sram.lef"]
+                gds-paths: ["../../pdk/sram/sram.gds", "macros/an odd name.gds"]
+        """)
+    )
+    run = PnrSuiteConfig(str(pnr_yaml)).get_runs("demo_pnr")[0]
+    root = tmp_path.parent.parent
+    assert run.get_lef_paths() == [str(root / "pdk" / "sram" / "sram.lef")]
+    assert run.get_gds_paths() == [
+        str(root / "pdk" / "sram" / "sram.gds"),
+        str(tmp_path / "macros" / "an odd name.gds"),
+    ]
+
+
+def test_pnr_run_without_gds_paths_has_none(tmp_path):
+    pnr_yaml = tmp_path / "pnr.yaml"
+    pnr_yaml.write_text(_PNR_YAML)
+    assert PnrSuiteConfig(str(pnr_yaml)).get_runs("demo_pnr")[0].get_gds_paths() == []
+
+
+def test_def2stream_inputs_are_ordered_and_deduplicated(tmp_path):
+    """Standard cells then macros; tech LEF, PDK macro LEF, then run LEFs.
+
+    The reader order is OpenROAD's own, and a macro the PDK and the run both
+    name is one input — handing it twice re-registers every master in it.
+    """
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    pdk = _make_stream_pdk(tmp_path, cell_gds=["pdk/gds/cells.gds", "pdk/gds/fill.gds"])
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+
+    sram_lef = str(tmp_path / "pdk" / "sram" / "sram.lef")
+    sram_gds = str(tmp_path / "pdk" / "sram" / "sram.gds")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(
+            tmp_path,
+            # The PDK's macro LEF repeated on purpose, and one of its GDS.
+            lef_paths=[sram_lef, pdk.get_macro_lef()],
+            gds_paths=[sram_gds, str(tmp_path / "pdk" / "gds" / "fill.gds")],
+        ),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+    _touch(sram_lef, sram_gds)
+
+    inputs = backend.gather_def2stream_inputs(platform)
+    assert inputs.tech == pdk.get_klayout_tech()
+    assert inputs.gds == [
+        str(tmp_path / "pdk" / "gds" / "cells.gds"),
+        str(tmp_path / "pdk" / "gds" / "fill.gds"),
+        sram_gds,
+    ]
+    assert inputs.lef == [
+        pdk.get_tech_lef(),
+        pdk.get_macro_lef(),
+        sram_lef,
+    ]
+    assert inputs.missing == []
+
+
+def test_def2stream_reports_every_missing_input_and_skips_klayout(
+    tmp_path, monkeypatch, caplog
+):
+    """A configured input that is not on disk stops the export up front.
+
+    KLayout would otherwise stream a GDS with the unresolvable masters left
+    empty, which is a layout that looks produced (#617)."""
+    import logging
+
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_stream_pdk(tmp_path)
+    Path(pdk.get_cell_gds()).unlink()
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+
+    missing_lef = str(tmp_path / "pdk" / "sram" / "sram.lef")
+    missing_gds = str(tmp_path / "pdk" / "sram" / "sram.gds")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(
+            tmp_path, lef_paths=[missing_lef], gds_paths=[missing_gds]
+        ),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+
+    def _must_not_run(cmd, **_kwargs):
+        raise AssertionError(f"KLayout was launched with a missing input: {cmd}")
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _must_not_run)
+
+    with caplog.at_level(logging.ERROR):
+        assert backend._run_def2stream(platform, "demo_top") is None
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.gds_missing_inputs"
+    )
+    assert record.levelno == logging.ERROR
+    assert record.rtl_fields["missing"] == [
+        pdk.get_cell_gds(),
+        missing_gds,
+        missing_lef,
+    ]
+    assert record.rtl_fields["count"] == 3
+
+
+def test_def2stream_hands_klayout_a_json_manifest_that_survives_spaces(
+    tmp_path, monkeypatch
+):
+    """Paths reach the helper as a list, not a whitespace-joined string."""
+    from rtl_buddy.pnr.klayout.def2stream import load_inputs
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_stream_pdk(tmp_path, cell_gds=["pdk/gds lib/std cells.gds"])
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+
+    sram_lef = str(tmp_path / "macro dir" / "sram macro.lef")
+    sram_gds = str(tmp_path / "macro dir" / "sram macro.gds")
+    _touch(sram_lef, sram_gds)
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path, lef_paths=[sram_lef], gds_paths=[sram_gds]),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+
+    out_gds = Path(backend.artefact_dir) / "demo_top.gds"
+    seen = {}
+
+    def _fake_run(cmd, **_kwargs):
+        seen["cmd"] = list(cmd)
+        out_gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    assert backend._run_def2stream(platform, "demo_top") == str(out_gds)
+
+    manifest = next(
+        arg.split("=", 1)[1] for arg in seen["cmd"] if arg.startswith("inputs_json=")
+    )
+    assert not any(arg.startswith("in_files=") for arg in seen["cmd"])
+    gds_files, lef_files = load_inputs(manifest)
+    assert gds_files == [str(tmp_path / "pdk" / "gds lib" / "std cells.gds"), sram_gds]
+    assert lef_files == [pdk.get_tech_lef(), pdk.get_macro_lef(), sram_lef]
+
+
+def test_merge_lef_files_appends_after_the_technologys_own(tmp_path):
+    """The `.lyt`'s LEF list is kept, and its entries are not re-added.
+
+    Replacing it would strip the masters the existing flow relies on; a
+    relative entry in it resolves against the `.lyt`'s directory, which is
+    where KLayout reads it from."""
+    from rtl_buddy.pnr.klayout.def2stream import merge_lef_files
+
+    tech_file = str(tmp_path / "pdk" / "tech.lyt")
+    _touch(tech_file, str(tmp_path / "pdk" / "lef" / "tech.lef"))
+
+    merged = merge_lef_files(
+        ["lef/tech.lef"],
+        [
+            str(tmp_path / "pdk" / "lef" / "tech.lef"),
+            str(tmp_path / "macro dir" / "sram macro.lef"),
+        ],
+        tech_file,
+    )
+    assert merged == [
+        "lef/tech.lef",
+        str(tmp_path / "macro dir" / "sram macro.lef"),
+    ]
+
+
+def test_merge_gds_reads_every_input_and_extends_the_lef_list(tmp_path):
+    """The helper takes a GDS *list* and hands the extra LEFs to the reader."""
+    from rtl_buddy.pnr.klayout import def2stream
+
+    read: list[str] = []
+
+    class _FakeCell:
+        def __init__(self, name):
+            self.name = name
+
+        def cell_index(self):
+            return 0
+
+        def clear(self):
+            pass
+
+        def is_empty(self):
+            return False
+
+        def parent_cells(self):
+            return 0
+
+        def copy_tree(self, _other):
+            pass
+
+    class _FakeLayout:
+        dbu = 0.001
+
+        def __init__(self):
+            self.written = None
+
+        def each_cell(self):
+            return iter([_FakeCell("demo_top")])
+
+        def read(self, path, _options=None):
+            read.append(path)
+
+        def cell(self, _name):
+            return _FakeCell("demo_top")
+
+        def create_cell(self, name):
+            return _FakeCell(name)
+
+        def top_cells(self):
+            return [_FakeCell("demo_top")]
+
+        def write(self, path):
+            self.written = path
+
+    lefdef = MagicMock()
+    lefdef.lef_files = ["lef/tech.lef"]
+    options = MagicMock()
+    options.lefdef_config = lefdef
+    tech = MagicMock()
+    tech.load_layout_options = options
+    pya_mod = MagicMock()
+    pya_mod.Technology.return_value = tech
+    pya_mod.Layout.side_effect = [_FakeLayout(), _FakeLayout()]
+
+    tech_file = str(tmp_path / "pdk" / "tech.lyt")
+    errors = def2stream.merge_gds(
+        pya_mod=pya_mod,
+        tech_file=tech_file,
+        layer_map="",
+        in_def=str(tmp_path / "demo top.def"),
+        design_name="demo_top",
+        in_files=[str(tmp_path / "std cells.gds"), str(tmp_path / "sram macro.gds")],
+        seal_file="",
+        out_file=str(tmp_path / "demo_top.gds"),
+        lef_files=[str(tmp_path / "sram macro.lef")],
+    )
+    assert errors == 0
+    assert read == [
+        str(tmp_path / "demo top.def"),
+        str(tmp_path / "std cells.gds"),
+        str(tmp_path / "sram macro.gds"),
+    ]
+    assert lefdef.lef_files == [
+        "lef/tech.lef",
+        str(tmp_path / "sram macro.lef"),
+    ]
 
 
 _PNR_XFAIL_YAML = dedent("""\
@@ -1130,9 +1490,7 @@ def test_def2stream_removes_a_zero_length_gds(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
 
-    pdk = _make_pdk_cfg(
-        tmp_path, klayout_tech="pdk/klayout/tech.lyt", cell_gds="pdk/gds/cells.gds"
-    )
+    pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
     platform.get_pdk.return_value = pdk
     backend = OpenRoadPnr(
