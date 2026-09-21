@@ -185,7 +185,7 @@ from .runner.test_runner import RunDepth, TestRunner
 from .runner.xfail import apply_xfail, xfail_refusal
 from .runner.fpga_runner import FpgaRunner
 from .runner.fpga_results import FpgaSkipResults
-from .runner.pnr_runner import PnrRunner
+from .runner.pnr_runner import PnrExportRunner, PnrRunner
 from .runner.pnr_results import PnrSkipResults
 from .runner.power_runner import PowerRunner
 from .runner.power_results import PowerSkipResults
@@ -222,6 +222,7 @@ from .tools.hier_rtl_buddy_view import (
     RtlBuddyViewQuery,
     probe_view_version,
 )
+from .tools.pnr_openroad import DEFAULT_PNG_HEIGHT, DEFAULT_PNG_WIDTH
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
@@ -746,6 +747,10 @@ class RtlBuddy:
             self.do_synth_regression
         )
         self.app.command("pnr", help="run place-and-route")(self.do_cmd_pnr)
+        self.app.command(
+            "pnr-export",
+            help="export GDS/PNG from a saved P&R result (no synthesis, no OpenROAD)",
+        )(self.do_cmd_pnr_export)
         self.app.command("power", help="run power analysis")(self.do_cmd_power)
         self.app.command("power-regression", help="run power analysis regression")(
             self.do_power_regression
@@ -11150,6 +11155,10 @@ class RtlBuddy:
             "gds_missing_cells",
             "gds_missing_cell_count",
             "gds_allowed_empty_cells",
+            # Where `rb pnr-export` recorded what it read and produced
+            # (#618). Absent from an `rb pnr` row: a run writes no such
+            # record.
+            "export_provenance",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11622,6 +11631,208 @@ class RtlBuddy:
             logger=logger,
             metadata=metadata,
         )
+
+    def do_cmd_pnr_export(
+        self,
+        pnr_config: Annotated[
+            str,
+            typer.Option("-c", "--pnr-config", help="pnr.yaml to use"),
+        ] = "pnr.yaml",
+        pnr_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of pnr run whose saved result to export",
+                show_default="export every entry in the suite",
+            ),
+        ] = None,
+        list_runs: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list pnr runs in the selected config and exit"
+            ),
+        ] = False,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l",
+                "--reg-level",
+                help="export only entries with reglvl at or below this value",
+            ),
+        ] = 0,
+        emit_png: Annotated[
+            bool,
+            typer.Option("--png", help="render a PNG of the exported GDS"),
+        ] = False,
+        png_only: Annotated[
+            bool,
+            typer.Option(
+                "--png-only",
+                help=(
+                    "re-render the PNG from the GDS already in the artefact "
+                    "directory; no stream-out, and the GDS is not rewritten"
+                ),
+            ),
+        ] = False,
+        def_path: Annotated[
+            str,
+            typer.Option(
+                "--def",
+                help=(
+                    "export this DEF instead of the run's own routed one; "
+                    "needs a single named run, whose platform and top are used"
+                ),
+                show_default="the run's <top>.def",
+            ),
+        ] = None,
+        lyp: Annotated[
+            str,
+            typer.Option(
+                "--lyp",
+                help="layer properties (.lyp) for the render",
+                show_default="the PDK's klayout-props",
+            ),
+        ] = None,
+        png_width: Annotated[
+            int,
+            typer.Option("--png-width", help="rendered PNG width in pixels"),
+        ] = DEFAULT_PNG_WIDTH,
+        png_height: Annotated[
+            int,
+            typer.Option("--png-height", help="rendered PNG height in pixels"),
+        ] = DEFAULT_PNG_HEIGHT,
+        gds_mode: Annotated[
+            GdsMode,
+            typer.Option(
+                "--gds-mode",
+                case_sensitive=False,
+                help=(
+                    "override each run's gds-mode: strict publishes nothing "
+                    "when a cell has no layout, preview keeps the incomplete "
+                    "layout and reports the cells"
+                ),
+                show_default="each run's gds-mode (preview)",
+            ),
+        ] = None,
+    ):
+        """export GDS/PNG from a saved P&R result (no synthesis, no OpenROAD)"""
+        ctx = self._enter_command_context(
+            primary_config=pnr_config, list_only=list_runs
+        )
+        suite_cfg = PnrSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.pnr_export",
+            command="pnr-export",
+            pnr=pnr_name or "all",
+            pnr_config=pnr_config,
+            png_only=png_only,
+        )
+
+        if list_runs:
+            if self.machine:
+                self._emit_machine_result(
+                    "pnr-export --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        results = self._do_pnr_export_suite(
+            suite_cfg,
+            pnr_name=pnr_name,
+            reg_level=reg_level,
+            emit_png=emit_png,
+            png_only=png_only,
+            def_path=def_path,
+            lyp=lyp,
+            png_width=png_width,
+            png_height=png_height,
+            gds_mode=gds_mode,
+        )
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "pnr-export",
+                exit_code,
+                results=[self._pnr_result_row(r) for r in results],
+            )
+        else:
+            self._render_pnr_summary("P&R Export Results Summary", results)
+        raise typer.Exit(exit_code)
+
+    def _do_pnr_export_suite(
+        self,
+        suite_cfg,
+        *,
+        pnr_name=None,
+        reg_level=0,
+        emit_png: bool = False,
+        png_only: bool = False,
+        def_path: str | None = None,
+        lyp: str | None = None,
+        png_width: int = DEFAULT_PNG_WIDTH,
+        png_height: int = DEFAULT_PNG_HEIGHT,
+        gds_mode: str | None = None,
+    ):
+        runs = suite_cfg.get_runs(pnr_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        if def_path is not None and len(runs) != 1:
+            # One DEF cannot be the saved result of several runs, and
+            # guessing which one it belongs to is the staleness the
+            # command exists to refuse (#618).
+            raise FatalRtlBuddyError(
+                "--def needs exactly one pnr run: name the run to export "
+                f"(this selection has {len(runs)})"
+            )
+        if def_path is not None and png_only:
+            raise FatalRtlBuddyError(
+                "--def and --png-only are exclusive: a re-render reads the "
+                "GDS beside the run, not a DEF"
+            )
+        results = []
+        for run in runs:
+            pnr_level = run.get_reglvl(run.get_tool_name())
+            if reg_level is not None and pnr_level > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "pnr_export_suite.skip",
+                    pnr=run.get_name(),
+                    reason="above_regression_level",
+                    pnr_level=pnr_level,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "pnr_name": run.get_name(),
+                        "results": PnrSkipResults(
+                            name=f"{run.get_name()}/results",
+                            desc=(f"reglvl {pnr_level} above {reg_level}"),
+                        ),
+                    }
+                )
+                continue
+            runner = PnrExportRunner(
+                name=run.get_name(),
+                root_cfg=self.root_cfg,
+                pnr_cfg=run,
+                suite_dir=suite_dir,
+                reglvl_filter=reg_level if reg_level else None,
+                emit_png=emit_png,
+                gds_mode=gds_mode,
+                def_path=def_path,
+                png_only=png_only,
+                klayout_props=lyp,
+                png_width=png_width,
+                png_height=png_height,
+            )
+            res = runner.run()
+            # Deliberately no `xfail` handling: the marker is the design's
+            # expectation of its P&R run, and an export over a saved result
+            # is not that run (#553, #594).
+            results.append({"pnr_name": run.get_name(), "results": res})
+        return results
 
     def do_cmd_power(
         self,

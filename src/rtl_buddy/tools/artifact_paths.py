@@ -162,6 +162,18 @@ SIBLING_OUTPUT_NAMES = (
     # rb pnr's design-independent reports (tools/pnr_openroad.py)
     "route.drc.rpt",
     "timing.rpt",
+    # What `rb pnr-export` recorded about the layout it exported, beside
+    # that layout (#618). A `.json` in a P&R artefact directory, which a
+    # co-named FPGA run clears by suffix — and unlike the GDS it describes,
+    # nothing regenerates it.
+    "export.provenance.json",
+    # The stream-out's input manifest and the KLayout helper's completeness
+    # report (#617, #619). Same exposure: a strict re-render reads the
+    # report to decide whether the GDS beside it is complete, and a co-named
+    # FPGA run's `.json` clear would turn a complete layout into an
+    # unverified one.
+    "def2stream.inputs.json",
+    "def2stream.report.json",
     # rb synth (tools/synth_yosys.py, tools/synth_openroad.py)
     "synth_netlist.v",
     "synth.rtlil",

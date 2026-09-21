@@ -23,6 +23,13 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `FAIL` or strict `XPASS`, and 2 for a fatal configuration or environment error.
   `SKIP`, `XFAIL`, and non-strict `XPASS` count as successful. XPLR verbs exit 0
   on success and 2 on fatal errors.
+- `pnr-export` runs the KLayout export over a saved P&R result and starts no
+  P&R and no synthesis. There the export is the whole job, so any export that
+  was not delivered is a `FAIL` — unlike `rb pnr`, where a failed `preview`
+  export leaves the P&R verdict standing. A layout published with cells that
+  have no GDS stays a qualified pass in `preview` and is a `FAIL` in `strict`.
+  Read `gds_status` and `gds_missing_cells` before reporting a layout, and
+  `export_provenance` for the record of what was read.
 
 ## Synthesis correctness gates
 
