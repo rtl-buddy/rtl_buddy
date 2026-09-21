@@ -1801,6 +1801,30 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "has already been cleared, so this run stops rather than "
                 "leave them standing over it"
             )
+        # The two halves of rtl-buddy/rtl_buddy#627: a macro library the
+        # configuration named and the disk does not have, and a macro the
+        # analysis could say nothing about because no library covered it.
+        case "power.missing_macro_inputs":
+            missing = fields.get("missing") or []
+            return (
+                f'power run "{fields.get("power")}": {fields.get("count")} '
+                "configured macro input(s) not on disk — "
+                + ", ".join(str(p) for p in missing)
+                + ". These come from the referenced synth/pnr run's "
+                "lef-paths / lib-paths and this run's own lib-paths; a "
+                "read_liberty of a path that is not there leaves the macro "
+                "reporting 0 W, so the run stops instead"
+            )
+        case "power.unpowered_instances":
+            cells = fields.get("cells") or []
+            return (
+                f'power run "{fields.get("power")}": {fields.get("count")} '
+                "instance(s) have no Liberty power data and report 0 W — "
+                + ", ".join(str(c) for c in cells)
+                + ". The reported total covers everything else; supply the "
+                "cell's Liberty through the referenced pnr/synth run's "
+                "lib-paths, or through lib-paths on this power.yaml entry"
+            )
         case "power.phys_half_stale":
             return (
                 f'power run "{fields.get("power")}": the previous run\'s '

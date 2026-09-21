@@ -17,6 +17,7 @@ _SNAPSHOT_ATTEMPTS = 3
 
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
+from ..phys import reports
 from ..phys.manifest import (
     project_relative,
     project_root_for_dir,
@@ -54,6 +55,80 @@ def _within(root: str, path: str) -> bool:
         if candidate == base or candidate.startswith(base + os.sep):
             return True
     return False
+
+
+def _dedup_paths(paths) -> list[str]:
+    """The paths in first-named order, one entry per file, empties dropped.
+
+    De-duplication is on the resolved path, as the P&R backend's own
+    stream-out inputs de-duplicate: a macro Liberty that a `power.yaml`
+    repeats after inheriting it from the run it reads is one library, and
+    `read_liberty` on the same file twice makes OpenSTA re-register every
+    cell in it and warn about each one.
+
+    Order is stable and deterministic because `read_liberty` is: two
+    libraries that define a cell of the same name resolve to whichever
+    was read first, so a set here would make the analysis depend on hash
+    ordering (#627).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path:
+            continue
+        key = os.path.normcase(os.path.realpath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+#: A Liberty ``cell (NAME) {`` declaration, and the two-line spelling of
+#: it that generated libraries use. Scanned line by line rather than
+#: parsed, for the reason
+#: :meth:`~rtl_buddy.tools.synth_openroad.OpenRoadSynth._masters_from_lef_and_liberty`
+#: gives: a standard-cell Liberty runs to tens of megabytes and only the
+#: declaration lines matter here.
+_LIBERTY_CELL_RE = re.compile(r'^\s*cell\s*\(\s*"?([^"\s()]+)"?\s*\)')
+_LIBERTY_CELL_OPEN_RE = re.compile(r"^\s*cell\s*$")
+_LIBERTY_CELL_NAME_RE = re.compile(r'^\s*\(\s*"?([^"\s()]+)"?\s*\)')
+
+
+def _liberty_cell_names(paths) -> set[str]:
+    """Every cell name the given Liberty files declare.
+
+    The synthesis backend's equivalent scans LEF as well, because what it
+    asks is "does OpenROAD have a *master* for this name". This one asks
+    the narrower question the power flow cares about — is there a library
+    cell with power data behind this master — and a `MACRO` in a LEF is
+    exactly the case that answers no (#627).
+
+    A file that cannot be read contributes nothing. That is the safe
+    direction: a name this fails to find is reported as unpowered, which
+    is a warning naming a real instance, where a name it wrongly found
+    would restore the silence the issue is about.
+    """
+    names: set[str] = set()
+    for path in paths:
+        try:
+            with open(path) as f:
+                pending = False
+                for line in f:
+                    if pending:
+                        pending = False
+                        m = _LIBERTY_CELL_NAME_RE.match(line)
+                        if m:
+                            names.add(m.group(1))
+                            continue
+                    m = _LIBERTY_CELL_RE.match(line)
+                    if m:
+                        names.add(m.group(1))
+                    elif _LIBERTY_CELL_OPEN_RE.match(line):
+                        pending = True
+        except OSError:
+            continue
+    return names
 
 
 class OpenRoadPower(BasePower):
@@ -117,6 +192,12 @@ class OpenRoadPower(BasePower):
         # because the fingerprint has to be of what the script read, and
         # `None` until it runs (#570).
         self._script_technology: dict | None = None
+        # The PDK cells that are in the layout but not in the netlist —
+        # `filler_placement`'s fill cells. They have no Liberty and no
+        # power, by construction, and must not be read as macros the
+        # analysis could say nothing about; see `_unpowered_instances`.
+        # Captured by `_write_script` with the rest of the platform.
+        self._physical_only_cells: list[str] = []
         # What `_resolve_inputs()` said when the script was generated —
         # the top `link_design` names, the SDC `read_sdc` reads. `None`
         # until `_write_script` runs; see `_publish_phys_model` for why
@@ -490,8 +571,31 @@ class OpenRoadPower(BasePower):
           an empty file.
 
         Returns a dict with keys: netlist (None for pnr), odb (None for
-        synth), sdc, top.
+        synth), sdc, top, macro_libs, macro_lefs.
+
+        **The macro libraries are resolved here** rather than in
+        `_write_script`, because this is the one place that already holds
+        the upstream entry they are inherited from (#627). A hard macro's
+        Liberty reaches `rb pnr` or `rb synth` through *that* run's
+        `lib-paths`; the power analysis reads only the platform corner,
+        which characterises standard cells, so every macro instance was in
+        the design and in the instance report contributing exactly zero.
+        The libraries the upstream run declares are what this run has to
+        read to say anything about those instances, and the `power.yaml`'s
+        own `lib-paths` are appended after them.
+
+        ``macro_lefs`` is empty on the `pnr` path and the synthesis run's
+        `lef-paths` on the `synth` one, because that is where the LEF is
+        load-bearing: `read_verilog` + `link_design` builds the database
+        out of LEF masters and cannot place an instance of a master it has
+        never seen, while `read_db` restores a database in which every
+        master the router placed is already present. Reading the macro LEF
+        again before a `read_db` would not even survive it — the database
+        read replaces the technology the LEF built.
         """
+        # Appended after whatever the upstream run declares, so the
+        # inherited list stays the base and a `power.yaml` adds to it.
+        own_libs = self.power_cfg.get_lib_paths()
         if self.power_cfg.get_netlist_source() == "pnr":
             pnr_cfg = self.power_cfg.resolve_pnr_cfg()
             top = pnr_cfg.resolve_synth_cfg().get_top()
@@ -503,7 +607,14 @@ class OpenRoadPower(BasePower):
             sdc = self.power_cfg.get_constraints() or os.path.join(
                 pnr_artefact, f"{top}.routed.sdc"
             )
-            return {"netlist": None, "odb": odb, "sdc": sdc, "top": top}
+            return {
+                "netlist": None,
+                "odb": odb,
+                "sdc": sdc,
+                "top": top,
+                "macro_libs": _dedup_paths([*pnr_cfg.get_lib_paths(), *own_libs]),
+                "macro_lefs": [],
+            }
 
         synth_cfg = self.power_cfg.resolve_synth_cfg()
         top = synth_cfg.get_top()
@@ -518,6 +629,8 @@ class OpenRoadPower(BasePower):
             "odb": None,
             "sdc": self.power_cfg.get_constraints(),
             "top": top,
+            "macro_libs": _dedup_paths([*synth_cfg.get_lib_paths(), *own_libs]),
+            "macro_lefs": _dedup_paths(synth_cfg.get_lef_paths()),
         }
 
     def _upstream_identity(self) -> dict:
@@ -687,12 +800,21 @@ class OpenRoadPower(BasePower):
         # measured — `_publish_phys_model` reads the capture rather than
         # resolving again (#560).
         self._script_inputs = inputs
+        macro_libs = list(inputs.get("macro_libs") or [])
+        macro_lefs = list(inputs.get("macro_lefs") or [])
+        # Not part of the script — the fill cells are already in the
+        # database this reads — but resolved here with the rest of the
+        # platform, so the detection below judges the PDK the run was
+        # prepared against (#627).
+        self._physical_only_cells = list(pdk.get_fill_cells() or [])
         # And the technology the `read_liberty` / `read_lef` lines below
         # name, in the order they name it, for `_phys_technology` (#570).
         self._script_technology = {
             "liberty": liberty,
+            "macro_libs": macro_libs,
             "tech_lef": tech_lef,
             "macro_lef": macro_lef,
+            "macro_lefs": macro_lefs,
         }
         netlist = inputs["netlist"]
         sdc = inputs["sdc"]
@@ -709,6 +831,27 @@ class OpenRoadPower(BasePower):
             raise RuntimeError(
                 f"power run '{self.power_cfg.get_name()}': "
                 f"pdk '{pdk.get_name()}' has no tech-lef configured"
+            )
+        # Every macro input the configuration named, before OpenROAD is
+        # launched and at ERROR, the way a stream-out judges its own
+        # (`pnr.gds_missing_inputs`). A `read_liberty` of a path that is not
+        # there is a diagnostic in a log nobody reads and an analysis that
+        # carries on to report the macro at zero watts — which is the exact
+        # silence this key exists to end, restored by a typo (#627).
+        missing = [path for path in macro_libs + macro_lefs if not os.path.isfile(path)]
+        if missing:
+            log_event(
+                logger,
+                logging.ERROR,
+                "power.missing_macro_inputs",
+                power=self.power_cfg.get_name(),
+                count=len(missing),
+                missing=missing,
+            )
+            raise RuntimeError(
+                f"power run '{self.power_cfg.get_name()}': "
+                f"{len(missing)} configured macro input(s) not on disk: "
+                + ", ".join(missing)
             )
         if source == "pnr":
             if not os.path.isfile(odb):
@@ -734,10 +877,16 @@ class OpenRoadPower(BasePower):
         lines = [
             "# Generated by rtl_buddy power flow",
             f"read_liberty {liberty}",
-            f"read_lef {tech_lef}",
         ]
+        # After the platform corner, so a macro library never shadows a
+        # standard cell, and in the order resolved. Both lists are empty
+        # for a design with no macros, and the script is then the one this
+        # flow has always emitted, line for line (#627).
+        lines.extend(f"read_liberty {lib}" for lib in macro_libs)
+        lines.append(f"read_lef {tech_lef}")
         if macro_lef:
             lines.append(f"read_lef {macro_lef}")
+        lines.extend(f"read_lef {lef}" for lef in macro_lefs)
         if source == "pnr":
             # ODB encapsulates placement + routing. Reading it
             # repopulates OpenROAD's DB at the post-route state;
@@ -889,6 +1038,99 @@ class OpenRoadPower(BasePower):
                 manifest=result["manifest"],
             )
         return None
+
+    def _read_if_present(self, path: str) -> str | None:
+        try:
+            return Path(path).read_text()
+        except OSError:
+            return None
+
+    def _unpowered_instances(self) -> dict:
+        """Instances the analysis could say nothing about, and their cells.
+
+        A hard macro whose Liberty never reached the run is *in* the
+        design — placed, routed, and one line of `power_instances.rpt` —
+        and every one of its four columns is `0.00e+00`. Nothing in the
+        report distinguishes that from a cell that genuinely burns
+        nothing, so the design total, the `Macro` group row and the
+        model's per-instance half all read as a measurement when they are
+        an omission (#627).
+
+        Read off the two reports this run already produced, rather than
+        asked of OpenSTA. Emitting the list from Tcl would put a new
+        `get_property` in the hierarchy walk — a property an older
+        OpenSTA may not answer, inside the `catch` that must not cost the
+        run anything — and would change the generated script for every
+        design, including the ones with no macros at all. The reports are
+        already parsed by the publish a few lines further on, and the
+        Liberty files the script named are on disk.
+
+        All three conditions, not any one:
+
+        - the instance's master is not declared in any Liberty the script
+          read (:func:`_liberty_cell_names`), which is the statement
+          being made;
+        - its total power is exactly zero, which is what makes the
+          statement worth a warning; and
+        - its master is not one of the PDK's fill cells.
+
+        The second keeps a Liberty spelling this scanner misses from
+        turning a whole standard-cell library into a warning: a cell that
+        reports watts has power data whatever the scan concluded. The
+        first keeps an unclocked flop that really does sit at zero out of
+        it. The third is not a refinement but a correction: `rb pnr` ends
+        with `filler_placement`, so a routed database holds tens of
+        thousands of fill instances that are in the layout and not in the
+        netlist. They have no Liberty and no power *by construction*, and
+        reporting them would bury the one macro this exists to find under
+        24 000 lines of noise. They are named by the PDK, which is the
+        same list the flow filled with.
+
+        :returns: ``{"cells": [...], "instances": int}`` — the master
+            names, sorted, and how many instances of them there are. The
+            paths themselves are not carried: a design can hold thousands
+            and the per-instance report and `phys-model.json` both list
+            them with the cell beside each. Empty when there is nothing
+            to say, including when either report is absent — the
+            by-product failure `power.phys_model_incomplete` reports
+            that.
+        """
+        empty: dict = {"cells": [], "instances": 0}
+        instances_text = self._read_if_present(self._instances_report_path())
+        cells_text = self._read_if_present(self._instances_cells_path())
+        if not instances_text or not cells_text:
+            return empty
+        cells = reports.parse_instance_cells(cells_text)
+        physical_only = set(self._physical_only_cells)
+        rows = [
+            row
+            for row in reports.parse_instance_power(instances_text, cells)
+            if row.get("module")
+            and row.get("total_uw") == 0.0
+            and str(row["module"]) not in physical_only
+        ]
+        if not rows:
+            # The common case, and the expensive check skipped: no
+            # zero-power instance means no Liberty needs scanning.
+            return empty
+        technology = self._script_technology or {}
+        known = _liberty_cell_names(
+            [
+                path
+                for path in [
+                    technology.get("liberty"),
+                    *(technology.get("macro_libs") or []),
+                ]
+                if path
+            ]
+        )
+        unpowered = [row for row in rows if str(row["module"]) not in known]
+        if not unpowered:
+            return empty
+        return {
+            "cells": sorted({str(row["module"]) for row in unpowered}),
+            "instances": len(unpowered),
+        }
 
     def _fatal_log_region(self, log_text: str) -> str:
         """The part of `power.log` whose `[ERROR ...]` lines fail the run.
@@ -1096,6 +1338,23 @@ class OpenRoadPower(BasePower):
                 "could not parse Total line from report_power output"
             )
 
+        # Before the pass is announced, so the warning reads above the
+        # numbers it qualifies rather than under them. It never changes
+        # the verdict: the watts reported are a real measurement of
+        # everything that had a library, and refusing to report them
+        # would cost a user the standard-cell figure they can act on to
+        # make a point about the macro they already know is a macro.
+        unpowered = self._unpowered_instances()
+        if unpowered["cells"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.unpowered_instances",
+                power=self.power_cfg.get_name(),
+                count=unpowered["instances"],
+                cells=unpowered["cells"],
+            )
+
         activity_source = self.power_cfg.get_activity_source()
         log_event(
             logger,
@@ -1122,6 +1381,8 @@ class OpenRoadPower(BasePower):
             leakage_w=parsed["leakage_w"],
             activity_source=activity_source,
             phys_model=phys_model,
+            unpowered_cells=unpowered["cells"],
+            unpowered_instance_count=unpowered["instances"],
         )
 
     def _phys_technology(self) -> list[str]:
@@ -1144,12 +1405,23 @@ class OpenRoadPower(BasePower):
         Read from the capture `_write_script` took rather than resolved
         again: the mapping has to describe the technology the run
         consumed, not whatever `cfg-pnr-platforms` says now.
+
+        The macro libraries and LEFs sit where the script reads them —
+        the inherited and configured Liberty after the platform corner,
+        the inherited LEFs after the PDK's (#627). They belong in the
+        fingerprint for the reason the platform's do, and more sharply: a
+        run that reads a macro's Liberty and one that does not measure
+        the same netlist and report different watts, so digesting them
+        identically would present the before and after of this very fix
+        as one experiment.
         """
         resolved = self._script_technology or {}
         named = [
             resolved.get("liberty"),
+            *(resolved.get("macro_libs") or []),
             resolved.get("tech_lef"),
             resolved.get("macro_lef"),
+            *(resolved.get("macro_lefs") or []),
         ]
         return library_fingerprint([path for path in named if path], self.root_cfg)
 

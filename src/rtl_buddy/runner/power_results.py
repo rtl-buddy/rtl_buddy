@@ -22,6 +22,38 @@ class PowerResults:
         return "power_results: " + pprint.pformat(self.results)
 
 
+#: How many cell names the pass description spells out before it stops
+#: counting. A design that lost a whole library would otherwise put
+#: hundreds of names in a results table cell; the machine fields carry
+#: the complete list either way.
+_DESC_CELLS = 3
+
+
+def _unpowered_qualifier(cells, instance_count: int) -> str:
+    """What to add to a pass description when cells had no library (#627).
+
+    The verdict is unchanged — the watts reported are a real measurement
+    of everything that had a library — so the qualifier is what stops
+    them from being read as a measurement of the whole design. It names
+    the cells because the cell is what the reader has to go and supply a
+    Liberty for; which instances they are is in the per-instance report
+    and in the model beside it.
+    """
+    if not cells:
+        return ""
+    listed = ", ".join(str(c) for c in cells[:_DESC_CELLS])
+    if len(cells) > _DESC_CELLS:
+        listed += f", +{len(cells) - _DESC_CELLS} more"
+    one = instance_count == 1
+    instance_word = "instance" if one else "instances"
+    cell_word = "cell" if len(cells) == 1 else "cells"
+    return (
+        f"; {instance_count} {instance_word} of {len(cells)} {cell_word} "
+        f"with no Liberty power data {'reports' if one else 'report'} 0 W "
+        f"({listed})"
+    )
+
+
 class PowerPassResults(PowerResults):
     def __init__(
         self,
@@ -35,10 +67,18 @@ class PowerPassResults(PowerResults):
         leakage_w: float | None = None,
         activity_source: str | None = None,
         phys_model: str | None = None,
+        unpowered_cells: list | None = None,
+        unpowered_instance_count: int = 0,
     ):
+        unpowered_cells = list(unpowered_cells or [])
         super().__init__(
             name=name,
-            results={"result": "PASS", "name": name, "desc": "Power analysis passed"},
+            results={
+                "result": "PASS",
+                "name": name,
+                "desc": "Power analysis passed"
+                + _unpowered_qualifier(unpowered_cells, unpowered_instance_count),
+            },
         )
         if mode is not None:
             self.results["mode"] = mode
@@ -58,6 +98,14 @@ class PowerPassResults(PowerResults):
         # (#558). Absent when the run could not publish one.
         if phys_model is not None:
             self.results["phys_model"] = phys_model
+        # The cells the analysis had no library for, and how many
+        # instances of them there are (#627). Absent — rather than empty —
+        # on the ordinary run, so a consumer reading the key reads a run
+        # that found something.
+        if unpowered_cells:
+            self.results["unpowered_cells"] = unpowered_cells
+            self.results["unpowered_cell_count"] = len(unpowered_cells)
+            self.results["unpowered_instance_count"] = unpowered_instance_count
 
 
 class PowerFailResults(PowerResults):

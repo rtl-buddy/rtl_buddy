@@ -11179,6 +11179,13 @@ class RtlBuddy:
             # published (#560). Omitted, like every other optional field
             # here, when the run published no model.
             "phys_model",
+            # The cells the analysis had no Liberty for, and the instances
+            # of them that therefore report 0 W (#627). Present only on a
+            # run that found some, so a consumer reading `unpowered_cells`
+            # reads a total that does not cover the whole design.
+            "unpowered_cells",
+            "unpowered_cell_count",
+            "unpowered_instance_count",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
