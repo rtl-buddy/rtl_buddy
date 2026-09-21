@@ -656,6 +656,85 @@ class TestWaveformValueReaderScopeSignals:
 
 
 # ---------------------------------------------------------------------------
+# WaveformValueReader against a real trace
+#
+# The fakes above pin the reader's own branching; this pins the assumptions
+# those fakes encode against the pywellen that is actually installed. pywellen
+# 0.25.0 rewrote this surface and the reader's `except` blocks turned that into
+# blank annotations with nothing in the log (#263), so the contract — KeyError
+# for a miss, None before the first change, plain values otherwise — is worth
+# holding to a real waveform.
+# ---------------------------------------------------------------------------
+
+
+_READER_VCD = """\
+$timescale 1ns $end
+$scope module tb_top $end
+$var wire 1 ! clk $end
+$scope module i_dut $end
+$var wire 1 # rst $end
+$var wire 4 $ cnt $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0000 $
+#10
+1!
+1#
+b0010 $
+#20
+0!
+"""
+
+
+class TestWaveformValueReaderRealTrace:
+    @pytest.fixture
+    def reader(self, tmp_path):
+        from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+
+        vcd = tmp_path / "dump.vcd"
+        vcd.write_text(_READER_VCD)
+        return WaveformValueReader(str(vcd))
+
+    def test_get_value_at_several_times(self, reader):
+        # At a change, between changes (holds), and after the last one.
+        assert reader.get_value("tb_top.clk", 0) == "0"
+        assert reader.get_value("tb_top.clk", 10) == "1"
+        assert reader.get_value("tb_top.clk", 15) == "1"
+        assert reader.get_value("tb_top.clk", 999) == "0"
+        assert reader.get_value("tb_top.i_dut.cnt", 10) == "2"
+
+    def test_get_value_before_first_change_is_none(self, reader):
+        # rst has no value until t=10; a blank annotation is the right answer.
+        assert reader.get_value("tb_top.i_dut.rst", 0) is None
+        assert reader.get_value("tb_top.i_dut.rst", 10) == "1"
+
+    def test_missing_signal_is_a_quiet_none(self, reader):
+        """A lookup miss must not log — only a real API break does (#263)."""
+        with patch("rtl_buddy.tools.surfer_wcp.log_event") as logged:
+            assert reader.get_value("tb_top.nope", 10) is None
+        logged.assert_not_called()
+        assert reader._api_break_logged is False
+
+    def test_get_scope_signals_lists_a_real_scope(self, reader):
+        assert reader.get_scope_signals("tb_top.i_dut") == [
+            ("rst", "tb_top.i_dut.rst"),
+            ("cnt", "tb_top.i_dut.cnt"),
+        ]
+        # A path that is a signal, not a scope, and an unknown one.
+        assert reader.get_scope_signals("tb_top.clk") == []
+        assert reader.get_scope_signals("tb_top.nope") == []
+
+    def test_get_values_bulk_omits_misses(self, reader):
+        result = reader.get_values_bulk(
+            ["tb_top.clk", "tb_top.i_dut.cnt", "tb_top.nope"], 10
+        )
+        assert result == {"tb_top.clk": "1", "tb_top.i_dut.cnt": "2"}
+
+
+# ---------------------------------------------------------------------------
 # _push_scope_values same-line grouping
 # ---------------------------------------------------------------------------
 
@@ -845,8 +924,13 @@ class TestWaveformValueReaderCheck:
         with pytest.raises(FatalRtlBuddyError, match="not found"):
             reader.check()
 
-    def test_pywellen_without_random_access_api_raises_fatal(self, tmp_path):
+    def test_pywellen_without_random_access_api_raises_fatal(
+        self, tmp_path, monkeypatch
+    ):
+        """The message must name the installed version and the supported
+        range — an AttributeError traceback leaves the user nowhere (#263)."""
         from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.tools import pywellen_compat
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         fst = tmp_path / "dump.fst"
@@ -854,27 +938,25 @@ class TestWaveformValueReaderCheck:
         # A Waveform lacking the >=0.25 random-access surface (a stale <0.25
         # pin, or a future incompatible rewrite).
         fake_pywellen = SimpleNamespace(Waveform=type("Waveform", (), {}))
+        monkeypatch.setattr(pywellen_compat, "pywellen_version", lambda: "0.24.2")
         reader = WaveformValueReader(str(fst))
         with patch.dict("sys.modules", {"pywellen": fake_pywellen}):
-            with pytest.raises(FatalRtlBuddyError, match="random-access"):
+            with pytest.raises(FatalRtlBuddyError) as excinfo:
                 reader.check()
+        message = str(excinfo.value)
+        assert "random-access" in message
+        assert "0.24.2" in message
+        assert pywellen_compat.SUPPORTED_SPECIFIER in message
+        assert "rb wave" in message
 
-    def test_passes_with_random_access_api(self, tmp_path):
+    def test_passes_with_the_installed_pywellen(self, tmp_path):
+        """No fake here: the guard's table has to agree with the pywellen
+        that is actually resolved, which is the whole point of it."""
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         fst = tmp_path / "dump.fst"
         fst.touch()
-        # A Waveform exposing the >=0.25 surface: wf[path] lookup, scopes(),
-        # and the timescale getter.
-        attrs = {
-            "__getitem__": lambda self, k: None,
-            "scopes": lambda self: (),
-            "timescale": property(lambda self: None),
-        }
-        fake_pywellen = SimpleNamespace(Waveform=type("Waveform", (), attrs))
-        reader = WaveformValueReader(str(fst))
-        with patch.dict("sys.modules", {"pywellen": fake_pywellen}):
-            reader.check()  # must not raise
+        WaveformValueReader(str(fst)).check()  # must not raise
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,20 @@
-"""Smoke tests for rb saif (FST/VCD → SAIF v2.0)."""
+"""Tests for rb saif (FST/VCD → SAIF v2.0).
+
+Unit coverage of the per-bit accumulator, then a golden end-to-end pass over
+a real VCD read by the real pywellen — the converter walks live pywellen
+objects, so a mocked waveform could not catch an API break (#263, #267).
+"""
+
+import re
+import sys
+from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.rtl_buddy import RtlBuddy
+from rtl_buddy.tools import pywellen_compat
 from rtl_buddy.tools.saif_from_trace import _bit_stats, convert
 
 
@@ -51,35 +63,93 @@ def test_convert_missing_input_raises(tmp_path):
         convert(tmp_path / "nope.fst", tmp_path / "out.saif")
 
 
+def test_convert_out_of_range_pywellen_raises_before_any_api_touch(
+    tmp_path, monkeypatch
+):
+    """A pywellen without the surface this converter drives must fail with a
+    named version and the supported range, not an AttributeError traceback
+    from whichever getter vanished first (#263).
+
+    The fake stands in for a real out-of-range install: a stale ``<0.25``
+    tool venv, or the next pre-1.0 rewrite.
+    """
+    trace = tmp_path / "dump.vcd"
+    trace.write_text(_VCD)
+    monkeypatch.setitem(
+        sys.modules, "pywellen", SimpleNamespace(Waveform=type("Waveform", (), {}))
+    )
+    monkeypatch.setattr(pywellen_compat, "pywellen_version", lambda: "0.24.2")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        convert(trace, tmp_path / "out.saif")
+    message = str(excinfo.value)
+    assert "0.24.2" in message
+    assert pywellen_compat.SUPPORTED_SPECIFIER in message
+    assert "rb saif" in message
+
+
 # ---------------------------------------------------------------------------
-# End-to-end: real VCD -> SAIF through the live pywellen >=0.25 API.
+# Golden end-to-end: real VCD -> real pywellen -> exact SAIF.
 #
-# top.clk (1-bit), top.data (8-bit bus), top.sub.rst (1-bit, nested scope).
-# clk toggles 0->1->0; the last change at t=10 fixes the duration.
+# The converter walks live pywellen objects, so only a real trace proves the
+# port; a mocked waveform would model an API pywellen may no longer have,
+# which is the failure #263 was. Every emitted number below is hand-derived
+# from this stimulus, so a silent change in either the converter or pywellen's
+# value encoding fails here.
+#
+#   top.clk      1-bit, four edges -> TC 3 (only 0<->1 transitions count)
+#   top.bus      4-bit, per-bit toggles + a z on the MSB from t=20 -> TZ
+#   top.WIDTH    a Parameter -> skipped, not a net
+#   top.mem.[0]  memory-array element -> skipped by name
+#   top.sub.rst  1-bit, x -> 0 -> 1 in a nested scope -> TX, and x->0 not a TC
+#
+# Timescale is 10 ps (not the 1 ns default) and the last change is at t=30, so
+# TIMESCALE and DURATION are both load-bearing.
 # ---------------------------------------------------------------------------
 
 _VCD = """\
-$timescale 1ns $end
+$timescale 10ps $end
 $scope module top $end
 $var wire 1 ! clk $end
-$var wire 8 # data $end
+$var wire 4 # bus $end
+$var parameter 32 ) WIDTH $end
+$scope module mem $end
+$var wire 1 ' [0] $end
+$upscope $end
 $scope module sub $end
-$var wire 1 % rst $end
+$var wire 1 $ rst $end
 $upscope $end
 $upscope $end
 $enddefinitions $end
 #0
 0!
-b00000000 #
-0%
-#5
-1!
-b00000001 #
-1%
+b0000 #
+b00000000000000000000000000000100 )
+0'
+x$
 #10
+1!
+b0011 #
+0$
+#20
 0!
-b00000010 #
+bz101 #
+1$
+#30
+1!
 """
+
+_EXPECTED_NETS = {
+    # 0@0 1@10 0@20 1@30, end 30: three 0<->1 transitions, 20 low / 10 high.
+    "top/clk": {"T0": 20, "T1": 10, "TX": 0, "TZ": 0, "TC": 3, "IG": 0},
+    # bus: 0b0000@0 0b0011@10 "z101"@20, held to end 30.
+    "top/bus\\[0\\]": {"T0": 10, "T1": 20, "TX": 0, "TZ": 0, "TC": 1, "IG": 0},
+    "top/bus\\[1\\]": {"T0": 20, "T1": 10, "TX": 0, "TZ": 0, "TC": 2, "IG": 0},
+    "top/bus\\[2\\]": {"T0": 20, "T1": 10, "TX": 0, "TZ": 0, "TC": 1, "IG": 0},
+    # MSB goes z at t=20 and stays there: 10 ticks of TZ, and 0->z is no toggle.
+    "top/bus\\[3\\]": {"T0": 20, "T1": 0, "TX": 0, "TZ": 10, "TC": 0, "IG": 0},
+    # x@0 0@10 1@20, end 30: 10 ticks each, and x->0 does not count as a toggle.
+    "top/sub/rst": {"T0": 10, "T1": 10, "TX": 10, "TZ": 0, "TC": 1, "IG": 0},
+}
 
 
 def _write_vcd(tmp_path):
@@ -88,35 +158,117 @@ def _write_vcd(tmp_path):
     return vcd
 
 
-def test_convert_writes_saif_structure(tmp_path):
+def _parse_saif(text: str) -> tuple[dict, dict, list]:
+    """Return (header fields, {net path: stats}, instance paths).
+
+    Parsing beats substring matching here: it pins each number to the net it
+    belongs to, so a value landing under the wrong signal cannot pass.
+    """
+    header: dict[str, str] = {}
+    nets: dict[str, dict[str, int]] = {}
+    instances: list[str] = []
+    path: list[str] = []
+    kinds: list[str] = []  # one entry per open block
+    net: str | None = None
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line == ")":
+            kind = kinds.pop()
+            if kind == "instance":
+                path.pop()
+            elif kind == "net":
+                net = None
+            continue
+        if not line.startswith("("):
+            continue
+        if line.endswith(")"):
+            # A leaf line: a header field, or one of a net's stat pairs.
+            for key, value in re.findall(r"\((\w+) ([^()]*)\)", line):
+                if net is None:
+                    header[key] = value.strip()
+                else:
+                    nets[net][key] = int(value)
+            continue
+        body = line[1:].strip()
+        if body == "SAIFILE" or body == "NET":
+            kinds.append("group")
+        elif body.startswith("INSTANCE"):
+            path.append(body[len("INSTANCE") :].strip())
+            instances.append("/".join(path))
+            kinds.append("instance")
+        else:
+            net = "/".join([*path, body])
+            nets[net] = {}
+            kinds.append("net")
+
+    assert not kinds, "unbalanced SAIF parentheses"
+    return header, nets, instances
+
+
+def test_convert_emits_the_golden_saif(tmp_path):
     saif = tmp_path / "out.saif"
     convert(_write_vcd(tmp_path), saif)
-    text = saif.read_text()
+    header, nets, instances = _parse_saif(saif.read_text())
 
-    # Header: native timescale, backward direction, computed duration (max t).
-    assert '(SAIFVERSION "2.0")' in text
-    assert '(DIRECTION "backward")' in text
-    assert "(TIMESCALE 1 ns)" in text
-    assert "(DURATION 10)" in text
+    assert header["SAIFVERSION"] == '"2.0"'
+    assert header["DIRECTION"] == '"backward"'
+    assert header["PROGRAM_NAME"] == '"rb saif"'
+    # Native trace timescale, not a normalised one, so values stay integral.
+    assert header["TIMESCALE"] == "10 ps"
+    # Duration is the last change time across every signal.
+    assert header["DURATION"] == "30"
 
-    # Hierarchy: nested INSTANCE for top and its child scope sub.
-    assert "(INSTANCE top" in text
-    assert "(INSTANCE sub" in text
+    assert nets == _EXPECTED_NETS
 
-    # 1-bit nets by name; the 8-bit bus expanded to per-bit nets.
-    assert "(clk" in text
-    assert "(rst" in text
-    assert "(data\\[0\\]" in text
-    assert "(data\\[7\\]" in text
+    # Hierarchy mirrors the trace's scopes, nested under the top instance.
+    assert instances[:1] == ["top"]
+    assert "top/sub" in instances
+    assert "top/mem" in instances
 
 
-def test_convert_emits_toggle_and_state_blocks(tmp_path):
+def test_convert_skips_parameters_and_memory_elements(tmp_path):
+    """Parameters are not nets, and FST memory-array elements (``name`` starting
+    with ``[``) confuse the SAIF parser when nested under INSTANCE."""
     saif = tmp_path / "out.saif"
     convert(_write_vcd(tmp_path), saif)
-    text = saif.read_text()
+    _, nets, _ = _parse_saif(saif.read_text())
 
-    # clk toggles 0->1->0, so its TC is exactly 2 (only 0<->1 transitions count).
-    assert "(TC 2)" in text
-    # Every net carries the full per-bit state + glitch block.
-    assert "(IG 0)" in text
-    assert "(T0 " in text and "(T1 " in text
+    assert "top/WIDTH" not in nets
+    assert not [n for n in nets if "[0]" in n]
+    # pywellen models the VCD array element as an unnamed child scope of
+    # `mem`; it is emitted as an empty INSTANCE, which carries no nets.
+    assert not [n for n in nets if n.startswith("top/mem")]
+
+
+def test_saif_cli_writes_the_same_file(minimal_project, tmp_path):
+    """Same conversion through the real CLI entry point.
+
+    ``rb saif`` resolves both paths against the command context, so this also
+    covers the wiring the direct ``convert()`` calls above bypass.
+    """
+    vcd = _write_vcd(minimal_project)
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_saif_cli")
+    result = runner.invoke(rb.app, ["saif", str(vcd), "out.saif"])
+    assert result.exit_code == 0, result.output
+
+    header, nets, _ = _parse_saif((minimal_project / "out.saif").read_text())
+    assert header["DURATION"] == "30"
+    assert nets == _EXPECTED_NETS
+
+
+def test_saif_cli_reports_a_missing_trace(minimal_project):
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_saif_cli")
+    result = runner.invoke(rb.app, ["saif", "nope.vcd", "out.saif"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "trace file not found" in str(result.exception)
+
+
+# FST is not covered end-to-end: writing one needs a real dumper (gtkwave's
+# vcd2fst or a simulator), neither of which CI installs, and hand-rolling the
+# container format would test our encoder rather than pywellen's. The VCD and
+# FST readers converge on the same pywellen Waveform surface, which is what
+# these gates pin.
