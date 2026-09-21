@@ -204,6 +204,7 @@ def test_pdk_leaves_the_new_process_keys_unset_by_default(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
     assert pdk.get_placement_density() is None
     assert pdk.get_placement_padding() is None
+    assert pdk.get_placement_macro_halo() is None
     assert pdk.get_dont_use_cells() == []
     assert pdk.get_pdn_config() == ""
 
@@ -214,6 +215,31 @@ def test_pdk_exposes_configured_placement(tmp_path):
     pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=0.55, padding=2))
     assert pdk.get_placement_density() == 0.55
     assert pdk.get_placement_padding() == 2
+
+
+def test_pdk_exposes_a_configured_macro_halo(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_halo=20.0))
+    assert pdk.get_placement_macro_halo() == 20.0
+
+
+@pytest.mark.parametrize("halo", [-1.0, -0.005])
+def test_pdk_rejects_a_negative_macro_halo(tmp_path, halo):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_halo=halo))
+    assert "placement.macro-halo" in str(excinfo.value)
+    assert "nangate45" in str(excinfo.value)
+
+
+def test_pdk_accepts_a_macro_halo_of_zero(tmp_path):
+    """Zero is a legal, if PDN-hostile, request: macros may abut."""
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_halo=0.0))
+    assert pdk.get_placement_macro_halo() == 0.0
 
 
 def test_pdk_resolves_pdn_config_against_the_root_config(tmp_path):
@@ -269,6 +295,7 @@ def test_new_pdk_and_platform_keys_are_spelled_in_kebab_case(tmp_path):
             placement:
               density: 0.55
               padding: 2
+              macro-halo: 20
             dont-use-cells: ["AND2_X1", "*_X32"]
             pdn-config: "pdk/nangate45/pdn.tcl"
         """),
@@ -276,6 +303,7 @@ def test_new_pdk_and_platform_keys_are_spelled_in_kebab_case(tmp_path):
     pdk = PdkConfig(pdk_file, str(tmp_path / "root_config.yaml"))
     assert pdk.get_placement_density() == 0.55
     assert pdk.get_placement_padding() == 2
+    assert pdk.get_placement_macro_halo() == 20.0
     assert pdk.get_dont_use_cells() == ["AND2_X1", "*_X32"]
     assert pdk.get_pdn_config() == str(tmp_path / "pdk/nangate45/pdn.tcl")
 
@@ -287,12 +315,14 @@ def test_new_pdk_and_platform_keys_are_spelled_in_kebab_case(tmp_path):
             cts-buffer: ["BUF_X4", "BUF_X8"]
             placement:
               density: 0.62
+              macro-halo: 30
         """),
     )
     platform = PnrPlatformConfig(platform_file, lambda _name: pdk)
     assert platform.get_cts_buffers() == ["BUF_X4", "BUF_X8"]
     assert platform.get_placement_density() == 0.62
     assert platform.get_placement_padding() == 2
+    assert platform.get_placement_macro_halo() == 30.0
 
 
 @pytest.mark.parametrize("cell", ["", "   ", "AND2_X1 OR2_X1"])
@@ -378,6 +408,7 @@ def test_pnr_platform_placement_falls_back_to_the_flow_defaults(tmp_path):
     cfg = _platform(_make_pdk_cfg(tmp_path))
     assert cfg.get_placement_density() == 0.7
     assert cfg.get_placement_padding() == 1
+    assert cfg.get_placement_macro_halo() == 20.0
 
 
 def test_pnr_platform_placement_takes_the_pdk_values(tmp_path):
@@ -393,10 +424,13 @@ def test_pnr_platform_placement_overrides_the_pdk_field_by_field(tmp_path):
     """The platform wins where it says something, the PDK where it does not."""
     from rtl_buddy.config.pdk import PlacementFile
 
-    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=0.55, padding=2))
+    pdk = _make_pdk_cfg(
+        tmp_path, placement=PlacementFile(density=0.55, padding=2, macro_halo=20.0)
+    )
     cfg = _platform(pdk, placement=PlacementFile(density=0.6))
     assert cfg.get_placement_density() == 0.6
     assert cfg.get_placement_padding() == 2
+    assert cfg.get_placement_macro_halo() == 20.0
 
 
 def test_pnr_platform_rejects_its_own_out_of_range_placement(tmp_path):
@@ -726,6 +760,34 @@ def test_pnr_flow_substitutes_placement_density_and_padding(tmp_path):
     assert "global_placement -density 0.55 -pad_left 2 -pad_right 2\n" in text
 
 
+def test_pnr_flow_renders_the_default_macro_halo(tmp_path):
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+
+    assert "set MACRO_HALO      20\n" in text
+
+
+def test_pnr_flow_renders_a_configured_macro_halo(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_halo=27.5))
+    text = _render_flow(tmp_path, _platform(pdk))
+
+    assert "set MACRO_HALO      27.5\n" in text
+
+
+def test_pnr_flow_embeds_the_macro_packer(tmp_path):
+    """The packer file is substituted verbatim, so pnr.tcl is self-contained
+    and the run does not depend on a second file surviving a dispatch."""
+    from importlib.resources import files
+
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    packer = files("rtl_buddy.pnr").joinpath("macro_pack.tcl").read_text()
+
+    assert packer.strip() in text
+    assert "rb::macro_pack::solve" in text
+    assert "{{" not in text
+
+
 def test_pnr_flow_placement_honours_the_platform_override(tmp_path):
     from rtl_buddy.config.pdk import PlacementFile
 
@@ -855,6 +917,7 @@ def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
         Path(cmd[cmd.index("-log") + 1]).write_text("")
         result = MagicMock()
         result.returncode = 0
+        result.stderr = ""
         return result
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
@@ -1752,6 +1815,7 @@ def test_export_fails_when_the_render_fails(tmp_path, monkeypatch):
             Path(backend.artefact_dir, "demo_top.png").write_bytes(b"\x89PNG")
             result = MagicMock()
             result.returncode = 1
+            result.stderr = ""
             result.stdout = result.stderr = ""
             return result
 
@@ -1979,6 +2043,7 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
             (artefacts / "demo_top.def").write_text("DESIGN demo_top ;\n")
             result = MagicMock()
             result.returncode = 0
+            result.stderr = ""
             return result
         return streamout(cmd, **kwargs)
 
@@ -2209,17 +2274,22 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     assert "check_placement" in pre_route[last_dp + 1 :]
 
 
-def test_pnr_template_places_multiple_macros_on_a_grid():
+def test_pnr_template_packs_macros_by_their_own_size():
+    """The flow hands every macro's own footprint to the packer and places
+    the result FIRM. The packing itself is tested in test_pnr_macro_pack.py."""
     from importlib.resources import files
 
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
-    assert "set macro_count [llength $macros]" in template
-    assert "for {set candidate_cols 1}" in template
-    assert "$max_macro_w <= $core_w / $candidate_cols" in template
-    assert "macros do not fit any rectangular grid" in template
-    assert "$col * $slot_w" in template
-    assert "$row * $slot_h" in template
-    assert "does not fit its floorplan grid slot" in template
+    assert "[[$inst getMaster] isBlock]" in template
+    assert (
+        "lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]"
+        in template
+    )
+    assert "rb::macro_pack::solve \\" in template
+    assert "$inst setPlacementStatus FIRM" in template
+    # No slot is sized for the largest macro any more (#626).
+    assert "max_macro_w" not in template
+    assert "slot_w" not in template
 
 
 def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
@@ -2284,6 +2354,7 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
         Path(cmd[cmd.index("-log") + 1]).write_text("")
         result = MagicMock()
         result.returncode = 0
+        result.stderr = ""
         return result
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
@@ -2454,6 +2525,7 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
         routed_v.write_text("module demo_top(); endmodule\n")
         result = MagicMock()
         result.returncode = 1
+        result.stderr = ""
         return result
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_dies)
@@ -2463,6 +2535,79 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
     assert "exited with code 1" in res.results["desc"]
     assert not odb.exists()
     assert not routed_v.exists()
+
+
+def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypatch):
+    """A Tcl error — the macro packer refusing a floorplan, say — is written
+    to stderr, which OpenROAD's own `-log` does not carry. It has to survive
+    the run: the whole diagnostic in the log, its first line in the verdict
+    (#626)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    diagnostic = (
+        "Error: pnr.tcl, 272 3 macros do not fit the 492.660 x 489.600 um "
+        "floorplan core\n"
+        "  smallest core at this aspect ratio that would fit: 559.917 x 556.440 um\n"
+    )
+
+    def _dies_with_a_tcl_error(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text(">>> Macro placement\n")
+        result = MagicMock()
+        result.returncode = 1
+        result.stderr = diagnostic
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _dies_with_a_tcl_error)
+
+    res = backend.run()
+
+    assert (
+        "3 macros do not fit the 492.660 x 489.600 um floorplan core"
+        in (res.results["desc"])
+    )
+    log_text = Path(backend._log_path()).read_text()
+    assert "smallest core at this aspect ratio that would fit" in log_text
 
 
 def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
@@ -2529,6 +2674,7 @@ def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
         odb.write_bytes(b"\x00partial odb\x00")
         result = MagicMock()
         result.returncode = 1
+        result.stderr = ""
         return result
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_dies)
@@ -2595,6 +2741,7 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
         odb.write_bytes(b"\x00partial odb\x00")
         result = MagicMock()
         result.returncode = 0
+        result.stderr = ""
         return result
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_errors)
@@ -2663,6 +2810,7 @@ def test_gds2png_removes_a_partial_png(tmp_path, monkeypatch):
         out_png.write_bytes(b"\x89PNG partial")
         result = MagicMock()
         result.returncode = 1
+        result.stderr = ""
         result.stdout = "render aborted"
         result.stderr = ""
         return result

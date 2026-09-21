@@ -9,6 +9,10 @@ on:
       - 'uv.lock'
       - 'pytest.ini'
       - 'src/**/*.py'
+      # The P&R flow template and the Tcl it embeds are packaged
+      # resources with tests of their own (#626).
+      - 'src/**/*.tcl'
+      - 'src/**/*.template'
       - 'tests/**/*.py'
   # No `branches:` filter — stacked PRs are based on their predecessor's
   # branch, not on main, and a base filter would silently skip their checks.
@@ -19,6 +23,10 @@ on:
       - 'uv.lock'
       - 'pytest.ini'
       - 'src/**/*.py'
+      # The P&R flow template and the Tcl it embeds are packaged
+      # resources with tests of their own (#626).
+      - 'src/**/*.tcl'
+      - 'src/**/*.template'
       - 'tests/**/*.py'
 
 jobs:

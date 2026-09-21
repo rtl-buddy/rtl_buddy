@@ -5,6 +5,7 @@ from serde import serde, field
 from ..errors import FatalRtlBuddyError
 from .pdk import (
     DEFAULT_PLACEMENT_DENSITY,
+    DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_PADDING,
     PlacementFile,
     validate_placement,
@@ -90,6 +91,11 @@ class PnrPlatformConfig:
             self._pdk.get_placement_padding(),
             DEFAULT_PLACEMENT_PADDING,
         )
+        self._placement_macro_halo = _first_set(
+            placement.macro_halo,
+            self._pdk.get_placement_macro_halo(),
+            DEFAULT_PLACEMENT_MACRO_HALO,
+        )
 
     def get_name(self) -> str:
         return self._name
@@ -121,6 +127,10 @@ class PnrPlatformConfig:
     def get_placement_padding(self) -> int:
         """Global-placement cell padding, after platform/PDK/default."""
         return self._placement_padding
+
+    def get_placement_macro_halo(self) -> float:
+        """Macro halo in microns, after platform/PDK/default."""
+        return self._placement_macro_halo
 
     def get_cts_sink_clustering(self) -> bool:
         return self._cts_sink_clustering

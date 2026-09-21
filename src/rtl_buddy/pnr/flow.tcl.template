@@ -17,6 +17,7 @@ set SITE            {{ site }}
 set CORE_UTIL_PCT   {{ util_pct }}
 set CORE_ASPECT     {{ aspect }}
 set CORE_MARGIN     {{ core_margin }}
+set MACRO_HALO      {{ macro_halo }}
 
 set TIEHI_CELL_PORT {{ tie_hi }}
 set TIELO_CELL_PORT {{ tie_lo }}
@@ -59,57 +60,28 @@ puts ">>> Tie cells"
 if {[string length $TIEHI_CELL_PORT] > 0} { insert_tiecells $TIEHI_CELL_PORT }
 if {[string length $TIELO_CELL_PORT] > 0} { insert_tiecells $TIELO_CELL_PORT }
 
+{{ macro_pack_procs }}
 puts ">>> Macro placement"
 set block [ord::get_db_block]
 set manuf_grid_dbu [expr {int([ord::microns_to_dbu 0.005])}]
+set dbu_per_micron [expr {int([ord::microns_to_dbu 1.0])}]
 set macros {}
 foreach inst [$block getInsts] {
   if {[[$inst getMaster] isBlock]} { lappend macros $inst }
 }
-set macro_count [llength $macros]
-if {$macro_count > 0} {
+if {[llength $macros] > 0} {
   set core [$block getCoreArea]
-  set core_w [expr {double([$core xMax] - [$core xMin])}]
-  set core_h [expr {double([$core yMax] - [$core yMin])}]
-  set max_macro_w 0
-  set max_macro_h 0
+  set halo_dbu [expr {int(round([ord::microns_to_dbu $MACRO_HALO]))}]
+  set footprints {}
   foreach inst $macros {
     set master [$inst getMaster]
-    set max_macro_w [expr {max($max_macro_w, [$master getWidth])}]
-    set max_macro_h [expr {max($max_macro_h, [$master getHeight])}]
+    lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
   }
-  set ideal_cols [expr {sqrt(double($macro_count))}]
-  set best_score [expr {double($macro_count + 1)}]
-  set cols 0
-  for {set candidate_cols 1} {$candidate_cols <= $macro_count} {incr candidate_cols} {
-    set candidate_rows [expr {int(ceil(double($macro_count) / $candidate_cols))}]
-    if {$max_macro_w <= $core_w / $candidate_cols &&
-        $max_macro_h <= $core_h / $candidate_rows} {
-      set score [expr {abs($candidate_cols - $ideal_cols)}]
-      if {$score < $best_score} {
-        set cols $candidate_cols
-        set best_score $score
-      }
-    }
-  }
-  if {$cols == 0} {
-    error "macros do not fit any rectangular grid in the floorplan core"
-  }
-  set rows [expr {int(ceil(double($macro_count) / $cols))}]
-  set slot_w [expr {$core_w / $cols}]
-  set slot_h [expr {$core_h / $rows}]
-  for {set i 0} {$i < $macro_count} {incr i} {
-    set inst [lindex $macros $i]
-    set master [$inst getMaster]
-    set col [expr {$i % $cols}]
-    set row [expr {$i / $cols}]
-    if {[$master getWidth] > $slot_w || [$master getHeight] > $slot_h} {
-      error "macro [$inst getName] does not fit its floorplan grid slot"
-    }
-    set x [expr {[$core xMin] + $col * $slot_w + ($slot_w - [$master getWidth]) / 2.0}]
-    set y [expr {[$core yMin] + $row * $slot_h + ($slot_h - [$master getHeight]) / 2.0}]
-    set x [expr {int($x / $manuf_grid_dbu) * $manuf_grid_dbu}]
-    set y [expr {int($y / $manuf_grid_dbu) * $manuf_grid_dbu}]
+  set placement [rb::macro_pack::solve \
+      [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \
+      $footprints $halo_dbu $manuf_grid_dbu $dbu_per_micron]
+  foreach inst $macros {
+    lassign [dict get $placement [$inst getName]] x y
     $inst setLocation $x $y
     $inst setPlacementStatus FIRM
     puts ">>>   placed [$inst getName] at ($x, $y) DBU"
