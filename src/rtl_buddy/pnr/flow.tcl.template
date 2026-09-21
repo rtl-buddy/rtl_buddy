@@ -54,6 +54,7 @@ initialize_floorplan \
 make_tracks
 
 puts ">>> IO pin placement"
+{{ pin_constraints_tcl }}
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 
 puts ">>> Tie cells"

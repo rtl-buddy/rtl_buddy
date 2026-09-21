@@ -439,7 +439,18 @@ class OpenRoadPnr:
             else ""
         )
 
+        pin_script = self.pnr_cfg.pin_constraints
+        pin_constraints_tcl = ""
+        if pin_script is not None:
+            if not os.path.isfile(pin_script):
+                raise RuntimeError(f"pin-constraints file does not exist: {pin_script}")
+            # Tcl double-quoted word: suppress substitutions in config paths.
+            escaped = pin_script.replace("\\", "\\\\")
+            for char in ("$", "[", "]", '"'):
+                escaped = escaped.replace(char, "\\" + char)
+            pin_constraints_tcl = f'source "{escaped}"'
         substitutions = {
+            "pin_constraints_tcl": pin_constraints_tcl,
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
             "sdc": sdc,
