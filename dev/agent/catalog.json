@@ -953,6 +953,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-pr.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#export-a-saved-result",
+          "slug": "export-a-saved-result",
+          "title": "Export a saved result",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/export-a-saved-result.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#interpret-results",
           "slug": "interpret-results",
           "title": "Interpret results",
@@ -2367,6 +2373,12 @@
           "slug": "pnr",
           "title": "pnr",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/reference/cli/pnr.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/#pnr-export",
+          "slug": "pnr-export",
+          "title": "pnr-export",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/reference/cli/pnr-export.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/#power",

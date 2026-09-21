@@ -104,6 +104,10 @@ cfg-pdks:
       tt: pdk/sky130hd/lib/tt.lib
     tech-lef: pdk/sky130hd/tech.lef
     macro-lef: pdk/sky130hd/macros.lef
+    cell-gds:
+      - pdk/sky130hd/gds/sky130_fd_sc_hd.gds
+      - pdk/sky130hd/gds/sky130_fd_sc_hd_fill.gds
+    klayout-tech: pdk/sky130hd/sky130hd.lyt
 
 cfg-synth-platforms:
   - name: sky130hd_tt
@@ -122,7 +126,7 @@ cfg-pnr-platforms:
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, and `conflicting-drivers`. OpenROAD additionally accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, and `pin-layers.horizontal` / `pin-layers.vertical`. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, and `pin-layers.horizontal` / `pin-layers.vertical`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
 | `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), and `routing-layers.signal`/`.clock` |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `openroad.run`, and `openroad.pre-sta-tcl` settings. Built-in default is `standard`. Precedence is per-run override, effort, tool config |
