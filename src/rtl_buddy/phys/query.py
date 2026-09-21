@@ -148,6 +148,23 @@ DEFAULT_RUNS_LIMIT = 20
 #: nobody reads to the end.
 DEFAULT_RANK_LIMIT = 10
 
+#: How ``rb phys summary`` spells "list none of this ranking".
+#:
+#: ``--limit 0`` already means *all* — documented, relied on, and what
+#: the hub pane passes — so a per-ranking override needs a spelling for
+#: the opposite that cannot be confused with it. A literal word does
+#: that without renumbering anything: ``--instances-limit none`` yields
+#: an empty ``instances`` list, while ``--modules-limit 0`` still
+#: yields every module. It travels through the payload builders and the
+#: MCP tools as this exact string, so one value means one thing
+#: everywhere, and lands in the payload's ``limits`` block as itself.
+RANK_NONE = "none"
+
+#: A per-ranking limit as the surfaces exchange it: an ``int`` head
+#: (``0`` for all), :data:`RANK_NONE` for no rows at all, or ``None``
+#: for "not overridden — use the shared limit".
+RankLimit = int | str | None
+
 #: The four power columns every instance row carries, in the order a
 #: reader wants them: the total first, then what it decomposes into.
 POWER_COLUMNS = ("total_uw", "internal_uw", "switching_uw", "leakage_uw")
@@ -800,7 +817,59 @@ def _power_sum(rows) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def summary_payload(ctx: PhysContext, *, limit: int = DEFAULT_RANK_LIMIT) -> dict:
+def parse_rank_limit(value: str | None) -> RankLimit:
+    """Read a per-ranking limit off a CLI flag.
+
+    ``None`` in (the flag was not passed) is ``None`` out — the caller
+    falls back to the shared ``--limit`` rather than to a default of its
+    own, so an invocation that names neither flag behaves exactly as it
+    did before they existed. Otherwise the word :data:`RANK_NONE` asks
+    for no rows and a non-negative integer is a head, ``0`` meaning all
+    as it does everywhere else. Anything else raises :class:`ValueError`
+    naming the spellings it takes; the CLI turns that into a usage
+    error rather than a traceback.
+    """
+    if value is None:
+        return None
+    text = value.strip().lower()
+    if text == RANK_NONE:
+        return RANK_NONE
+    try:
+        number = int(text, 10)
+    except ValueError:
+        raise ValueError(
+            f"expected an integer or '{RANK_NONE}', not {value!r}; "
+            "0 lists every row, a positive number heads the ranking, and "
+            f"'{RANK_NONE}' lists none of it"
+        ) from None
+    if number < 0:
+        raise ValueError(
+            f"expected 0 or greater, not {number}; 0 lists every row and "
+            f"'{RANK_NONE}' lists none of it"
+        )
+    return number
+
+
+def _rank_rows(builder, model: dict, limit: RankLimit) -> list[dict]:
+    """One ranking, or none of it, without paying for what was not asked.
+
+    :data:`RANK_NONE` returns ``[]`` *without calling* ``builder``:
+    suppression exists because a 300k-row ranking costs a sort, a
+    serialisation and a decode, and a suppression that sorted the rows
+    before dropping them would have saved only the last of the three.
+    """
+    if limit == RANK_NONE:
+        return []
+    return builder(model, limit)
+
+
+def summary_payload(
+    ctx: PhysContext,
+    *,
+    limit: int = DEFAULT_RANK_LIMIT,
+    modules_limit: RankLimit = None,
+    instances_limit: RankLimit = None,
+) -> dict:
     """The run header, the totals sanity block, and the two rankings.
 
     The totals come from the flows' own log scrapes and the rows from a
@@ -808,8 +877,21 @@ def summary_payload(ctx: PhysContext, *, limit: int = DEFAULT_RANK_LIMIT) -> dic
     derived from the other — a totals-versus-sum mismatch is information
     (see :mod:`rtl_buddy.phys.model`), and folding one into the other
     here would destroy it.
+
+    ``limit`` heads *both* rankings and keeps its meaning and its
+    default. ``modules_limit`` and ``instances_limit`` override it for
+    one ranking each and may be :data:`RANK_NONE` for an empty one —
+    the consumer that wants the complete module table (``limit=0``)
+    without every leaf instance row behind it (#606). The payload
+    reports both applied values in ``limits``, beside the shared
+    ``limit`` it still carries, and ``counts`` stays the *model's* row
+    counts either way, so a suppressed ranking is never mistaken for a
+    half the run never produced: that is ``counts[half] is None``,
+    which only a one-sided model says.
     """
     model = ctx.model
+    modules_limit = limit if modules_limit is None else modules_limit
+    instances_limit = limit if instances_limit is None else instances_limit
     payload = _run_block(ctx)
     payload.update(
         {
@@ -821,8 +903,9 @@ def summary_payload(ctx: PhysContext, *, limit: int = DEFAULT_RANK_LIMIT) -> dic
             "halves": halves_block(model),
             "missing_halves": missing_halves(model),
             "limit": limit,
-            "modules": heaviest_modules(model, limit),
-            "instances": hottest_instances(model, limit),
+            "limits": {"modules": modules_limit, "instances": instances_limit},
+            "modules": _rank_rows(heaviest_modules, model, modules_limit),
+            "instances": _rank_rows(hottest_instances, model, instances_limit),
             "artefacts": artefacts_block(ctx),
         }
     )
