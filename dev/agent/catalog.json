@@ -947,6 +947,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/configure-the-physical-platform.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps",
+          "slug": "tune-the-process-dependent-steps",
+          "title": "Tune the process-dependent steps",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/tune-the-process-dependent-steps.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-pr",
           "slug": "run-pr",
           "title": "Run P&R",

@@ -36,3 +36,5 @@ All paths resolve from `root_config.yaml`.
 The Yosys backend uses Liberty for mapping, area, and timing. The OpenROAD backend requires Liberty and technology/macro LEF; a missing LEF fails before running the tool. Keep large PDK files untracked and provide a reproducible fetch script.
 
 OpenROAD `strategy` values are `AREA`, `TIMING`, `TIMING_ANNEAL`, and `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
+
+A PDK's `dont-use-cells` list excludes cells from mapping: each pattern becomes a `-dont_use` argument to Yosys `dfflibmap` and `abc`, and on the OpenROAD backend a `set_dont_use` before the resynthesis stage reads the netlist. It is the same list [P&R](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps) reads, so a cell excluded here is excluded there too, and two runs that exclude different cells fingerprint as two experiments.
