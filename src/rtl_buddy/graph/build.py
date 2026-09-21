@@ -58,6 +58,7 @@ from ..config.model import ModelConfig
 from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..tool_manifest import VIEW_GRAPH_MIN_VERSION as _VIEW_GRAPH_MIN_VERSION
 from ..tools.hier_rtl_buddy_view import RtlBuddyViewGraph
 from . import extract as extract_mod
 from .binding import BINDING_TIER, bind_python, collect_sources
@@ -107,12 +108,12 @@ FAILED = "failed"
 #: the knob a reader has to change to get the export back.
 GRAPH_OPT_OUT = "models.yaml `graph: false`"
 
-#: First ``rtl-buddy-view`` release carrying the ``graph`` subcommand
-#: (rtl-buddy-view#126). Mirrors the ``0.3.0`` floor that ``rb
-#: hier-query`` gates on in ``tool_manifest.py`` — the manifest floor
-#: is what every view-backed command shares, and this is the extra
-#: per-feature floor layered on top of it.
-VIEW_GRAPH_MIN_VERSION = "0.4.0"
+#: First ``rtl-buddy-view`` release carrying the ``graph`` subcommand.
+#: Owned by ``tool_manifest.py``, which declares it as the viewer's
+#: per-subcommand floor for ``graph`` so ``rb tool-check`` and the gate
+#: below read the same number (rtl_buddy#550). Re-exported here because
+#: this is where callers have always imported it from.
+VIEW_GRAPH_MIN_VERSION = _VIEW_GRAPH_MIN_VERSION
 
 #: Where each tier's own export lands under ``artefacts/graph/``. Kept
 #: on disk (not just in memory) so a failed merge is debuggable and so
