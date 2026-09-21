@@ -12,11 +12,19 @@ dependencies = [
   "click >= 8.3.0",
   "pyserde[yaml] >= 0.27.0",
   "rich >= 14.0.0",
-  # >=0.25: tools/surfer_wcp.py and tools/saif_from_trace.py are ported to the
-  # 0.25 random-access API (lifts the interim <0.25 bound from #264). Cap the
-  # minor — pre-1.0 minors break the API — so the next rewrite fails the CI lock
-  # bump, not in the field; test_pywellen_api.py guards the surface. See #263.
-  "pywellen >=0.25.2,<0.26",
+  # pywellen is pre-1.0 and rewrites its public API on minor bumps: 0.25.0
+  # replaced the random-access surface tools/surfer_wcp.py (rb wave) and
+  # tools/saif_from_trace.py (rb saif) read traces with, which is why #264 had
+  # to pin <0.25. Both are ported to the 0.25 getter API, so that bound is
+  # lifted and replaced with a two-sided one:
+  #   floor 0.25.6 — 0.25.3 shipped the upstream streaming panic fix
+  #     (ekiwi/wellen 134) and .4-.6 are its follow-up patches, so the whole
+  #     supported range behaves; .6 is also the newest 0.25 (2026-07-21).
+  #   cap  <0.26   — the root-cause fix for #263: the next pre-1.0 rewrite
+  #     fails at the CI lock bump instead of silently in the field.
+  # tests/test_pywellen_api.py guards both halves (surface + this pin); keep it
+  # and tools/pywellen_compat.py in step with any change here. See #263, #267.
+  "pywellen >=0.25.6,<0.26",
   "jsonschema >= 4.21.0",
   "websockets >= 12.0",
 ]

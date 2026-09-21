@@ -20,6 +20,7 @@ import pywellen
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .pywellen_compat import require_random_access_api
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,8 @@ def _emit_scope(out, scope, indent: int, end_t: int) -> None:
 def convert(trace_path: Path, saif_path: Path) -> None:
     """Convert FST/VCD at `trace_path` to SAIF v2.0 at `saif_path`.
 
-    Raises FatalRtlBuddyError on input-not-found or pywellen open failure.
+    Raises FatalRtlBuddyError on input-not-found, pywellen open failure, or a
+    pywellen whose Waveform API this converter cannot drive (#263).
     """
     if not trace_path.is_file():
         log_event(
@@ -162,6 +164,11 @@ def convert(trace_path: Path, saif_path: Path) -> None:
             path=str(trace_path),
         )
         raise FatalRtlBuddyError(f"trace file not found: {trace_path}")
+
+    # Guard before any Waveform API touch, so an out-of-range pywellen names
+    # itself and the supported range instead of dying mid-walk on whichever
+    # getter vanished first.
+    require_random_access_api("rb saif")
 
     try:
         w = pywellen.Waveform(str(trace_path))

@@ -1176,7 +1176,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
     { name = "pyserde", extras = ["yaml"], specifier = ">=0.27.0" },
     { name = "pyslang", marker = "extra == 'elab'", specifier = ">=10.0.0,<12" },
-    { name = "pywellen", specifier = ">=0.25.2,<0.26" },
+    { name = "pywellen", specifier = ">=0.25.6,<0.26" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "rtl-buddy-graph-extract", marker = "extra == 'graph-extract'", specifier = ">=0.1.0" },
     { name = "rtl-buddy-xeno", extras = ["slang", "verible"], marker = "extra == 'mut'", specifier = ">=0.1.0" },
